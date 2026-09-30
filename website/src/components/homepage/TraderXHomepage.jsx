@@ -16,7 +16,7 @@ export default function TraderXHomepage() {
         <title>Distributed TraderX | Yeshiva University CS</title>
         <meta
           name="description"
-          content="Yeshiva University's build of FINOS TraderX: a sell-side OMS with an LMAX Disruptor matching engine replicated over a three-member Aeron Raft cluster, across fifteen runnable architectural states."
+          content="Yeshiva University's build of FINOS TraderX: a sell-side OMS with an LMAX Disruptor matching engine replicated over a three-member Aeron Raft cluster, with 18 YU states, EOD risk integration, a Demo console and a new Trader Desk."
         />
       </Head>
       <div className={styles.page}>

@@ -4,6 +4,8 @@ title: "State 007: Observability with LGTM on Compose"
 
 # State 007 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [006-messaging-nats-replacement](/docs/learning/state-006-messaging-nats-replacement)
@@ -18,10 +20,10 @@ title: "State 007: Observability with LGTM on Compose"
 - Nearest previous convergence: [004-containerized-compose-runtime](/docs/learning/state-004-containerized-compose-runtime)
 - Nearest next convergence: [009-order-management-matcher](/docs/learning/state-009-order-management-matcher)
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-007-observability-lgtm-compose](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-007-observability-lgtm-compose)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-007-observability-lgtm-compose](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-007-observability-lgtm-compose)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

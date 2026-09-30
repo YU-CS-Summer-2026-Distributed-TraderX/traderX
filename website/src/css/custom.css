@@ -165,11 +165,12 @@ body {
 }
 
 .theme-doc-markdown table {
-  display: table;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   width: 100%;
   border: 1px solid var(--tx-border);
   border-radius: 8px;
-  overflow: hidden;
 }
 
 .theme-doc-markdown th {

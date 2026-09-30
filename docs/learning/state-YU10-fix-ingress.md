@@ -4,6 +4,8 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 # State YU10-fix-ingress Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU09-ops-hardening](/docs/learning/state-YU09-ops-hardening)
@@ -18,10 +20,10 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,12 +31,10 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 ## Plain-English Code Delta
 
-- **Added:** **FIX 4.4 acceptor** (in-process, port 18130): sessions authenticated at logon
-- **Added:** **Order entry over FIX**: `NewOrderSingle` and `OrderCancelRequest` translate to the exact
-- **Added:** **Order state over FIX**: `OrderStatusRequest` answered from the in-memory read model.
-- **Added:** **Asynchronous ExecutionReports**: a dedicated output-disruptor handler translates lifecycle
-- **Added:** **Durable correlation ledger** binding (session, ClOrdID) ↔ (inputSeq, orderRef): duplicate
-- **Added:** **Deterministic outcome semantics**: the four-outcome admission model; ambiguous post-publish
+- Maps FIX 4.4 sessions, order entry, cancellation and status onto the sequenced trading path.
+- **Evidence entrypoints:** FixSessionIntegrationTest; FixGatewayStatusTest.
+- **Boundary:** Typed order fields and accepted units follow the current order-type contract.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

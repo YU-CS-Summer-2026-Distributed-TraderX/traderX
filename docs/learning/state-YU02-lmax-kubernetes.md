@@ -4,6 +4,8 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 
 # State YU02-lmax-kubernetes Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [014-fdc3-intent-interoperability](/docs/learning/state-014-fdc3-intent-interoperability)
@@ -18,10 +20,10 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 
 ## Plain-English Code Delta
 
-- **Added:** FR-LK06 — startup performs snapshot load, journal replay and warm-up replay, and readiness is
-- **Added:** FR-LK07 — durable Kubernetes storage and lifecycle rules for journal, snapshot and checkpoint
-- **Added:** FR-LK09 — a port matrix and implementation-status document are produced before any claim of
-- **Changed:** FR-LK03 — inherited matcher-path internals are replaced by the sequencer and single-writer hot
-- **Changed:** FR-LK04 — `order-matcher` becomes the LMAX hot-path node under Kubernetes while keeping its
-- **Changed:** FR-LK05 — `trade-service` takes the gateway/receptionist role in front of the hot path.
-- **Changed:** FR-LK02 — the Kubernetes, C3 and FDC3 runtime contracts inherited from `014` are preserved; a
-- **Removed:** The synchronous per-order database round trip on the admission path, which was the throughput and
+- Packages the sequencer for Kubernetes, with snapshots, startup replay and readiness gates.
+- **Evidence entrypoints:** Snapshot tests; test-state-YU02-lmax-kubernetes.sh.
+- **Boundary:** The historical single-member tier is retained for study; current cluster operation follows YU12.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

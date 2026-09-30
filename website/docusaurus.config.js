@@ -12,7 +12,7 @@ const siteTitle = 'Distributed TraderX'
 // siteTitle: next to the YU mark it only needs to say which application this is.
 const navbarTitle = 'TraderX'
 const siteOrg = 'Yeshiva University'
-const siteTagline = 'A sell-side OMS on the LMAX architecture — Yeshiva University CS'
+const siteTagline = 'A sell-side OMS on the LMAX architecture; Yeshiva University CS'
 const copyrightOwner = 'Yeshiva University CS · built on TraderX, a FINOS project'
 const docsUrl = process.env.DOCUSAURUS_URL || 'https://YU-CS-Summer-2026-Distributed-TraderX.github.io'
 const docsBaseUrl = process.env.DOCUSAURUS_BASE_URL || '/traderX/'
@@ -35,22 +35,30 @@ function pathBrowserPolyfillPlugin() {
 // GitHub repo configuration - update these for forks/branches
 const repoOwner = 'YU-CS-Summer-2026-Distributed-TraderX';
 // Allow override via environment (e.g., DOCS_BRANCH=feature-branch).
-// Default is the branch the site is actually built from, NOT main: on this fork main is the upstream
-// sync and does not carry our docs/ or specs/, so "Edit this page" against main 404s for every page
-// added here. Change this if the site starts deploying from a different branch.
-const repoBranch = process.env.DOCS_BRANCH || 'YU15-eod-risk-extract';
+// Source links follow the current integration tree; the deployment workflow selects its own ref.
+const repoBranch = process.env.DOCS_BRANCH || 'traderX-risk-integration';
 const repoUrl = `https://github.com/${repoOwner}/${projectSlug}`;
 // Where "go to the repository" should land. repoUrl stays the bare root because the editUrl below
 // builds its own /edit/<branch>/ paths from it; only the human-facing links get the branch.
 const repoTreeUrl = `${repoUrl}/tree/${repoBranch}`;
 
 // Remark plugin to transform relative links to GitHub URLs
-const transformRelativeLinks = require('./src/remark/transformRelativeLinks');
+const publicDocs = require('./public-docs-policy');
+const publicProse = require('./plugins/remark-public-prose');
 
 module.exports = {
   markdown: {
     mermaid: true,
     format: 'md',
+    async parseFrontMatter(params) {
+      const result = await params.defaultParseFrontMatter(params);
+      const {contentTitle} = require('@docusaurus/utils').parseMarkdownContentTitle(result.content, {removeContentTitle: false});
+      for (const key of ['title', 'sidebar_label', 'description']) {
+        if (typeof result.frontMatter[key] === 'string') result.frontMatter[key] = publicProse.prose(result.frontMatter[key]);
+      }
+      if (!result.frontMatter.title && contentTitle) result.frontMatter.title = publicProse.prose(contentTitle);
+      return result;
+    },
   },
   themes: ['@docusaurus/theme-mermaid'],
   // src/mermaid-zoom-client.js was written and styled (see .tx-mermaid-zoom-* in custom.css) but
@@ -82,7 +90,7 @@ module.exports = {
         // Docusaurus does not run through its link resolver, so a root-absolute "/docs/..." here
         // resolves to https://host/docs/... and 404s on every page — the homepage only worked
         // because its own banner is a <Link>, which does apply baseUrl.
-        `<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. <a href="${docsBaseUrl}docs/engineering/whats-new"><strong>See what’s new</strong></a>.`,
+        `<strong>Yeshiva University CS</strong>: TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. <a href="${docsBaseUrl}docs/engineering/whats-new"><strong>See what’s new</strong></a>.`,
     },
     navbar: {
       title: navbarTitle,
@@ -171,7 +179,7 @@ module.exports = {
           ]
         },
         {
-          title: 'Upstream — FINOS',
+          title: 'Upstream: FINOS',
           items: [
             {
               label: 'TraderX (upstream)',
@@ -205,13 +213,9 @@ module.exports = {
           // decisions, named collaborators and private correspondence on a public, crawlable site.
           // The public-facing versions of the material worth sharing live in docs/engineering/.
           // Do not remove this exclusion to fix a broken link; move the page instead.
-          exclude: [
-            'prompt-ideas/**', 'migration/**', 'migration/**/*', '**/migration/**',
-            'guide/adr/**', 'guide/adr/**/*',
-            'handoff/**', 'handoff/**/*', '**/handoff/**',
-          ],
-          editUrl:
-            `${repoUrl}/edit/${repoBranch}/website/`,
+          exclude: publicDocs.docsExclude,
+          beforeDefaultRemarkPlugins: [publicProse],
+          editUrl: ({docPath}) => `${repoUrl}/edit/${repoBranch}/docs/${docPath}`,
           sidebarPath: require.resolve('./sidebars.js')
         },
         theme: {
@@ -235,7 +239,7 @@ module.exports = {
         // internal handoff tree was still being indexed into llms.txt — 45 entries, each with its
         // title and an excerpt of its opening lines. Excluding it in one place is not enough; every
         // generator that reads ../docs needs telling separately.
-        ignoreFiles: ['handoff/**', 'handoff/**/*', 'prompt-ideas/**', 'migration/**'],
+        ignoreFiles: publicDocs.docsExclude,
         includeBlog: false,
         generateLLMsTxt: true,
         generateLLMsFullTxt: true,
@@ -252,7 +256,9 @@ module.exports = {
         routeBasePath: 'specs',
         sidebarPath: require.resolve('./traderspec-root-specs.sidebars.js'),
         sidebarItemsGenerator: require('./plugins/specs-sidebar-items-generator'),
+        beforeDefaultRemarkPlugins: [publicProse],
         remarkPlugins: [require('./plugins/remark-speckit-reference-links')],
+        exclude: publicDocs.specsExclude,
         include: ['**/*.md'],
         editUrl: `${repoUrl}/edit/${repoBranch}/specs/`,
       },
@@ -265,6 +271,7 @@ module.exports = {
         routeBasePath: 'specify',
         sidebarPath: require.resolve('./traderspec-specify.sidebars.js'),
         include: ['memory/**/*.md'],
+        beforeDefaultRemarkPlugins: [publicProse],
         editUrl: `${repoUrl}/edit/${repoBranch}/.specify/`,
       },
     ],

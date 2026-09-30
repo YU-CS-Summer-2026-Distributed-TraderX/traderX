@@ -37,13 +37,11 @@ function WhatPanel() {
   return (
     <div className={styles.panelStack}>
       <SectionIntro title="From reference demo to order management system">
-        FINOS TraderX is a teaching platform: a deliberately approachable trading application that
-        runs on a laptop. This deployment keeps that property — every state still runs locally — and
-        pushes the architecture underneath it much further. The synchronous, database-backed matcher
-        became an event-sourced LMAX Disruptor engine replicated over an Aeron Raft cluster, and the
-        surrounding system grew the parts a real desk cannot do without: pre-trade risk controls,
-        settlement and reconciliation, a FIX gateway, listed options, and a reproducible end-of-day
-        risk extract.
+        FINOS TraderX supplies the reference application and numbered learning states. The YU
+        lineage adds a single-threaded engine, durable risk controls, post-trade processing,
+        history, algorithms, FIX, consensus, options and OTC support. YU18 connects EOD inputs
+        to validated external results and adds managed recovery and a separate Trader Desk.
+        Specifications describe both implemented behavior and remaining acceptance work.
       </SectionIntro>
 
       <div className={styles.cardGrid}>
@@ -53,7 +51,7 @@ function WhatPanel() {
       </div>
 
       <section className={styles.demoPanel}>
-        <h3>Explore Catalogued Live Environments</h3>
+        <h3>Demo environment registry</h3>
         <div className={styles.demoSource}>
           <span>
             {catalogSource.liveEnvironmentCount} environments sourced from live environment catalog
@@ -99,7 +97,7 @@ function WhatPanel() {
       </section>
 
       <section className={styles.docsPanel}>
-        <h3>Generated Documentation Surfaces</h3>
+        <h3>Documentation exports</h3>
         <div className={styles.demoGrid}>
           {documentationCards.map((card) => (
             <article key={card.title} className={styles.demoCard}>
@@ -265,13 +263,11 @@ function CodeBlock({title, label, children}) {
 function SddPanel() {
   return (
     <div className={styles.panelStack}>
-      <SectionIntro title="Fifteen states, each one specified before it was built">
-        Every state here began as a spec. Each declares what it must make true, layers its changes
-        over its ancestors, and renders into a complete, independently runnable system — so
-        &ldquo;the version with the order book but without options&rdquo; is something you can boot
-        and benchmark directly. That layering has one sharp edge: a fix landed in a layer that a
-        later state overrides is inert, which is why the test suite runs against three separately
-        composed trees.
+      <SectionIntro title="State specifications and generated implementations">
+        Each catalog entry selects its source layers and generation command. Requirements,
+        contracts and acceptance criteria describe the intended behavior; tests check the
+        composed result. A fix can be shadowed by a later override, so choose the state and
+        source revision explicitly before validating it.
       </SectionIntro>
 
       <div className={styles.codeGrid}>
@@ -299,24 +295,13 @@ function SddPanel() {
       {/* Was an abstract pitch about what SDD "lets firms" do. We actually did it, and the measured
           cost of doing it is far more useful to another organisation than the promise. */}
       <section className={styles.auditPanel}>
-        <h3>Diverging without forking away</h3>
+        <h3>Maintaining source layers</h3>
         <p>
-          The point of layering the changes rather than editing the baseline is that upstream stays
-          reachable. We tested that the hard way: all fifteen states were rebased onto current FINOS
-          TraderX after seven weeks of upstream movement. Upstream had shipped{' '}
-          <strong>62 commits and changed zero lines of application code</strong> — and catching up
-          still took roughly <strong>150 hand edits</strong>, none of which <code>git</code> could
-          show us, because the work is in the layers rather than the files.
+          State overrides compose after the inherited baseline. An upstream update can be
+          shadowed by a later full-file override, so review the effective generated tree and
+          run the selected state's checks after changing either layer.
         </p>
-        <ul>
-          <li>
-            Requirements stay traceable from spec to generated code to the demo that runs it.
-          </li>
-          <li>
-            Our states are overlays, so an upstream change lands underneath them instead of
-            conflicting with them.
-          </li>
-        </ul>
+        <p>Specifications, generated code and runnable proofs serve different purposes.</p>
       </section>
     </div>
   );
@@ -326,8 +311,9 @@ function SpecKitPanel() {
   return (
     <div>
       <SectionIntro title="The GitHub Spec Kit Engine">
-        Spec Kit replaces non-deterministic AI vibe coding with a structured pipeline. AI assists
-        with reasoning and decomposition, while deterministic patch scripts control emitted files.
+        Spec Kit organizes requirements, plans and verification work. Repository generation scripts
+        compose the selected state into runnable files. Review generated differences and test
+        the resulting behavior.
       </SectionIntro>
 
       <div className={styles.officialLinks} aria-label="Official Spec Kit links">

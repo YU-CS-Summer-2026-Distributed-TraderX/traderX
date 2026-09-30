@@ -4,6 +4,8 @@ title: "State 011: Tilt Local Dev on Kubernetes"
 
 # State 011 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [010-kubernetes-runtime](/docs/learning/state-010-kubernetes-runtime)
@@ -18,10 +20,10 @@ title: "State 011: Tilt Local Dev on Kubernetes"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-011-tilt-kubernetes-dev-loop](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-011-tilt-kubernetes-dev-loop)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-011-tilt-kubernetes-dev-loop](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-011-tilt-kubernetes-dev-loop)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

@@ -4,6 +4,8 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 
 # State YU03-in-memory-risk-gateway Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU02-lmax-kubernetes](/docs/learning/state-YU02-lmax-kubernetes)
@@ -18,10 +20,10 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 
 ## Plain-English Code Delta
 
-- **Added:** An in-process Gateway replica that screens every order, batch, and market trade against account
-- **Added:** An authoritative decision in the single-writer BLP that repeats every mutable and aggregate check
-- **Added:** A fixed decision precedence — kill switch, account, security, restriction, quantity, price
-- **Added:** Checking and reserving as one single-threaded BLP operation before book entry, so aggregate
-- **Added:** Exposure reservation on accept: an order reserves `quantity × limitPx` against its account,
-- **Added:** Versioned control events for accounts, securities, policy, and restrictions travelling the same
-- **Added:** Losing the control plane leaves the command path running on installed local state — no fallback
-- **Added:** Replay from snapshot plus journal reproducing every past acceptance and rejection identically,
+- Checks credit, size, notional, restricted securities and price collars in memory before admission.
+- **Evidence entrypoints:** BlpRiskStateTest; RiskControlControllerTest.
+- **Boundary:** These controls implement specific admission rules, not regulatory certification.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

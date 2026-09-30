@@ -33,7 +33,7 @@ If you want to run demos quickly, use the generated state branches listed below.
 - [code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/tree/code/generated-state-013-radius-kubernetes-platform)
 - [code/generated-state-014-fdc3-intent-interoperability](https://github.com/finos/traderX/tree/code/generated-state-014-fdc3-intent-interoperability)
 
-The `YU` states are this fork's own line and their generated branches live HERE, not upstream — the
+The `YU` states are this fork's own line and their generated branches live HERE, not upstream; the
 links above point at `finos/traderX` because those states are upstream's. Same branch naming,
 different repository, and conflating the two sends a reader to a 404 on someone else's project.
 

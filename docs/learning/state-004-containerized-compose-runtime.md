@@ -4,6 +4,8 @@ title: "State 004: Containerized Compose Runtime (NGINX Ingress)"
 
 # State 004 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [003-agentic-harness-foundation](/docs/learning/state-003-agentic-harness-foundation)
@@ -18,10 +20,10 @@ title: "State 004: Containerized Compose Runtime (NGINX Ingress)"
 - Nearest previous convergence: `none`
 - Nearest next convergence: [007-observability-lgtm-compose](/docs/learning/state-007-observability-lgtm-compose)
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-004-containerized-compose-runtime](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-004-containerized-compose-runtime)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-004-containerized-compose-runtime](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-004-containerized-compose-runtime)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

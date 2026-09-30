@@ -4,6 +4,8 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 
 # State YU08-execution-algo-engine Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU07-historical-tick-store](/docs/learning/state-YU07-historical-tick-store)
@@ -18,10 +20,10 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 
 ## Plain-English Code Delta
 
-- **Added:** An `execution-algo-engine` service that accepts a parent order — account, security, side,
-- **Added:** TWAP scheduling, which splits the parent quantity into equally sized time buckets and puts any
-- **Added:** VWAP scheduling, which sizes each bucket by weights supplied by a pluggable volume-profile source
-- **Added:** Two volume-profile sources: a synthetic U-shaped intraday curve that needs no market data, and a
-- **Added:** Automatic fallback to the synthetic weights when the DuckDB source finds no matching history for a
-- **Added:** Child-order submission through the matching engine's existing `POST /orders` endpoint with a
-- **Added:** Fill tracking that subscribes to the existing `/accounts/*/orders` broadcast and correlates
-- **Added:** Progress queries over `GET /algo/orders/{parentOrderId}` and `GET /algo/orders`, showing buckets
+- Slices TWAP parent orders into scheduled children through ordinary risk-gated order ingress.
+- **Evidence entrypoints:** AlgoOrderServiceTest; AlgoEventStoreReplayTest.
+- **Boundary:** Scheduling and child execution are separate; a submitted child need not fill.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

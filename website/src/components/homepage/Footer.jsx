@@ -20,7 +20,7 @@ export default function Footer() {
           <span />
           <div>
             {/*
-              Was "Copyright (c) 2026 Fintech Open Source Foundation" — not who holds this work. The
+              Was "Copyright (c) 2026 Fintech Open Source Foundation"; not who holds this work. The
               upstream project is credited on the line below rather than misattributed as the author
               of this deployment. The copyright notice itself is gone: it was a hardcoded year that
               would silently go stale, and attribution is what this line is actually for.

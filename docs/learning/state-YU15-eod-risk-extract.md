@@ -4,6 +4,8 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 
 # State YU15-eod-risk-extract Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU14-listed-equity-options](/docs/learning/state-YU14-listed-equity-options)
@@ -18,10 +20,10 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 
 ## Plain-English Code Delta
 
-- **Added:** A risk-extract producer whose only trigger is the `eod.pnl.done` event, held on a durable
-- **Added:** Idempotent creation of the `TRADERX_EOD` stream at both ends, so the producer need not start
-- **Added:** A sequenced risk-extract marker, ordinary cluster ingress that mutates no state, at whose sequence
-- **Added:** A malformed marker dropped without advancing any sequence, exactly as an unrecognised input event
-- **Added:** Canonical cut rendering — rows ordered by `(accountId, securityId)`, fixed columns, integer ticks,
-- **Added:** Leader-only publication of the cut as a single NATS message carrying its own row count, off the
-- **Added:** Per-row marks taken from the published closing-price snapshot for the stamped
-- **Added:** A snapshot row whose quality is `MISSING` or whose price is null counted as absent, falling
+- Exports un-netted positions and counterparties at one consensus cut with reproducible bytes and receipt identity.
+- **Evidence entrypoints:** RiskExtractTest; RiskReplayDeterminismTest; SharedEodExamplesTest.
+- **Boundary:** An extract is an input to a risk engine, not a computed portfolio-risk result.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

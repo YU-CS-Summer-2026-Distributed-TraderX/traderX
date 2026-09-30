@@ -4,6 +4,8 @@ title: "State YU16-cdm-instruments: CDM Instruments"
 
 # State YU16-cdm-instruments Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU15-eod-risk-extract](/docs/learning/state-YU15-eod-risk-extract)
@@ -18,10 +20,10 @@ title: "State YU16-cdm-instruments: CDM Instruments"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU16-cdm-instruments](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU16-cdm-instruments)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU16-cdm-instruments](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU16-cdm-instruments)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU16-cdm-instruments: CDM Instruments"
 
 ## Plain-English Code Delta
 
-- **Added:** A CDM-shaped instrument model on reference-data: `GET /instruments` and
-- **Added:** Ten instruments in the seed universe: five ETFs (`SPY, QQQ, IWM, VTI, GLD` —
-- **Added:** `/instruments/control-snapshot` — the general-name control snapshot, identical contract over
-- **Added:** Treasury pricing in price-publisher: term-profiled correlated walk with mean reversion and a
-- **Added:** Face-amount order validation for `UST-` keys at the cluster gateway REST boundary and in the
-- **Added:** Treasury booking semantics in trade-processor: face-weighted average cost, `Rejected` trade
-- **Added:** Extract enrichment by join: `instrumentType` gains `TREASURY`, Treasury rows carry `coupon`
-- **Added:** Extract accrued interest by derivation (ADR-061): Treasury rows additionally carry
+- Adds CDM instrument representation and Treasury/corporate-bond terms and pricing inputs.
+- **Evidence entrypoints:** test-state-YU16-cdm-instruments.sh; price-publisher tests.
+- **Boundary:** Instrument-level failures do not justify substituting invented marks; per-instrument support differs.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

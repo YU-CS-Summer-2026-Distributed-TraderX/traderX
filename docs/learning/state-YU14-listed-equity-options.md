@@ -4,6 +4,8 @@ title: "State YU14-listed-equity-options: Listed Equity Options"
 
 # State YU14-listed-equity-options Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU13-limit-order-book](/docs/learning/state-YU13-limit-order-book)
@@ -18,10 +20,10 @@ title: "State YU14-listed-equity-options: Listed Equity Options"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU14-listed-equity-options: Listed Equity Options"
 
 ## Plain-English Code Delta
 
-- **Added:** FR-LEO01 — option contracts are securities identified by unpadded OCC symbols; they trade
-- **Added:** FR-LEO02 — deterministic multiplier derivation at symbol registration (option → 100,
-- **Added:** FR-LEO03 — all risk-gate notional math (reserve, market trade, executed exposure,
-- **Added:** FR-LEO04 — the multiplier is cluster state: format-3 snapshot security records carry it, and
-- **Added:** FR-LEO05 — strike/expiry/call-put/underlying and counterparty/netting-set never enter the
-- **Added:** FR-LEO06 — instrument currency (USD) and derived position notional
-- **Added:** FR-LEO07 — the SBE symbol-registration ticker field carries at least 19 ASCII characters.
-- **Changed:** Snapshot format identifier 2 → 3: the security record gains the multiplier column; a format-2
+- Trades listed equity options through the same book and applies contract multipliers to exposure.
+- **Evidence entrypoints:** test-state-YU14-listed-equity-options.sh; option persistence proof.
+- **Boundary:** Trading support is distinct from option valuation, Greeks or exercise processing.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

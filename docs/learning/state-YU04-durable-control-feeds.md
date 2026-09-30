@@ -4,6 +4,8 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 
 # State YU04-durable-control-feeds Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU03-in-memory-risk-gateway](/docs/learning/state-YU03-in-memory-risk-gateway)
@@ -18,10 +20,10 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 
 ## Plain-English Code Delta
 
-- **Added:** Transactional outbox in `account-service` and `reference-data`: each control change is written in the
-- **Added:** Two durable NATS JetStream streams of versioned control deltas, `TRADERX_CONTROL_ACCOUNT` and
-- **Added:** Retention and replay on those streams, so a control change made while a replica is briefly offline is
-- **Added:** Watermarked snapshot endpoints `GET /account/control-snapshot` and `GET /stocks/control-snapshot`,
-- **Added:** A five-step bootstrap per source in `order-matcher`: subscribe and buffer, fetch the snapshot, verify
-- **Added:** Real per-source epoch and monotonic version on every control record, so the replica can tell a gap, a
-- **Added:** Quarantine and automatic re-bootstrap: a gap, regression, epoch change or failed checksum stops
-- **Added:** Per-source observability — `traderx_replica_source_watermark` and `traderx_replica_quarantine_total`,
+- Publishes account, limit and security changes through transactional outboxes and versioned control feeds.
+- **Evidence entrypoints:** AccountOutboxAtomicityIT; ControlFeedSubscriberTest.
+- **Boundary:** Persistence, publication and engine acknowledgement are separate events.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

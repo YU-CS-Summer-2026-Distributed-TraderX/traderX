@@ -4,6 +4,8 @@ title: "State YU18-risk-integration: Risk Integration"
 
 # State YU18-risk-integration Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU17-otc-rates](/docs/learning/state-YU17-otc-rates)
@@ -18,9 +20,9 @@ title: "State YU18-risk-integration: Risk Integration"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU18-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU18-risk-integration)
+- Catalogued state branch: [code/generated-state-YU18-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU18-risk-integration)
 - Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
@@ -29,14 +31,10 @@ title: "State YU18-risk-integration: Risk Integration"
 
 ## Plain-English Code Delta
 
-- **Delta:** FR-EB01: The state SHALL inherit YU17-otc-rates and preserve its two export schemas byte for byte.
-- **Delta:** FR-EB02: The builder SHALL require matching consensus sequence, session date, price snapshot version and cut hash across artifacts.
-- **Delta:** FR-EB03: The manifest SHALL include caller-supplied cluster epoch, offset-aware valuation time, input origin, file hashes, schemas and counts.
-- **Delta:** FR-EB04: The bundle ID SHALL hash the canonical manifest body excluding bundleId.
-- **Delta:** FR-EB05: Validation SHALL reject malformed headers, missing provenance, invalid numeric/date values, duplicate row identities and manifest disagreement.
-- **Delta:** FR-EB06: Publication SHALL stage files privately and refuse existing output destinations.
-- **Delta:** FR-EB07: The mock SHALL validate its input and echo every position/contract identity with null NPV, empty Greeks, NOT_PRICED and MOCK_ONLY.
-- **Delta:** FR-EB08: The result SHALL identify its input bundle and explicitly declare synthetic=true, usableForRisk=false and priced coverage zero.
+- Builds immutable risk bundles, validates dated market inputs and external results, and displays job status and coverage. Components also extend order lifecycle and projection recovery.
+- **Evidence entrypoints:** test-state-YU18-risk-integration.sh; check-yu18-composition.py; component tests.
+- **Boundary:** The accepted container path prices a closed synthetic Treasury-bill profile. Production risk remains unavailable.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

@@ -4,6 +4,8 @@ title: "State YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"
 
 # State YU01-lmax-sequencer Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [009-order-management-matcher](/docs/learning/state-009-order-management-matcher)
@@ -18,10 +20,10 @@ title: "State YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"
 
 ## Plain-English Code Delta
 
-- **Added:** Single sequenced input stream: all state-mutating inputs (order create/cancel/force-fill, price
-- **Added:** Parallel input handlers — Journaler (durable append), Replicator (replica/DR stream), Un-marshaller
-- **Added:** Single-threaded, in-memory, event-sourced Business Logic Processor fusing matching + trade booking +
-- **Added:** Typed output events (`OrderAccepted|Rejected|PartiallyFilled|Filled|Canceled`, `TradeBooked`,
-- **Added:** Asynchronous request/response event pattern for BLP cache misses (e.g.
-- **Added:** Event sourcing operability: periodic full-state snapshot (`snapshot.dat`) + bounded journal-tail replay
-- **Added:** Replication and warm-standby failover: follower BLPs consume the identical replicated input stream in
-- **Added:** Optional batch ingress: `POST /orders/batch` accepts an array of new orders and sequences the whole
+- Sequences orders on one in-memory thread with a Disruptor ring buffer and a replayable journal. SQL is a read model.
+- **Evidence entrypoints:** Journal and replay tests; test-state-YU01-lmax-sequencer.sh.
+- **Boundary:** Local journal recovery is distinct from later replicated consensus.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

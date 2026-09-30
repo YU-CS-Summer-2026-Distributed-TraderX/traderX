@@ -4,6 +4,8 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 
 # State YU11-aeron-replication Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU10-fix-ingress](/docs/learning/state-YU10-fix-ingress)
@@ -18,10 +20,10 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 
 ## Plain-English Code Delta
 
-- **Added:** A second replication transport chosen at startup with `BLP_REPLICATION_TRANSPORT=nats|aeron`, so a
-- **Added:** Aeron reliable unicast UDP replication through an Archiving Media Driver sidecar in each
-- **Added:** A NetworkPolicy permitting the Aeron data, ACK, control, and replay UDP ports only between
-- **Added:** Archive storage on the order-matcher persistent volume, with a documented capacity-expansion and
-- **Added:** A fixed 64-byte SBE input record encoded directly into an Aeron `tryClaim` buffer, so the primary's
-- **Added:** Follower validation that rejects an unknown schema, a required unknown flag, a stale leader epoch,
-- **Added:** Decoding of each accepted record straight into a claimed input-ring slot, published exactly once,
-- **Added:** A fixed-capacity SPSC map from the follower's local ring sequence to the primary
+- Replicates encoded events using Aeron transport and SBE messages, with replay and epoch recovery.
+- **Evidence entrypoints:** test-aeron-loss-replay.sh; test-state-YU11-aeron-replication.sh.
+- **Boundary:** Replication alone does not provide the consensus model introduced by YU12.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

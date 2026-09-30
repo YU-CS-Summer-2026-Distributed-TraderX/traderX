@@ -53,7 +53,7 @@ docker compose up
 
 On first run, this builds all containers from project-specific Dockerfiles and starts them in sequence. Containers connect via a shared virtual network.
 
-**WebUI**: http://localhost:8080 (works with Codespaces too—localhost is mapped through).
+**WebUI**: http://localhost:8080 (works with Codespaces too; localhost is mapped through).
 
 ---
 
@@ -100,7 +100,7 @@ Press **space** to open the Tilt web UI at http://localhost:10350/
 
 ### Local Development with Tilt
 
-To build and deploy a service locally instead of using pre-built images, edit [gitops/local/Tiltfile](../gitops/local/Tiltfile) and uncomment the relevant line:
+To build and deploy a service locally instead of using pre-built images, edit `gitops/local/Tiltfile` in the selected generated runtime (see [Tilt state guide](/docs/learning/state-011-tilt-kubernetes-dev-loop)) and uncomment the relevant line:
 
 ```python
 # Uncomment lines to use locally built version

@@ -4,6 +4,8 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 
 # State YU06-eod-price-production Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU05-post-trade-compliance](/docs/learning/state-YU05-post-trade-compliance)
@@ -18,10 +20,10 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 
 ## Plain-English Code Delta
 
-- **Added:** Session-close trigger `POST /eod/session/close?sessionDate=` in `trade-processor`, called both by a
-- **Added:** Official closing price per instrument, defined as the newest last-trade sample at or before the
-- **Added:** Versioned, immutable closing-price snapshot (`eod_price_session`, `eod_price_snapshot`) keyed by
-- **Added:** Data-quality classification of every price as `OK`, `STALE`, `SPIKE` or `MISSING`, from configured
-- **Added:** Manual override endpoint `POST /eod/prices/{date}/override` that records a corrected price and its
-- **Added:** Admin-only EOD control surface: every `/eod/*` endpoint requires an authenticated `admin` caller,
-- **Added:** Publication fail-safe: `POST /eod/prices/{date}/publish` returns `409` while any instrument is an
-- **Added:** Durable `EOD_PRICES_READY` event on JetStream subject `eod.prices.ready`, emitted only after the
+- Closes a versioned EOD price snapshot, checks mark quality and publishes an overnight P&L chain.
+- **Evidence entrypoints:** EodStreamRepairIT; EodSnapshotAndPnlIT.
+- **Boundary:** Stale or missing marks require an explicit decision; arrival freshness is not market observation time.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

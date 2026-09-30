@@ -1,0 +1,110 @@
+[
+  {
+    "id": "YU01-lmax-sequencer",
+    "behavior": "Sequences orders on one in-memory thread with a Disruptor ring buffer and a replayable journal. SQL is a read model.",
+    "evidence": "Journal and replay tests; test-state-YU01-lmax-sequencer.sh",
+    "limits": "Local journal recovery is distinct from later replicated consensus."
+  },
+  {
+    "id": "YU02-lmax-kubernetes",
+    "behavior": "Packages the sequencer for Kubernetes, with snapshots, startup replay and readiness gates.",
+    "evidence": "Snapshot tests; test-state-YU02-lmax-kubernetes.sh",
+    "limits": "The historical single-member tier is retained for study; current cluster operation follows YU12."
+  },
+  {
+    "id": "YU03-in-memory-risk-gateway",
+    "behavior": "Checks credit, size, notional, restricted securities and price collars in memory before admission.",
+    "evidence": "BlpRiskStateTest; RiskControlControllerTest",
+    "limits": "These controls implement specific admission rules, not regulatory certification."
+  },
+  {
+    "id": "YU04-durable-control-feeds",
+    "behavior": "Publishes account, limit and security changes through transactional outboxes and versioned control feeds.",
+    "evidence": "AccountOutboxAtomicityIT; ControlFeedSubscriberTest",
+    "limits": "Persistence, publication and engine acknowledgement are separate events."
+  },
+  {
+    "id": "YU05-post-trade-compliance",
+    "behavior": "Adds settlement states, journal-to-SQL reconciliation, regulatory export, transaction-cost analysis and scoped post-trade access.",
+    "evidence": "SettlementServiceTest; ReconciliationServiceTest; RegulatoryReportDeterminismTest",
+    "limits": "Post-trade JWT checks do not establish production authentication for the new Desk."
+  },
+  {
+    "id": "YU06-eod-price-production",
+    "behavior": "Closes a versioned EOD price snapshot, checks mark quality and publishes an overnight P&L chain.",
+    "evidence": "EodStreamRepairIT; EodSnapshotAndPnlIT",
+    "limits": "Stale or missing marks require an explicit decision; arrival freshness is not market observation time."
+  },
+  {
+    "id": "YU07-historical-tick-store",
+    "behavior": "Stores historical ticks, queries symbol/time windows and supports replay. Later kdb+/q capture adds engine order and trade history.",
+    "evidence": "selfcheck.q; txselfcheck.q; test-state-YU07-historical-tick-store.sh",
+    "limits": "Historical datasets and licensed raw data are not distributed with the documentation."
+  },
+  {
+    "id": "YU08-execution-algo-engine",
+    "behavior": "Slices TWAP parent orders into scheduled children through ordinary risk-gated order ingress.",
+    "evidence": "AlgoOrderServiceTest; AlgoEventStoreReplayTest",
+    "limits": "Scheduling and child execution are separate; a submitted child need not fill."
+  },
+  {
+    "id": "YU09-ops-hardening",
+    "behavior": "Adds operational configuration for secrets, probes, resource limits and service delivery.",
+    "evidence": "test-state-YU09-ops-hardening.sh; Kubernetes manifests",
+    "limits": "Configuration support does not establish the health or security of a deployed installation."
+  },
+  {
+    "id": "YU10-fix-ingress",
+    "behavior": "Maps FIX 4.4 sessions, order entry, cancellation and status onto the sequenced trading path.",
+    "evidence": "FixSessionIntegrationTest; FixGatewayStatusTest",
+    "limits": "Typed order fields and accepted units follow the current order-type contract."
+  },
+  {
+    "id": "YU11-aeron-replication",
+    "behavior": "Replicates encoded events using Aeron transport and SBE messages, with replay and epoch recovery.",
+    "evidence": "test-aeron-loss-replay.sh; test-state-YU11-aeron-replication.sh",
+    "limits": "Replication alone does not provide the consensus model introduced by YU12."
+  },
+  {
+    "id": "YU12-aeron-cluster",
+    "behavior": "Runs matching on a three-member Aeron Raft cluster, with leader election, snapshots and archive recovery.",
+    "evidence": "ThreeMemberClusterTest; SnapshotRoundTripTest",
+    "limits": "A successful local recovery case is not an unbounded HA guarantee. Preserve compatible core versions and retained history."
+  },
+  {
+    "id": "YU13-limit-order-book",
+    "behavior": "Matches by price and time, fills at resting prices, supports cancel and atomic replace, and snapshots the resting book.",
+    "evidence": "LimitOrderBookTest; ClOrdIdLedgerTest; OrderTraceTest",
+    "limits": "Current YU18 adds typed orders and cross-account self-match groups. Tracing drops observations rather than blocking trading."
+  },
+  {
+    "id": "YU14-listed-equity-options",
+    "behavior": "Trades listed equity options through the same book and applies contract multipliers to exposure.",
+    "evidence": "test-state-YU14-listed-equity-options.sh; option persistence proof",
+    "limits": "Trading support is distinct from option valuation, Greeks or exercise processing."
+  },
+  {
+    "id": "YU15-eod-risk-extract",
+    "behavior": "Exports un-netted positions and counterparties at one consensus cut with reproducible bytes and receipt identity.",
+    "evidence": "RiskExtractTest; RiskReplayDeterminismTest; SharedEodExamplesTest",
+    "limits": "An extract is an input to a risk engine, not a computed portfolio-risk result."
+  },
+  {
+    "id": "YU16-cdm-instruments",
+    "behavior": "Adds CDM instrument representation and Treasury/corporate-bond terms and pricing inputs.",
+    "evidence": "test-state-YU16-cdm-instruments.sh; price-publisher tests",
+    "limits": "Instrument-level failures do not justify substituting invented marks; per-instrument support differs."
+  },
+  {
+    "id": "YU17-otc-rates",
+    "behavior": "Books OTC swaps and swaptions beside the matching book in the same consensus log. Adds reference-anchored price bands, a price-derived grid, sequenced CLOSED/PRE_OPEN/OPEN phases, historical tape replay and operator-scoped counters.",
+    "evidence": "test-state-YU17-otc-rates.sh; OTC contract tests",
+    "limits": "Contracts export terms without valuation. Historical replay is not live data or a backtest; tick-rule sides are inferred. Active configuration may instead use an explicitly synthetic offline feed."
+  },
+  {
+    "id": "YU18-risk-integration",
+    "behavior": "Builds immutable risk bundles, validates dated market inputs and external results, and displays job status and coverage. Components also extend order lifecycle and projection recovery.",
+    "evidence": "test-state-YU18-risk-integration.sh; check-yu18-composition.py; component tests",
+    "limits": "The accepted container path prices a closed synthetic Treasury-bill profile. Production risk remains unavailable."
+  }
+]

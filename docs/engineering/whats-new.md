@@ -1,171 +1,60 @@
 ---
 title: What's new
 sidebar_label: What's new
-description: What Yeshiva University's build adds to FINOS TraderX, state by state — an LMAX matching engine on Raft consensus, pre-trade risk, a crossing order book, listed options, an end-of-day risk extract, plus OpenTelemetry tracing and a KDB-X tick store.
+description: Trading, risk controls, market history, EOD integration and the two TraderX user interfaces.
 ---
 
 # What's new
 
-FINOS TraderX is a reference trading platform: correct, readable and deliberately simple. This
-build asks what it would take to make it behave like a **sell-side order management system** — and
-answers in fifteen runnable states, each one a working system rather than a branch of half-finished
-work.
+This build extends FINOS TraderX through 18 YU states. Orders pass through in-memory risk checks into a sequenced matching engine; later states replicate that engine on a three-member Aeron Raft cluster. SQL services project committed events for account, order, trade and position queries.
 
-The matching engine moved in-memory and single-threaded, then onto Raft consensus across three
-members. Risk moved in front of the book. Settlement, reconciliation, regulatory export, FIX
-ingress, listed options and an end-of-day risk extract were added on top. Every state below still
-generates, deploys and runs — and each links to the spec pack that defines it.
+## Trading and post-trade processing
 
-Two further capabilities — OpenTelemetry tracing and a KDB-X tick store — extend existing states
-rather than adding new ones. See [Other additions](#other-additions).
+The price-time book supports cancellation, atomic replacement and client-order-ID deduplication. Current typed orders include MARKET, LIMIT, STOP, STOP_LIMIT, ICEBERG, PEGGED and TRAILING_STOP, with an explicit time-in-force matrix. Business-day changes are sequenced commands rather than reads of each member's wall clock. Self-match groups can protect several accounts belonging to the same demo workspace.
 
-## The fifteen states
+Pre-trade controls cover credit, size, notional, price collars and restrictions. Durable control feeds carry changes into the engine. Settlement, reconciliation, transaction-cost analysis and reproducible regulatory exports operate after trading. FIX 4.4 ingress and TWAP scheduling use the trading path. Listed options account for contract multipliers; CDM instruments and OTC swaps/swaptions carry their own terms.
 
-### YU01 — LMAX Sequencer Architecture
+## Prices, history and EOD integration
 
-Replaces the request/response matcher with the LMAX pattern: a single-threaded, in-memory sequencer
-fed by a Disruptor ring buffer and journaled to disk. Order handling becomes deterministic and
-replayable, and the database stops being the source of truth.
+Versioned closing-price snapshots feed the EOD chain. Quality checks distinguish usable, missing and stale marks; publication overrides are explicit. Historical ticks, kdb+/q capture, replay and sandbox tools support inspection of market and engine events. OpenTelemetry traces and the Grafana stack help follow requests across services.
 
-[Spec pack →](/specs/YU01-lmax-sequencer)
+Risk extracts freeze the portfolio at one consensus cut. YU18 builds byte-identified bundles, validates terms and dated market inputs, and checks returned results before displaying coverage. The accepted HTTP container path uses a closed synthetic Treasury-bill portfolio and an assumed curve. It does not price arbitrary live portfolios or establish production risk eligibility.
 
-### YU02 — LMAX on Kubernetes
+## Market reference and operator attribution
 
-Runs that engine as the deployed order-matcher, recovering from journal plus periodic snapshots and
-held un-ready until replay finishes. Adds the approval-gated build and deploy path: a push builds an
-image, but nothing reaches the cluster without a human saying so.
+YU17 also changes the market behavior beneath OTC booking. Price bands follow the external reference, with fallback to the last trade and then the first limit. An empty book derives its tick grid from that reference. CLOSED, PRE_OPEN and OPEN are sequenced phases; eligible pre-open orders queue until open.
 
-[Spec pack →](/specs/YU02-lmax-kubernetes)
+A configured historical-tape publisher replays an offline median reference series using an epoch-derived clock. Sampled prints can also enter through dedicated replay accounts. Price messages carry `source` and `asOf`; replayed history is neither a live market feed nor an invented current price. The offline local profile can instead use explicitly synthetic prices.
 
-### YU03 — In-Memory Risk Gateway
+Operator-scoped order, trade, self-match and band counters exclude external replay flow. They let an operator attribute their own work while the tape runs; global counters still describe the whole venue. See [market replay](observability-and-replay.md#the-market-tape-replayed) and [proof attribution](testing-strategy.md#attribution-while-the-venue-is-active).
 
-Pre-trade risk on the hot path (SEC 15c3-5): credit, order size, notional and price-collar checks
-decided in memory, with no database round trip per order. A rejected order never reaches the book.
+## Original Demo UI / console
 
-[Spec pack →](/specs/YU03-in-memory-risk-gateway)
+The original console remains available through **More → Demo console** in the new Desk. It includes:
 
-### YU04 — Durable Control Feeds
+- Trading tickets, orders, executions, positions and OTC contract views, including the seven typed order modes when the gateway advertises them.
+- System member/book comparisons, service health and links to metrics, logs and traces.
+- EOD close, quality review, explicit overrides, publication and artifact provenance; Risk job status and validated calculation coverage.
+- Accounts, administrative session driving and reconciliation, FIX session tools and reference data.
+- Historical tick queries, kdb+/q tools, replay, sandbox and corpus browsing, plus access to the legacy application.
 
-Makes risk control changes durable. A limit, restriction or new security is written to a
-transactional outbox in the same commit as the row it describes, then published in strict version
-order — so a change survives the consumer being offline instead of being lost.
+Some actions require console administrator credentials and configured services. A connected gateway indicator does not certify the entire rig. See [UI workflows](ui-workflows.md#demo-console).
 
-[Spec pack →](/specs/YU04-durable-control-feeds)
+## New Trader Desk
 
-### YU05 — Post-Trade Compliance
+The Desk organizes the frequent trading workflow around **Overview, Markets, Orders, Positions and Risk**, with secondary tools in More and a separate admin workspace.
 
-The post-trade bundle: a real settlement lifecycle, reconciliation of the journal against the SQL
-projection, a reproducible regulatory export, transaction-cost analysis, and real JWT auth where
-account scope is checked against the trade's own account rather than assumed.
+- Select a workspace account, inspect instruments and price freshness, sort Markets, and open the inline Angular order ticket.
+- Use **Price at market** to copy a fresh mark into a limit field. The order type stays unchanged; the value is not an execution guarantee.
+- See accepted, refused and unknown outcomes separately. An accepted order resets the next ticket while keeping its receipt visible.
+- Create a demo account with separate SQL creation and engine admission steps; workspace accounts share self-match protection.
+- Keep account selections and UI state within the local workspace. Managed reads check the active pointer and reject stale replies; historical views are read-only.
+- Inspect stored risk results under their own portfolio/cut identity. The selected account's valuation is not fabricated from unrelated demo results.
 
-[Spec pack →](/specs/YU05-post-trade-compliance)
+At this revision, existing-order Desk mutations require confirmed managed scope, and the legacy profile leaves them disabled. Secondary tools and swap/swaption entry remain accessible through Demo console. Username-only local sessions and an optional server-checked admin password are a demo profile, not production authentication or tenant isolation.
 
-### YU06 — EOD Price Production
+## Recovery and validation
 
-End-of-day closing prices as a versioned, immutable snapshot, with a quality gate that blocks
-publication on stale, spiking or missing marks until a human overrides it — and a durable overnight
-chain that computes end-of-day P&L from the published cut.
+Managed identity binds projections to a run. Explicit recovery reconciles retained SQL with the archive; optional automatic catch-up adds a lease, fencing and transactional cursors. Automatic recovery is **default off** and has been exercised locally. It requires complete retained history and refuses conflicts rather than deleting data to make it agree.
 
-[Spec pack →](/specs/YU06-eod-price-production)
-
-### YU07 — Historical Tick Store
-
-A columnar store of real historical market data, verified by cross-implementation gates whose
-expected values were computed independently in a second engine — so the store is checked against
-something other than itself.
-
-[Spec pack →](/specs/YU07-historical-tick-store)
-
-### YU08 — Execution Algo Engine
-
-Large orders become TWAP parents sliced into child orders on a schedule, submitted through the same
-risk-gated ingress as any other order rather than around it.
-
-[Spec pack →](/specs/YU08-execution-algo-engine)
-
-### YU09 — Ops Hardening
-
-The unglamorous pass: credentials from Kubernetes secrets rather than literals, probe and durability
-fixes, memory limits that stop a warm-up OOM, and continuous delivery for the remaining services.
-
-[Spec pack →](/specs/YU09-ops-hardening)
-
-### YU10 — FIX Order-Entry Ingress
-
-A standard FIX 4.4 session for external counterparties — new orders and cancels arriving over the
-protocol the industry actually uses, mapped onto the same sequenced path as REST.
-
-[Spec pack →](/specs/YU10-fix-ingress)
-
-### YU11 — Aeron + SBE Replication
-
-Replaces warm-standby replication with Aeron transport and SBE encoding, lifting replication
-capacity by a large multiple and proving recovery across an epoch boundary.
-
-[Spec pack →](/specs/YU11-aeron-replication)
-
-### YU12 — Aeron Cluster Consensus
-
-High availability becomes Raft consensus across three members, decided by the cluster itself with
-Kubernetes out of the decision path. Leader failover under 200 ms, and no order ID is ever reused
-across one.
-
-[Spec pack →](/specs/YU12-aeron-cluster)
-
-### YU13 — Crossing Limit-Order Book
-
-A genuine crossing book: price-time priority, marketable orders filled at the resting price, market
-orders that cannot rest at an undefined price, self-trade prevention, atomic replace, idempotent
-client order IDs — and the whole resting book carried in the cluster snapshot.
-
-[Spec pack →](/specs/YU13-limit-order-book)
-
-### YU14 — Listed Equity Options
-
-Listed equity options trade as ordinary securities on the unchanged book, with no second matching
-path. The risk math becomes contract-multiplier aware, so a $2.50 option controlling 100 shares
-consumes $250 of credit rather than $2.50.
-
-[Spec pack →](/specs/YU14-listed-equity-options)
-
-### YU15 — EOD Risk Extract
-
-A portfolio extract for an external risk engine, with every account frozen at the same consensus
-instant — a portfolio assembled from accounts sampled at different moments is one the firm never
-held, and its risk number means nothing. Rows are un-netted with the counterparty attached, and the
-bytes are identical every time for a given identifier.
-
-[Spec pack →](/specs/YU15-eod-risk-extract)
-
-## Other additions
-
-Two capabilities extend states that already exist rather than standing as states of their own, which
-is why they do not appear in the list above. Both were built to the same constraint: they may not
-change what the trading path costs.
-
-### OpenTelemetry tracing
-
-An order's trace follows it across the Raft cluster, exported asynchronously so telemetry never sits
-in front of a trade — a producer copies a few longs into a ring buffer and returns, and a full ring
-drops the span rather than slowing the order. Grafana, Prometheus, Loki and Tempo deploy with the
-platform. Built into [YU13](/specs/YU13-limit-order-book) — the long version is in
-[Observability and replay](observability-and-replay.md#opentelemetry--a-trace-that-survives-consensus).
-
-### KDB-X tick store (kdb+/q)
-
-kdb+/q is the time-series database this corner of finance actually runs on, so the platform's
-history is journalled and played back there — VWAP, spreads, a session pulled out by time window
-and replayed at real time or as fast as the machine will go, all in q. It holds the NYSE TAQ tape
-and our own engine's flow, the latter captured by a leader-side tap that sits off the consensus
-path. Built into [YU07](/specs/YU07-historical-tick-store) — the long version is in
-[Observability and replay](observability-and-replay.md#kdb-x-tick-store-kdbq).
-
-## See how it is verified
-
-Every claim above is checked by something that can fail. The engine, cluster, gateway, risk and
-post-trade logic run as machine-verified tests on every push; container-backed suites check the
-properties that only a real database or broker can disagree about; and end-to-end proof scripts
-drive the deployed system and print an explicit pass or fail per step.
-
-- **[Testing strategy](testing-strategy.md)** — which tier proves what, and what stays manual and why.
-- **[Test coverage](test-coverage.md)** — what is tested, how much runs automatically, and how every number was counted.
+Read the [complete state/component map](feature-map.md), [EOD and recovery boundaries](integration-and-recovery.md), [testing strategy](testing-strategy.md) and [historical measurements](measurements.md). Those pages distinguish implemented behavior, local proof, default-off features and remaining acceptance work.

@@ -11,7 +11,7 @@ import styles from './TraderXHomepage.module.css';
 function TopBanner() {
   return (
     <div className={styles.topBanner}>
-      <strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron
+      <strong>Yeshiva University CS</strong>: TraderX rebuilt on the LMAX architecture over an Aeron
       Raft cluster.{' '}
       <Link to="/docs/engineering/whats-new">See what&rsquo;s new</Link>.
     </div>
@@ -80,15 +80,16 @@ export default function Hero() {
           <p className={styles.heroCopy}>
             Yeshiva University&rsquo;s own build of <ExternalLink
               href="https://github.com/finos/traderX">FINOS TraderX</ExternalLink>, taken from the
-            reference demo to a <strong>sell-side order management system</strong>: the matching
-            engine rebuilt on the LMAX Disruptor architecture, replicated across a three-member Aeron
-            Raft cluster, with risk, post-trade, FIX ingress and end-of-day risk extraction added as
-            fifteen individually runnable{' '}
-            <Link to={catalogSource.generatedBranchesDocs}>architectural states</Link>.
+            reference application into a trading system with a sequenced matching engine,
+            pre-trade risk, post-trade processing, FIX, market history and EOD integration.
+            The catalog contains 14 upstream numbered states and 18 YU states; YU18 also holds
+            order-lifecycle, recovery and Trader Desk components.
           </p>
 
           <p className={styles.heroCopy}>
-            Every claim on this site is machine-checked or measured on a deployed cluster.
+            Explore the original Demo console and the new Trader Desk, then follow the
+            specifications and tests behind each workflow. Local validation and historical
+            measurements are labelled separately from deployment readiness.
           </p>
 
           {/* Its own sentence on its own line. Joined to the line above with an em dash, the link

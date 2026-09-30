@@ -4,6 +4,8 @@ title: "State 013: Radius Platform on Kubernetes (Optional)"
 
 # State 013 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [012-platform-convergence-c3](/docs/learning/state-012-platform-convergence-c3)
@@ -18,10 +20,10 @@ title: "State 013: Radius Platform on Kubernetes (Optional)"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-013-radius-kubernetes-platform)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-013-radius-kubernetes-platform)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

@@ -4,6 +4,8 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 
 # State YU17-otc-rates Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU16-cdm-instruments](/docs/learning/state-YU16-cdm-instruments)
@@ -18,10 +20,10 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU17-otc-rates](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU17-otc-rates)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU17-otc-rates](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU17-otc-rates)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 
 ## Plain-English Code Delta
 
-- **Added:** A **session phase machine** in consensus — `CLOSED`, `PRE_OPEN`, `OPEN` — sequenced and snapshotted.
-- **Added:** A **price band that follows the market**, anchored on the reference rather than on a book's first order.
-- **Added:** A **price-derived book grid**: an empty book takes its tick size from the reference price, by decade.
-- **Added:** An **external reference replayed on a stateless clock**, resampled offline from a licensed historical tape.
-- **Added:** **Replayed prints entering as order flow**, sampled to a target rate and matched as ordinary orders.
-- **Added:** `GET /bbo` on each member: best bid, offer and mark derived from the book and served beside consensus.
-- **Added:** `POST /swaps` on the cluster gateway: books a vanilla fixed-float OTC interest-rate swap.
-- **Added:** `TYPE_SWAP_BOOK` (12) on the inherited `InputEventMessage` (SBE template 1): a sequenced consensus command.
+- Books OTC swaps and swaptions beside the matching book in the same consensus log. Adds reference-anchored price bands, a price-derived grid, sequenced CLOSED/PRE_OPEN/OPEN phases, historical tape replay and operator-scoped counters.
+- **Evidence entrypoints:** test-state-YU17-otc-rates.sh; OTC contract tests.
+- **Boundary:** Contracts export terms without valuation. Historical replay is not live data or a backtest; tick-rule sides are inferred. Active configuration may instead use an explicitly synthetic offline feed.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

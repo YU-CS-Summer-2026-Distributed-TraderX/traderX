@@ -4,6 +4,8 @@ title: "State 009: Order Management and Matcher"
 
 # State 009 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [008-pricing-awareness-market-data](/docs/learning/state-008-pricing-awareness-market-data)
@@ -18,10 +20,10 @@ title: "State 009: Order Management and Matcher"
 - Nearest previous convergence: [007-observability-lgtm-compose](/docs/learning/state-007-observability-lgtm-compose)
 - Nearest next convergence: [012-platform-convergence-c3](/docs/learning/state-012-platform-convergence-c3)
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-009-order-management-matcher](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-009-order-management-matcher)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-009-order-management-matcher](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-009-order-management-matcher)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

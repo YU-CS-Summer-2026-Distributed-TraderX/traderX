@@ -1,38 +1,16 @@
 ---
 title: Observability and replay
 sidebar_label: Observability and replay
-description: How an order's trace survives Raft consensus without adding a byte to the replicated log, and how the platform's history is journalled and played back in kdb+/q, the time-series database this industry runs on.
+description: Distributed order traces, market history and analytical playback.
 ---
 
 # Observability and replay
 
-Two capabilities extend states that already exist rather than standing as states of their own. Both
-were built to the same constraint: **they may not change what the trading path costs.**
+Tracing extends YU13; kdb+/q history and capture extend YU07. Both use bounded asynchronous paths. Their performance effect depends on load and configuration; see the [historical measurements](measurements.md).
 
-This page is the long version. The short one is on
-[What's new](whats-new.md#other-additions).
+## OpenTelemetry: a trace across consensus
 
-## OpenTelemetry — a trace that survives consensus
-
-### The problem
-
-A useful trace has to span gateway → sequence → consensus commit → apply → egress. But the gateway
-and the members are **different processes joined only by the replicated log**, so the trace has to
-cross a consensus boundary.
-
-The obvious fix — put a `traceparent` in the sequenced message — is the one thing we may not do.
-Bytes in the log are replicated state, so adding them is a schema change, a member roll, and a
-permanent determinism risk taken on behalf of a debugging feature. It is also a correctness hazard:
-a resend carrying a *new* trace id would no longer be byte-identical to the original, so replay
-would stop reproducing.
-
-### Derive, don't carry
-
-Every order already carries a **client idempotency key** through the log — set by the gateway from
-the client's ClOrdID and read by the engine for duplicate suppression. It is business data that is
-already replicated, already unique per order, and already identical on every member and on replay.
-
-Both sides run the *same pure function* over it:
+An order trace spans gateway, sequencing, consensus commit, apply and egress. The gateway and members derive trace identity from the client idempotency key already in the replicated message. They do not add a separate tracing field to the log.
 
 ```
 traceId       = splitmix64(key), splitmix64(key ^ TRACE_SALT)   (128-bit)
@@ -40,156 +18,71 @@ sampled?      = (splitmix64(key ^ SAMPLE_SALT) & mask) == 0
 clusterSpanId = splitmix64(key ^ CLUSTER_SALT)
 ```
 
-So a member independently arrives at the same trace id, the same parent span id and the same
-sampling verdict the gateway did — with **zero bytes added to the log, zero schema change, and
-nothing new for the state machine to read.**
+The same pure functions produce the same trace/parent IDs and sampling decision on both sides. Rejected orders escalate sampling from the deterministic acknowledgement kind. A collector cannot recover a span that was never emitted. Log lines carry derived trace IDs as text rather than high-cardinality Loki labels.
 
-Two consequences fall out of that choice:
+A producer copies eight longs into a preallocated ring. Full rings drop and count observations; exporter formatting and OTLP/HTTP requests run on a daemon thread. Exporter pacing also applies on failure. This prevents direct collector backpressure on the order path, while CPU, disk and backlog contention still require measurement.
 
-- **A rejected order is traced whatever the sampling verdict said.** "Was it rejected" is likewise a
-  committed, deterministic fact that both sides read off the same ack, so both escalate together and
-  the trace stays whole. Error sampling is only possible here *because* the decision is derivable —
-  a collector's tail sampling cannot recover a span that head sampling never emitted.
-- **A log line can join a trace by computing its id** rather than by being handed one. The id lives
-  in the line itself, not in a label.
+Allocation gates cover the declared steady-state JVM profile. Epsilon tests run without reclamation and have a finite heap; they are separate from byte-allocation assertions and do not mean that every single allocated byte immediately terminates a process.
 
-### Why this is not telemetry in replicated state
+Tracing is enabled by `OTEL_TRACES=1`. The local observability launcher provisions Collector, Tempo, Prometheus, Grafana and Loki for the selected rig. Inspect context and endpoint wiring before running it:
 
-The derivation is one-way and read-only. It consumes a committed field and produces an id that is
-never written back, never encoded into an output event, and never branched on by the engine. Delete
-the class and every member still emits byte-identical output.
-
-### Not slowing the trade path
-
-A producer — a REST or FIX submit thread, the gateway's owner thread, a member's apply thread — does
-exactly one thing: copies eight longs into a pre-allocated ring buffer and returns. No lock, no
-allocation, no I/O, and deliberately **no backpressure path back to the caller**. If the ring is
-full, the write fails, a counter increments, and the order carries on untouched.
-
-Dropping telemetry under load is correct behaviour. Stalling an owner thread behind a slow collector
-would be the worst outcome available, so the design makes it unreachable rather than unlikely.
-
-Everything expensive — hex formatting, JSON assembly, HTTP, retries, the collector being down —
-happens on one daemon thread that no order ever touches. A collector outage costs a counter, not a
-millisecond.
-
-### Why not the OpenTelemetry SDK
-
-Its batching processor has the right shape — bounded queue, drop on full — but the API above it
-allocates per span. This path runs under an allocation gate, and under Epsilon GC (no collector at
-all) in the no-GC proofs, where a single allocated byte fails the build.
-
-The sink emits OTLP/HTTP with a JSON body instead: a documented, stable wire format, posted to the
-same `/v1/traces` endpoint any SDK would use. About a hundred lines, and no new dependencies.
-
-### Running it
-
-Tracing is off unless `OTEL_TRACES=1`; otherwise every call site holds a null reference.
-
-```bash
-bash scripts/yu15/start-observability-kind.sh   # OTel Collector, Tempo, Prometheus, Grafana, Loki
-bash scripts/yu15/demo-otel-traffic.sh          # drive traffic and watch traces arrive
+```sh
+bash scripts/yu15/start-observability-kind.sh
+bash scripts/yu15/demo-otel-traffic.sh
 ```
 
-The observability stack has shipped in the manifests since state 007, but the cluster bring-up
-deploys only the trading tier — so on kind the two halves land in different clusters and the
-collector endpoint resolves to nothing. The trace pipeline is then *silently* dead: orders book
-fine, spans go nowhere, and the only symptom is an empty Tempo. That script exists to prevent
-exactly that.
+These are operational commands and can deploy services or submit traffic. They were not run for the docs refresh. A working order path with empty Tempo may indicate collector routing, sampling or exporter failure; it is not proof that no orders occurred.
 
 ## KDB-X tick store (kdb+/q)
 
-### Why kdb
+The query layer exposes market VWAP/spreads and session windows, plus engine fills/orders and analytical playback. `.ts.vwap`, `.ts.spread`, `.ts.session`, `.tx.fills`, `.tx.orders`, `.ts.replay` and `.tx.replay` address those separate datasets.
 
-kdb+/q is the time-series database this corner of finance actually runs on. Tick capture,
-journaling and session playback sit on it across front offices in the industry, and analysts query
-it in q rather than in SQL. Putting the platform's history there — and querying it the way the
-desk would — is what makes the data side of this system read as the real thing rather than a
-trading demo with a database bolted on.
-
-So the platform's history lives in KDB-X, and the same verbs work over all of it: `.ts.vwap` and
-`.ts.spread` for prices, `.ts.session` to pull a window out, `.tx.fills` and `.tx.orders` for our
-own executions, and `.ts.replay` / `.tx.replay` to step a captured session back through at real
-time or as fast as the machine will go.
-
-### Reading the corpus in place
-
-KDB-X reads the existing ZSTD Parquet corpus **natively — there is no conversion step and no second
-copy.** A q layer maps each object as a virtual table, prunes row groups against the `WHERE` clause,
-and stitches the per-file tables into one date/symbol-partitioned table whose partition columns come
-from the path the ingest already wrote.
-
-That reader also settled the practical worry about the Community edition's 16 GiB ceiling: an
-aggregate over all 47.8M quote rows peaked at **768 MiB**, because it works a row group at a time
-rather than materialising the table.
-
-### What is stored
-
-| Tables | Source | Loader | What it is |
-|---|---|---|---|
-| `quote` / `trade` | NYSE TAQ tape | `tickstore.q` | what the **market** did |
-| `txOrder` / `txTrade` | TraderX cluster | `txstore.q` | what **our engine** did |
-
-The two keep separate names because a tape print and an engine execution are different objects with
-different provenance — a single `trade` table holding both is how a VWAP ends up quietly answering
-a question nobody asked.
-
-### The live capture tap
-
-Our own flow is captured off the running cluster by a **leader-side tap that sits off the consensus
-path**, so recording never becomes something consensus waits for. The capture is a read-side
-projection of committed output, exactly like the SQL bridge — not an input the state machine reads.
-A stalled disk fills its queue and drops, loudly and counted; it cannot stall an apply thread.
-
-### Journal and playback, in two senses
-
-Both words do double duty in this system, and the distinction is worth stating plainly.
-
-| | Authoritative | Analytical |
+| Tables | Source | Loader |
 |---|---|---|
-| Store | Aeron Archive (+ snapshots) | **KDB-X** |
-| Purpose | consensus, recovery, determinism | query, analytics, session playback |
-| Playback means | replay the log to rebuild exact state | replay a captured session to study it |
-| On the hot path? | yes, synchronous, before commit | no — off-consensus, best-effort |
+| `quote` / `trade` | Authorized market tape | `tickstore.q` |
+| `txOrder` / `txTrade` | Captured TraderX output | `txstore.q` |
 
-Nothing in the tick store is authoritative or required for recovery. What it holds is a kdb
-tickerplant log, not a consensus journal: delete the whole thing and the cluster still recovers
-byte-identically; delete the Aeron Archive and it does not.
+A tape print and an engine execution have different provenance. Do not merge them into a single undifferentiated trade dataset or compare counts without checking that the run and time windows agree.
 
-### The gates
+The historical reader supports an existing ZSTD Parquet corpus through row-group pruning and virtual tables. This describes a supported input format, not a requirement to convert newly supplied raw data. A historical aggregate over **47.8M quote rows** reported **768 MiB** peak memory against a **16 GiB** edition limit. That is a bounded historical workload; the exact runtime manifest is not supplied here and this refresh did not rerun it.
 
-Both stores are checked by q gates that are **cross-implementation**: every expected value was
-computed independently in a second engine over the same files, so the store is verified against
-something other than itself.
+The leader-side capture tap projects committed output outside consensus. A stalled sink fills the queue and increments drops rather than blocking apply. After a saturating flood, exporter backlog drain can still affect co-resident latency; the July A/B observed that boundary.
 
-| Gate | Checks | Covers |
-|---|---:|---|
-| `selfcheck.q` | 17 | per-partition row counts, deduplication, the quote/trade split, first trades to the tick, regular-hours VWAP across every symbol-day, replay ordering and pacing |
-| `txselfcheck.q` | 18 | schema, the leader-only guard, and capture count equal to the cluster's own trade count |
+## Recovery journal versus analytical history
 
-### Running it
+| | Aeron Archive and snapshots | kdb+/q capture |
+|---|---|---|
+| Purpose | Replicated state recovery | Queries and analytical playback |
+| Replay | Rebuild deterministic engine state | Study a captured session |
+| Completeness | Required by the selected recovery procedure | Best-effort capture with explicit drop counters |
 
-```bash
-TICKSTORE_ROOT=/path/to/ticks  q kdb/tickstore.q     # the market tape
-TICKSTORE_ROOT=/path/to/sample q kdb/selfcheck.q     # 17 gates over it
+Analytical playback does not repair a missing authoritative archive. Retain the archive required by managed catch-up and the configured snapshot/recovery protocol.
+
+## Checks and prerequisites
+
+The historical q suite lists **17** market-store checks and **18** capture checks. Expected values were independently computed for the checked datasets. These counts belong to those scripts and fixtures, not a new full-system run.
+
+```sh
+TICKSTORE_ROOT=/path/to/authorized/ticks q kdb/tickstore.q
+TICKSTORE_ROOT=/path/to/authorized/sample q kdb/selfcheck.q
 ```
 
-`txstore.q` and `txselfcheck.q` take the same shape over a captured session.
+`txstore.q` and `txselfcheck.q` operate on an authorized captured session. Confirm the actual script location in the rendered tick-store module and use its working directory. The source tree's q files are not necessarily at repository root.
 
-## Where each lives
+Trace-join and reject/log-join proofs live under `scripts/proofs/`. They assert observed spans and negative controls on a configured rig. The historical Python tick-store report listed **24** cases; current totals must come from the selected run's reports. See [testing strategy](testing-strategy.md) and [counting rules](test-coverage.md).
 
-Neither is a state of its own, so each sits in the layer of the state it extends:
+## The market tape, replayed
 
-- **Tracing** — the [YU13](/specs/YU13-limit-order-book) layer, alongside the order-matcher and
-  gateway it instruments.
-- **Tick store** — the [YU07](/specs/YU07-historical-tick-store) layer, the historical tick store
-  state.
+The tape mode uses licensed historical observations as an external reference. Its existing resampler computes one median per symbol per interval, keeping the publication rate tied to configured cadence and universe size. The older corpus omitted trade-correction and sale-condition fields; a median reduces sensitivity to isolated prints but does not restore those fields or make the result reference-grade.
 
-## How this is verified
+The historical deployment described February–March 2025 tape samples. That window must not be confused with another dataset or a current market feed. `source` and `asOf` retain the observation's provenance beside the simulation label.
 
-The 35 q gates run as their own tier. The tick store's Python side runs 24 tests in CI against the
-module's pinned requirements, and the trace pipeline has two end-to-end proofs that assert a trace
-actually crosses consensus and that a rejected order's log line joins its trace.
+```
+replay_position = (now - epoch_start) * compression
+```
 
-- **[Testing strategy](testing-strategy.md)** — which tier proves what, and what stays manual.
-- **[Test coverage](test-coverage.md)** — what runs automatically, and how every number was counted.
+The publisher derives playback position instead of persisting a cursor, so restart resumes on the same clock. Members only sequence the emitted events; they do not read the publisher's wall clock during deterministic apply.
+
+Sampled prints also generate orders through dedicated replay accounts. Sides are inferred with a tick rule because the retained corpus does not reconstruct an NBBO. The rate is sampled rather than replaying every print. Reference ticks and orders share one clock; order IDs identify symbol/tape slot for idempotency. Orders outside the reference collar can be refused normally.
+
+This is demonstration traffic, not a backtest or a statement of historical execution quality. Keep replay account effects distinct from operator effects and preserve dataset access restrictions. Existing ingest/Parquet support does not authorize converting or publishing another raw corpus.

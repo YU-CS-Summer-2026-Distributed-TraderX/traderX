@@ -4,6 +4,8 @@ title: "State 003: Agentic Harness Foundation"
 
 # State 003 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [002-edge-proxy-uncontainerized](/docs/learning/state-002-edge-proxy-uncontainerized)
@@ -18,10 +20,10 @@ title: "State 003: Agentic Harness Foundation"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-003-agentic-harness-foundation](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-003-agentic-harness-foundation)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-003-agentic-harness-foundation](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-003-agentic-harness-foundation)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

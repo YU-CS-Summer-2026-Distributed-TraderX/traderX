@@ -4,6 +4,8 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 
 # State YU12-aeron-cluster Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU11-aeron-replication](/docs/learning/state-YU11-aeron-replication)
@@ -18,10 +20,10 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 
 ## Plain-English Code Delta
 
-- **Added:** The inherited matching and risk core runs inside an Aeron Cluster `ClusteredService`, so a Raft
-- **Added:** Three cluster members form an odd quorum, each running its Media Driver, Archive, Consensus
-- **Added:** A partition minority is structurally unable to elect a leader, extend the committed log, or admit
-- **Added:** Snapshots capture the complete deterministic state bound to the exact applied log position: book,
-- **Added:** Recovery loads the newest valid snapshot and resumes strictly after its position, asserting every
-- **Added:** A replacement member with an empty volume rejoins on its own through snapshot retrieval plus
-- **Added:** A stateless-forward gateway tier terminates FIX and REST order entry and follows the cluster
-- **Added:** Health and metrics expose cluster role, member ID, leadership term, commit, service and snapshot
+- Runs matching on a three-member Aeron Raft cluster, with leader election, snapshots and archive recovery.
+- **Evidence entrypoints:** ThreeMemberClusterTest; SnapshotRoundTripTest.
+- **Boundary:** A successful local recovery case is not an unbounded HA guarantee. Preserve compatible core versions and retained history.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

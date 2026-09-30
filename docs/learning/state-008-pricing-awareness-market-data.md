@@ -4,6 +4,8 @@ title: "State 008: Pricing Awareness and Market Data Streaming"
 
 # State 008 Learning Guide
 
+Upstream numbered lineage, separate from YU01–YU18.
+
 ## Position In Learning Graph
 
 - Previous state(s): [007-observability-lgtm-compose](/docs/learning/state-007-observability-lgtm-compose)
@@ -18,10 +20,10 @@ title: "State 008: Pricing Awareness and Market Data Streaming"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-008-pricing-awareness-market-data](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-008-pricing-awareness-market-data)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-008-pricing-awareness-market-data](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-008-pricing-awareness-market-data)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 

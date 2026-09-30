@@ -4,6 +4,8 @@ title: "State YU09-ops-hardening: Ops Hardening"
 
 # State YU09-ops-hardening Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU08-execution-algo-engine](/docs/learning/state-YU08-execution-algo-engine)
@@ -18,10 +20,10 @@ title: "State YU09-ops-hardening: Ops Hardening"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU09-ops-hardening: Ops Hardening"
 
 ## Plain-English Code Delta
 
-- **Added:** `mariadb-credentials` and `auth-secrets` Kubernetes Secrets, created out-of-band and never committed, so a repo checkout never exposes a working credential.
-- **Added:** Journal rotation at every snapshot boundary when `journal.archive.enabled` is true (`Journaler.rotate()`), closing the active file off as an immutable, timestamped segment.
-- **Added:** A `JournalArchiver` that uploads each closed segment to the GCS bucket named by `journal.archive.bucket`, so journal history survives loss of the pod's own volume.
-- **Added:** HMAC-authenticated uploads over GCS's S3-compatible XML API — the same interoperability mode the tick-store capture already uses.
-- **Added:** A dedicated background upload thread, so the journaler thread servicing the input Disruptor ring never waits on network I/O.
-- **Added:** A closed segment that fails to upload, kept on local disk — deletion follows only a confirmed upload, so archival never loses journal data.
-- **Added:** A `journal.archive.enabled` flag defaulting to `false`, so the shipped default reproduces the parent state's single growing journal file exactly.
-- **Added:** An optional `order-matcher-journal-gcs-hmac` Secret whose absence disables only the upload leg — pod startup and journal rotation are unaffected.
+- Adds operational configuration for secrets, probes, resource limits and service delivery.
+- **Evidence entrypoints:** test-state-YU09-ops-hardening.sh; Kubernetes manifests.
+- **Boundary:** Configuration support does not establish the health or security of a deployed installation.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

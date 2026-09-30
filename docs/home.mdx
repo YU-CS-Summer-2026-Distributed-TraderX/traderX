@@ -1,49 +1,30 @@
 ---
 id: home
-title: "TraderX Portal"
+title: TraderX documentation
 ---
 
-# TraderX Documentation Portal
+# TraderX documentation
 
-TraderX is a SpecKit-first reference trading system.
+Yeshiva University's TraderX build extends the FINOS reference application with a sequenced matching engine, risk controls, post-trade processing and a three-member Aeron cluster. It also includes market history, execution algorithms, FIX entry, listed options, OTC contracts and EOD inputs for an external risk engine.
 
-## Start Here
+The repository contains **14 upstream numbered learning states and 18 YU states**. They describe different lineages. YU18 also contains feature components, including order types, managed run identity, projection recovery and the Trader Desk. A state or component specification can contain unfinished acceptance work.
 
-1. Read the project orientation:
-   - [Getting Started](/docs/spec-kit/getting-started-with-traderx)
-2. Generate and run the baseline from requirements:
-   - [Spec Kit Generation Guide](/docs/spec-kit/spec-kit-generation-guide)
-3. Understand the end-to-end workflow and quality gates:
-   - [GitHub Spec Kit Workflow](/docs/spec-kit/spec-kit-workflow)
+## Choose a starting point
 
-## Browse Canonical Sources
+- [What's new](engineering/whats-new.md): the platform, original Demo console and new Trader Desk.
+- [Feature and evidence map](engineering/feature-map.md): every state and current YU18 component, with behavior and limits.
+- [Testing strategy](engineering/testing-strategy.md): local commands, prerequisites and what each check proves.
+- [Learning guides](/docs/learning) and [learning graph](/docs/learning-paths): dependencies and source specifications.
+- [Getting started](spec-kit/getting-started-with-traderx.md): generate a selected state from its source layers.
 
-- [Feature Specs Catalog](/specs)
-- [Spec Kit Constitution and Templates](/specify/memory/constitution)
-- [API Explorer (Runtime)](/docs/spec-kit/api-explorer)
+## Read results in context
 
-## Where Is All The Code?
+The matching engine, SQL projections, UI and external risk worker are separate parts of the system. An accepted order may be resting or canceled rather than filled. A stored job result does not prove that its worker is running. Synthetic or assumed pricing inputs remain labelled, and the closed container profile does not provide production portfolio risk.
 
-All TraderX state code lives in this same repository. The canonical source is specs in `main`, and runnable code snapshots are published as generated-state branches and tags.
+[Published measurements](engineering/measurements.md) retain the historical throughput and latency values, their measurement scope and the remaining provenance gaps. This documentation does not report a fresh deployment or benchmark run.
 
-- [Generated State Branches Guide](/docs/spec-kit/generated-state-branches)
-- [Generated-State Branches on GitHub](https://github.com/finos/traderX/branches/all?query=code%2Fgenerated-state-)
-- [Generated-State Tags on GitHub](https://github.com/finos/traderX/tags?query=generated%2F)
-- [State Catalog (`catalog/state-catalog.json`)](https://github.com/finos/traderX/blob/main/catalog/state-catalog.json)
+## Source and runtime
 
-## Live Demos
+Current integration source is on `traderX-risk-integration`. State generation composes templates and overrides into `generated/code/target-generated`; full-file overrides apply in lineage order. The [state catalog](/docs/spec-kit/state-docs) records the learning states and their entrypoints. Branch publication and a running deployment are separate from local generation.
 
-- [TraderX Demo (State 004)](https://demo.traderx.finos.org)
-- [TraderX Advanced Demo (State 009)](https://demo-advanced.traderx.finos.org)
-- [Live Environments Registry](/docs/spec-kit/live-environments)
-
-## Architecture Decisions
-
-- [Project ADRs (Architecture Decision Records)](/docs/adr)
-- ADRs follow the [MADR format/specification](https://github.com/adr/madr)
-
-## Learning Paths and Future States
-
-- [Learning Guides](/docs/learning)
-- [Learning Paths](/docs/learning-paths)
-- [SpecKit Strategy for State Transitions](/docs/spec-kit/spec-kit-learning-path-strategy)
+The [live-environment registry](spec-kit/live-environments.md) lists upstream demo URLs; availability is not checked by a local docs build. See the [API Explorer guide](spec-kit/api-explorer.md) for runtime API inspection and [ADRs](/docs/adr) for architecture decisions.

@@ -4,6 +4,8 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 
 # State YU07-historical-tick-store Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU06-eod-price-production](/docs/learning/state-YU06-eod-price-production)
@@ -18,10 +20,10 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 
 ## Plain-English Code Delta
 
-- **Added:** A `tick-store` component that subscribes to the existing `pricing.*` and `/accounts/*/trades` NATS
-- **Added:** Capture is an extra subscriber on broadcast subjects that carry no ack back to a publisher, so a
-- **Added:** A Parquet store partitioned as `source=<live|taq>/dt=<date>/symbol=<SYM>/`, ZSTD-compressed and
-- **Added:** A unified row schema carrying `source`, `event_type` and `symbol` on every row, so live-captured
-- **Added:** `ingest_taq_quotes.py`, a normalizer that turns a NYSE Daily TAQ Consolidated Quotes (CQ) CSV into
-- **Added:** `ingest_taq_trades.py`, the equivalent normalizer for TAQ Consolidated Trades (CT) files, verified
-- **Added:** Ingestion that streams a source CSV straight out of its zip archive, `unzip -p` piped into
-- **Added:** Peak ingestion disk is one output Parquet partition rather than a day's ~76 GiB decompressed CSV,
+- Stores historical ticks, queries symbol/time windows and supports replay. Later kdb+/q capture adds engine order and trade history.
+- **Evidence entrypoints:** selfcheck.q; txselfcheck.q; test-state-YU07-historical-tick-store.sh.
+- **Boundary:** Historical datasets and licensed raw data are not distributed with the documentation.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

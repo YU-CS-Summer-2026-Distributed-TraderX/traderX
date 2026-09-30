@@ -4,6 +4,8 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 
 # State YU13-limit-order-book Learning Guide
 
+YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+
 ## Position In Learning Graph
 
 - Previous state(s): [YU12-aeron-cluster](/docs/learning/state-YU12-aeron-cluster)
@@ -18,10 +20,10 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 - Nearest previous convergence: `none`
 - Nearest next convergence: `none`
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book)
-- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Catalogued state branch: [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
@@ -29,14 +31,10 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 
 ## Plain-English Code Delta
 
-- **Added:** A two-sided limit-order book per security; an accepted limit order that does not cross rests at
-- **Added:** Price-time priority crossing: a marketable order fills against resting opposite-side orders
-- **Added:** Each match step fills `min(aggressor remaining, resting remaining)`, so partial fills leave the
-- **Added:** Both sides of every match receive an order update, a booked trade with its own trade sequence
-- **Added:** The resting side's order update carries `FLAG_RESTING_UPDATE`, so gateway ack correlation can
-- **Added:** Market orders (no limit price) execute immediately against available depth and cancel any
-- **Added:** Risk validation of a market order prices it at the last trade price, falling back to the opposite
-- **Added:** A leader-side `/orders` order-lifecycle bridge feeding the `orderbook` SQL projection and
+- Matches by price and time, fills at resting prices, supports cancel and atomic replace, and snapshots the resting book.
+- **Evidence entrypoints:** LimitOrderBookTest; ClOrdIdLedgerTest; OrderTraceTest.
+- **Boundary:** Current YU18 adds typed orders and cross-account self-match groups. Tracing drops observations rather than blocking trading.
+- [Full feature and component map](/docs/engineering/feature-map).
 
 ## Run This State
 

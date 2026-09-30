@@ -160,7 +160,7 @@ function transformItem(item, depth = 0) {
     return item
   }
 
-  const label = item.label || ''
+  const label = require('./remark-public-prose').prose(item.label || '')
   const normalized = normalizeLabel(label)
   let decoratedLabel = label
 

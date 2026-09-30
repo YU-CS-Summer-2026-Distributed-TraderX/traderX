@@ -49,10 +49,9 @@ const emitFile = (filePath, content) => {
 const repoWebBase =
   process.env.TRADERX_REPO_WEB_BASE ||
   'https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX'
-// The branch the specs are authored on. `main` here is the upstream sync and carries none of the YU
-// spec packs, so an "authoring branch" link to it 404s the same way.
+// Current integration source; independent of the ref selected by the deployment workflow.
 const sourceAuthoringBranch =
-  process.env.TRADERX_SOURCE_AUTHORING_BRANCH || 'YU15-eod-risk-extract'
+  process.env.TRADERX_SOURCE_AUTHORING_BRANCH || 'traderX-risk-integration'
 const stripNumericPrefix = (stateId) => stateId.replace(/^[0-9]{3}[a-z]?-/, '')
 const parsedStateNumber = (stateId) => stateId.match(/^([0-9]{3}[a-z]?)-/)?.[1] ?? ''
 const stateDisplayToken = (stateId) => parsedStateNumber(stateId) || stateId
@@ -84,7 +83,7 @@ const normalizeSiteRoot = (value) => {
   return pathname === '/' ? '' : pathname
 }
 
-const siteRoot = normalizeSiteRoot(process.env.TRADERX_SITE_ROOT || process.env.DOCUSAURUS_BASE_URL || '')
+const siteRoot = normalizeSiteRoot(process.env.TRADERX_SITE_ROOT || process.env.DOCUSAURUS_BASE_URL || '/traderX/')
 const withSiteRoot = (route) => siteRoot ? `${siteRoot}${route}` : route
 const specRouteForLearningPathsMermaid = (stateId) =>
   withSiteRoot(`/specs/${stripNumericPrefix(stateId)}`)
@@ -285,7 +284,7 @@ const parseFunctionalDelta = (featurePack) => {
     const [, id, inlineTitle] = idMatch
     const remainder = cells.slice(2, -1).map((cell) => cell.trim()).filter(Boolean)
     // Prefer the title that sits beside the id; fall back to the remaining cells for 2-column tables.
-    const delta = (inlineTitle || remainder.join(' — ')).trim()
+    const delta = (inlineTitle || remainder.join('; ')).trim()
     if (!delta || normalizeNone(delta)) {
       continue
     }
@@ -341,7 +340,10 @@ const fixedSummaryByState = {
   ]
 }
 
+const publicFeatures = JSON.parse(fs.readFileSync(path.join(root, 'website/public-features.json'), 'utf8'))
 const plainEnglishDeltaFor = (state) => {
+  const feature = publicFeatures.find((item) => item.id === state.id)
+  if (feature) return [feature.behavior, `**Evidence entrypoints:** ${feature.evidence}.`, `**Boundary:** ${feature.limits}`, '[Full feature and component map](/docs/engineering/feature-map).']
   const fixed = fixedSummaryByState[state.id]
   if (fixed) {
     return fixed
@@ -416,6 +418,8 @@ title: "State ${stateDisplayToken(state.id)}: ${state.title}"
 
 # State ${stateDisplayToken(state.id)} Learning Guide
 
+${state.id.startsWith('YU') ? 'YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.' : 'Upstream numbered lineage, separate from YU01–YU18.'}
+
 ## Position In Learning Graph
 
 - Previous state(s): ${linkedStateList(previousIds)}
@@ -430,9 +434,9 @@ title: "State ${stateDisplayToken(state.id)}: ${state.title}"
 - Nearest previous convergence: ${convergenceNeighbors.previous ? `[${convergenceNeighbors.previous}](${learningRouteFor(convergenceNeighbors.previous)})` : '`none`'}
 - Nearest next convergence: ${convergenceNeighbors.next ? `[${convergenceNeighbors.next}](${learningRouteFor(convergenceNeighbors.next)})` : '`none`'}
 
-## Rendered Code
+## Catalogued Branches
 
-- Generated branch: ${generatedBranch ? `[${generatedBranch}](${generatedBranchLink})` : '`n/a`'}
+- Catalogued state branch: ${generatedBranch ? `[${generatedBranch}](${generatedBranchLink})` : '`n/a`'}
 - Authoring branch (spec source): [${authoringBranch}](${branchLinkFor(authoringBranch)})
 
 ## Code Comparison With Previous State
