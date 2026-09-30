@@ -43,6 +43,13 @@ describe('connected order management context',()=>{
   answers[0]();tick();expect(d.readState()).toBe('loading');expect(d.canChangeExisting()).toBeFalse();
   answers[1]();tick();expect(d.readState()).toBe('ready');discardPeriodicTasks();
  }));
+ it('keeps suspended pegged orders in the working list and dispatches cancellation',fakeAsync(()=>{
+  const original=api.load;
+  api.load=async(url:string,options:any)=>{const r=await original(url,options);return url.endsWith('orders?status=all')?{...r,body:r.body.map((o:any)=>({...o,status:'SUSPENDED',orderType:'PEGGED'}))}:r;};
+  const d=TestBed.inject(Desk);TestBed.tick();tick();
+  expect(d.workingOrders().length).toBe(1);expect(d.workingOrders()[0].status).toBe('SUSPENDED');
+  d.cancel(7);tick();expect(writes.length).toBe(1);expect(writes[0].url).toBe('/desk-api/orders/cancel');discardPeriodicTasks();
+ }));
  it('sends explicit account and run to the checked endpoint and refuses history',fakeAsync(()=>{
   const d=TestBed.inject(Desk);TestBed.tick();tick();d.cancel(7);tick();
   expect(writes.length).toBe(1);expect(writes[0]).toEqual({url:'/desk-api/orders/cancel',body:{orderRef:7,accountId:11,projectionScope:'run-a'}});

@@ -1,6 +1,7 @@
 // The workspace authorizes the account. The registry selects the projection, while the
 // receiving gateway fences the immutable descriptor even if routing changes after this read.
-const live = new Set(['NEW','PARTIALLY_FILLED','PENDING_TRIGGER']);
+// Match RestingOrder.isOpen and the console's LIVE_STATUSES: suspension is reversible.
+const live = new Set(['NEW','PARTIALLY_FILLED','PENDING_TRIGGER','SUSPENDED']);
 export async function deskOrderAction(upstream, accounts, action, body) {
   const refuse=(status,error)=>({status,body:{error}});
   if (!['orders','cancel','replace'].includes(action)) return refuse(404,'Unknown order action.');

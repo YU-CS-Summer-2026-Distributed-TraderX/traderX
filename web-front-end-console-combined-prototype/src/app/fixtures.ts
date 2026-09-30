@@ -85,7 +85,7 @@ export const POSITIONS: FixturePosition[] = [
   { account: 51010, key: 'MSFT', quantity: 50, avgCost: 410.0 },
 ];
 
-export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'PENDING_TRIGGER' | 'FILLED' | 'CANCELED' | 'REJECTED';
+export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'PENDING_TRIGGER' | 'SUSPENDED' | 'FILLED' | 'CANCELED' | 'REJECTED';
 
 export interface FixtureOrder {
   ref: number; account: number; key: string; side: 'Buy' | 'Sell'; quantity: number; filled: number;

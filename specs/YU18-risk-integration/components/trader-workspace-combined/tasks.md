@@ -45,3 +45,11 @@ pass. Final live proof: 29 named checks plus SQL/browser assertions, real core/g
 restart, archive catch-up and managed transition. Final screenshots inspected. All proof containers
 are stopped and retained; original four kind nodes remain stopped. Source/generated gateway/test
 byte parity verified. No full-suite, HA, performance or production authentication claim.
+
+Review R1 (2026-09-30): corrected the server's live-status set to include SUSPENDED; suspended
+pegged orders remain cancellable. Reused shared LIVE_STATUSES in the Orders page and added the
+missing fixture status. Before-fix regression fails on suspended cancellation (409 instead of 200);
+after correction 16 Node tests and 40 Angular tests pass, plus production build. Terminal/unknown
+statuses, account/run mismatches and unsupported replacement types still refuse. No engine changes
+or live-rig rerun; prior live evidence describes 43ceaf9e, and this correction has source/browser-test
+evidence only.

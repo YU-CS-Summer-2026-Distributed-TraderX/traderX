@@ -43,3 +43,30 @@ test('ambiguous committed outcome sends exactly once and stays unknown',async()=
  const r=rig({timeout:true});const result=await deskOrderAction(r.upstream,[11],'replace',body);
  assert.equal(result.status,504);assert.match(result.body.error,/Outcome unknown/);assert.equal(r.writes.length,1);
 });
+
+test('every live status can be cancelled, including a suspended pegged order',async()=>{
+ for(const status of ['NEW','PARTIALLY_FILLED','PENDING_TRIGGER','SUSPENDED']) {
+  const r=rig({order:{status,orderType:status==='SUSPENDED'?'PEGGED':'LIMIT'}});
+  const result=await deskOrderAction(r.upstream,[11],'cancel',body);
+  assert.equal(result.status,200,status);assert.equal(result.body.canceled,true,status);
+  assert.equal(r.writes.length,1,status);assert.equal(r.writes[0].path,'/order-matcher/cancel',status);
+ }
+});
+test('terminal and unknown lifecycle statuses remain non-actionable',async()=>{
+ for(const status of ['FILLED','CANCELED','REJECTED','EXPIRED','UNKNOWN',null]) {
+  for(const action of ['cancel','replace']) {
+   const r=rig({order:{status}});assert.equal((await deskOrderAction(r.upstream,[11],action,body)).status,409,String(status));assert.equal(r.writes.length,0);
+  }
+ }
+});
+test('suspended orders retain account, run and replacement-type refusals',async()=>{
+ for(const [accounts,b,overrides] of [
+  [[12],body,{}],[[11],{...body,projectionScope:'old'},{}],[[11],body,{order:{accountId:12}}],
+  [[11],body,{order:{projectionScope:'old'}}],[[11],body,{run:{phase:'SEALED'}}],[[11],body,{gateway:{descriptorHash:'old'}}],[[11],body,{switch:true}]
+ ]) {
+  const r=rig({...overrides,order:{status:'SUSPENDED',orderType:'PEGGED',...overrides.order}});
+  assert.ok((await deskOrderAction(r.upstream,accounts,'cancel',b)).status>=400);assert.equal(r.writes.length,0);
+ }
+ const r=rig({order:{status:'SUSPENDED',orderType:'PEGGED'}});
+ assert.equal((await deskOrderAction(r.upstream,[11],'replace',body)).status,422);assert.equal(r.writes.length,0);
+});

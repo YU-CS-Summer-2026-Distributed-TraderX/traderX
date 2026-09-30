@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { PriceChip } from '../../../web-front-end-console/src/app/price-chip';
 import { HelpTip } from '../../../web-front-end-console/src/app/help';
-import { ORDER_TYPES, OrderType, TIFS_FOR, Tif, TypedTicket, defaultTif, validateTicket, trailHint } from '../../../web-front-end-console/src/app/order-types';
+import { LIVE_STATUSES, ORDER_TYPES, OrderType, TIFS_FOR, Tif, TypedTicket, defaultTif, validateTicket, trailHint } from '../../../web-front-end-console/src/app/order-types';
 import { RiskPage as ConnectedRiskPage } from '../../../web-front-end-console/src/app/risk-page';
 import riskFixture from '../../../web-front-end-console/test-fixtures/risk-demo-synthetic.json';
 import { AssetClass, INSTRUMENTS, FixtureInstrument } from './fixtures';
@@ -425,7 +425,7 @@ export class OrdersPage {
     return ({ NEW: 'Working', PARTIALLY_FILLED: 'Part filled', PENDING_TRIGGER: 'Waiting for trigger', FILLED: 'Filled',
       CANCELED: 'Cancelled', REJECTED: 'Rejected', SUSPENDED: 'Suspended' } as Record<string, string>)[s] ?? s;
   }
-  live(s: string): boolean { return ['NEW', 'PARTIALLY_FILLED', 'PENDING_TRIGGER', 'SUSPENDED'].includes(s); }
+  live(s: string): boolean { return LIVE_STATUSES.includes(s); }
   setFilter(f: 'working' | 'all'): void { this.session.updatePrefs({ orderFilter: f }); }
 
   private finishSubmission(r: {ok:boolean; text:string}): void {
