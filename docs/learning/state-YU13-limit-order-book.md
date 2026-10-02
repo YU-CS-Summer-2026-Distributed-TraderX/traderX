@@ -4,7 +4,7 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 
 # State YU13-limit-order-book Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Matches by price and time, fills at resting prices, supports cancel and atomic replace, and snapshots the resting book.
 - **Evidence entrypoints:** LimitOrderBookTest; ClOrdIdLedgerTest; OrderTraceTest.
 - **Boundary:** Current YU18 adds typed orders and cross-account self-match groups. Tracing drops observations rather than blocking trading.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

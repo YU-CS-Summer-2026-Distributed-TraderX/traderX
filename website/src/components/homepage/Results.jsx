@@ -81,7 +81,7 @@ const results = [
     unit: 'ms',
     label: 'Leader failover',
     detail:
-      'Killing the leader to orders flowing again, measured on Kubernetes with an independent gateway-session probe. The election is Raft-internal, with Kubernetes out of the decision path, with no order ID reuse observed in those drills. See the measurement note for election-versus-client recovery limits.',
+      'Killing the leader to orders flowing again, measured on Kubernetes with an independent gateway-session probe. The election is Raft-internal, with Kubernetes out of the decision path, with no order ID reuse observed in those drills. Client recovery time and leader election time measure different parts of failover.',
   },
 ];
 
@@ -170,7 +170,7 @@ export default function Results() {
           <p>
             Published figures from earlier Kubernetes campaigns, preserved with their workload
             boundaries. These are not new measurements of the current integration build.{' '}
-            <Link to="/docs/engineering/measurements">Read dates, topology and provenance limits</Link>.
+            <Link to="/docs/engineering/testing-strategy">How performance and correctness are checked</Link>.
           </p>
         </div>
 

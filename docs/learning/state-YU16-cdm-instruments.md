@@ -4,7 +4,7 @@ title: "State YU16-cdm-instruments: CDM Instruments"
 
 # State YU16-cdm-instruments Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Adds CDM instrument representation and Treasury/corporate-bond terms and pricing inputs.
 - **Evidence entrypoints:** test-state-YU16-cdm-instruments.sh; price-publisher tests.
 - **Boundary:** Instrument-level failures do not justify substituting invented marks; per-instrument support differs.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

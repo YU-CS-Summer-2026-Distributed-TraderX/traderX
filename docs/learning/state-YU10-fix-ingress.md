@@ -4,7 +4,7 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 # State YU10-fix-ingress Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Maps FIX 4.4 sessions, order entry, cancellation and status onto the sequenced trading path.
 - **Evidence entrypoints:** FixSessionIntegrationTest; FixGatewayStatusTest.
 - **Boundary:** Typed order fields and accepted units follow the current order-type contract.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

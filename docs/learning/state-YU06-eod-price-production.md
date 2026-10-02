@@ -4,7 +4,7 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 
 # State YU06-eod-price-production Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Closes a versioned EOD price snapshot, checks mark quality and publishes an overnight P&L chain.
 - **Evidence entrypoints:** EodStreamRepairIT; EodSnapshotAndPnlIT.
 - **Boundary:** Stale or missing marks require an explicit decision; arrival freshness is not market observation time.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

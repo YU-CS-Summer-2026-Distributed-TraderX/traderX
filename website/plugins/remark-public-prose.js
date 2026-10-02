@@ -11,13 +11,13 @@ function prose(value) {
 function publicLink(url, source) {
   if (!url || /^(?:[a-z]+:|#)/i.test(url)) return url;
   if (/(?:^|\/)docs\/risk-integration\//.test(url)) return '/docs/engineering/integration-and-recovery';
-  if (url.startsWith('/issues/')) return '/docs/engineering/feature-map';
+  if (url.startsWith('/issues/')) return '/docs/engineering/whats-new';
   if (url.startsWith('/')) return url;
   const [target, hash] = url.split('#');
   const absolute = path.resolve(path.dirname(source), target);
   const relative = path.relative(root, absolute).replaceAll(path.sep, '/');
   if (/^(?:docs\/)?(?:handoff|coordination)\//.test(relative) || relative.includes('/review-evidence/')) return null;
-  if (relative.startsWith('issues/')) return '/docs/engineering/feature-map';
+  if (relative.startsWith('issues/')) return '/docs/engineering/whats-new';
   if (relative.startsWith('docs/risk-integration/')) return '/docs/engineering/integration-and-recovery';
   if (/\.(md|mdx)$/.test(relative) && fs.existsSync(absolute)) {
     const sourcePart = path.relative(root, source).split(path.sep)[0];
@@ -46,6 +46,15 @@ module.exports = function remarkPublicProse() {
     function nodeText(n) { return n.value || (n.children || []).map(nodeText).join(''); }
     function walk(node) {
       if (['code', 'inlineCode', 'blockquote', 'math', 'inlineMath'].includes(node.type)) return;
+      // Development stamps belong in source history, not public specification headers.
+      // Keep status/parent information and leave business dates in examples untouched.
+      if (node.type === 'paragraph' && /^(Updated|Created|Reviewed|Date):\s*\d{4}-\d{2}-\d{2}/i.test(nodeText(node))) {
+        const value = nodeText(node)
+          .replace(/^(Updated|Created|Reviewed|Date):\s*\d{4}-\d{2}-\d{2}[. ]*/i, '')
+          .replace(/\s*Owner:.*$/i, '')
+          .replace(/\b(?:commit|revision|at)\s+[a-f0-9]{7,40}\b/gi, '');
+        node.children = [{type: 'text', value}];
+      }
       if (node.type === 'heading') {
         const original = nodeText(node);
         const id = slugger.slug(original);

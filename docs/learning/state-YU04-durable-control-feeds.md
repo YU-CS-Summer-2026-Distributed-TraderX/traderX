@@ -4,7 +4,7 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 
 # State YU04-durable-control-feeds Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Publishes account, limit and security changes through transactional outboxes and versioned control feeds.
 - **Evidence entrypoints:** AccountOutboxAtomicityIT; ControlFeedSubscriberTest.
 - **Boundary:** Persistence, publication and engine acknowledgement are separate events.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

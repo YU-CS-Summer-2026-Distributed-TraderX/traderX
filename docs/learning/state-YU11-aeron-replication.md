@@ -4,7 +4,7 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 
 # State YU11-aeron-replication Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Replicates encoded events using Aeron transport and SBE messages, with replay and epoch recovery.
 - **Evidence entrypoints:** test-aeron-loss-replay.sh; test-state-YU11-aeron-replication.sh.
 - **Boundary:** Replication alone does not provide the consensus model introduced by YU12.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

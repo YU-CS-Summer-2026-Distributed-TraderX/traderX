@@ -343,7 +343,7 @@ const fixedSummaryByState = {
 const publicFeatures = JSON.parse(fs.readFileSync(path.join(root, 'website/public-features.json'), 'utf8'))
 const plainEnglishDeltaFor = (state) => {
   const feature = publicFeatures.find((item) => item.id === state.id)
-  if (feature) return [feature.behavior, `**Evidence entrypoints:** ${feature.evidence}.`, `**Boundary:** ${feature.limits}`, '[Full feature and component map](/docs/engineering/feature-map).']
+  if (feature) return [feature.behavior, `**Evidence entrypoints:** ${feature.evidence}.`, `**Boundary:** ${feature.limits}`, '[All YU states and additions](/docs/engineering/whats-new).']
   const fixed = fixedSummaryByState[state.id]
   if (fixed) {
     return fixed
@@ -418,7 +418,7 @@ title: "State ${stateDisplayToken(state.id)}: ${state.title}"
 
 # State ${stateDisplayToken(state.id)} Learning Guide
 
-${state.id.startsWith('YU') ? 'YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.' : 'Upstream numbered lineage, separate from YU01–YU18.'}
+${state.id.startsWith('YU') ? 'YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.' : 'Upstream numbered lineage, separate from YU01–YU18.'}
 
 ## Position In Learning Graph
 

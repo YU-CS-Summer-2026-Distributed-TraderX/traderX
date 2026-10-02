@@ -4,7 +4,7 @@ title: "State YU05-post-trade-compliance: Post-Trade Compliance Bundle"
 
 # State YU05-post-trade-compliance Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Adds settlement states, journal-to-SQL reconciliation, regulatory export, transaction-cost analysis and scoped post-trade access.
 - **Evidence entrypoints:** SettlementServiceTest; ReconciliationServiceTest; RegulatoryReportDeterminismTest.
 - **Boundary:** Post-trade JWT checks do not establish production authentication for the new Desk.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

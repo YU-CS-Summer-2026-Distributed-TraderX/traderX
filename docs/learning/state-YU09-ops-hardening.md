@@ -4,7 +4,7 @@ title: "State YU09-ops-hardening: Ops Hardening"
 
 # State YU09-ops-hardening Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Adds operational configuration for secrets, probes, resource limits and service delivery.
 - **Evidence entrypoints:** test-state-YU09-ops-hardening.sh; Kubernetes manifests.
 - **Boundary:** Configuration support does not establish the health or security of a deployed installation.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

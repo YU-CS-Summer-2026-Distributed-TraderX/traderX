@@ -4,7 +4,7 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 
 # State YU03-in-memory-risk-gateway Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Checks credit, size, notional, restricted securities and price collars in memory before admission.
 - **Evidence entrypoints:** BlpRiskStateTest; RiskControlControllerTest.
 - **Boundary:** These controls implement specific admission rules, not regulatory certification.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

@@ -4,7 +4,7 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 
 # State YU07-historical-tick-store Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Stores historical ticks, queries symbol/time windows and supports replay. Later kdb+/q capture adds engine order and trade history.
 - **Evidence entrypoints:** selfcheck.q; txselfcheck.q; test-state-YU07-historical-tick-store.sh.
 - **Boundary:** Historical datasets and licensed raw data are not distributed with the documentation.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

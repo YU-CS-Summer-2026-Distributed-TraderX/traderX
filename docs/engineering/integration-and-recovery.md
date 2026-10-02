@@ -4,7 +4,7 @@ title: EOD integration and recovery boundaries
 
 # EOD integration and recovery boundaries
 
-This describes source at `4c2c4eb2`. Implemented support, an enabled profile and a validated production installation are different claims.
+Implemented support, an enabled profile and a validated production installation are different claims.
 
 ## From a portfolio cut to a result
 
@@ -43,4 +43,4 @@ Limits remain explicit:
 - Transition VERIFY can exceed a database packet limit because its witness is stored in one row.
 - Local single-member catch-up evidence does not establish multi-member HA, deployment throughput or cloud activation.
 
-See the [state/component map](feature-map.md) for contracts and the [test guide](testing-strategy.md) for executable checks. Retained deployments require migration, archive and compatibility review before enabling this profile.
+See the [state and component overview](whats-new.md) for contracts and the [test guide](testing-strategy.md) for executable checks. Retained deployments require migration, archive and compatibility review before enabling this profile.

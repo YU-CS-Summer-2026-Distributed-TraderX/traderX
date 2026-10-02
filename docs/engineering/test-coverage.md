@@ -1,44 +1,238 @@
----
-title: Test inventory and counting
----
+# Test coverage
 
-# Test inventory and counting
+What is tested, which checks run automatically, and how the counts are defined.
 
-Scope: integration revision `4c2c4eb2`, source inspection on 2026-09-30. This refresh does not manufacture a current executed-test total from file names or older reports.
+## How these numbers were counted
 
-## What counts mean
+Two different counts appear below and they are not interchangeable.
 
-- **Source files** count tracked files matching a stated pattern. Overrides can shadow earlier copies; adding counts across state packs double-counts effective code.
-- **Executed cases** come from one run's JUnit XML, Node TAP or browser report. Parameterized tests can produce several cases; disabled suites produce none.
-- **Proof scripts** are entrypoints, not case counts. A script can contain many checks or exit before exercising anything.
-- **Scenarios** are requirements or proof cases. They are not necessarily automated tests.
+- **Classes and tests** come from the JUnit XML of an actual run, in the **effective (generated)
+  tree**: the code that exists after the spec layers are composed. Counting across the spec
+  directories instead double-counts, because ancestor layers hold shadowed copies of files that a
+  later layer overrides.
+- **Executed** is what a run reports. It is higher than the number of `@Test` annotations in the
+  source, because parameterized and repeated cases expand at runtime, and some source files never
+  execute at all.
 
-Record revision, generated state, suite selectors, runtime, skips/failures and excluded tiers alongside each count. Never add source and generated executions as if they were distinct behaviors.
+Where the two disagree, the executed number is the real one, and it is the one used here.
 
-## Coverage by mechanism
+## Coverage summary
 
-| Area | Evidence entrypoints | Important refusal or failure cases |
+### The composed unit tier
+
+| Suite | Tests |
+|---|---:|
+| Composed engine (`order-matcher`) | 489 |
+| Composed service modules | 209 |
+| **Total** | **698** |
+
+The reported YU17 run had zero failures.
+
+The numeric tables retain the published **YU17 baseline**. YU18 extends this coverage with typed orders, EOD bundles, external result intake, managed recovery and both user interfaces. Those additions are listed [below](#yu18-and-component-coverage); the YU17 totals are not a combined YU18 count.
+
+### Everything else
+
+| Coverage | Count | Made up of |
+|---|---:|---|
+| Baseline inherited services | 48 | Java 25 · NestJS 7 · .NET 16 |
+| Cross-service integration | 5 suites | real MariaDB, and a real JetStream broker |
+| Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
+| Market-data gates | 35 | 17 historical store + 18 live capture |
+| End-to-end proof scripts | 47 | operator-run against a live cluster |
+| Composed Node and Python suites | 44 | reference-data 9 · price-publisher 11 · tick-store 24 |
+| Java test classes in the unit tier | 130 | the composed tree |
+
+## Java: the composed tree
+
+Counted on the YU17 effective tree: the code that exists once every ancestor's spec layers are
+composed and the shadowed copies are resolved.
+
+| Module | Test classes | Tests executed | In CI |
+|---|---|---|---|
+| **order-matcher** (engine, book, journal, Aeron replication, cluster, gateways, risk, reporting, risk extract, tracing) | **96** | **489** | ✅ |
+| trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 13 | 86 | ✅ |
+| execution-algo-engine | 8 | 48 | ✅ |
+| position-service | 2 | 11 | ✅ |
+| account-service (account and user CRUD, people validation, outbox) | 8 | 32 | ✅ |
+| aeron-replication-sidecar (peer resolution, readiness and schema endpoints) | 2 | 15 | ✅ |
+| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 17 | ✅ |
+| **Total** | **130** | **698** | |
+
+Hosted tests exclude `ThreeMemberClusterTest` and `SnapshotBarrierPerformanceTest`, which need reserved cluster and timing resources. Their results are collected by the dedicated tier instead. Hosted totals should be read from the executed-suite report rather than inferred by subtracting class counts from case counts.
+
+These are the classes the unit task runs. The container-backed tests are tagged out of it and
+counted separately under [Cross-service integration](#cross-service-integration).
+
+`order-matcher` is 70% of the test classes and holds the correctness properties the system is built
+on: self-trade prevention, atomic replace, client-order-ID idempotency, byte-identical consensus
+allocation, deterministic replay, and reproducible regulatory and risk exports.
+
+### Inside order-matcher, by package
+
+| Package | Tests | Covers |
 |---|---|---|
-| Sequencing, matching, snapshots and risk | generated matcher JUnit; `scripts/ci/engine-tests.sh` | Replay equality, duplicate IDs, risk rejection, cancel/replace and snapshot restoration |
-| Typed lifecycle | `OrderTypesEngineTest`, `OrderTypesServiceTest`, `OrderTypesBoundaryTest`; RI-07 live exercise | Exact numeric input, invalid TIF, FOK liquidity, absent peg/trail reference, stale business day |
-| Self-match groups | matcher group tests, boundary tests and Desk server tests | Same group across accounts, different-group control, FOK exclusion and snapshot persistence |
-| Control feeds and post-trade | composed service suites and integration tasks | Outbox atomicity, broker repair, retained schema, reconciliation and settlement |
-| EOD bundles and external intake | source/generated EOD suite, fixture checkout, RI-03 acceptance/recovery | Hash/identity mismatch, missing input, unsupported calculation, uncertain submission and stored-byte tampering |
-| Run identity and catch-up | generated recovery-identity tools; trade-processor SQL integration | Wrong scope, missing archive, retained conflicts, lease fencing, overlap with live delivery |
-| UI and streams | both Angular suites; Node readers and Desk server tests | Scope/account changes, stale responses, history read-only, unavailable/unknown states and reset feedback |
-| History and capture | `selfcheck.q`, `txselfcheck.q`, tick-store tests | Dataset counts, ordering, replay, capture identity and missing source prerequisites |
-| Operational proofs | `scripts/ri07/`, `scripts/proofs/`, replication scripts | Readiness at effect end, restart, failover and explicit refusal of invalid test conditions |
+| `ordermatcher.lmax` | ~122 | engine, limit order book, journal, Aeron replication |
+| `ordermatcher.cluster` | ~69 | consensus, snapshot codec, FIX and binary gateways, risk extract, tracing |
+| `ordermatcher.risk`, `.service`, root | remainder | risk state, control feeds, entitlements, projection |
 
-## Historical totals, not current coverage
+## Baseline inherited services
 
-An older integration-copy page described a YU15 run as **335 engine + 164 service = 499 tests**, with **48 baseline cases**, **5 integration suites**, **6 allocation/no-GC gates**, **35 q checks**, **26 proof scripts**, **44 Node/Python cases** and **106 Java test classes**. Those values belonged to that report's selected tree and tiers. They are not totals for current YU18 and do not establish that those suites execute in another generated state.
+The plain-vanilla TraderX services this deployment forked. All 48 tests here were added by this
+project: the baseline had none running, because the Java test sources sat at a non-default source
+path and the build skipped them silently while still reporting success.
 
-The deployed site inspected on 2026-09-30 instead reports the newer YU17 snapshot: **489 engine + 209 services = 698 cases**, **130 Java classes** and **47 proof scripts**. It describes 696 hosted cases but also describes a YU13–YU15 CI matrix, so this historical prose is not sufficient to establish event-specific hosted coverage. Those figures are retained as reported totals, not freshly counted current YU18 results.
+| Service | Stack | Tests | In CI |
+|---|---|---|---|
+| account-service | Java / JUnit | 8 | ✅ |
+| trade-processor | Java / JUnit | 7 | ✅ |
+| position-service | Java / JUnit | 5 | ✅ |
+| trade-service | Java / JUnit | 5 | ✅ |
+| reference-data | NestJS / `node:test` | 7 | ✅ |
+| people-service | .NET / xUnit | 16 | ✅ |
+| **Total** | | **48** | all in CI |
 
-Later accepted integration reports described **563 matcher cases (557 passed, 6 skipped)**, **221 service cases**, **7 database/broker integration cases**, **152 EOD cases in each source/generated run**, **97 console cases** and **13 Node reader cases** for the September 24 combined integration milestone. Subsequent recovery and Desk changes changed the suites again. These reports are dated local evidence, not a new full run at `4c2c4eb2` or a current hosted-CI statement.
+## Cross-service integration
 
-The current reproduction commands are in [Testing strategy](testing-strategy.md). Use `assert-suites-executed.sh` and `check-yu18-composition.py --junit` after a fresh full run. Preserve XML before filtered tests replace it. Inspect active Gradle source sets; a dormant `src/main/test/java` file must not be counted as compiled by assumption.
+The five inherited suites run against real infrastructure in containers rather than in-memory substitutes. They
+cover properties that live in the infrastructure rather than in application code, which is exactly
+the set a mock cannot reach: a mock returns what the caller expects, so a test built on one shows
+that the code asked for the right thing, never that the database agreed.
 
-## Boundaries
+| Test | Runs against | Load-bearing case |
+|---|---|---|
+| `TradeProcessorPersistenceIT` | MariaDB, deployed schema | an order for a non-existent account is rejected by the foreign key and **fails loudly** rather than being silently dropped |
+| `AccountOutboxAtomicityIT` | MariaDB, deployed schema and deployed server flags | the account write and its outbox row **commit as one unit or not at all**: asserted from a connection outside the application's transaction |
+| `TradeProcessorContextIT` | MariaDB + message broker | the composed context starts with wiring that dials the broker during bean creation |
+| `EodStreamRepairIT` (7 cases) | real JetStream | an existing `TRADERX_EOD` missing a required subject is **repaired, not accepted**: an unrepaired stream rejects the completion publish and the overnight chain breaks silently |
+| `EodSnapshotAndPnlIT` (11 cases) | MariaDB, **schema read live from the deployed ConfigMap** | the snapshot read returns exactly the `(date, version)` asked for, and the P&L upsert is idempotent under redelivery: idempotency lives in the table's PRIMARY KEY, not in the Java |
 
-Allocation gates constrain cost under their declared execution profile. Correctness tests do not establish latency; latency tests do not establish model validity. Disposable single-member SQL recovery does not prove cluster HA. The accepted synthetic bill result is a bounded pricing comparison, not validation of general portfolio risk. Production authentication and retained/cloud activation require their own evidence.
+`AccountOutboxAtomicityIT` is the counterpart to a unit test that mocks the outbox repository. With
+the repository mocked, the assertion is that it was *called*: which holds whether or not the two
+writes share a transaction, so the one property the outbox exists to provide is the one that test
+cannot see.
+
+Every case here was falsified before it was trusted: the code was deliberately broken to confirm
+the test fails, and fails for the stated reason. For `EodSnapshotAndPnlIT` that meant deleting the
+PRIMARY KEY from the deployed DDL: exactly the two idempotency cases fail, the other nine pass.
+The schema is a declared Gradle input for that reason: without it a DDL-only edit leaves the task
+up to date and the previous run's green results stand, which is how the first falsification
+attempt appeared to prove the opposite.
+
+All five are isolated by tag into their own task, so the fast unit job needs no container runtime.
+
+## Gates
+
+A gate asks what the code *cost*, not whether it was correct: a method can return the right answer
+while allocating on every call, and no assertion about its return value would notice. That matters on
+a single-threaded matching engine, where garbage collection stops the thread that processes orders,
+so allocation on the hot path turns into latency spikes under load rather than into wrong results.
+The rationale is in [Testing strategy](testing-strategy.md).
+
+These run as separately forked JVMs, because they need their own JVM configuration, and are counted
+apart from the totals above.
+
+| Gate | Asserts |
+|---|---|
+| `allocationGateTest` | the hot path allocates exactly zero bytes in steady state |
+| `riskAllocationGateTest` | the same, with risk gating engaged |
+| `aeronAllocationGateTest` | the Aeron transport claim and encode path |
+| `clusterAllocationGateTest` | the cluster apply path |
+| `noGcTest` | the above under Epsilon GC: no collector; sustained allocation eventually exhausts the fixed heap |
+| `riskNoGcTest` | the same, risk-gated |
+| Typed-order allocation gate (YU18) | supported typed-order paths under the configured warmup and JVM profile |
+
+The inherited allocation gates run in hosted CI. YU18 adds its typed-order gate to the engine test task. The two Epsilon-GC gates run on demand; no-GC checks detect heap exhaustion from sustained allocation rather than making one allocation immediately fatal.
+
+## Market-data gates
+
+| Gate | Checks | Verifies |
+|---|---|---|
+| `selfcheck.q` | 17 | historical store: per-partition row counts, deduplication, quote and trade split, first trades to the tick, regular-hours VWAP across every symbol-day, replay ordering and pacing |
+| `txselfcheck.q` | 18 | live capture: schema, leader-only guard, capture count equal to the cluster's trade count |
+
+Both are cross-implementation checks. Every expected value was computed independently in a second
+engine over the same files, so they verify the store against something other than itself.
+
+## End-to-end proof scripts
+
+The YU17 inventory contains 47 proof scripts spanning the following areas: REST, FIX and binary ingress → gateway →
+three-member Aeron cluster → asynchronous projection → SQL read model → egress, plus the risk
+control plane. Each prints an explicit pass or fail line per step.
+
+| Area | Scripts | Environment |
+|---|---|---|
+| Risk gateway and control feeds | risk demo, live control delta, offline catch-up | Kubernetes |
+| Post-trade and compliance | entitlements, reconciliation, reproducible regulatory export, settlement | Kubernetes |
+| End-of-day price chain | quality gate, consumer halt | Kubernetes |
+| Execution algo | order slicing | Kubernetes |
+| FIX ingress | session, cancel | Kubernetes |
+| Order book and lifecycle | cancel ingress, duplicate suppression, self-trade prevention and replace, read model | Kubernetes |
+| Options and risk extract | option chain, option persistence, risk extract | Kubernetes |
+| Observability | trace join, reject trace and log join | Kubernetes |
+| High availability and recovery | cluster recovery, failover transparency, cross-epoch ID reuse, restore from object storage, replace proof, node-clock failover | Kubernetes |
+
+Each script asserts against the system's own record: the committed sequence on a cluster member, the
+row in the read model, the message on the egress stream: rather than against the response it got
+back, because a request can succeed while the effect it asked for does not. They require a live
+cluster, so they are operator-run.
+
+## Front-end and other components
+
+| Component | Tests | Status |
+|---|---|---|
+| `reference-data` (composed) | 9 | ✅ in CI, alongside the template copy |
+| `web-front-end` (Angular) | 49 in 10 specs | **disabled at source**: every suite is `xdescribe`, so wiring the job would run zero tests |
+| `price-publisher` | 11 | ✅ in CI |
+| `database`, `ingress`, `api-explorer` | 0 | no tests |
+
+## YU18 and component coverage
+
+| Area | Test entrypoints | Cases covered |
+|---|---|---|
+| Typed orders and lifecycle | `OrderTypesEngineTest`, `OrderTypesServiceTest`, `OrderTypesBoundaryTest` | exact numeric input, order-type/TIF combinations, FOK liquidity, stops, trailing and pegged orders, iceberg display, cancel/replace and sequenced DAY expiry |
+| Self-match groups | matcher group and boundary suites; Desk server tests | same-group accounts, different-group control, FOK exclusion and snapshot persistence |
+| EOD bundles and external results | source/generated `eod-risk-bundles` suites; checkout validation | hashes, terms, market-input coverage, result identity and units, unsupported calculations and tampered stored bytes |
+| Submission and restart | `scripts/ri03-acceptance.py`, `scripts/ri03-recovery.py` | actual HTTP intake, immutable request/response custody, uncertain outcomes and recovery without blind resubmission |
+| Run identity and projection recovery | generated `recovery-identity` tests; trade-processor integration task | wrong scope, retained SQL conflicts, missing archive pages, lease fencing and transactional catch-up |
+| Runtime packaging | `scripts/ci/status-runtime-smoke.py`, `scripts/ci/risk-container-smoke.py` | shipped entrypoints, dependencies, readiness, schemas and refusal behavior |
+| Original Demo console | Angular specs; Node EOD/risk/Treasury readers | tickets, order feedback, job states, unavailable results and stored-data validation |
+| Trader Desk | Angular specs; `test-desk-session.mjs`, `test-server.mjs` | workspace accounts, session and scope boundaries, stale responses, historical read-only views and server-side validation |
+| Live order and risk flows | `scripts/ri07/order-types-live.py`, `scripts/ri07/risk-flow-local.sh` | engine/book and SQL effects, synthetic container flow, result intake and UI-facing status |
+| Automatic projection recovery | generated `recovery-identity/test-live-automatic-recovery.sh` | startup/reconnect catch-up, fencing, outage and retained-row checks in a disposable local installation |
+
+These entries describe suites and proof entrypoints, not extra cases to add to the YU17 totals. Count the composed YU18 run from its own JUnit, TAP and browser reports. Source and generated runs of the same EOD suite are composition checks, not two distinct sets of features. A single-member recovery proof does not establish multi-member HA, and synthetic container pricing does not validate general portfolio risk.
+
+## What CI runs
+
+The engine workflow selects the generated state from the event. Integration events test YU18; historical state events use the YU13–YU17 matrix. Separate jobs cover the console and EOD packaging.
+
+| Job | Scope | Trigger |
+|---|---|---|
+| engine | composed order-matcher and service suites, allocation gates, YU18 composition and suite-execution checks | push and pull request |
+| baseline | 4 Java baseline services | push and pull request |
+| baseline (reference-data) | NestJS baseline | push and pull request |
+| baseline (people-service) | .NET baseline | push and pull request |
+| composed extras | composed reference-data (jest), price-publisher (`node:test`), tick-store (pytest): 44 tests | push and pull request |
+| integration (persistence) | real MariaDB in a container | push and pull request |
+| integration (outbox atomicity) | real MariaDB, deployed schema and server flags | push and pull request |
+| integration (context) | real MariaDB and message broker | push and pull request |
+| integration (EOD stream repair + snapshot/P&L) | real JetStream broker and real MariaDB: 18 cases | push and pull request |
+| cluster and timing | three-node cluster, wall-clock budgets, 2 Epsilon gates | manual |
+| YU18 console and EOD | Angular/Node checks, source/generated EOD validation, checkout and packaging checks | configured integration events and manual runs |
+
+Each matrix entry composes its own source layers before testing. A test file that is shadowed by a later override does not provide coverage of the generated result. `assert-suites-executed.sh` checks for missing reports, and `check-yu18-composition.py --junit` checks that the intended typed-order suites ran.
+
+## Verification tiers
+
+The full rationale for what runs where is in [Testing strategy](testing-strategy.md).
+
+| Layer | What | Where |
+|---|---|---|
+| In-process tests | YU17 baseline: 698 composed + 48 baseline; YU18 additions above | CI, every push |
+| Cross-service integration | 5 suites against real MariaDB and a real JetStream broker | CI, every push |
+| End-to-end proofs | 47 in the YU17 inventory, plus YU18 order/risk/recovery entrypoints | operator-run against a live cluster |
+| Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
+| Gates (cut across the rest) | inherited allocation/no-GC gates plus the YU18 typed-order gate | allocation gates every push; no-GC on demand |
+
+Nearly every end-to-end proof has an in-process test asserting the same property in CI, so the
+proofs confirm invariants that are already gated on every change.

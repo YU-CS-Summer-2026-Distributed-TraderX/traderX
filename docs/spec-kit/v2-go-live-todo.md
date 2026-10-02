@@ -5,7 +5,6 @@ title: "TraderX v2.0 Go-Live TODO"
 # TraderX v2.0 Go-Live TODO
 
 Status: in progress.
-Created: 2026-05-21
 
 ## Decisions (Current Direction)
 

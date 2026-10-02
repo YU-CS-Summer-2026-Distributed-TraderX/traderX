@@ -4,7 +4,7 @@ title: "State YU18-risk-integration: Risk Integration"
 
 # State YU18-risk-integration Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Builds immutable risk bundles, validates dated market inputs and external results, and displays job status and coverage. Components also extend order lifecycle and projection recovery.
 - **Evidence entrypoints:** test-state-YU18-risk-integration.sh; check-yu18-composition.py; component tests.
 - **Boundary:** The accepted container path prices a closed synthetic Treasury-bill profile. Production risk remains unavailable.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

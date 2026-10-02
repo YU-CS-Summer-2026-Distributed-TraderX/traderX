@@ -10,4 +10,4 @@ The current boundary includes immutable portfolio bundles, instrument terms, dat
 
 The accepted container path prices a closed synthetic Treasury-bill profile with an assumed curve. It does not accept arbitrary live portfolios. OTC booking support does not establish matching external pricing support, and missing SOFR conventions must not be translated into an incompatible swap model to obtain a number.
 
-See [EOD integration and recovery boundaries](integration-and-recovery.md), the [feature map](feature-map.md#yu18-risk-integration) and [verification commands](testing-strategy.md). These public guides replace the older correspondence-oriented discussion; implementation contracts remain in the YU18 spec pack.
+See [EOD integration and recovery boundaries](integration-and-recovery.md), the [state overview](whats-new.md) and [verification commands](testing-strategy.md). These public guides replace the older correspondence-oriented discussion; implementation contracts remain in the YU18 spec pack.

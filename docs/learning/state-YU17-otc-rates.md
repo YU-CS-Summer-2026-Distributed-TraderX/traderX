@@ -4,7 +4,7 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 
 # State YU17-otc-rates Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Books OTC swaps and swaptions beside the matching book in the same consensus log. Adds reference-anchored price bands, a price-derived grid, sequenced CLOSED/PRE_OPEN/OPEN phases, historical tape replay and operator-scoped counters.
 - **Evidence entrypoints:** test-state-YU17-otc-rates.sh; OTC contract tests.
 - **Boundary:** Contracts export terms without valuation. Historical replay is not live data or a backtest; tick-rule sides are inferred. Active configuration may instead use an explicitly synthetic offline feed.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

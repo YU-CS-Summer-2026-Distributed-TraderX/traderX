@@ -4,7 +4,7 @@ title: "State YU14-listed-equity-options: Listed Equity Options"
 
 # State YU14-listed-equity-options Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Trades listed equity options through the same book and applies contract multipliers to exposure.
 - **Evidence entrypoints:** test-state-YU14-listed-equity-options.sh; option persistence proof.
 - **Boundary:** Trading support is distinct from option valuation, Greeks or exercise processing.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

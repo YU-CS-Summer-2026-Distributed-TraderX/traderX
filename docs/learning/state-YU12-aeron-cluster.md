@@ -4,7 +4,7 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 
 # State YU12-aeron-cluster Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Runs matching on a three-member Aeron Raft cluster, with leader election, snapshots and archive recovery.
 - **Evidence entrypoints:** ThreeMemberClusterTest; SnapshotRoundTripTest.
 - **Boundary:** A successful local recovery case is not an unbounded HA guarantee. Preserve compatible core versions and retained history.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

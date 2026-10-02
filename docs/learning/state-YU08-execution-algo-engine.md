@@ -4,7 +4,7 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 
 # State YU08-execution-algo-engine Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Slices TWAP parent orders into scheduled children through ordinary risk-gated order ingress.
 - **Evidence entrypoints:** AlgoOrderServiceTest; AlgoEventStoreReplayTest.
 - **Boundary:** Scheduling and child execution are separate; a submitted child need not fill.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

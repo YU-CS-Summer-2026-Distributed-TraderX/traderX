@@ -4,7 +4,7 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 
 # State YU15-eod-risk-extract Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Exports un-netted positions and counterparties at one consensus cut with reproducible bytes and receipt identity.
 - **Evidence entrypoints:** RiskExtractTest; RiskReplayDeterminismTest; SharedEodExamplesTest.
 - **Boundary:** An extract is an input to a risk engine, not a computed portfolio-risk result.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

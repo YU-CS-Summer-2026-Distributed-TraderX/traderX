@@ -53,3 +53,9 @@ Remaining limits: runtime/test commands were source-checked, not executed for th
 Next action: coordinator reviews and integrates the docs commit with concurrent Desk changes, updates the coordinator-owned queue index and decides when to publish.
 
 Related: [acceptance and demos](07-acceptance-and-demo.md), [build and deployment](08-build-and-deployment.md), [trader workspace](11-trader-workspace-ui.md).
+
+## User review corrections
+
+The public overview now follows the deployed layout: YU01–YU18 each have their own summary and spec-pack link, followed by other additions and both UI sections. Testing strategy restores the tier structure, and coverage restores the module/integration/gate tables with YU18 additions. The user removed the feature/evidence map, measurement-context and source/route-map pages; their navigation and generated links now point to the retained overview and testing pages. Revision/date audit notes were removed from public guides, and development stamps are suppressed in rendered specification headers while preserving status information.
+
+Validation: rebuilt preview, three publication-plugin tests, generated-doc drift and front matter pass. The artifact audit covers 711 HTML pages with zero broken local targets, anchors or LLM-index links. Browser inspection confirms 18 ordered state summaries with 18 spec links, all original testing tiers, and the restored coverage tables. This revision is for local user comparison on port 4390; no publication or cross-chat notification was performed.

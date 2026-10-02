@@ -6,11 +6,8 @@ module.exports = {
     // question. It still sits immediately before the Testing category, which keeps its pager
     // pointing at Testing strategy — what was built, then how each claim is checked.
     'engineering/whats-new',
-    'engineering/feature-map',
     'engineering/ui-workflows',
     'engineering/integration-and-recovery',
-    'engineering/measurements',
-    'engineering/site-source-map',
     {
       type: 'category',
       label: 'Testing',

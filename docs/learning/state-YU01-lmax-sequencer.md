@@ -4,7 +4,7 @@ title: "State YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"
 
 # State YU01-lmax-sequencer Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Sequences orders on one in-memory thread with a Disruptor ring buffer and a replayable journal. SQL is a read model.
 - **Evidence entrypoints:** Journal and replay tests; test-state-YU01-lmax-sequencer.sh.
 - **Boundary:** Local journal recovery is distinct from later replicated consensus.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

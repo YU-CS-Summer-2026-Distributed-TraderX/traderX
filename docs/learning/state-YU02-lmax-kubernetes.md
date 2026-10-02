@@ -4,7 +4,7 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 
 # State YU02-lmax-kubernetes Learning Guide
 
-YU lineage. Current integration behavior is described in the [feature map](/docs/engineering/feature-map); historical state branches may differ.
+YU lineage. Current integration behavior is described in the [state overview](/docs/engineering/whats-new); historical state branches may differ.
 
 ## Position In Learning Graph
 
@@ -34,7 +34,7 @@ YU lineage. Current integration behavior is described in the [feature map](/docs
 - Packages the sequencer for Kubernetes, with snapshots, startup replay and readiness gates.
 - **Evidence entrypoints:** Snapshot tests; test-state-YU02-lmax-kubernetes.sh.
 - **Boundary:** The historical single-member tier is retained for study; current cluster operation follows YU12.
-- [Full feature and component map](/docs/engineering/feature-map).
+- [All YU states and additions](/docs/engineering/whats-new).
 
 ## Run This State
 

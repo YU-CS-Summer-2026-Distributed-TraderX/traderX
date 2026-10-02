@@ -4,7 +4,7 @@ title: Demo console and Trader Desk
 
 # Demo console and Trader Desk
 
-Both interfaces use the TraderX services. Their availability depends on the configured runtime; neither a screenshot nor a successful website build proves that those services are running. This page describes integration revision `4c2c4eb2`.
+The Demo console and Trader Desk use the same TraderX services. Available actions depend on the services and permissions configured for the workspace.
 
 ## Demo console
 
@@ -35,7 +35,7 @@ The selected Desk is in `web-front-end-console-combined-prototype/`, reusing Ang
 2. Inspect price source and receipt age. **Price at market** copies a fresh mark into the limit field without changing the order type.
 3. Submit through the gateway. An accepted response keeps a receipt visible and clears the next ticket. A refusal explains a rejected request; an unknown outcome is not retried automatically.
 4. Check order state and fills. A market/IOC order on an empty book can be accepted and then canceled without a fill.
-5. Use managed scope for existing-order actions. On the legacy unmanaged profile at this revision, the Desk disables unsafe mutations. Historical views stay read-only.
+5. Use managed scope for existing-order actions. On the legacy unmanaged profile the Desk disables unsafe mutations. Historical views stay read-only.
 
 Adding an account creates its SQL definition, records local workspace membership, configures its self-match group and requests engine admission. A failed admission can be retried for that account; ambiguous SQL creation is not repeated automatically. Login waits for committed group configuration and does not re-enable an operator-disabled account.
 

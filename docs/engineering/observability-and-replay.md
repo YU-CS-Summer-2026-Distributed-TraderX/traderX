@@ -6,7 +6,7 @@ description: Distributed order traces, market history and analytical playback.
 
 # Observability and replay
 
-Tracing extends YU13; kdb+/q history and capture extend YU07. Both use bounded asynchronous paths. Their performance effect depends on load and configuration; see the [historical measurements](measurements.md).
+Tracing extends YU13; kdb+/q history and capture extend YU07. Both use bounded asynchronous paths. Their performance effect depends on load and configuration; allocation and timing are checked separately.
 
 ## OpenTelemetry: a trace across consensus
 
@@ -46,7 +46,7 @@ A tape print and an engine execution have different provenance. Do not merge the
 
 The historical reader supports an existing ZSTD Parquet corpus through row-group pruning and virtual tables. This describes a supported input format, not a requirement to convert newly supplied raw data. A historical aggregate over **47.8M quote rows** reported **768 MiB** peak memory against a **16 GiB** edition limit. That is a bounded historical workload; the exact runtime manifest is not supplied here and this refresh did not rerun it.
 
-The leader-side capture tap projects committed output outside consensus. A stalled sink fills the queue and increments drops rather than blocking apply. After a saturating flood, exporter backlog drain can still affect co-resident latency; the July A/B observed that boundary.
+The leader-side capture tap projects committed output outside consensus. A stalled sink fills the queue and increments drops rather than blocking apply. After a saturating flood, exporter backlog drain can still affect co-resident latency; the tracing/capture comparison observed that boundary.
 
 ## Recovery journal versus analytical history
 

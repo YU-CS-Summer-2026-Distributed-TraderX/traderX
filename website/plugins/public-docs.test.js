@@ -3,6 +3,15 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const plugin = require('./remark-public-prose');
 const root = path.resolve(__dirname,'../..');
+test('omits private development stamps without erasing status or example dates', () => {
+ const tree={type:'root',children:[
+  {type:'paragraph',children:[{type:'text',value:'Updated: 2026-09-23. Status: review needed. Owner: private lane at d6ca3330.'}]},
+  {type:'paragraph',children:[{type:'text',value:'A bond matures on 2027-01-01.'}]},
+ ]};
+ plugin()(tree,{path:path.join(root,'specs/YU18-risk-integration/spec.md')});
+ assert.equal(tree.children[0].children[0].value,'Status: review needed.');
+ assert.equal(tree.children[1].children[0].value,'A bond matures on 2027-01-01.');
+});
 test('edits prose while preserving code, quotations and stable heading anchors', () => {
   const tree={type:'root',children:[
     {type:'heading',depth:2,children:[{type:'text',value:'A — B'}]},
