@@ -281,36 +281,30 @@ fi
 [ "${MISSING:-0}" -gt 0 ] && echo "     (missing=$MISSING is bridge lag counted at classification time; the set comparison below is the verdict)"
 
 # ---- 3b. negative control: a PERSISTENT field mismatch must fail a fresh classification -------
-# The restart discipline above must not have weakened the assertion into one that only ever sees
-# clean states (an assertion never observed failing is a hypothesis). Mutate one projection field,
-# prove a fresh classification names it, restore, prove it clears. The restore is trapped so a
-# killed run cannot leave the projection poisoned. NOTE a mutation is invisible WITHOUT the
-# restart: classification is once-per-entry, which is why this control and the verdict above ride
-# the same mechanism — this control failing means the verdict above is not real.
-MUT_ROW=$(dbq "SELECT id FROM trades ORDER BY id LIMIT 1;")
-MUT_QTY=$(num "$(dbq "SELECT quantity FROM trades WHERE id='$MUT_ROW';")")
-if [ -z "$MUT_ROW" ] || [ -z "$MUT_QTY" ]; then
-  bad "no projection row available to plant the mismatch control — the control did not run"
-else
-  say "planted field mismatch" "row $MUT_ROW qty $MUT_QTY -> $((MUT_QTY + 1))"
-  restore_mut(){ [ -n "$MUT_ROW" ] && dbq "UPDATE trades SET quantity=$MUT_QTY WHERE id='$MUT_ROW'" >/dev/null 2>&1; MUT_ROW=""; }
-  trap restore_mut EXIT
-  dbq "UPDATE trades SET quantity=$((MUT_QTY + 1)) WHERE id='$MUT_ROW'" >/dev/null 2>&1
-  S2=$(fresh_classification) || true
-  M2=$(num "$(printf '%s' "$S2" | jfield "d['fieldMismatch']")")
-  restore_mut; trap - EXIT
-  if [ -z "$M2" ] || [ "$M2" -le 0 ]; then
-    bad "a PLANTED persistent mismatch was NOT caught by a fresh classification — the verdict above cannot be trusted"
-  else
-    echo "   → the planted mismatch is named by a fresh classification (field_mismatch=$M2) ✔"
-  fi
-  S3=$(fresh_classification) || true
-  M3=$(num "$(printf '%s' "$S3" | jfield "d['fieldMismatch']")")
-  if [ -z "$M3" ] || [ "$M3" -ne 0 ]; then
-    bad "field_mismatch did not clear after the control was restored (read: ${M3:-unreadable}) — the projection may be left poisoned"
-  else
-    echo "   → restored: fresh classification back to field_mismatch=0 ✔  (the clean verdict above is a real verdict)"
-  fi
+# Mutate a positively identified SQL/live-window row, require its exact id in a fresh
+# processor's mismatch log, restore, and require clean reclassification of that subject.
+# Counters alone cannot identify which row failed. The helper restores on EXIT/INT/TERM/HUP;
+# SIGKILL or loss of database/control-plane connectivity cannot guarantee remote restoration.
+# YU18 persists scoped recon checkpoints. The helper pauses the sole processor replica,
+# saves/resets only the selected scope, observes the exact subject in a NEW pod's logs,
+# and restores subject/checkpoint/replicas even on catchable interruption. Legacy/unknown
+# scope refuses instead of attributing an unqualified id to the current run.
+python3 "$here/recon-proof-subject.py" --context "$CTX" --db-deploy "$DB_DEPLOY" --om "$OM" \
+  --attempts "${RECON_PROOF_ATTEMPTS:-90}" --poll-seconds "${RECON_PROOF_POLL_SECONDS:-2}" <<<"$ADMIN" &
+SUBJECT_PID=$!
+subject_interrupted(){
+  trap '' INT TERM HUP
+  kill -TERM "$SUBJECT_PID" 2>/dev/null || true
+  wait "$SUBJECT_PID" || true
+  exit 1
+}
+trap subject_interrupted INT TERM HUP
+wait "$SUBJECT_PID"; SUBJECT_RC=$?
+trap - INT TERM HUP
+if [ "$SUBJECT_RC" -ne 0 ]; then
+  bad "exact scoped subject control failed or refused; see diagnostic above"
+  # Do not continue into the orphan mutation after a failed cleanup/precondition.
+  exit 1
 fi
 
 # ---- 4. orphan sweep: every projection row must have journal provenance -----------------------
@@ -326,108 +320,20 @@ for _ in $(seq 1 30); do
 done
 say "engine trades / SQL rows" "${ENGINE_TRADES:-?} / ${SQL_TRADES:-?}"
 
-sweep(){ curl -s -m600 -X POST "$TP/recon/orphan-sweep" -H "Authorization: Bearer $ADMIN"; }
-OS=$(sweep)
-LOCAL=$(num "$(printf '%s' "$OS" | jfield "d['localTradeCount']")")
-PROVEN=$(num "$(printf '%s' "$OS" | jfield "d['fullHistoryTradeCount']")")
-ORPHANS=$(num "$(printf '%s' "$OS" | jfield "d['orphanCount']")")
-say "local trade count"       "${LOCAL:-?}"
-say "with journal provenance" "${PROVEN:-?}"
-say "orphan_in_projection"    "${ORPHANS:-?}"
-if [ -z "$LOCAL" ] || [ -z "$PROVEN" ] || [ -z "$ORPHANS" ]; then
-  bad "orphan sweep answered unreadably: $OS"
-elif [ "$LOCAL" -le 0 ] || [ "$PROVEN" -le 0 ]; then
-  # Agreement between two empty sets is not reconciliation.
-  bad "nothing to reconcile (local=$LOCAL, journal=$PROVEN) — a sweep over no data proves nothing"
-else
-  # NOT asserted as zero. A rig seeded with TRADE-* demo rows carries projection rows that have no
-  # journal fill BY CONSTRUCTION -- on this cluster rig that is 4 of them -- so "orphans == 0" is a
-  # statement about which fixtures the rig happens to hold, not about whether the sweep works. It
-  # failed here for exactly that reason while the sweep was behaving perfectly.
-  #
-  # The real property is that the sweep can TELL a journal-backed row from one without provenance,
-  # and that is what the delta test below proves. This number is the baseline it measures against.
-  BASELINE="$ORPHANS"
-  BASE_IDS=$(printf '%s' "$OS" | jfield "', '.join(d['orphanIds'])")
-  if [ "$ORPHANS" -eq 0 ]; then
-    echo "   → all $LOCAL projection rows have a journal fill behind them ✔"
-  else
-    echo "   → baseline: $ORPHANS projection row(s) with no journal fill — expected on a seeded rig"
-    echo "     ${BASE_IDS}"
-  fi
-  # A sweep that flags EVERY row is not a sweep, and no count-delta test below can tell the
-  # difference: planting one more row into a set that is already entirely orphaned still moves the
-  # count by one. This is the guard that says the sweep discriminates at all, and it is a
-  # comparison between two things the sweep itself reports rather than a threshold.
-  if [ "$ORPHANS" -ge "$LOCAL" ]; then
-    bad "the sweep called all $LOCAL projection row(s) orphans — it is not distinguishing anything,
-     and the planted-probe test below would pass against it"
-  fi
+# The same proof helper owns a unique, attributed projection-only row for this invocation.
+# Its INSERT is scoped atomically, and cleanup reconciles ambiguous outcomes with full-row
+# ownership predicates. Catchable signals wait for the bounded operation and qualified cleanup.
+python3 "$here/recon-proof-subject.py" --mode orphan --context "$CTX" \
+  --db-deploy "$DB_DEPLOY" --om "$OM" --attempts "${RECON_PROOF_ATTEMPTS:-90}" \
+  --poll-seconds "${RECON_PROOF_POLL_SECONDS:-2}" <<<"$ADMIN" &
+SUBJECT_PID=$!
+trap subject_interrupted INT TERM HUP
+wait "$SUBJECT_PID"; ORPHAN_RC=$?
+trap - INT TERM HUP
+if [ "$ORPHAN_RC" -ne 0 ]; then
+  bad "attributed orphan control failed or refused; see diagnostic above"
+  exit 1
 fi
-BASELINE="${BASELINE:-0}"
-BASE_IDS="${BASE_IDS:-}"
-
-# ---- 5. positive control: can the sweep detect an orphan at all? ------------------------------
-# Without this, orphan_in_projection=0 is indistinguishable from a check that does nothing — the
-# exact shape of vacuous pass this suite has already produced once. Plant a row the log CANNOT
-# contain and require the sweep to name it.
-#
-# The id is deliberately non-numeric before the dash: run-proofs.sh derives the epoch's trade
-# ceiling with SUBSTRING_INDEX(id,'-',1), and a huge numeric probe left behind would make the next
-# suite run wipe the rig for a dead epoch it invented.
-PROBE="orphan-probe-B"
-cleanup(){ dbq "DELETE FROM trades WHERE id='$PROBE';" >/dev/null 2>&1; }
-trap cleanup EXIT
-dbq "INSERT INTO trades (id, accountid, security, side, quantity, price, state) \
-     VALUES ('$PROBE', 42422, 'NVDA', 'Buy', 1, 1.000, 'Processing');" >/dev/null 2>&1
-OS2=$(sweep)
-ORPHANS2=$(num "$(printf '%s' "$OS2" | jfield "d['orphanCount']")")
-IDS2=$(printf '%s' "$OS2" | jfield "', '.join(d['orphanIds'])")
-say "planted projection-only row" "$PROBE"
-say "orphan_in_projection"        "${ORPHANS2:-?} (baseline was ${BASELINE}; the verdict is the probe's id below, not this number)"
-# Assert the DELTA and that the probe is NAMED. Both halves matter: the count alone could move for
-# an unrelated reason, and a matching count with the probe absent would be a coincidence, not a
-# detection. The previous form required the count to equal 1 and the id list to equal the probe
-# exactly, which is only true on a rig holding no seed rows -- it failed here while printing the
-# probe among the flagged ids, accusing the sweep of a defect the same line disproved.
-# THE VERDICT IS THE PROBE'S IDENTITY, IN THREE PHASES, AND NOT THE COUNT.
-#
-# It used to be the count: baseline, then baseline+1, then back to baseline. That assumed the
-# orphan population is STABLE between three sweeps, and since ADR-072 it is not — replayed order
-# flow books trades continuously, the bridge writes their projection rows, and a row whose journal
-# fill the freshly-built index has not yet reached is an orphan by definition. Measured 2026-08-26
-# on the first suite run with the replay live: baseline 2, probe 3 (correct), cleanup 4. The sweep
-# was working perfectly and the arithmetic accused it of a defect. This is the same class the
-# comment above records — the count moving for an unrelated reason — arriving from a new writer,
-# and widening the count to a tolerance would have deleted the check rather than repaired it.
-#
-# absent -> planted and NAMED -> removed and absent is the whole claim, it is what "the sweep can
-# tell a journal-backed row from one without provenance" actually means, and no amount of
-# concurrent drift can satisfy it by accident. The counts stay on screen as information.
-case "$BASE_IDS" in *"$PROBE"*) PRESENT0=1 ;; *) PRESENT0=0 ;; esac
-case "$IDS2"     in *"$PROBE"*) NAMED=1 ;;    *) NAMED=0 ;; esac
-if [ "$PRESENT0" -ne 0 ]; then
-  bad "$PROBE was ALREADY named an orphan before this run planted it — a previous run leaked its
-     probe row, so the detection below would pass without detecting anything. Clean it up:
-     DELETE FROM trades WHERE id='$PROBE';"
-elif [ "$NAMED" -ne 1 ]; then
-  bad "the planted row was NOT detected (count=${ORPHANS2:-?}, baseline ${BASELINE})"
-  echo "     ids=${IDS2:-none} — the baseline above meant nothing: the sweep cannot tell a"
-  echo "     journal-backed row from one without provenance."
-else
-  echo "   → the planted row is named as ORPHAN_IN_PROJECTION ✔  (the baseline above is a real verdict)"
-fi
-cleanup; trap - EXIT
-OS3=$(sweep)
-ORPHANS3=$(num "$(printf '%s' "$OS3" | jfield "d['orphanCount']")")
-IDS3=$(printf '%s' "$OS3" | jfield "', '.join(d['orphanIds'])")
-say "after removing the probe"    "${ORPHANS3:-?} (baseline was ${BASELINE}; it drifts under live flow)"
-# The third phase, and the half that proves the naming above was caused by the probe rather than by
-# drift that happened to coincide with it: the id the sweep named is gone once the row is gone.
-case "$IDS3" in
-  *"$PROBE"*) bad "$PROBE is STILL named an orphan after its projection row was deleted — the sweep
-     is not reading the projection it claims to sweep, so the detection above proved nothing" ;;
-esac
 
 echo
 if [ "$FAIL" -eq 0 ]; then

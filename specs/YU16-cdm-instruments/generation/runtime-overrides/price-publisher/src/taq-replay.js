@@ -24,7 +24,7 @@
 //
 // FAILURE CONTRACT — same as previous-close.js, for the same reason: a publisher that quietly
 // fell back to the walk looks exactly like one that never had a tape. Every path that ends with
-// the replay off records a sentence in `error`, reported on /health. ADR-068 rule 1 holds: no
+// the replay off records readable `error` detail and stable `state`/`reason` codes on /health. ADR-068 rule 1 holds: no
 // extract, no epoch stamp, no valid file — the walk continues and the pod starts exactly as
 // before.
 const fs = require('fs');
@@ -36,6 +36,8 @@ const EXTRACT_PATH = process.env.TAQ_REPLAY_EXTRACT_PATH || '/etc/taq-replay/ext
 
 const state = {
   attempted: false,
+  availability: 'not_attempted',
+  reason: 'NOT_ATTEMPTED',
   extractPath: EXTRACT_PATH,
   // The fresh-epoch mint instant, stamped into the replay-epoch ConfigMap by the bring-up /
   // rebuild_fresh_epoch (derived from the member-0 PVC's creationTimestamp, which IS the mint).
@@ -71,7 +73,15 @@ const state = {
 // are dropped, and `segmentsDropped` says so rather than the coverage quietly getting shorter.
 const SEGMENT_CAP = 512;
 
-function fail(sentence) {
+// Date's representation domain, not a financial/session-time convention. Checking before
+// toISOString keeps the price and health surfaces able to report invalid time inputs.
+function representableTimestamp(ms) {
+  return Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime());
+}
+
+function fail(availability, reason, sentence) {
+  state.availability = availability;
+  state.reason = reason;
   state.extract = null;
   state.error = sentence;
   console.warn(`[taq-replay] ${sentence}; equities stay on the synthetic walk (ADR-068 rule 1)`);
@@ -82,49 +92,87 @@ function fail(sentence) {
  *  a local Secret mount of a few hundred KB, not a network read. */
 function load(nowMs) {
   state.attempted = true;
-  state.epochStartMs = Number(process.env.REPLAY_EPOCH_START_MS || NaN);
-  if (!fs.existsSync(EXTRACT_PATH)) {
-    return fail(`no extract at ${EXTRACT_PATH}`);
+  const epochInput = process.env.REPLAY_EPOCH_START_MS;
+  state.epochStartMs = Number(epochInput || NaN);
+  let bytes;
+  try {
+    bytes = fs.readFileSync(EXTRACT_PATH);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return fail('unavailable', 'EXTRACT_MISSING', `no extract at ${EXTRACT_PATH}`);
+    }
+    return fail('invalid', 'EXTRACT_UNREADABLE',
+      `${EXTRACT_PATH} could not be read: ${String((err && err.message) || err)}`);
   }
-  if (!Number.isFinite(state.epochStartMs) || state.epochStartMs <= 0) {
-    return fail('REPLAY_EPOCH_START_MS is unset or unreadable — the replay-epoch ConfigMap was '
+  if (!epochInput || !epochInput.trim()) {
+    return fail('invalid', 'CLOCK_MISSING', 'REPLAY_EPOCH_START_MS is unset or unreadable — the replay-epoch ConfigMap was '
       + 'never stamped for this epoch');
+  }
+  if (!Number.isFinite(state.epochStartMs) || state.epochStartMs <= 0
+      || !Number.isFinite(new Date(state.epochStartMs).getTime())) {
+    return fail('invalid', 'CLOCK_INVALID', 'REPLAY_EPOCH_START_MS is unset or unreadable — the replay-epoch ConfigMap was '
+      + 'never stamped for this epoch');
+  }
+  let json;
+  try {
+    json = zlib.gunzipSync(bytes).toString('utf8');
+  } catch (err) {
+    return fail('invalid', 'EXTRACT_INVALID_GZIP', `${EXTRACT_PATH} did not gunzip+parse: ${String((err && err.message) || err)}`);
   }
   let extract;
   try {
-    extract = JSON.parse(zlib.gunzipSync(fs.readFileSync(EXTRACT_PATH)).toString('utf8'));
+    extract = JSON.parse(json);
   } catch (err) {
-    return fail(`${EXTRACT_PATH} did not gunzip+parse: ${String((err && err.message) || err)}`);
+    return fail('invalid', 'EXTRACT_INVALID_JSON', `${EXTRACT_PATH} did not gunzip+parse: ${String((err && err.message) || err)}`);
   }
   // All-or-nothing: a half-valid extract replayed for some symbols and walked for others would be
   // a provenance mess nobody could reason about after the fact. Validation refusing here leaves
   // EVERY equity on the walk, with the reason on /health.
-  const windowsPerDay = Number(extract.sessionSeconds) / Number(extract.windowSeconds);
-  if (extract.version !== 1 || !extract.source
+  const windowsPerDay = extract && Number(extract.sessionSeconds) / Number(extract.windowSeconds);
+  if (!extract || typeof extract !== 'object' || extract.version !== 1 || !extract.source
       || !Number.isInteger(windowsPerDay) || windowsPerDay <= 0
       || !Number.isFinite(extract.compression) || extract.compression <= 0
       || !Array.isArray(extract.days) || extract.days.length === 0
-      || !extract.prices || typeof extract.prices !== 'object') {
-    return fail(`${EXTRACT_PATH} is not a v1 extract (version/source/window/compression/days/prices)`);
+      || !extract.prices || typeof extract.prices !== 'object' || Array.isArray(extract.prices)) {
+    return fail('invalid', 'EXTRACT_INVALID_SCHEMA', `${EXTRACT_PATH} is not a v1 extract (version/source/window/compression/days/prices)`);
+  }
+  const sessionSeconds = Number(extract.sessionSeconds);
+  const windowSeconds = Number(extract.windowSeconds);
+  const lastWindowOffsetMs = windowsPerDay * windowSeconds * 1000;
+  if (!Number.isFinite(sessionSeconds) || sessionSeconds <= 0
+      || !Number.isFinite(windowSeconds) || windowSeconds <= 0
+      || !Number.isFinite(lastWindowOffsetMs) || lastWindowOffsetMs <= 0) {
+    return fail('invalid', 'EXTRACT_INVALID_SCHEMA',
+      'extract session/window timestamp arithmetic is not finite and positive');
   }
   for (const day of extract.days) {
-    if (!day.date || !Number.isFinite(day.openMs) || day.openMs <= 0) {
-      return fail(`extract day entry unreadable: ${JSON.stringify(day)}`);
+    if (!day || !day.date || !Number.isFinite(day.openMs) || day.openMs <= 0) {
+      return fail('invalid', 'EXTRACT_INVALID_SCHEMA', `extract day entry unreadable: ${JSON.stringify(day)}`);
+    }
+    // Positive window offsets are monotone. Valid first/last endpoints bound every window;
+    // positionAt also checks the actual computed timestamp before either caller formats it.
+    if (!representableTimestamp(day.openMs)
+        || !representableTimestamp(day.openMs + windowSeconds * 1000)
+        || !representableTimestamp(day.openMs + lastWindowOffsetMs)) {
+      return fail('invalid', 'EXTRACT_INVALID_SCHEMA',
+        `extract day/window timestamp outside Date range: ${JSON.stringify(day)}`);
     }
   }
   for (const [ticker, series] of Object.entries(extract.prices)) {
     if (!Array.isArray(series) || series.length !== extract.days.length) {
-      return fail(`${ticker} carries ${series && series.length} day(s), extract has ${extract.days.length}`);
+      return fail('invalid', 'EXTRACT_INVALID_SCHEMA', `${ticker} carries ${series && series.length} day(s), extract has ${extract.days.length}`);
     }
     for (const day of series) {
       if (!Array.isArray(day) || day.length !== windowsPerDay
           || day.some((px) => !Number.isFinite(px) || px <= 0)) {
-        return fail(`${ticker} has a malformed day (want ${windowsPerDay} finite positive prices per day; `
+        return fail('invalid', 'EXTRACT_INVALID_SCHEMA', `${ticker} has a malformed day (want ${windowsPerDay} finite positive prices per day; `
           + 'the builder forward-fills, so a hole means a truncated or hand-edited extract)');
       }
     }
   }
   state.extract = extract;
+  state.availability = 'replaying';
+  state.reason = 'REPLAY_ACTIVE';
   state.error = null;
   // The tape is running from the instant it loads, so the first segment opens here. Without this
   // everything replayed before the first pause would be attributed to nothing at all.
@@ -155,9 +203,14 @@ function positionAt(nowMs) {
   const windowsPerDay = ex.sessionSeconds / ex.windowSeconds;
   // While frozen the clock reads the instant it was frozen at. Still one derivation.
   const atMs = state.frozenAtMs === null ? nowMs : state.frozenAtMs;
+  if (!representableTimestamp(atMs) || !representableTimestamp(state.epochStartMs)) { return null; }
   const tapeSeconds = tapeSecondsAt(atMs, state.epochStartMs, ex.compression);
+  if (!Number.isFinite(tapeSeconds)) { return null; }
   let dayIndex = Math.floor(tapeSeconds / ex.sessionSeconds);
   let windowIndex = Math.floor((tapeSeconds % ex.sessionSeconds) / ex.windowSeconds);
+  // Infinity must not be clamped into a seemingly valid final hold. Refuse nonfinite raw
+  // indices before clamping; ordinary finite positions past the tape still hold as before.
+  if (!Number.isInteger(dayIndex) || !Number.isInteger(windowIndex)) { return null; }
   const held = dayIndex >= ex.days.length;
   if (held) {
     dayIndex = ex.days.length - 1;
@@ -169,11 +222,13 @@ function positionAt(nowMs) {
   // once on a sandbox pod's first status call after start (2026-08-28) -- a 500 from /health, which
   // is the surface whose whole job is to say what state the tape is in. Refuse instead: a caller
   // that gets null reports "position unknown", which is true, where a throw reports nothing.
-  if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex >= ex.days.length) {
+  if (dayIndex < 0 || dayIndex >= ex.days.length
+      || windowIndex < 0 || windowIndex >= windowsPerDay) {
     return null;
   }
   // A window's median is the price AS OF the window's end; the last window's end is the close.
   const asOfMs = ex.days[dayIndex].openMs + (windowIndex + 1) * ex.windowSeconds * 1000;
+  if (!representableTimestamp(asOfMs)) { return null; }
   // `tapeSeconds` is the RAW, unclamped position — continuous, sub-window, and monotone in wall
   // clock even past the end of the tape. print-replay.js (ADR-072) schedules replayed orders off
   // it, and it must be THIS number: a second derivation of the clock is a second clock, and the
@@ -208,6 +263,8 @@ function priceAt(ticker, nowMs) {
 function status(nowMs) {
   const base = {
     attempted: state.attempted,
+    state: state.availability,
+    reason: state.reason,
     extractPath: state.extractPath,
     error: state.error
   };
@@ -223,7 +280,7 @@ function status(nowMs) {
     // twice: true, and naming none of the inputs, so the reader has to reconstruct them from
     // outside the process -- where they look correct, because the process is holding different
     // ones.
-    return { ...base, source: state.extract.source, position: null,
+    return { ...base, state: 'invalid', reason: 'CLOCK_UNADDRESSABLE', source: state.extract.source, position: null,
       epochStartMs: state.epochStartMs,
       paused: state.frozenAtMs !== null,
       frozenAtMs: state.frozenAtMs,
@@ -232,6 +289,8 @@ function status(nowMs) {
   }
   return {
     ...base,
+    state: pos.held ? 'finished' : state.frozenAtMs !== null ? 'paused' : 'replaying',
+    reason: pos.held ? 'REPLAY_FINISHED' : state.frozenAtMs !== null ? 'REPLAY_PAUSED' : 'REPLAY_ACTIVE',
     source: state.extract.source,
     symbols: Object.keys(state.extract.prices).length,
     days: state.extract.days.length,

@@ -84,6 +84,11 @@ import java.util.function.Consumer;
  * nothing new is emitted, nothing enters the snapshot and {@code SNAPSHOT_FORMAT} is untouched —
  * the same status as everything else here.
  *
+ * <p>YU18 adds refused bookings through a null-by-default shadow-only decision tap. A refusal
+ * creates no contract or output event. Its row names the applied input, account, product,
+ * convention, reason and available request correlation, with no invented IDs or financial values.
+ * Only the regulatory replay installs this tap; order projection and full-history trades do not.
+ *
  * <p><b>Contract grain, never position grain.</b> A receive-fixed and a pay-fixed at equal notional
  * net to ZERO at position grain, destroying both rates; that is why swaps are carried per contract
  * and why they never reach the position model. This surface inherits that: one row per booked
@@ -111,6 +116,8 @@ final class ClusterRecon {
      *  component would appear as a null on every one of the thousands of ORDER rows, changing the
      *  shape of a surface whose whole claim is reproducibility, to carry a term the EOD contracts
      *  artifact already publishes in full. See {@link #otcAuditRow} for the mapping.
+     *  YU18 refusal rows add optional clientOrderKey/requestId, omitted on legacy rows. Their
+     *  quantity/price and orderId/tradeId are null because no financial object was created.
      *
      *  <p>{@code riskReason} is the exception, and it is widened rather than reused because there
      *  is no spare column: on a rejection every other component is already carrying that order's
@@ -125,8 +132,20 @@ final class ClusterRecon {
      *  surface that only explains rejections would have to be widened again to say why an order
      *  vanished at the open. */
     record AuditRow(String kind, long inputSeq, String orderId, String tradeId, int accountId,
-                    String security, String side, int quantity, BigDecimal price,
-                    long timestampMillis, String riskReason) { }
+                    String security, String side, Integer quantity, BigDecimal price,
+                    long timestampMillis, String riskReason,
+                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                    Long clientOrderKey,
+                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                    Long requestId) {
+        // Legacy accepted/order rows keep precisely their existing JSON field set and values.
+        AuditRow(String kind, long inputSeq, String orderId, String tradeId, int accountId,
+                 String security, String side, int quantity, BigDecimal price,
+                 long timestampMillis, String riskReason) {
+            this(kind, inputSeq, orderId, tradeId, accountId, security, side, quantity, price,
+                timestampMillis, riskReason, null, null);
+        }
+    }
 
     /** Outcome of one full-log replay, reported so a proof can assert the replay was REAL: an
      *  index that reproduces the live engine's trade population is a replay; one that does not is
@@ -223,7 +242,11 @@ final class ClusterRecon {
      * byte-for-byte because it is a pure replay of a CLOSED prefix of the log: the same range in
      * always yields the same records out, however far the live log has moved on since.
      *
-     * <p>Two sources, one range and one ordering. Order events arrive from the shadow's output
+     * <p>Order outputs, accepted contract growth and refused OTC decisions share one range and
+     * committed-input ordering. Refusals are observed during the same shadow apply and consume the
+     * same report budget. Missing genesis/history refuses through the existing strict replay checks.
+     *
+     * <p>Two accepted-event sources, one range and one ordering. Order events arrive from the shadow's output
      * ring; OTC bookings arrive from the shadow's contract store, which produces no output event
      * (see the class javadoc). Both fire inside the same {@code onSessionMessage} that applied the
      * message, so the rows come out in committed-log order without a sort. A contract's id IS the
@@ -404,7 +427,14 @@ final class ClusterRecon {
             }
             refuseIfFull(rows);
             rows.add(otcAuditRow(contract, millis));
-        }, new long[2]);
+        }, refusal -> {
+            final long seq = refusal.inputSeq();
+            if (seq < fromSeq || (toSeq > 0 && seq > toSeq)) {
+                return;
+            }
+            refuseIfFull(rows);
+            rows.add(otcRefusalRow(refusal));
+        }, new long[2], true);
         return rows;
     }
 
@@ -459,10 +489,17 @@ final class ClusterRecon {
 
     private long replay(final ReplaySink sink, final ContractSink contractSink,
                         final long[] counters, final boolean strict) {
+        return replay(sink, contractSink, null, counters, strict);
+    }
+
+    private long replay(final ReplaySink sink, final ContractSink contractSink,
+                        final java.util.function.Consumer<MatchingEngineClusteredService.OtcRefusal> refusalSink,
+                        final long[] counters, final boolean strict) {
         final MatchingEngineClusteredService shadow = new MatchingEngineClusteredService();
         shadow.runDescriptor(runDescriptor);
         shadow.initEngine();
         shadow.outputSink(out -> sink.accept(out, shadow.tickerFor(out.securityId)));
+        shadow.otcRefusalSink(refusalSink);
         // The service converts cluster time to millis from its Cluster handle, which a shadow has
         // no business owning; pre-divide instead so the shadow's event time is identical to the
         // live member's under either clock. Same env, so the two can never disagree.
@@ -714,9 +751,24 @@ final class ClusterRecon {
             (int) contract[3],
             BigDecimal.valueOf(contract[4], SwapContractCsv.RATE_SCALE),
             timestampMillis,
-            // A contract only reaches the store because the credit gate passed it. A REFUSED
-            // booking produces no row at all to carry a reason — that gap is its own issue.
+            // A contract only reaches the store because the credit gate passed it.
+            // Refusals arrive independently through the shadow-only decision tap.
             RiskReason.ACCEPTED.name());
+    }
+
+    /** Refusal grain is the applied input, never an invented contract or financial result. */
+    static AuditRow otcRefusalRow(final MatchingEngineClusteredService.OtcRefusal refusal) {
+        final int convention = refusal.conventionIndex();
+        return new AuditRow(
+            refusal.productType() == finos.traderx.ordermatcher.lmax.InputEvent.TYPE_SWAPTION_BOOK
+                ? "SWAPTION_REJECTED" : "SWAP_REJECTED",
+            refusal.inputSeq(), null, null, refusal.accountId(),
+            SwapConventions.knows(convention) ? SwapConventions.at(convention).name()
+                : "CONVENTION_" + convention,
+            refusal.paysFixed() ? "PAY_FIXED" : "RECEIVE_FIXED",
+            null, null, refusal.timestampMillis(), reasonName(refusal.reason()),
+            refusal.clientOrderKey() == 0L ? null : refusal.clientOrderKey(),
+            refusal.requestId() == 0L ? null : refusal.requestId());
     }
 
     private static boolean isReportableKind(final byte kind) {

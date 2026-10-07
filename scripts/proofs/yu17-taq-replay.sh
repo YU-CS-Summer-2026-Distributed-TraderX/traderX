@@ -23,7 +23,7 @@
 #      clock — position stays monotonic across the roll, because it is derived, never stored.
 #   6. THE END OF THE TAPE HOLDS (open question 2's ruling): with the epoch stamp forced past the
 #      tape's 20h span, the price freezes at Mar 31's close and asOf STOPS ADVANCING. No loop, no
-#      synthetic fallback. The stamp is restored from the PVC on every exit path.
+#      synthetic fallback. Exit cleanup restamps from verified PVC evidence; failure is nonzero.
 #
 #   EXPECT=before (pre-change build): /health carries no taqReplay block at all, and no equity
 #   carries tape provenance — the gap, measured, so the after-arms are known to be able to fail.
@@ -46,6 +46,10 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "${here}/../yu15/lib-replay-epoch.sh"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
+# The after proof changes the replay clock and must restore it. Explicit disabled stamping
+# cannot satisfy that contract; refuse before any rig query or mutation.
+[[ "${EXPECT}" == "before" || "${REPLAY_ANCHOR_MODE:-required}" == "required" ]] \
+  || fail "this replay proof requires replay-anchor stamping; disabled or unknown mode cannot verify restoration"
 step() { echo; echo "=== $* ==="; }
 ok()   { echo "[ok] $*"; }
 
@@ -75,11 +79,17 @@ print('yes')
 
 STAMP_TOUCHED=0
 cleanup() {
+  local rc=$?
   rm -f "${EXTRACT_FILE:-}"
   if [[ "${STAMP_TOUCHED}" == "1" ]]; then
     echo "[cleanup] restoring the replay-epoch stamp from the member-0 PVC"
-    stamp_replay_epoch >/dev/null 2>&1 || echo "[cleanup] WARNING: restamp failed — run stamp_replay_epoch by hand"
+    if ! stamp_replay_epoch; then
+      echo "[cleanup] restamp failed; replay anchor or publisher rollout remains unverified" >&2
+      [[ "${rc}" != "0" ]] || rc=1
+    fi
   fi
+  trap - EXIT
+  exit "${rc}"
 }
 trap cleanup EXIT
 
@@ -291,14 +301,14 @@ SRC_HELD="$(pyget source <<<"${Q2}")"
   || fail "held source is '${SRC_HELD}' — the hold must not change provenance category (decision 4)"
 ok "held at ${LAST_PX}, asOf frozen at ${LAST_ASOF}, source still ${WANT_SRC}"
 
-step "restore the real epoch stamp"
+step "restore the storage-derived replay stamp"
 stamp_replay_epoch || fail "could not restore the replay-epoch stamp from the PVC"
 STAMP_TOUCHED=0
 H4="$(pub /health)"
 HELD4="$(pyget taqReplay.position.held <<<"${H4}")"
 [[ "${HELD4}" == "False" || "${HELD4}" == "false" ]] \
   || fail "stamp restored but the publisher still reports held=${HELD4}"
-ok "clock back on the epoch's own mint; position $(pyget taqReplay.position.tapeDate <<<"${H4}") day $(pyget taqReplay.position.dayIndex <<<"${H4}")"
+ok "clock back on the storage-derived replay anchor; position $(pyget taqReplay.position.tapeDate <<<"${H4}") day $(pyget taqReplay.position.dayIndex <<<"${H4}")"
 
 echo
 echo "[PASS] yu17-taq-replay: the tape is the reference — replayed at the derived position,"

@@ -13,3 +13,11 @@ Updated: 2026-09-23. This index links component-owned task lists; their checkbox
 - [Order types](components/order-types/tasks.md): planned; no implementation claim.
 - [Risk service](components/risk-service/tasks.md): container pack drafted externally; implementation planned.
 - [Risk pipeline](components/risk-pipeline/tasks.md): reuse existing coordinator and intake; service migration planned.
+
+## October 7 integration
+
+- [x] Combine the 13 locally reviewed operational and observability deliveries in an isolated candidate.
+- [x] Complete combined script, generated Java/allocation and producer/console checks: 555 focused cases passed, plus the console production build.
+- [x] Prepare the reviewed fast-forward delivery for the risk-integration branch; preserve unrelated staging and working edits.
+
+The [component index](components/README.md#october-7-integration) owns links to their task lists. Live HA, retained compatibility, deployment and financial acceptance remain open.

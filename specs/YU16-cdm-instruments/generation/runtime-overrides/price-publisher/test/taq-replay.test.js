@@ -361,3 +361,212 @@ test('journal: a span this process did not watch is dated but flagged assumed', 
   assert.equal(m.tapeAtWall(after, now).assumed, false);
   assert.equal(m.coverage(now).observedFromMs, startedAt);
 });
+
+// FR-TS-01/02: exercise the actual startup module with private synthetic bytes.
+function statusFixture(t, { bytes, epoch = EPOCH, load = true, directory = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'taq-status-'));
+  const file = path.join(dir, 'extract.json.gz');
+  const oldPath = process.env.TAQ_REPLAY_EXTRACT_PATH;
+  const oldEpoch = process.env.REPLAY_EPOCH_START_MS;
+  t.after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (oldPath === undefined) { delete process.env.TAQ_REPLAY_EXTRACT_PATH; }
+    else { process.env.TAQ_REPLAY_EXTRACT_PATH = oldPath; }
+    if (oldEpoch === undefined) { delete process.env.REPLAY_EPOCH_START_MS; }
+    else { process.env.REPLAY_EPOCH_START_MS = oldEpoch; }
+  });
+  if (directory) { fs.mkdirSync(file); }
+  else if (bytes !== undefined) { fs.writeFileSync(file, bytes); }
+  process.env.TAQ_REPLAY_EXTRACT_PATH = file;
+  if (epoch === null) { delete process.env.REPLAY_EPOCH_START_MS; }
+  else { process.env.REPLAY_EPOCH_START_MS = String(epoch); }
+  delete require.cache[require.resolve('../src/taq-replay')];
+  const mod = require('../src/taq-replay');
+  if (load) { mod.load(EPOCH); }
+  return { mod, file };
+}
+const fixtureBytes = () => zlib.gzipSync(JSON.stringify(validExtract()));
+function assertCode(mod, availability, reason) {
+  const st = mod.status(EPOCH);
+  assert.equal(st.state, availability);
+  assert.equal(st.reason, reason);
+  return st;
+}
+
+test('status codes: not attempted and absent extract are distinct', (t) => {
+  const { mod } = statusFixture(t, { load: false });
+  assert.equal(assertCode(mod, 'not_attempted', 'NOT_ATTEMPTED').attempted, false);
+  mod.load(EPOCH);
+  const st = assertCode(mod, 'unavailable', 'EXTRACT_MISSING');
+  assert.equal(st.attempted, true);
+  assert.match(st.error, /no extract at/);
+  assert.equal(mod.priceAt('AAPL', EPOCH), null);
+});
+
+test('status codes: an unreadable filesystem object is not absent', (t) => {
+  const { mod } = statusFixture(t, { directory: true });
+  assert.match(assertCode(mod, 'invalid', 'EXTRACT_UNREADABLE').error, /could not be read/);
+  assert.equal(mod.priceAt('AAPL', EPOCH), null);
+});
+
+test('status codes: permission refusal is not missing or corrupt bytes', (t) => {
+  const { mod, file } = statusFixture(t, { bytes: fixtureBytes(), load: false });
+  // Inject EACCES at the file-read boundary: chmod is ineffective under privileged CI users.
+  // A real directory-read refusal is exercised separately above.
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', function (p, ...args) {
+    if (p === file) { const err = new Error('permission denied'); err.code = 'EACCES'; throw err; }
+    return read.call(this, p, ...args);
+  });
+  mod.load(EPOCH);
+  assert.match(assertCode(mod, 'invalid', 'EXTRACT_UNREADABLE').error, /permission denied/);
+});
+
+for (const [name, bytes, reason] of [
+  ['bad gzip', Buffer.from('not gzip'), 'EXTRACT_INVALID_GZIP'],
+  ['truncated gzip', fixtureBytes().subarray(0, 15), 'EXTRACT_INVALID_GZIP'],
+  ['malformed JSON', zlib.gzipSync('{'), 'EXTRACT_INVALID_JSON'],
+  ['null schema', zlib.gzipSync('null'), 'EXTRACT_INVALID_SCHEMA'],
+  ['missing schema fields', zlib.gzipSync('{}'), 'EXTRACT_INVALID_SCHEMA'],
+  ['null day', zlib.gzipSync(JSON.stringify({...validExtract(), days:[null]})), 'EXTRACT_INVALID_SCHEMA'],
+  ['malformed series', zlib.gzipSync(JSON.stringify({...validExtract(), prices:{AAPL:[[0]]}})), 'EXTRACT_INVALID_SCHEMA'],
+]) {
+  test(`status codes: ${name}`, (t) => {
+    const { mod } = statusFixture(t, { bytes });
+    assert.ok(assertCode(mod, 'invalid', reason).error);
+    assert.equal(mod.state.extract, null);
+    assert.equal(mod.priceAt('AAPL', EPOCH), null);
+  });
+}
+
+for (const [epoch, reason] of [[null,'CLOCK_MISSING'], ['', 'CLOCK_MISSING'], ['  ','CLOCK_MISSING'],
+  ['garbage','CLOCK_INVALID'], [0,'CLOCK_INVALID'], [-1,'CLOCK_INVALID'], ['Infinity','CLOCK_INVALID'],
+  [1e20,'CLOCK_INVALID']]) {
+  test(`status codes: clock input ${JSON.stringify(epoch)}`, (t) => {
+    const { mod } = statusFixture(t, { bytes: fixtureBytes(), epoch });
+    assert.ok(assertCode(mod, 'invalid', reason).error);
+    assert.equal(mod.priceAt('AAPL', EPOCH), null);
+  });
+}
+
+test('status codes follow actual replay, pause/resume and last-close hold', (t) => {
+  const { mod } = statusFixture(t, { bytes: fixtureBytes() });
+  const active = assertCode(mod, 'replaying', 'REPLAY_ACTIVE');
+  assert.equal(active.error, null);
+  assert.equal(active.position.dayIndex, 0);
+  const before = mod.priceAt('AAPL', EPOCH);
+  mod.pause(EPOCH);
+  assertCode(mod, 'paused', 'REPLAY_PAUSED');
+  assert.deepEqual(mod.priceAt('AAPL', EPOCH + 1000), before);
+  mod.resume(EPOCH);
+  assertCode(mod, 'replaying', 'REPLAY_ACTIVE');
+  const end = EPOCH + (2 * SESSION / C) * 1000;
+  assert.equal(mod.status(end).state, 'finished');
+  assert.equal(mod.status(end).reason, 'REPLAY_FINISHED');
+  assert.equal(mod.status(end).position.held, true);
+  assert.equal(mod.priceAt('AAPL', end).price, 200 + 1000 + WPD - 1);
+  // Holding and paused are independent; the terminal hold takes precedence in the state code.
+  mod.pause(end);
+  assert.equal(mod.status(end).state, 'finished');
+  assert.equal(mod.status(end).paused, true);
+});
+
+test('status codes: a loaded unaddressable clock retains tape detail and refuses prices', (t) => {
+  const { mod } = statusFixture(t, { bytes: fixtureBytes() });
+  for (const now of [NaN, undefined, Infinity]) {
+    const st = mod.status(now);
+    assert.equal(st.state, 'invalid');
+    assert.equal(st.reason, 'CLOCK_UNADDRESSABLE');
+    assert.equal(st.position, null);
+    assert.equal(st.source, validExtract().source);
+    assert.equal(mod.priceAt('AAPL', now), null);
+  }
+  mod.state.epochStartMs = NaN;
+  assertCode(mod, 'invalid', 'CLOCK_UNADDRESSABLE');
+});
+
+// FR-TS-04: timestamps and raw clock arithmetic must be usable before formatting/clamping.
+const DATE_LIMIT_MS = 8_640_000_000_000_000;
+for (const [name, make] of [
+  ['unrepresentable positive day open', () => ({...validExtract(), days:DAYS.map(d => ({...d,openMs:1e20}))})],
+  ['first window outside Date range', () => ({...validExtract(), days:DAYS.map(d => ({...d,openMs:DATE_LIMIT_MS}))})],
+  ['last window outside Date range', () => ({...validExtract(), days:DAYS.map(d => ({...d,openMs:DATE_LIMIT_MS - SESSION * 1000 + 1}))})],
+  ['finite seconds overflowing milliseconds', () => ({...validExtract(), sessionSeconds:1e307,
+    windowSeconds:1e307, prices:{AAPL:DAYS.map(() => [200])}})],
+  ['negative session and window', () => ({...validExtract(), sessionSeconds:-10,
+    windowSeconds:-10, prices:{AAPL:DAYS.map(() => [200])}})],
+]) {
+  test(`timestamp domain: ${name} refuses at load without throwing`, (t) => {
+    const { mod } = statusFixture(t, { bytes:zlib.gzipSync(JSON.stringify(make())) });
+    assert.equal(mod.state.extract, null);
+    const st=assertCode(mod, 'invalid', 'EXTRACT_INVALID_SCHEMA');
+    assert.ok(st.error);
+    assert.equal(mod.positionAt(EPOCH), null);
+    assert.equal(mod.priceAt('AAPL', EPOCH), null);
+  });
+}
+
+test('timestamp domain: raw compressed-clock overflow refuses before final-hold clamp', (t) => {
+  const ex={...validExtract(),compression:1e308};
+  const { mod }=statusFixture(t,{bytes:zlib.gzipSync(JSON.stringify(ex))});
+  assert.ok(mod.state.extract, 'valid timestamps still load despite extreme finite compression');
+  assert.equal(mod.priceAt('AAPL', EPOCH).price,200);
+  const now=EPOCH+2000;
+  assert.equal(mod.positionAt(now),null);
+  assert.equal(mod.priceAt('AAPL',now),null);
+  const st=mod.status(now);
+  assert.equal(st.state,'invalid');assert.equal(st.reason,'CLOCK_UNADDRESSABLE');
+  assert.equal(st.position,null);
+});
+
+test('timestamp domain: finite tape seconds with overflowing day index refuse', (t) => {
+  const ex={...validExtract(),sessionSeconds:5e-324,windowSeconds:5e-324,
+    prices:{AAPL:DAYS.map(() => [200])}};
+  const { mod }=statusFixture(t,{bytes:zlib.gzipSync(JSON.stringify(ex))});
+  assert.ok(mod.state.extract);
+  assert.equal(mod.priceAt('AAPL',EPOCH).price,200);
+  const now=EPOCH+1000;
+  assert.equal(mod.positionAt(now),null);
+  assert.equal(mod.priceAt('AAPL',now),null);
+  assert.equal(mod.status(now).reason,'CLOCK_UNADDRESSABLE');
+});
+
+test('timestamp domain: runtime timestamp refusal covers effective now, epoch and derived asOf', (t) => {
+  const { mod }=statusFixture(t,{bytes:fixtureBytes()});
+  for(const now of [DATE_LIMIT_MS+1, -DATE_LIMIT_MS-1, 1e20]) {
+    assert.equal(mod.positionAt(now),null);
+    assert.equal(mod.priceAt('AAPL',now),null);
+    assert.equal(mod.status(now).reason,'CLOCK_UNADDRESSABLE');
+  }
+  mod.state.epochStartMs=1e20;
+  assertCode(mod,'invalid','CLOCK_UNADDRESSABLE');
+  assert.equal(mod.priceAt('AAPL',EPOCH),null);
+  mod.state.epochStartMs=EPOCH;
+  mod.state.extract.days[0].openMs=1e20;
+  assert.equal(mod.priceAt('AAPL',EPOCH),null);
+  assertCode(mod,'invalid','CLOCK_UNADDRESSABLE');
+});
+
+test('timestamp domain: inclusive Date limits preserve first-window clamp and final hold', (t) => {
+  const { mod }=statusFixture(t,{bytes:fixtureBytes()});
+  assert.equal(mod.priceAt('AAPL',-DATE_LIMIT_MS).price,200);
+  const last=mod.priceAt('AAPL',DATE_LIMIT_MS);
+  assert.equal(last.price,200+1000+WPD-1);
+  assert.equal(last.held,true);
+  assert.equal(mod.status(DATE_LIMIT_MS).reason,'REPLAY_FINISHED');
+  assert.equal(last.asOf,new Date(DAYS[1].openMs+SESSION*1000).toISOString());
+});
+
+test('timestamp domain: last-close at the Date upper boundary remains representable', (t) => {
+  const ex={...validExtract(),days:DAYS.map(d=>({...d,openMs:DATE_LIMIT_MS-SESSION*1000}))};
+  const { mod }=statusFixture(t,{bytes:zlib.gzipSync(JSON.stringify(ex))});
+  assert.ok(mod.state.extract);
+  const now=EPOCH+2*DAY_WALL_MS;
+  const q=mod.priceAt('AAPL',now);
+  assert.equal(q.asOf,new Date(DATE_LIMIT_MS).toISOString());
+  assert.equal(q.price,200+1000+WPD-1);
+  assert.equal(mod.status(now).state,'finished');
+  mod.pause(now);
+  assert.equal(mod.status(now+1000).paused,true);
+  assert.deepEqual(mod.priceAt('AAPL',now+1000),q);
+});

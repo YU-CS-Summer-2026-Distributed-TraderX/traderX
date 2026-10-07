@@ -696,6 +696,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // cluster-time conversion are then the same code on both, and cannot drift apart.
     private volatile java.util.function.Consumer<OutputEvent> outputSink;
 
+    /** Immutable observation of a refused sequenced OTC input. No contract was created. */
+    record OtcRefusal(byte productType, long inputSeq, int accountId, int conventionIndex,
+                      boolean paysFixed, byte reason, long clientOrderKey, long requestId,
+                      long timestampMillis) { }
+
+    // Shadow-report only. Null on live services; outside replicated state and snapshots.
+    // The observation object is allocated ONLY behind the non-null guard on a refused booking.
+    private java.util.function.Consumer<OtcRefusal> otcRefusalSink;
+
+    void otcRefusalSink(final java.util.function.Consumer<OtcRefusal> sink) {
+        this.otcRefusalSink = sink;
+    }
+
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
         this.cluster = cluster;
@@ -884,7 +897,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // with it: no book to rest in, no counterparty to cross, no position to accumulate.
             // Routing it around MatchingEngine is what makes "a swap changes nothing for the
             // instruments that already work" a structural fact rather than a claim.
-            onSwapBook(session);
+            onSwapBook(session, timestamp);
             return;
         }
         // OTEL-01: derive this order's trace identity BEFORE the sequenced generator overwrites
@@ -1623,7 +1636,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * <p>Cold path — a handful of bookings a day. It allocates and it is nowhere near the order
      * hot loop, which is the point of keeping it out of {@code MatchingEngine} entirely.
      */
-    private void onSwapBook(final ClientSession session) {
+    private void onSwapBook(final ClientSession session, final long timestamp) {
         appliedSeq++;
         final long clientKey = event.clientOrderKey();
         long contractId = 0L;
@@ -1691,6 +1704,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putByte(23, (byte) 0);
         ackBuffer.putLong(24, applyRequestId); // uniform echo; the swap path still keys on 13
         offerEgress(session);
+        final java.util.function.Consumer<OtcRefusal> tap = otcRefusalSink;
+        if (!booked && tap != null) {
+            tap.accept(new OtcRefusal(event.type, appliedSeq, event.accountId,
+                event.swapConventionIndex(), event.swapPaysFixed(), reason, clientKey,
+                applyRequestId, cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS
+                    ? timestamp / 1_000_000L : timestamp));
+        }
     }
 
     /**

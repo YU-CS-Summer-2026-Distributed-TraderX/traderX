@@ -271,12 +271,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private volatile long pipelineOffersSucceeded;
     private volatile long pipelineOfferBackpressure;
     private volatile long pipelineAcksCompleted;
-    // Option B observability. `reaped` counts pendings the deadline sweep gave up on — each one is
-    // a stranded offer (dropped or election-destroyed ack), which is the quantity the design's
-    // "drop-stranding in the wild" question asks for directly, on any run, with no kills needed.
-    // `unmatched` counts direct order acks whose request id matched no pending (late ack after its
-    // reap, or another epoch's leftovers) — ignored by construction, but a rising rate is worth a
-    // look. `refused` counts egress records whose LENGTH was not this build's ack length: that is
+    // Option B observability. `reaped` counts pendings whose committed decision was still absent
+    // at the deadline sweep. The order may have committed; this counter cannot distinguish a
+    // delayed acknowledgement from a best-effort drop or election loss.
+    // `unmatched` retains its legacy total: every nonzero direct ack without a live pending,
+    // INCLUDING expected continuation fills. GatewayAckHistory provides bounded reason counters;
+    // unknown means the wire/history cannot establish identity, not that a trade was lost.
+    // `refused` counts egress records whose LENGTH was not this build's ack length: that is
     // a mixed-version fleet (a 24-byte pre-B member), refused loudly rather than read as garbage.
     private volatile long pipelineReaped;
     private volatile long pipelineAcksUnmatched;
@@ -641,7 +642,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // so the submitter must not claim rejection). No-op at startup (empty). Owner thread only —
         // safe, no pollEgress runs inside here. No sequence space to reset any more: request ids are
         // gateway-lifetime-monotonic, so a fresh epoch's acks can never collide with old pendings.
-        inflight.drain();
+        retireAckSession();
         int attempt = 0;
         while (running) {
             final String entry = attempt == 0
@@ -684,6 +685,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 connected = false;
             }
         }
+    }
+
+    /** Same owner-thread boundary used by reconnect; no old diagnostic evidence crosses sessions. */
+    private void retireAckSession() {
+        inflight.drain();
+        inflight.ackHistory.resetSession();
     }
 
     private void awaitConnected() throws InterruptedException {
@@ -764,18 +771,31 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         }
                     }
                 } else {
-                    // Pipelined mode (option B): the ack NAMES the request it answers — bytes 24..31
-                    // carry the request id this gateway stamped on the offer. The FIRST direct ack
-                    // for that id completes and REMOVES the pending; continuation fills of the same
-                    // input (a crossing order emits ACCEPTED then per-match-step FILLs, all under
-                    // one apply, all carrying one id) find the entry already gone and are ignored.
-                    // Foreign, stale-epoch and already-reaped acks miss the map by construction —
-                    // no arrival-order assumption is left to break.
-                    final PendingOrder p = inflight.onDirectAck(buffer.getLong(offset + 24));
-                    if (p != null) {
-                        completePipelinedHead(p, buffer, offset, kind);
-                    } else if (buffer.getLong(offset + 24) != 0) {
-                        pipelineAcksUnmatched++;
+                    // The first direct ack completes by request id exactly as before. A missing
+                    // pending still increments the legacy aggregate; bounded diagnostic evidence
+                    // splits correlated status transitions from exceptional/unknown records.
+                    // Request ids alone have no session identity: an old session cannot answer a
+                    // new pending even if a synthetic reuse gives it the same numeric id.
+                    final long requestId = buffer.getLong(offset + 24);
+                    if (client != null && clusterSessionId != client.clusterSessionId()) {
+                        if (requestId != 0) {
+                            pipelineAcksUnmatched++;
+                            inflight.ackHistory.otherSession();
+                        }
+                    } else {
+                        final PendingOrder p = inflight.onDirectAck(requestId);
+                        if (p != null) {
+                            if (client != null) {
+                                inflight.ackHistory.completed(requestId, buffer.getLong(offset),
+                                    buffer.getInt(offset + 8), kind, buffer.getByte(offset + 22));
+                            }
+                            completePipelinedHead(p, buffer, offset, kind);
+                        } else if (requestId != 0) {
+                            pipelineAcksUnmatched++;
+                            if (client == null) inflight.ackHistory.unknownSession();
+                            else inflight.ackHistory.unmatched(requestId, buffer.getLong(offset),
+                                buffer.getInt(offset + 8), kind, buffer.getByte(offset + 22));
+                        }
                     }
                 }
             }
@@ -2791,13 +2811,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             + "traderx_gateway_pipeline_total{stage=\"offer_backpressure\"} "
                 + pipelineOfferBackpressure + "\n"
             + "traderx_gateway_pipeline_total{stage=\"ack_completed\"} " + pipelineAcksCompleted + "\n"
-            // Option B: every reaped pending is a stranded offer — an ack dropped by best-effort
-            // egress or destroyed by a promotion. Non-zero on a kill-free run answers the design's
-            // "does drop-stranding occur in the wild" question directly; unmatched counts direct
-            // acks naming no pending (late after reap / foreign epoch), refused counts wrong-width
+            // Reaped counts unanswered pendings at their deadline, without identifying why.
+            // The legacy unmatched aggregate includes expected continuation fills.
+            // Reason counters below separate the
+            // evidence available in bounded history; unknown includes ambiguous/foreign records.
+            // Refused counts wrong-width
             // egress records (a mixed-version fleet — see GATEWAY-ACK-FORMAT-MISMATCH).
             + "traderx_gateway_pipeline_total{stage=\"reaped\"} " + pipelineReaped + "\n"
             + "traderx_gateway_pipeline_total{stage=\"ack_unmatched\"} " + pipelineAcksUnmatched + "\n"
+            + inflight.ackHistory.metrics()
             + "traderx_gateway_pipeline_total{stage=\"egress_length_refused\"} " + egressLengthRefused + "\n"
             // OTEL-01 follow-up: reject lines the per-second cap refused to print. Exported rather
             // than silent for the same reason the span drop count is: a correlation gap an operator
@@ -3125,9 +3147,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         private final ArrayDeque<PendingOrder> byOffer = new ArrayDeque<>();
         private final Semaphore permits;
         private final int max;
+        final GatewayAckHistory ackHistory;
 
         Inflight(final int max) {
             this.max = max;
+            this.ackHistory = new GatewayAckHistory(max);
             this.permits = new Semaphore(max);
             this.pending = new org.agrona.collections.Long2ObjectHashMap<>(max * 2, 0.65f);
         }
@@ -3139,6 +3163,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
         /** Owner thread: order was offered under {@code p.requestId} — register it for its ack. */
         void register(final PendingOrder p) {
+            ackHistory.registered(p.requestId);
             pending.put(p.requestId, p);
             byOffer.addLast(p);
         }
@@ -3170,8 +3195,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
          * election no longer bulk-drains the window. Entries their ack already completed are
          * skipped as their turn comes — the map, not this queue, says what is still pending.
          *
-         * @return how many were reaped, so the caller can count strands (each one is a dropped or
-         *         election-destroyed ack — the design's second trigger, now directly observable).
+         * @return how many unanswered pendings were reaped; the cause of absent/late egress
+         *         is not established by this deadline observation.
          */
         int sweepOverdue(final long nowMillis) {
             int reaped = 0;
@@ -3181,6 +3206,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
                 byOffer.pollFirst();
                 if (pending.remove(h.requestId) != null) {
+                    ackHistory.reaped(h.requestId);
                     h.future.complete(null);
                     permits.release();
                     reaped++;
@@ -3196,6 +3222,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
          *  meaning what it says. No sequence space is left to reset — request ids never restart. */
         void drain() {
             for (final PendingOrder p : pending.values()) {
+                ackHistory.drained(p.requestId);
                 p.future.complete(null);
                 permits.release();
             }

@@ -100,16 +100,14 @@ before someone asks.
    Equities walk again, `/health.taqReplay.error` says exactly why, and nothing else changes — no
    network, no key, no tape required.
 
-   **If you are building a consumer, read this before you key on `error`.** Deleting the Secret does
-   **not** clear the `taqReplay` block — it returns present, with no position and `error` set to
-   `"no extract at …"`. So **this deliberate, rehearsed revert populates `error` exactly as a real
-   fault does**, and a client keyed on that field alone renders the demo's own honest mode as a red
-   breakage. Worse, a *corrupt* extract is structurally identical to an absent one — no `source`, no
-   `days`, no `position` — so structure cannot separate them either; only the message text can.
-   Distinguish the absence phrase explicitly and treat every other error as a fault, so an
-   unrecognised message **alarms rather than going quiet**. Found the hard way 2026-08-26 by the UI
-   lane, which shipped two wrong readings in a row before landing on this; see
-   `issues/open/the-publisher-signals-absent-and-corrupt-tape-identically.md`. Return:
+   **Consumers should prefer `taqReplay.state` and `reason`.** The deliberate revert reports
+   `state: "unavailable", reason: "EXTRACT_MISSING"`, retaining readable `error` detail. Corrupt or
+   unreadable extracts and invalid clocks report `state: "invalid"` with a specific reason. Loaded
+   tape reports `replaying`, `paused`, or `finished`; `finished` means the existing last-close hold.
+   Unknown or incomplete codes must alarm, rather than present a corrupt tape as ordinary synthetic
+   fallback. Older publishers have no codes: retain the narrow `no extract at` absence match only
+   for those versions, and treat other errors as faults. No code implies trading or financial validity.
+   See `specs/YU18-risk-integration/components/tape-status/spec.md`. Return:
    `bash -c 'source scripts/yu15/lib-replay-epoch.sh; K="kubectl --context kind-traderx-yu12-cluster -n traderx"; fetch_replay_extract_secret; stamp_replay_epoch'`
 
 **After the demo, restore the real anchor** (the jumps de-anchor the clock from the mint):

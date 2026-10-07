@@ -3,10 +3,10 @@
 # TODAY's tree, on both sides.
 #
 #   fix = the generated order-matcher, untouched.
-#   pre = the same tree with scripts/yu15/stp-boundary-revert.patch applied to a throwaway copy,
+#   pre = the same tree with the selected stp-boundary-revert*.patch applied to a private copy,
 #         which removes self-trade prevention (ADR-057) and the /replace ingress (ADR-058).
 #
-# Both sides go through scripts/yu15/build-cluster-image.sh, so they share a gradle invocation, a
+# Both sides go through scripts/yu15/stp-image-provenance.py, so they share a gradle invocation, a
 # Dockerfile and a base image, and the ONLY difference between the two binaries is the patch. That
 # is checked, not assumed: this script diffs the two images' class trees at the end and fails if
 # the difference is not exactly the two files the patch touches. Two identical images pass every
@@ -39,44 +39,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OM="${ROOT}/generated/code/target-generated/order-matcher"
-PATCH="${ROOT}/scripts/yu15/stp-boundary-revert.patch"
 PRE_TAG="${STP_PRE_TAG:-traderx/cluster-node:stp-boundary-pre}"
 FIX_TAG="${STP_FIX_TAG:-traderx/cluster-node:stp-boundary-fix}"
 
 fail() { echo "[fail] $*" >&2; exit 1; }
 
-[[ -d "${OM}" ]] || fail "generated order-matcher missing; run: bash pipeline/generate-state-YU17-otc-rates.sh"
-[[ -f "${PATCH}" ]] || fail "missing ${PATCH}"
+[[ -d "${OM}" ]] || fail "generated order-matcher missing; generate the selected state first"
 
-# THE PATCH IS THE FIRST THING CHECKED, before an eight-minute build. --dry-run against the copy is
-# the same test the real apply does, and a patch that no longer applies means the engine moved --
-# which is the point of a synthesized boundary, not a failure. Re-cut it; never force it.
+# Snapshot all selected inputs before compilation. Strictly apply the pre transform
+# in that snapshot; compile both roles through one recipe and attach provenance to
+# each image. Docker cache hits are valid when the recorded bytes still match.
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-echo "[stp-boundary] copying the generated tree aside (the shared one is never patched)"
-# --exclude build/.gradle: gradle output is large, stale, and about to be rebuilt from clean anyway.
-rsync -a --exclude build --exclude .gradle "${OM}/" "${WORK}/order-matcher/"
-patch -p1 -d "${WORK}/order-matcher" --forward --dry-run < "${PATCH}" >/dev/null \
-  || fail "stp-boundary-revert.patch no longer applies to the generated tree.
-  The engine moved under it. Re-cut the patch against today's source -- do NOT --force it: a
-  fuzzed hunk silently produces a 'pre' image that is not the engine minus STP."
-patch -p1 -d "${WORK}/order-matcher" --forward < "${PATCH}"
-
-# fix FIRST, from the pristine tree. build-cluster-image.sh runs `gradlew clean bootJar` in whatever
-# tree it is pointed at, so ordering is not load-bearing -- but building the unmodified side first
-# means a failure here is a plain build break rather than something to blame on the patch.
-echo
-# DOCKER_NO_CACHE on BOTH sides. The `fix` side is today's tree unmodified, so its jar is usually
-# byte-identical to whatever tip image was built last and docker hands back that image — Created and
-# all. yu13-stp-and-replace's preflight then reads a Created older than the sources and refuses the
-# pair it just asked for, which is a rebuild loop that never terminates. `pre` gets it too so the
-# two sides are built the same way and neither can be the odd one out.
-echo "[stp-boundary] building ${FIX_TAG} (today's tree, unmodified)"
-DOCKER_NO_CACHE=1 CLUSTER_IMAGE="${FIX_TAG}" bash "${ROOT}/scripts/yu15/build-cluster-image.sh"
-
-echo
-echo "[stp-boundary] building ${PRE_TAG} (today's tree, STP + /replace removed)"
-DOCKER_NO_CACHE=1 CLUSTER_IMAGE="${PRE_TAG}" OM_DIR="${WORK}/order-matcher" bash "${ROOT}/scripts/yu15/build-cluster-image.sh"
+PROVENANCE="${ROOT}/scripts/yu15/stp-image-provenance.py"
+python3 "${PROVENANCE}" prepare --root "${ROOT}" --work "${WORK}"
+python3 "${PROVENANCE}" build --root "${ROOT}" --work "${WORK}" --role fix --image "${FIX_TAG}"
+python3 "${PROVENANCE}" build --root "${ROOT}" --work "${WORK}" --role pre --image "${PRE_TAG}"
 
 # ---------------------------------------------------------------------------------------------
 # THE PAIR MUST DIFFER, AND ONLY IN THE BEHAVIOUR. This is not a tidiness check.
@@ -148,6 +126,8 @@ echo "[ok] the only classes that differ come from the two files the patch edits:
 sed 's/^/       /' <<<"${DIFFERING}"
 
 echo
+python3 "${PROVENANCE}" verify --root "${ROOT}" --role pre --image "${PRE_TAG}"
+python3 "${PROVENANCE}" verify --root "${ROOT}" --role fix --image "${FIX_TAG}"
 echo "[ok] ${PRE_TAG}  (no STP, no /replace route)"
 echo "[ok] ${FIX_TAG}  (today's tree)"
 echo "     Next: bash scripts/yu15/run-proofs.sh yu13-stp-and-replace"

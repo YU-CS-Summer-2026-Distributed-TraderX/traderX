@@ -2,6 +2,7 @@ package finos.traderx.ordermatcher.cluster;
 
 import com.sun.net.httpserver.HttpServer;
 import finos.traderx.ordermatcher.lmax.MatchingEngine;
+import finos.traderx.ordermatcher.risk.BlpRiskState;
 import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import org.agrona.CloseHelper;
@@ -293,42 +294,24 @@ public final class ClusterNodeMain {
                 + ",\"queueDepth\":" + service.queueDepth() + "}";
             respond(exchange, 200, body);
         });
-        // Readiness gates on CATCH-UP, not just service start: a member is ready only when its
-        // applied sequence is within CLUSTER_READY_MAX_LAG (default 5000 events, ~150ms of full
-        // flood) of the furthest-ahead peer, read from the peers' /health over the headless
-        // service. This is what makes `kubectl rollout restart` safe on emptyDir members — the
-        // rolling update cannot kill the next member until the restarted one has converged, so
-        // the un-snapshotted log tail always lives on a quorum (the tail-loss hazard documented
-        // in PROOF-yu12-gke-failover-2026-07-18.md). Unreachable peers are ignored so cold
-        // start and quorum-loss states never wedge on their own readiness.
+        // Routing readiness retains its lag tolerance and no-observed-peer arm. These do not
+        // establish book convergence, quorum health, leader eligibility or recovery safety.
+        // Diagnostic comparisons below concern only the maximum OBSERVED applied sequence.
         final long maxLag = Long.parseLong(env("CLUSTER_READY_MAX_LAG", "5000"));
         // The catch-up decision needs synchronous peer HTTP (peerApplied below), which is slow under
-        // flood — so compute it on a background sampler every 250ms and have /ready read the cached
-        // result. The request path then never blocks on a peer, so the probe stays fast under load.
+        // flood — so compute it on a background sampler with a 250ms sleep after each pass.
+        // /ready reads the cached result without waiting for a peer request.
         final java.util.concurrent.atomic.AtomicReference<String> readyBody =
-            new java.util.concurrent.atomic.AtomicReference<>("{\"ready\":false,\"reason\":\"not started\"}");
+            new java.util.concurrent.atomic.AtomicReference<>(readinessBody(false, -1, -1,
+                configuredPeerCount(memberId, hostnames), -1, maxLag, null, null));
         final java.util.concurrent.atomic.AtomicBoolean readyFlag =
             new java.util.concurrent.atomic.AtomicBoolean(false);
         final Thread readySampler = new Thread(() -> {
             while (true) {
                 try {
-                    if (service.engine() == null) {
-                        readyFlag.set(false);
-                        readyBody.set("{\"ready\":false,\"reason\":\"not started\"}");
-                    } else {
-                        final long mine = service.appliedSeq();
-                        long maxPeer = -1;
-                        for (int i = 0; i < hostnames.size(); i++) {
-                            if (i == memberId) {
-                                continue;
-                            }
-                            maxPeer = Math.max(maxPeer, peerApplied(hostnames.get(i), port));
-                        }
-                        final boolean ready = maxPeer < 0 || mine >= maxPeer - maxLag;
-                        readyFlag.set(ready);
-                        readyBody.set("{\"ready\":" + ready + ",\"applied\":" + mine
-                            + ",\"maxPeerApplied\":" + maxPeer + "}");
-                    }
+                    final ReadinessSample sample = sampleReadiness(port, memberId, hostnames, service, maxLag);
+                    readyFlag.set(sample.ready());
+                    readyBody.set(sample.body());
                     Thread.sleep(250);
                 } catch (final InterruptedException e) {
                     return;
@@ -418,7 +401,8 @@ public final class ClusterNodeMain {
         // Prometheus scrape surface (Grafana YU12 dashboard): each member exports its own signals
         // labelled by memberId, so Prometheus scraping all three renders per-node role/lag/snapshots.
         server.createContext("/metrics", exchange -> {
-            final boolean started = service.engine() != null;
+            final MatchingEngine metricsEngine = service.engine();
+            final boolean started = metricsEngine != null;
             final int role = service.role() == io.aeron.cluster.service.Cluster.Role.LEADER ? 1 : 0;
             final long applied = started ? service.appliedSeq() : 0;
             final long trades = started ? service.engine().tradeCounter() : 0;
@@ -501,7 +485,8 @@ public final class ClusterNodeMain {
                 // OTEL-01: span-sink health. Dropped spans mean telemetry shed load to keep the apply
                 // path free — the designed outcome, and the number that tells a supporter their trace
                 // sample is thin rather than their system is broken.
-                + (service.spanSink() == null ? "" : service.spanSink().metrics());
+                + (service.spanSink() == null ? "" : service.spanSink().metrics())
+                + riskCapacityMetrics(memberId, metricsEngine == null ? null : metricsEngine.riskState());
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
             exchange.sendResponseHeaders(200, bytes.length);
@@ -527,9 +512,49 @@ public final class ClusterNodeMain {
             }
             respond(exchange, 200, lat.dump());
         });
+        memberAccountRoute(server, memberId, service,
+            new finos.traderx.ordermatcher.auth.JwtAuthenticator(
+                env("AUTH_JWT_SECRET", "dev-jwt-shared-secret")));
         reconRoutes(server, service, recon);
         server.start();
         return server;
+    }
+
+    /**
+     * Cold HTTP accounting observations, never called by apply. Reads race with the single writer:
+     * neither the rows nor the separately read total form a coherent snapshot. Member replicas
+     * carry the same accounting; summing member series double counts it.
+     */
+    static String riskCapacityMetrics(final int memberId, final BlpRiskState risk) {
+        final String member = "{member=\"" + memberId + "\"} ";
+        final StringBuilder body = new StringBuilder()
+            .append("# HELP traderx_risk_state_available Accessible initialized risk instance (not readiness or snapshot coherence).\n")
+            .append("# TYPE traderx_risk_state_available gauge\n")
+            .append("traderx_risk_state_available").append(member).append(risk == null ? 0 : 1).append('\n');
+        // Missing state has no monetary samples: it cannot masquerade as released capacity.
+        if (risk == null) return body.toString();
+        final List<long[]> accounts = risk.accountTuples();
+        body.append("# HELP traderx_risk_accounts Occupied engine account slots, including disabled accounts.\n")
+            .append("# TYPE traderx_risk_accounts gauge\n")
+            .append("traderx_risk_accounts").append(member).append(accounts.size()).append('\n')
+            .append("# HELP traderx_risk_reserved_notional_ticks Member open-order reservation in raw engine money ticks (1e6 per unit); saturates at Long.MAX_VALUE; do not sum replicas.\n")
+            .append("# TYPE traderx_risk_reserved_notional_ticks gauge\n")
+            .append("traderx_risk_reserved_notional_ticks").append(member).append(risk.totalReservedNotional()).append('\n')
+            .append("# HELP traderx_risk_account_reserved_notional_ticks Account open-order reservation in raw engine money ticks (1e6 per unit), including zero after release.\n")
+            .append("# TYPE traderx_risk_account_reserved_notional_ticks gauge\n")
+            .append("# HELP traderx_risk_account_executed_notional_ticks Account accumulated executed/booked gross notional in raw engine money ticks (1e6 per unit), not net position or mark-to-market.\n")
+            .append("# TYPE traderx_risk_account_executed_notional_ticks gauge\n");
+        // Enumerate occupied slots, not request labels or nonzero-only rows. No metric cache:
+        // release emits an explicit zero; a replaced state enumerates only its own accounts.
+        for (final long[] account : accounts) {
+            final int accountId = (int) account[0];
+            final String labels = "{member=\"" + memberId + "\",account=\"" + accountId + "\"} ";
+            body.append("traderx_risk_account_reserved_notional_ticks").append(labels)
+                .append(risk.reservedNotional(accountId)).append('\n');
+            body.append("traderx_risk_account_executed_notional_ticks").append(labels)
+                .append(account[2]).append('\n');
+        }
+        return body.toString();
     }
 
     /**
@@ -553,6 +578,60 @@ public final class ClusterNodeMain {
         ReconNotReadyException(final String message) {
             super(message);
         }
+    }
+
+    /**
+     * FR-MAR01/02: cold, admin-only member observation, independent of reconciliation capacity.
+     * Authentication precedes state access. The apply thread is not locked: even equal sequence
+     * observations do not certify an atomic cut, freshness, quorum agreement or admission policy.
+     */
+    static void memberAccountRoute(final HttpServer server, final int memberId,
+                                   final MatchingEngineClusteredService service,
+                                   final finos.traderx.ordermatcher.auth.JwtAuthenticator jwt) {
+        final com.fasterxml.jackson.databind.ObjectMapper json =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+        server.createContext("/risk/control/accounts", exchange -> {
+            try {
+                final var principal = jwt.validate(exchange.getRequestHeaders().getFirst("Authorization"));
+                if (principal.isEmpty() || !principal.get().admin()) {
+                    respond(exchange, 401, "{\"error\":\"admin JWT required\"}");
+                    return;
+                }
+                // HttpServer contexts match prefixes; do not treat a child path as this resource.
+                if (!"/risk/control/accounts".equals(exchange.getRequestURI().getPath())) {
+                    respond(exchange, 404, "{\"error\":\"unknown account readout path\"}");
+                    return;
+                }
+                if (!"GET".equals(exchange.getRequestMethod())) {
+                    exchange.getResponseHeaders().set("Allow", "GET");
+                    respond(exchange, 405, "{\"error\":\"GET required\"}");
+                    return;
+                }
+                final long before = service.appliedSeq();
+                final var engine = service.engine();
+                final var risk = engine == null ? null : engine.riskState();
+                if (risk == null) {
+                    respond(exchange, 503, "{\"error\":\"member risk state unavailable\",\"memberId\":"
+                        + memberId + ",\"source\":\"member-engine-risk-table\",\"available\":false}");
+                    return;
+                }
+                final java.util.List<java.util.Map<String, Object>> accounts = new java.util.ArrayList<>();
+                // Existing accessor scans occupied backing slots; no directory/offered-control list,
+                // no retained labels, and no unnecessary notional or ownership/group disclosure.
+                for (final long[] tuple : risk.accountTuples()) {
+                    accounts.add(java.util.Map.of("accountId", tuple[0], "enabled", tuple[1] != 0));
+                }
+                final long after = service.appliedSeq();
+                respond(exchange, 200, json.writeValueAsString(java.util.Map.of(
+                    "memberId", memberId, "source", "member-engine-risk-table", "available", true,
+                    "sampling", "sequential-non-atomic", "freshness", "not-established",
+                    "appliedSeqBefore", before, "appliedSeqAfter", after,
+                    "count", accounts.size(), "accounts", accounts)));
+            } catch (final Exception ex) {
+                // Refuse an observation failure rather than converting it into an empty table.
+                respond(exchange, 500, "{\"error\":\"member account observation failed\"}");
+            }
+        });
     }
 
     private static void reconRoutes(final HttpServer server,
@@ -712,8 +791,85 @@ public final class ClusterNodeMain {
         return fallback;
     }
 
-    /** Peer's applied sequence via its /health, or -1 if unreachable/unparsable (ignored). */
-    private static long peerApplied(final String hostname, final int port) {
+    /** Cold HTTP diagnostics only; one sequential sampling pass, never a coherent cluster snapshot. */
+    record ReadinessSample(boolean ready, String body) {}
+    private record PeerApplied(long routingApplied, Long observedApplied) {}
+    private static final com.fasterxml.jackson.databind.ObjectMapper READY_JSON =
+        new com.fasterxml.jackson.databind.ObjectMapper()
+            .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+
+    private static int configuredPeerCount(final int memberId, final List<String> hostnames) {
+        return hostnames.size() - (memberId >= 0 && memberId < hostnames.size() ? 1 : 0);
+    }
+
+    static ReadinessSample sampleReadiness(final int port, final int memberId,
+                                           final List<String> hostnames,
+                                           final MatchingEngineClusteredService service,
+                                           final long maxLag) {
+        final long began = System.currentTimeMillis();
+        final int configured = configuredPeerCount(memberId, hostnames);
+        if (service.engine() == null) {
+            return new ReadinessSample(false, readinessBody(false, -1, -1, configured, -1,
+                maxLag, began, System.currentTimeMillis()));
+        }
+        final long mine = service.appliedSeq();
+        long maxPeer = -1;
+        int observed = 0;
+        long maxObserved = -1;
+        for (int i = 0; i < hostnames.size(); i++) {
+            if (i == memberId) {
+                continue;
+            }
+            final PeerApplied peer = peerApplied(hostnames.get(i), port);
+            maxPeer = Math.max(maxPeer, peer.routingApplied());
+            if (peer.observedApplied() != null) {
+                observed++;
+                maxObserved = Math.max(maxObserved, peer.observedApplied());
+            }
+        }
+        // Preserve the legacy routing decision exactly, including its no-observation arm.
+        final boolean ready = maxPeer < 0 || mine >= maxPeer - maxLag;
+        return new ReadinessSample(ready, readinessBody(true, mine, maxPeer, maxObserved, configured, observed,
+            maxLag, began, System.currentTimeMillis()));
+    }
+
+    static String readinessBody(final boolean started, final long mine, final long maxPeer,
+                                final int configured, final int observed, final long maxLag,
+                                final Long began, final Long completed) {
+        return readinessBody(started, mine, maxPeer, maxPeer, configured, observed, maxLag, began, completed);
+    }
+
+    private static String readinessBody(final boolean started, final long mine, final long maxPeer,
+                                       final long maxObserved, final int configured, final int observed,
+                                       final long maxLag, final Long began, final Long completed) {
+        final boolean ready = started && (maxPeer < 0 || mine >= maxPeer - maxLag);
+        final boolean comparable = started && mine >= 0 && observed > 0 && maxObserved >= 0;
+        final Long lag = comparable ? Math.max(0L, maxObserved - mine) : null;
+        final String coverage = observed < 0 ? "not_sampled"
+            : configured == 0 ? "none_configured"
+            : observed == 0 ? "unavailable"
+            : observed < configured ? "partial" : "complete";
+        return "{\"ready\":" + ready
+            + (started ? ",\"applied\":" + mine + ",\"maxPeerApplied\":" + maxPeer
+                : ",\"reason\":\"not started\"")
+            + ",\"configuredPeerCount\":" + configured
+            + ",\"observedPeerCount\":" + (observed < 0 ? "null" : observed)
+            + ",\"unavailablePeerCount\":" + (observed < 0 ? "null" : configured - observed)
+            + ",\"peerObservationStatus\":\"" + coverage + "\""
+            + ",\"localSequenceAvailable\":" + (started && mine >= 0)
+            + ",\"configuredMaxLag\":" + maxLag
+            + ",\"maxObservedPeerApplied\":" + (observed > 0 ? maxObserved : "null")
+            + ",\"observedLag\":" + lag
+            + ",\"withinLagTolerance\":" + (comparable && maxLag >= 0 ? lag <= maxLag : "null")
+            + ",\"caughtUpToObservedSequence\":" + (comparable ? mine >= maxObserved : "null")
+            + ",\"comparisonScope\":\"maximum_observed_applied_sequence\""
+            + ",\"sampleStartedAtEpochMs\":" + began
+            + ",\"sampleCompletedAtEpochMs\":" + completed + "}";
+    }
+
+    /** Legacy routing parse retained; diagnostic observations require a valid nonnegative JSON integer. */
+    private static PeerApplied peerApplied(final String hostname, final int port) {
         try {
             final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
                 java.net.URI.create("http://" + hostname + ":" + port + "/health").toURL().openConnection();
@@ -723,10 +879,23 @@ public final class ClusterNodeMain {
                 final String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
                 final java.util.regex.Matcher m =
                     java.util.regex.Pattern.compile("\"applied\":(-?\\d+)").matcher(body);
-                return m.find() ? Long.parseLong(m.group(1)) : -1;
+                final long routing = m.find() ? Long.parseLong(m.group(1)) : -1;
+                Long observed = null;
+                try {
+                    final var json = READY_JSON.readTree(body);
+                    final var applied = json == null ? null : json.get("applied");
+                    final var started = json == null ? null : json.get("started");
+                    if (applied != null && applied.isIntegralNumber() && applied.canConvertToLong()
+                        && applied.longValue() >= 0 && (started == null || (started.isBoolean() && started.booleanValue()))) {
+                        observed = applied.longValue();
+                    }
+                } catch (final Exception ignored) {
+                    // A malformed response may still match the legacy regex; never certify it.
+                }
+                return new PeerApplied(routing, observed);
             }
         } catch (final Exception e) {
-            return -1;
+            return new PeerApplied(-1, null);
         }
     }
 

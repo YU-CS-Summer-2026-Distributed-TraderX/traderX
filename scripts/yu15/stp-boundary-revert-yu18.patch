@@ -1,0 +1,54 @@
+# RI-18 YU18 pre boundary: remove the replicated ownership-group STP decision
+# and its method, plus the replace route. Keep all metrics, group state and
+# recovery formats. Legacy states continue using stp-boundary-revert.patch.
+# Zero-context hunks still require the complete deleted spans verbatim (zero fuzz).
+--- a/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
++++ b/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
+@@ -895,12 +894,0 @@
+-            // Self-match prevention, cancel-oldest (ADR-057, RI-12): identical accounts or
+-            // shared ownership groups in replicated state, identical on every member and replay.
+-            // Cancel-oldest is not a preference: cross() re-reads headAt each iteration, so a
+-            // policy that SKIPS a self order without removing it returns the same order forever
+-            // and the apply loop never terminates — on all three members and on replay. Removing
+-            // the head is what lets the loop advance, and it is also the only policy that lets the
+-            // aggressor reach genuine counterparties queued BEHIND its own stale quote.
+-            if (sameSelfMatchGroup(r.accountId, a.accountId)) {
+-                preventSelfTrade(r, e, book);
+-                opp = buy ? book.bestAskSlot() : book.bestBidSlot();
+-                continue;
+-            }
+@@ -989,30 +976,0 @@
+-    }
+-
+-    /**
+-     * Cancel a resting order the aggressor would otherwise have self-traded against (ADR-057).
+-     *
+-     * Mechanically identical to {@link #onCancel} — unlink, release the reservation exactly once,
+-     * mark terminal, emit — with two differences that are the whole client-facing contract:
+-     *
+-     * <ul>
+-     *   <li>{@code riskReason = SELF_TRADE_PREVENTED}, which reaches the client on egress ack byte
+-     *       22. It is what distinguishes "the venue cancelled this to prevent a self-trade" from
+-     *       "my own cancel succeeded" (reason ACCEPTED) and from a rejection (a different kind).</li>
+-     *   <li>{@code FLAG_RESTING_UPDATE}, because this is an UNSOLICITED cancel of an order that is
+-     *       not the input being applied. Without it the gateway's first-direct-ack correlation
+-     *       would answer the aggressor's own offer with a CANCELED ack for a different order, and
+-     *       the batch outstanding count would go wrong (FR-LOB07).</li>
+-     * </ul>
+-     *
+-     * The aggressor is never the one cancelled, which is what makes the compound case with an
+-     * atomic replace decidable: a replace's new order can trigger this against the participant's
+-     * other resting orders, but can never itself be removed by it.
+-     */
+-    private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
+-        selfTradesPrevented++;
+-        // Classify the canceled resting order, including cross-account group matches (RI-12).
+-        // These per-process counters are not replicated or snapshotted authoritative state.
+-        if (InputEvent.isReplayFlow(r.accountId)) {
+-            externalSelfTradesPrevented++;
+-        }
+-        cancelUnsolicited(r, e, book, RiskReason.SELF_TRADE_PREVENTED);
+--- a/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
++++ b/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
+@@ -361 +360,0 @@
+-        server.createContext("/replace", this::handleReplace);

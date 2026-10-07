@@ -8,6 +8,14 @@
 TraderX is now organized as a root-canonical GitHub SpecKit project.  
 The baseline implementation is generated and validated from requirements, stories, acceptance criteria, contracts, and conformance gates.
 
+## Risk integration branch
+
+Current YU18 work is specified in [YU18 risk integration](specs/YU18-risk-integration/README.md) and its [components](specs/YU18-risk-integration/components/README.md). It includes EOD bundle/result intake, seven order types, managed projection recovery, the Trader Desk and Demo console, and synthetic portfolio generation.
+
+The October 7 integration adds interrupted-proof cleanup, content-based image admission, scoped reconciliation proofs and explicit replay anchors. Member readouts show observed readiness, risk capacity and admin account state. The regulatory report includes sequenced OTC refusals; tape status and gateway ACK metrics have explicit failure/unknown categories. Projector JVMs exit on heap OOM, and a bounded diagnostic measures book-owned shallow memory separately from shared orders.
+
+These changes have local source/generated checks. They do not establish deployed HA, retained-upgrade compatibility, current throughput/latency or financial pricing acceptance. The maintained [risk work queue](issues/risk-integration/README.md) records remaining work.
+
 ## Canonical Project Layout
 
 - `.specify/` - SpecKit constitution and templates

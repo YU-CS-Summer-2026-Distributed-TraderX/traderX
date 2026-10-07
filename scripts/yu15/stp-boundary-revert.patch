@@ -111,11 +111,10 @@
       *  gateway's first-direct-ack correlation from answering the input being applied with it. */
 --- a/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
 +++ b/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
-@@ -336,7 +336,6 @@
+@@ -336,6 +336,5 @@
          // orderRef. A cancel that silently books an order is the worst available failure mode; a
          // sibling path 404s on old replicas instead.
          server.createContext("/cancel", this::handleCancel);
 -        server.createContext("/replace", this::handleReplace);
          server.createContext("/trades", this::handleTrade);
          server.createContext("/session", this::handleSession);
-         server.createContext("/swaps", this::handleSwapBook);

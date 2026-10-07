@@ -168,9 +168,9 @@ done
 # YU17: the tape replay's three bring-up duties. Two artifacts are FETCHED here — at bring-up,
 # from the bucket, never from the repo (ADR-068's durability rule): the ADR-070 median extract
 # that is the equity REFERENCE, and the ADR-072 print sample that becomes replayed ORDER FLOW.
-# Then the epoch anchor is stamped from the member-0 PVC that now exists. All three are rule-1
-# safe: an unfetchable artifact or an unstampable epoch leaves the publisher on the synthetic walk
-# with no replayed orders, saying so on /health.taqReplay and /health.printReplay.
+# The extract fetches remain best-effort. Anchor stamping requires verified member-0 /data PVC
+# evidence and stops bring-up on refusal or producer rollout failure. An explicit
+# REPLAY_ANCHOR_MODE=disabled skips stamping without asserting replay or synthetic behavior.
 K="kubectl --context ${CTX} -n traderx"
 # RIG_OFFLINE=1 skips both bucket reads: a local-only rig (no cloud access by policy) takes the same
 # rule-1 path as a laptop without gcloud -- synthetic equities, no replayed order flow -- and says so.

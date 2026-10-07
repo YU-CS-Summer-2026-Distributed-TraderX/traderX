@@ -1,82 +1,110 @@
 #!/usr/bin/env bash
-# lib-replay-epoch.sh — ADR-070's two bring-up duties, shared by start-cluster-kind.sh and
-# run-proofs.sh (rebuild_fresh_epoch):
-#
-#   stamp_replay_epoch          stamp the replay-epoch ConfigMap with the CURRENT epoch's mint
-#                               instant and roll price-publisher so it reads the new anchor.
-#   fetch_replay_extract_secret fetch the resampled extract from the bucket into the
-#                               taq-replay-extract Secret (bring-up only; epochs never refetch).
-#   fetch_print_sample_secret   the ADR-072 sibling: the sampled PRINTS that become replayed order
-#                               flow, into the taq-print-sample Secret. Same posture, same prefix.
-#
-# THE ANCHOR IS DERIVED, NEVER INVENTED: epochStartMs comes from the member-0 PVC's
-# creationTimestamp, and rebuild_fresh_epoch wipes and recreates the PVCs at every mint, so that
-# timestamp IS the mint instant. Deriving it makes restamping idempotent — calling this twice on
-# the same epoch writes the same value, so no caller has to know whether it is the first — and
-# means a stamp can never disagree with the epoch it describes. (Stamping "now" instead would
-# drift by however long the rollout waits took, and a RE-stamp would silently rewind the tape.)
-#
-# A HAND-WIPED RIG IS NOT A FRESH EPOCH UNTIL THIS RUNS. `rebuild_fresh_epoch` calls
-# stamp_replay_epoch as its second-to-last step; a manual recovery -- `kubectl delete pvc -l
-# app=order-matcher-cluster`, scale back up -- does NOT, and nothing downstream notices. The
-# ConfigMap keeps the DELETED epoch's anchor, the publisher keeps computing
-# (now - epochStartMs) x compression against it, and the tape simply reports a later day on a rig
-# that was just reset to nothing.
-#
-# MEASURED 2026-08-27, after exactly that: the anchor still read 1787805906000 (04:45Z) against a
-# PVC created at 15:14:16Z, and the replay was serving **tape day 23 of 40 on a rig minutes old**.
-# Every price was real, every asOf was self-consistent, and nothing anywhere reported an error --
-# a stale anchor has no failure mode, only a wrong answer. Re-stamping and rolling the publisher
-# put it back at day 1.
-#
-# So the manual recovery path is three steps, not two. NAME THE CONTEXT IN EVERY ONE OF THEM:
-#     C=kind-traderx-yu12-cluster
-#     kubectl --context $C -n traderx delete pvc -l app=order-matcher-cluster   # sts scaled to 0
-#     kubectl --context $C -n traderx scale sts order-matcher-cluster --replicas=3
-#     bash -c 'K=(kubectl --context kind-traderx-yu12-cluster -n traderx)
-#              source scripts/yu15/lib-replay-epoch.sh; stamp_replay_epoch'
-#
-# TWO WAYS THIS LAST STEP LIES, BOTH MEASURED 2026-08-27, BOTH ENDING IN A STALE ANCHOR:
-#
-#   * `${K}` IS RESOLVED FROM THE SOURCING SHELL. Call stamp_replay_epoch without K set and it runs
-#     bare `kubectl` — default context, default namespace — finds no member-0 PVC there, and says
-#     so TRUTHFULLY about the wrong cluster.
-#   * SETTING K WITHOUT `--context` HAS THE SAME END. It inherits whatever the current context is,
-#     which is not necessarily this rig and is not visible in the command you typed.
-#
-# AND THE EXIT STATUS CANNOT CATCH EITHER: the no-PVC path prints its line and `return 0` (line ~50,
-# deliberately, so a tier with no EOD chain is not a failure). A wrong-context call therefore
-# SUCCEEDS, and the rig serves a plausible wrong tape day exactly as if you had never run it.
-#
-# So the confirmation is never the command's status — it is /health.taqReplay.position.dayIndex,
-# which must be 0 on a rig you just wiped. `applied` advancing does not tell you this either; it is
-# the same trap as asserting Ready.
-#
-# Both functions resolve the sourcing script's ${K} kubectl prefix exactly as
-# lib-consensus-readings.sh does: string or array, either works.
+# Replay anchor stamping is required by default. K must name an explicit context and namespace.
+# Existing simple strings and indexed arrays are accepted; no eval or ambient kubectl target.
+# The only anchor source is the creationTimestamp of the bound member-0 PVC actually selected
+# by cluster-node's /data mount, cross-checked against its PV claimRef. This is storage-creation
+# evidence, not authenticated engine-epoch identity. Never substitute now, pod start or container ID.
+# REPLAY_ANCHOR_MODE=disabled explicitly skips stamping (status=disabled, rc=0); this makes no
+# assertion about tape, synthetic mode, a fresh epoch or a verified anchor. Required refusal is rc=1.
+# REPLAY_ANCHOR_STATUS and REPLAY_ANCHOR_PRODUCER distinguish stored anchors from producer rollout.
+# Extract-fetch functions below retain their existing best-effort contracts and _rk behavior.
+_REPLAY_ANCHOR_EVIDENCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/replay-anchor-evidence.py"
+
 _rk() {
   if [[ "$(declare -p K 2>/dev/null)" == "declare -"[aA]* ]]; then "${K[@]}" "$@"; else ${K} "$@"; fi
 }
 
+_replay_anchor_target() {
+  local declaration attributes executable token value context="" namespace=""
+  declaration="$(declare -p K 2>/dev/null)" || return 1
+  attributes="${declaration#declare }"; attributes="${attributes%% *}"
+  case "${attributes}" in
+    *A*) return 1 ;;
+    *a*) replay_k=("${K[@]}") ;;
+    --|-x|-r|-rx|-xr)
+      # Deliberately simple whitespace-separated legacy prefixes; quoted/escaped strings must
+      # migrate to indexed arrays. read performs no globbing, evaluation or command substitution.
+      [[ "${K}" != *$'\n'* ]] || return 1
+      read -r -a replay_k <<< "${K}" ;;
+    *) return 1 ;;
+  esac
+  [[ ${#replay_k[@]} -gt 0 && "${replay_k[0]##*/}" == kubectl ]] || return 1
+  executable="${replay_k[0]}"
+  replay_k=("${replay_k[@]:1}")
+  while [[ ${#replay_k[@]} -gt 0 ]]; do
+    token="${replay_k[0]}"; replay_k=("${replay_k[@]:1}")
+    case "${token}" in
+      --context|-n|--namespace)
+        [[ ${#replay_k[@]} -gt 0 ]] || return 1
+        value="${replay_k[0]}"; replay_k=("${replay_k[@]:1}") ;;
+      --context=*|--namespace=*) value="${token#*=}" ;;
+      *) return 1 ;;
+    esac
+    # No unknown flags, duplicate targets, whitespace, quotes, shell syntax or empty values.
+    [[ "${value}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$ ]] || return 1
+    case "${token}" in
+      --context*) [[ -z "${context}" ]] || return 1; context="${value}" ;;
+      *) [[ -z "${namespace}" && "${value}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ && ${#value} -le 63 ]] || return 1
+         namespace="${value}" ;;
+    esac
+  done
+  [[ -n "${context}" && -n "${namespace}" ]] || return 1
+  # Preserve the selected executable, normalize flags, and expose the explicit target for evidence.
+  replay_k=("${executable}" --context "${context}" -n "${namespace}")
+  replay_context="${context}"; replay_namespace="${namespace}"
+}
+
 stamp_replay_epoch() {
-  local ts ms
-  ts="$(_rk get pvc data-order-matcher-cluster-0 -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null)"
-  if [[ -z "${ts}" ]]; then
-    echo "[epoch] no member-0 PVC to derive the replay epoch from; leaving replay-epoch unstamped"
-    return 0
-  fi
-  ms="$(python3 -c 'import datetime,sys
-print(int(datetime.datetime.strptime(sys.argv[1],"%Y-%m-%dT%H:%M:%SZ")
-      .replace(tzinfo=datetime.timezone.utc).timestamp()*1000))' "${ts}")" || return 1
-  _rk create configmap replay-epoch --from-literal=epochStartMs="${ms}" \
-    --dry-run=client -o yaml | _rk apply -f - >/dev/null
-  echo "[epoch] replay-epoch stamped: epochStartMs=${ms} (${ts}, from the member-0 PVC)"
-  # env vars from a ConfigMap are read at container start, so the stamp is invisible until the
-  # publisher rolls. Absent deployment (a tier without the EOD chain) is not an error.
-  if _rk get deploy price-publisher >/dev/null 2>&1; then
-    _rk rollout restart deployment/price-publisher >/dev/null
-    _rk rollout status deployment/price-publisher --timeout=300s >/dev/null \
-      || { echo "[fail] price-publisher did not come back after the replay-epoch stamp"; return 1; }
+  local replay_k=() replay_context replay_namespace
+  local pod pvc pv volume claim evidence ms ts uid yaml deployment producer
+  REPLAY_ANCHOR_STATUS=unavailable
+  REPLAY_ANCHOR_PRODUCER=uninspected
+  _replay_anchor_target || { echo '[epoch] unavailable: K must be kubectl with one explicit --context and namespace; quoted or escaped string prefixes require an indexed array' >&2; return 1; }
+  case "${REPLAY_ANCHOR_MODE:-required}" in
+    disabled)
+      REPLAY_ANCHOR_STATUS=disabled
+      echo "[epoch] disabled: explicit operator choice; no anchor verified or written (context=${replay_context}, namespace=${replay_namespace})"
+      return 0 ;;
+    required) ;;
+    *) echo '[epoch] unavailable: REPLAY_ANCHOR_MODE must be required or disabled' >&2; return 1 ;;
+  esac
+  pod="$("${replay_k[@]}" get pod order-matcher-cluster-0 -o json)" \
+    || { echo '[epoch] unavailable: member-0 pod inspection failed' >&2; return 1; }
+  claim="$(python3 "${_REPLAY_ANCHOR_EVIDENCE}" claim "${replay_namespace}" <<< "${pod}")" || return 1
+  pvc="$("${replay_k[@]}" get pvc "${claim}" -o json)" \
+    || { echo '[epoch] unavailable: member-0 PVC inspection failed' >&2; return 1; }
+  volume="$(python3 "${_REPLAY_ANCHOR_EVIDENCE}" volume "${replay_namespace}" <<< "${pvc}")" || return 1
+  pv="$("${replay_k[@]}" get pv "${volume}" -o json)" \
+    || { echo '[epoch] unavailable: bound PV inspection failed' >&2; return 1; }
+  evidence="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${pod}" "${pvc}" "${pv}")" || return 1
+  evidence="$(python3 "${_REPLAY_ANCHOR_EVIDENCE}" anchor "${replay_namespace}" <<< "${evidence}")" || return 1
+  IFS=$'\t' read -r ms ts uid volume <<< "${evidence}"
+  # --ignore-not-found distinguishes a confirmed absent producer (empty successful read) from
+  # permission/connectivity errors. Inspect before changing the ConfigMap.
+  deployment="$("${replay_k[@]}" get deploy price-publisher --ignore-not-found -o json)" \
+    || { echo '[epoch] unavailable: price-publisher inspection failed; no anchor written' >&2; return 1; }
+  producer="$(python3 "${_REPLAY_ANCHOR_EVIDENCE}" deployment "${replay_namespace}" <<< "${deployment}")" || return 1
+  REPLAY_ANCHOR_PRODUCER="${producer}"
+  # Keep dry-run and apply separate: callers using || disable errexit inside this function,
+  # and pipeline status without pipefail can hide dry-run failure behind successful apply.
+  yaml="$("${replay_k[@]}" create configmap replay-epoch --from-literal=epochStartMs="${ms}" --dry-run=client -o yaml)" \
+    || { echo '[epoch] unavailable: replay-epoch dry-run failed; no anchor written' >&2; return 1; }
+  [[ -n "${yaml//[[:space:]]/}" ]] || { echo '[epoch] unavailable: replay-epoch dry-run returned no manifest' >&2; return 1; }
+  "${replay_k[@]}" apply -f - <<< "${yaml}" >/dev/null \
+    || { echo '[epoch] unavailable: replay-epoch apply failed; stored anchor is unverified' >&2; return 1; }
+  REPLAY_ANCHOR_STATUS=stored
+  echo "[epoch] storage-derived anchor stored: epochStartMs=${ms}, PVC=${claim}, uid=${uid}, PV=${volume}, creationTimestamp=${ts}, context=${replay_context}, namespace=${replay_namespace}"
+  if [[ "${producer}" == present ]]; then
+    REPLAY_ANCHOR_PRODUCER=restart-failed
+    "${replay_k[@]}" rollout restart deployment/price-publisher >/dev/null \
+      || { echo '[epoch] anchor stored; price-publisher restart failed' >&2; return 1; }
+    REPLAY_ANCHOR_PRODUCER=rollout-failed
+    "${replay_k[@]}" rollout status deployment/price-publisher --timeout=300s >/dev/null \
+      || { echo '[epoch] anchor stored; price-publisher rollout failed' >&2; return 1; }
+    REPLAY_ANCHOR_PRODUCER=rollout-complete
+    echo '[epoch] price-publisher rollout complete; replay position requires a separate health reading'
+  else
+    echo '[epoch] price-publisher confirmed absent; anchor stored, no producer rollout performed'
   fi
   return 0
 }

@@ -29,3 +29,7 @@ YU18 groups related integration and trading capabilities as separately specified
 ## Acceptance
 
 State generation includes component spec documents; byte-exact financial fixtures and source/generated behavior are preserved. Planned component scaffolds are validated structurally but do not count as implemented acceptance. See [component rules](../../docs/spec-kit/state-components.md).
+
+## October 7 component requirements
+
+Operational proof controls and observability are specified in the [component index](components/README.md#october-7-integration). Each component keeps its own requirement IDs, source ownership, executable checks and limitations. Shared bundle, wire and snapshot schemas are unchanged by this integration. The OTC shadow tap is optional and unset on live service instances.

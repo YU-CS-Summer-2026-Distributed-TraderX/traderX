@@ -2,12 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { Api } from './api';
 import { HelpTip } from './help';
 
-/** The `taqReplay` block of price-publisher's /health, verbatim. */
-interface TaqReplay {
-  source?: string; symbols?: number; days?: number;
-  windowSeconds?: number; compression?: number; error?: string | null;
-  position?: { tapeDate?: string; dayIndex?: number; windowIndex?: number; asOf?: string; held?: boolean };
-}
+import { classifyTapeStatus as classify, type TaqReplay } from './tape-status';
 
 /**
  * Where the tape is, right now — the sentence that makes a replayed price legible.
@@ -117,33 +112,6 @@ export class ReplayClock {
         : 'Position is read from the publisher on every poll and never advanced here, so one clock decides where the tape is.')
       + ' Names not on the tape publish their own source, shown per row.';
   });
-}
-
-/**
- * Which of the three states the publisher is actually in.
- *
- * MEASURED, not assumed, and the assumption was wrong. Deleting the replay Secret — the documented,
- * rehearsed revert — does NOT remove `taqReplay`. It returns the block present, with no position and
- * `error: "no extract at /etc/taq-replay/extract.json.gz"`. Keyed on `error` alone, the sanctioned
- * fallback therefore rendered as a red TAPE ERROR: the demo's own honest mode reported as a fault,
- * which is the opposite of what the revert exists to demonstrate.
- *
- * A purely STRUCTURAL rule does not work either, and I only found that by breaking the tape on
- * purpose. Corrupting the extract produces `did not gunzip+parse: incorrect header check` — and,
- * like the absent case, no source, no days, no position. Structure cannot separate "no tape here"
- * from "the tape is broken"; the publisher distinguishes them only in words, so this matches on the
- * one phrase it emits for absence and treats everything else as a fault.
- *
- * It FAILS SAFE deliberately: an unrecognised error alarms rather than going quiet. Silence is the
- * worse mistake here, because a corrupt tape presenting as the ordinary synthetic fallback is a
- * fault that looks exactly like a normal demo.
- */
-function classify(t: TaqReplay | undefined): 'tape' | 'synthetic' | 'error' {
-  if (!t) { return 'synthetic'; }
-  // A described tape: position, day count or source present. Then an error means a broken tape.
-  if (t.source || t.days || t.position) { return t.error ? 'error' : 'tape'; }
-  if (!t.error) { return 'synthetic'; }
-  return /no extract at/i.test(t.error) ? 'synthetic' : 'error';
 }
 
 const ordinal = (n: number): string => {

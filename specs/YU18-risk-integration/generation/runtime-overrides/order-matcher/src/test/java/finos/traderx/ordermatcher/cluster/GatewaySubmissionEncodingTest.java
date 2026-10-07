@@ -24,6 +24,8 @@ class GatewaySubmissionEncodingTest {
     @SuppressWarnings("unchecked")
     private void exercise(boolean typed,boolean replace) throws Exception {
         var gateway=new ClusterGatewayMain();var client=mock(AeronCluster.class);
+        // The injected egress below belongs to this active session, as real Aeron delivery does.
+        when(client.clusterSessionId()).thenReturn(1L);
         field("client").set(gateway,client);
         ((Map<String,Integer>)field("idByTicker").get(gateway)).put("IBM",1);
         Queue<FutureTask<?>> tasks=(Queue<FutureTask<?>>)field("tasks").get(gateway);

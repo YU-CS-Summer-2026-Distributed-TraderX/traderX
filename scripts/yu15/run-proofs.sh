@@ -21,6 +21,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROOF_LOG_DIR="${PROOF_LOG_DIR:-/tmp/proofrun}"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
 # shellcheck source=lib-replay-epoch.sh
@@ -36,7 +37,27 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib-replay-epoch.sh"
 # behaviour worth having.
 export CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
-K="kubectl --context ${CTX} -n ${NS}"
+# Read-only admission precedes supervision/preparation so refusal causes no rig
+# writes, including cleanup restoration. Recheck in the supervised child; a
+# matching running pod does not establish reference resolution after a restart.
+BASELINE_IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-$(declared_cluster_image "${ROOT}" || true)}}"
+if [[ -z "${BASELINE_IMAGE}" ]]; then
+  echo '[fail] no explicit/declared baseline image; refusing before proof preparation' >&2
+  exit 1
+fi
+python3 "${ROOT}/scripts/yu15/image-admission.py" node-refs --context "${CTX}" --image "${BASELINE_IMAGE}" || exit 1
+if [[ "${1:-}" == '--check-images' ]]; then
+  [[ $# == 1 ]] || { echo '[fail] --check-images accepts no proof selection' >&2; exit 1; }
+  exit 0
+fi
+# Supervise the entire lifecycle before any rig write. Uncatchable termination leaves the
+# private durable journal unfinished; the next run refuses until explicit recovery.
+if [[ "${PROOF_CLEANUP_CHILD:-0}" != "1" ]]; then
+  exec python3 "${ROOT}/scripts/yu15/proof-cleanup.py" --context "${CTX}" --namespace "${NS}" \
+    run -- bash "${BASH_SOURCE[0]}" "$@"
+fi
+K=(kubectl --context "${CTX}" -n "${NS}")
+_k() { "${K[@]}" "$@"; }
 
 # Ordered deliberately. The cluster-rolling proofs go LAST: they are the slowest, and until they
 # run everything else has a stable rig. yu08 is separated from the counter-exact proofs because the
@@ -267,22 +288,28 @@ FORWARDS=(
 # re-established before every proof" was therefore vacuous: nothing was ever torn down, the first
 # forward to bind a port kept it for the whole suite, and a stale tunnel to a dead gateway pod
 # would have survived every re-establish while the replacements silently lost the bind.
-kill_forwards() { pkill -f "kubectl.*port-forward" 2>/dev/null; sleep 1; }
-# stp_return_gateway first: a run killed mid-borrow must hand the gateway back before the forwards
-# it would need to verify that go away. No-ops unless a borrow is actually outstanding.
-trap 'declare -F stp_return_gateway >/dev/null && stp_return_gateway; kill_forwards' EXIT
+mkdir -p "${PROOF_LOG_DIR}"
+FORWARD_PIDS=()
+kill_forwards() {
+  local pid
+  if [[ ${#FORWARD_PIDS[@]} -gt 0 ]]; then
+    for pid in "${FORWARD_PIDS[@]}"; do kill -KILL "${pid}" 2>/dev/null || true; done
+    for pid in "${FORWARD_PIDS[@]}"; do wait "${pid}" 2>/dev/null || true; done
+  fi
+  FORWARD_PIDS=()
+}
+trap 'kill_forwards' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 start_forwards() {
   kill_forwards
   local pf
   for pf in "${FORWARDS[@]}"; do
     # shellcheck disable=SC2086
-    ${K} port-forward ${pf} >/dev/null 2>&1 &
-    # Forget the job, or bash reports each one when kill_forwards reaps it -- six
-    # "Terminated: 15" lines per proof, ~114 across a full suite, all of them noise in the log a
-    # human reads to decide what passed. Invisible until kill_forwards actually started killing
-    # things; the old pattern never matched, so nothing ever died to be reported.
-    disown 2>/dev/null || true
+    _k port-forward ${pf} >/dev/null 2>&1 &
+    # Retain exact owned PIDs. The supervisor also owns the complete process group.
+    FORWARD_PIDS+=("$!")
   done
   # Verify EVERY forward, not just the gateway. Waiting only on 18110 is what made a suite run
   # fail four proofs that pass individually: the OTel pair needs Tempo on 3200 (which answers 503
@@ -329,7 +356,7 @@ start_forwards() {
       # every timeout -- which is the same defect this block exists to fix, one level up. Only a
       # Deployment that BACKS AN UNREADY ENDPOINT is evidence about this failure.
       local zeroed culprit=""
-      zeroed=" $(${K} get deploy -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.metadata.name}{" "}{end}' 2>/dev/null) "
+      zeroed=" $(_k get deploy -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.metadata.name}{" "}{end}' 2>/dev/null) "
       local u
       for u in ${unready}; do
         [[ "${zeroed}" == *" ${u%%:*} "* ]] && culprit+=" ${u%%:*}"
@@ -365,7 +392,6 @@ start_forwards() {
 # The manifests are the authority (they are what kubectl applies), so BASELINE_IMAGE now comes
 # from the same derivation start-cluster-kind.sh uses. CLUSTER_IMAGE is the neutral override name;
 # YU15_CLUSTER_IMAGE still works so every existing invocation and doc keeps functioning.
-BASELINE_IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-$(declared_cluster_image "${ROOT}" || true)}}"
 if [[ -z "${BASELINE_IMAGE}" ]]; then
   cat >&2 <<'EOF'
 [fail] cannot determine the cluster-node image for this state, and will not fall back to a literal.
@@ -385,7 +411,7 @@ echo "[state] $(state_pack "${ROOT}") -> baseline image ${BASELINE_IMAGE}"
 # today's engine untouched. Rebuild both whenever the tip moves -- the boundary is supposed to
 # track the system, and a tag named for the current tree goes stale silently.
 STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:stp-boundary-pre}"
-current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+current_image() { _k get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 
 # The only safe way to swap the engine build OR to recover a wedged rig: take the cluster down,
 # wipe the members' PVCs, and bring it up on a FRESH EPOCH. A ROLLING image swap is exactly the
@@ -414,19 +440,12 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # initialDelaySeconds:5 those builds shipped with -- exists in scripts/proofs/yu13-stp-and-replace.sh
 # and yu13-cancel-ingress.sh, and both proofs already roll historical gateways with it. Rolling a
 # historical gateway is no longer the hazard it was; doing it from INSIDE this function still is.
-# THE IMAGE MUST BE ON THE NODES BEFORE ANYTHING IS DESTROYED. This function wipes the PVCs first
-# and discovers an unreachable image afterwards, at which point the epoch it would have fallen back
-# to no longer exists. `kind load` is start-cluster-kind.sh's job and this script never did it, so
-# naming a CLUSTER_IMAGE that exists only in the local Docker daemon used to mean ImagePullBackOff
-# several minutes later, on a rig with nothing left to run. Idempotent and cheap when already there.
+# Read references before any rebuild destruction, including proof-selected images.
+# Loading/repair belongs to explicit bring-up; this guard never mutates node stores.
 ensure_image_on_nodes() { # ensure_image_on_nodes <image>
-  local image="${1:-}" cluster
-  [[ -n "${image}" ]] || return 0
-  case "${CTX}" in kind-*) cluster="${CTX#kind-}" ;; *) return 0 ;; esac   # kind rigs only
-  docker image inspect "${image}" >/dev/null 2>&1 \
-    || fail_hard "${image} is not in the local Docker daemon — build it first (scripts/yu15/build-cluster-image.sh)"
-  kind load docker-image "${image}" --name "${cluster}" >/dev/null 2>&1 \
-    || fail_hard "could not load ${image} onto kind cluster ${cluster}"
+  local image="${1:-${BASELINE_IMAGE}}"
+  python3 "${ROOT}/scripts/yu15/image-admission.py" node-refs --context "${CTX}" --image "${image}" \
+    || fail_hard "selected reference is not resolvable; no epoch destruction performed"
 }
 
 fail_hard() { echo "[fail] $*" >&2; exit 1; }
@@ -493,36 +512,27 @@ gw_probe_form() { # gw_probe_form <VAR_NAME>
 
 stp_borrow_gateway() { # stp_borrow_gateway <image>
   local image="$1" container
-  container="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')"
-  STP_GW_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}')"
-  STP_GW_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' \
+  container="$(_k get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')"
+  STP_GW_IMAGE="$(_k get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  STP_GW_PROBES="$(_k get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' \
     | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
-  # A CAPTURE OF AN ALREADY-BROKEN DEPLOYMENT IS NOT THE THING TO RESTORE. A run that died between
-  # a patch and its restore leaves the probes stripped; capturing THAT as "original" latches the
-  # damage into every later run, which then reports a successful restore. Same guard, same reason,
-  # as the one in yu13-stp-and-replace.sh.
-  if [[ "${STP_GW_PROBES}" == *'"startupProbe":null'* || "${STP_GW_PROBES}" == *'"livenessProbe":null'* ]]; then
-    echo "[stp-prep] [warn] the gateway already carries no startup or liveness probe, so an earlier run"
-    echo "[stp-prep] [warn] died before its restore. Returning the MANIFEST form, not this capture."
-    STP_GW_PROBES="$(gw_probe_form GW_MANIFEST_PROBES)"
-  fi
   STP_GW_BORROWED=1
   echo "[stp-prep] borrowing the gateway onto ${image} for the seeding step only (it was ${STP_GW_IMAGE})"
-  ${K} patch deploy cluster-gateway --type=strategic \
-    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${container}\",\"image\":\"${image}\",$(gw_probe_form GW_HISTORICAL_PROBES)}]}}}}" >/dev/null
-  ${K} rollout status deploy/cluster-gateway --timeout=600s >/dev/null \
+  _k patch deploy cluster-gateway --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${container}\",\"image\":\"${image}\",$(gw_probe_form GW_HISTORICAL_PROBES)}]}}}}" >/dev/null || return 1
+  _k rollout status deploy/cluster-gateway --timeout=600s >/dev/null \
     || { echo "[stp-prep] [fail] the borrowed gateway never settled on ${image}"; return 1; }
 }
 
 stp_return_gateway() {
   [[ "${STP_GW_BORROWED}" == "1" ]] || return 0
   local container
-  container="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null)"
+  container="$(_k get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null)"
   echo "[stp-prep] returning the gateway to ${STP_GW_IMAGE} and the probes it had"
-  ${K} patch deploy cluster-gateway --type=strategic \
-    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${container}\",\"image\":\"${STP_GW_IMAGE}\",${STP_GW_PROBES}}]}}}}" >/dev/null 2>&1
-  ${K} rollout status deploy/cluster-gateway --timeout=600s >/dev/null 2>&1 \
-    || echo "[stp-prep] [warn] the gateway did not settle back on ${STP_GW_IMAGE} -- check it before the next run"
+  _k patch deploy cluster-gateway --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${container}\",\"image\":\"${STP_GW_IMAGE}\",${STP_GW_PROBES}}]}}}}" >/dev/null 2>&1 || return 1
+  _k rollout status deploy/cluster-gateway --timeout=600s >/dev/null 2>&1 \
+    || return 1
   STP_GW_BORROWED=0
 }
 
@@ -531,7 +541,7 @@ seed_fixtures() { # seed_fixtures [fresh]  -- "fresh" clears the projection for 
   local log fresh=0
   [[ "${1:-}" == "fresh" ]] && fresh=1
   SEED_N=$((SEED_N + 1))
-  log="/tmp/proofrun/seed-${SEED_N}.log"
+  log="${PROOF_LOG_DIR}/seed-${SEED_N}.log"
   if FRESH_EPOCH="${fresh}" bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >"${log}" 2>&1; then
     grep -E 'feed census|instruments enabled' "${log}" | sed 's/^ */  [seed] /' || true
     return 0
@@ -554,6 +564,11 @@ seed_fixtures() { # seed_fixtures [fresh]  -- "fresh" clears the projection for 
 # was simply never wired in here.
 rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- down, PVC wipe, optionally repin members, up
   local image="${1:-}"
+  [[ "${ALLOW_PROOF_RESET:-0}" == "1" ]] || fail_hard "epoch reset requires explicit ALLOW_PROOF_RESET=1; cleanup never resets data"
+  python3 "${ROOT}/scripts/yu15/proof-cleanup.py" --context "${CTX}" --namespace "${NS}" check-storage \
+    || fail_hard "member storage is not safe for this proof lifecycle"
+  python3 "${ROOT}/scripts/yu15/proof-cleanup.py" --context "${CTX}" --namespace "${NS}" reset-intent --image "${image:-$(current_image)}" \
+    || fail_hard "could not record epoch reset intent"
   # AN EPOCH WIPE MUST NEVER ALSO BE A SILENT BUILD CHANGE. The baseline block derives its image
   # from the MANIFESTS, and the manifests drift behind what a lane actually rolled
   # (issues/open/the-manifests-pin-a-build-the-rig-no-longer-runs.md) — so a bare invocation on a
@@ -573,18 +588,18 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- do
        If the build change is deliberate:            ALLOW_IMAGE_CHANGE=1 bash scripts/yu15/run-proofs.sh ..."
   fi
   ensure_image_on_nodes "${image}"
-  ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
-  ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
-  ${K} delete pvc -l app=order-matcher-cluster --ignore-not-found >/dev/null 2>&1
+  _k scale sts order-matcher-cluster --replicas=0 >/dev/null || fail_hard "could not stop members"
+  _k wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1 || fail_hard "members are still running; refusing PVC deletion"
+  _k delete pvc -l app=order-matcher-cluster --ignore-not-found >/dev/null 2>&1 || fail_hard "PVC deletion failed"
   if [[ -n "${image}" ]]; then
-    ${K} set image statefulset/order-matcher-cluster \
-      "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
+    _k set image statefulset/order-matcher-cluster \
+      "$(_k get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null || fail_hard "member image patch failed"
   fi
-  ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
-  ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null \
+  _k scale sts order-matcher-cluster --replicas=3 >/dev/null || fail_hard "member scale-up failed"
+  _k rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null \
     || fail_hard "the members' rollout did not complete — NOT a fresh epoch, and the PVCs are already wiped"
-  ${K} rollout restart deployment/cluster-gateway >/dev/null
-  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null \
+  _k rollout restart deployment/cluster-gateway >/dev/null || fail_hard "gateway restart failed"
+  _k rollout status deployment/cluster-gateway --timeout=600s >/dev/null \
     || fail_hard "the gateway's rollout did not complete after the epoch mint"
   assert_members_up "${image}"
   # A /seed through a MISMATCHED gateway is refused for reasons that have nothing to do with
@@ -602,8 +617,8 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- do
   # ADR-070: a fresh epoch restarts the tape at day 1, and the publisher learns that ONLY through
   # the replay-epoch stamp. A stale stamp is the silent-wrong form — the clock keeps running from
   # the DEAD epoch's mint and the prices are completely plausible — so a stamp that cannot be
-  # written is a hard stop, exactly like the write probe above. (A rig with no replay wiring at
-  # all stamps nothing and returns 0; the publisher then says so on /health and walks.)
+  # written is a hard stop, exactly like the write probe above. Missing or unreadable storage
+  # evidence refuses. REPLAY_ANCHOR_MODE=disabled is an explicit skip, not an anchor/replay claim.
   stamp_replay_epoch || fail_hard "the replay-epoch ConfigMap could not be stamped for this fresh
        epoch — the publisher would keep replaying on the dead epoch's clock, silently"
   roll_feed_adapter
@@ -617,7 +632,7 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- do
 # leaving as a tripwire in the function whose whole job is to be believed.
 assert_members_up() { # assert_members_up [image]
   local image="${1:-}" states count
-  states="$(${K} get pods -l app=order-matcher-cluster \
+  states="$(_k get pods -l app=order-matcher-cluster \
     -o jsonpath='{range .items[*]}{.spec.containers[0].image}{" "}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null)"
   count="$(printf '%s\n' "${states}" | grep -c . || true)"
   if [[ "${count}" != "3" ]]; then
@@ -676,7 +691,7 @@ ${states}"
 # gates on the runner's own claim, and the hard failure stands if the property never arrives.
 
 # Moved up from the gateway-pin block below, which is now not the first caller.
-gateway_image() { ${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+gateway_image() { _k get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 
 # The write goes through the GATEWAY POD ITSELF (wget on localhost:18110) rather than a port
 # forward: this runs inside rebuild_fresh_epoch, which is called before any forward exists and from
@@ -686,7 +701,7 @@ gateway_image() { ${K} get deploy cluster-gateway -o jsonpath='{.spec.template.s
 await_cluster_writable() { # await_cluster_writable [budget-seconds]
   local budget="${1:-120}" waited=0 r=""
   while (( waited < budget )); do
-    r="$(${K} exec deploy/cluster-gateway -- wget -q -O- --header='Content-Type: application/json' \
+    r="$(_k exec deploy/cluster-gateway -- wget -q -O- --header='Content-Type: application/json' \
       --post-data='{"accountId":42422,"tickers":"ZZPROBE9","price":100}' \
       http://localhost:18110/seed 2>/dev/null)"
     if [[ "${r}" == *'"seeded":true'* ]]; then
@@ -717,7 +732,7 @@ await_cluster_writable() { # await_cluster_writable [budget-seconds]
 # here than there, because here nothing downstream would ever contradict it.
 roll_feed_adapter() {
   local replicas old uid name n waited=0
-  replicas="$(${K} get deploy feed-adapter -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+  replicas="$(_k get deploy feed-adapter -o jsonpath='{.spec.replicas}' 2>/dev/null)"
   if [[ -z "${replicas}" ]]; then
     echo "[epoch] no feed-adapter Deployment on this rig; nothing to restore"
     return 0
@@ -731,20 +746,20 @@ roll_feed_adapter() {
   # cannot round-trip a registration, so a stale adapter would fail this assertion for a reason
   # that has a one-line remedy and no relation to the fault the assertion exists to catch.
   local want; want="$(current_image)"
-  if [[ -n "${want}" && "$(${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)" != "${want}" ]]; then
+  if [[ -n "${want}" && "$(_k get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)" != "${want}" ]]; then
     echo "[epoch] repinning feed-adapter to ${want} (it tracks the members' build)"
-    ${K} set image deployment/feed-adapter \
-      "$(${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].name}')=${want}" >/dev/null
+    _k set image deployment/feed-adapter \
+      "$(_k get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].name}')=${want}" >/dev/null
   fi
-  old="$(${K} get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null)"
-  ${K} rollout restart deployment/feed-adapter >/dev/null
-  ${K} rollout status deployment/feed-adapter --timeout=600s >/dev/null \
+  old="$(_k get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null)"
+  _k rollout restart deployment/feed-adapter >/dev/null
+  _k rollout status deployment/feed-adapter --timeout=600s >/dev/null \
     || fail_hard "the feed adapter's rollout did not complete after the epoch mint"
   while (( waited < 240 )); do
-    uid="$(${K} get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null)"
-    name="$(${K} get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+    uid="$(_k get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null)"
+    name="$(_k get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
     if [[ -n "${uid}" && "${uid}" != "${old}" && -n "${name}" ]]; then
-      n="$(${K} logs "${name}" 2>/dev/null | grep -c '^SYMBOL ' || true)"
+      n="$(_k logs "${name}" 2>/dev/null | grep -c '^SYMBOL ' || true)"
       [[ "${n}" =~ ^[0-9]+$ ]] || n=0
       if (( n >= 20 )); then
         echo "[epoch] feed adapter sequencing: ${n} symbols round-tripped through consensus (${waited}s)"
@@ -797,9 +812,9 @@ fi
 # wipe, no epoch reset, no projection clear.
 if [[ "$(gateway_image)" != "${BASELINE_IMAGE}" ]]; then
   echo "[baseline] gateway is on $(gateway_image); repinning to ${BASELINE_IMAGE}"
-  ${K} set image deployment/cluster-gateway \
-    "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
-  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
+  _k set image deployment/cluster-gateway \
+    "$(_k get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  _k rollout status deployment/cluster-gateway --timeout=600s >/dev/null
 fi
 
 # THE EXTRACT PRODUCER NEEDS BOTH HALVES OF THE TREATMENT THE GATEWAY GETS ABOVE: a repin, for a
@@ -815,12 +830,12 @@ fi
 # RISK-EXTRACT-READY" -- true, and silent about the cause. Same shape as the gateway lesson above,
 # one deployment further along: check every Deployment that runs the cluster-node image, not the
 # StatefulSet alone.
-producer_image() { ${K} get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+producer_image() { _k get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 if [[ -n "$(producer_image)" && "$(producer_image)" != "${BASELINE_IMAGE}" ]]; then
   echo "[baseline] risk-extract is on $(producer_image); repinning to ${BASELINE_IMAGE}"
-  ${K} set image deployment/risk-extract \
-    "$(${K} get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
-  ${K} rollout status deployment/risk-extract --timeout=600s >/dev/null
+  _k set image deployment/risk-extract \
+    "$(_k get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  _k rollout status deployment/risk-extract --timeout=600s >/dev/null
 fi
 
 # THE FEED ADAPTER IS THE THIRD DEPLOYMENT RUNNING THE CLUSTER-NODE IMAGE, and the lesson above is
@@ -829,12 +844,12 @@ fi
 # speaking AeronReplicationCodec on the ingress, so a stale build here is a wire mismatch, not a
 # cosmetic tag. Cheap and silent when it is scaled to 0, which is where it sits today
 # (issues/open/the-feed-adapter-parses-the-wrong-level-of-the-pricing-envelope.md).
-adapter_image() { ${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+adapter_image() { _k get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 if [[ -n "$(adapter_image)" && "$(adapter_image)" != "${BASELINE_IMAGE}" ]]; then
   echo "[baseline] feed-adapter is on $(adapter_image); repinning to ${BASELINE_IMAGE}"
-  ${K} set image deployment/feed-adapter \
-    "$(${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
-  ${K} rollout status deployment/feed-adapter --timeout=600s >/dev/null
+  _k set image deployment/feed-adapter \
+    "$(_k get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  _k rollout status deployment/feed-adapter --timeout=600s >/dev/null
 fi
 
 # The EXTRACT PRODUCER runs the same cluster-node image and was pinned by nothing. Its tag never
@@ -847,15 +862,15 @@ fi
 # never equals the local daemon's Id and an id comparison would fire on every single run -- a
 # guard that always fires is as useless as one that never does. A producer older than the image
 # it claims to run is the actual condition, and it is satisfiable.
-producer_started() { ${K} get pod -l app=risk-extract -o jsonpath='{.items[0].status.startTime}' 2>/dev/null; }
+producer_started() { _k get pod -l app=risk-extract -o jsonpath='{.items[0].status.startTime}' 2>/dev/null; }
 local_image_built() { docker image inspect "${BASELINE_IMAGE}" --format '{{.Created}}' 2>/dev/null; }
 epoch_of() { python3 -c "import sys,datetime;print(int(datetime.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00')).timestamp()))" "$1" 2>/dev/null || echo 0; }
 PRODUCER_AT="$(producer_started)"; IMAGE_AT="$(local_image_built)"
 if [[ -n "${PRODUCER_AT}" && -n "${IMAGE_AT}" ]]; then
   if (( $(epoch_of "${IMAGE_AT}") > $(epoch_of "${PRODUCER_AT}") )); then
     echo "[baseline] risk-extract started ${PRODUCER_AT}, older than ${BASELINE_IMAGE} built ${IMAGE_AT}; restarting it"
-    ${K} rollout restart deployment/risk-extract >/dev/null
-    ${K} rollout status deployment/risk-extract --timeout=600s >/dev/null
+    _k rollout restart deployment/risk-extract >/dev/null
+    _k rollout status deployment/risk-extract --timeout=600s >/dev/null
   fi
 fi
 
@@ -867,13 +882,13 @@ fi
 # open=6 trades=136 vs m2 open=7 trades=134, all three at applied=7365. The only recovery is a
 # wipe to a fresh epoch.
 member_state() { # member_state <ordinal> -> "<applied> <bookHash>"
-  ${K} exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null \
+  _k exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null \
     | awk '/^traderx_cluster_applied/ {a=$2} /^traderx_book_order_hash/ {h=$2} END {print a, h}'
 }
 if [[ "${NEED_FRESH}" == "0" ]]; then
   # Quiet the rig first: sampling three members sequentially under live algo traffic would never
   # catch them at one sequence, and the loop would misreport a busy healthy rig as unverifiable.
-  ${K} scale deploy/execution-algo-engine --replicas=0 >/dev/null 2>&1
+  _k scale deploy/execution-algo-engine --replicas=0 >/dev/null 2>&1
   tries=0
   while :; do
     read -r A0 H0 <<<"$(member_state 0)"
@@ -914,9 +929,9 @@ fi
 # trades this epoch booked, so the engine holds positions no surviving row explains -- only
 # restarting both sides makes "SQL is a projection of the log" true again.
 if [[ "${NEED_FRESH}" == "0" ]]; then
-  ENGINE_TRADES="$(${K} exec order-matcher-cluster-0 -- \
+  ENGINE_TRADES="$(_k exec order-matcher-cluster-0 -- \
     sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')"
-  SQL_MAX_TRADE="$(${K} exec deploy/eod-price-db -c mariadb -- \
+  SQL_MAX_TRADE="$(_k exec deploy/eod-price-db -c mariadb -- \
     mariadb -utraderx -ptraderx traderx -sN -e \
     "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id,'-',1) AS UNSIGNED)),0) FROM trades;" 2>/dev/null)"
   if [[ ! "${ENGINE_TRADES}" =~ ^[0-9]+$ || ! "${SQL_MAX_TRADE}" =~ ^[0-9]+$ ]]; then
@@ -960,8 +975,14 @@ if [[ "${NEED_FRESH}" == "1" ]]; then
   echo "[epoch] projection cleared and reseeded for this epoch"
 fi
 
-mkdir -p /tmp/proofrun
-pass=0; skip=0; fail=0; attempted=0; results=()
+mkdir -p "${PROOF_LOG_DIR}"
+pass=0; skip=0; fail=0; attempted=0; executed=0; outcomes=0; results=()
+prerequisite_failed() {
+  echo "[fail] ${p}: $*"
+  results+=("FAIL ${p} - prerequisite: $*")
+  fail=$((fail + 1))
+  outcomes=$((outcomes + 1))
+}
 for p in "${PROOFS[@]}"; do
   attempted=$((attempted + 1))
   script="${ROOT}/scripts/proofs/${p}.sh"
@@ -982,6 +1003,7 @@ for p in "${PROOFS[@]}"; do
     echo "[fail] no such proof: ${p} (expected ${script})"
     results+=("FAIL ${p} - script missing; the suite named a proof that does not exist")
     fail=$((fail + 1))
+    outcomes=$((outcomes + 1))
     continue
   fi
 
@@ -993,6 +1015,10 @@ for p in "${PROOFS[@]}"; do
   # carry -- subscriber off, fresh epoch, so the log holds only the proof's own fixtures -- and the
   # feed is restored (env back on + gateway restart replays the stream) afterwards.
   if [[ "${p}" == yu13-stp-and-replace ]]; then
+    # Record both possible retained writers before preparation/proof can select either.
+    python3 "${ROOT}/scripts/yu15/proof-cleanup.py" --context "${CTX}" --namespace "${NS}" writer-intent \
+      --image "${STP_IMAGE_PRE}" --image "${IMAGE_FIX:-traderx/cluster-node:stp-boundary-fix}" \
+      || fail_hard "could not persist the STP retained writer boundary"
     # Mint the epoch ON the pre-change image, not on the current one.
     #
     # This proof rolls the members onto historical builds (yu15-pre, then yu15-stp) with PVCs
@@ -1021,23 +1047,23 @@ for p in "${PROOFS[@]}"; do
     # run by this point in the order.
     echo "[stp-prep] scaling the observability stack to 0 (stp needs a quiet box for consensus)"
     for d in grafana loki tempo prometheus otel-collector; do
-      ${K} scale deploy/"${d}" --replicas=0 >/dev/null 2>&1 || true
+      if _k get deploy/"${d}" --ignore-not-found -o name | grep -q .; then
+        _k scale deploy/"${d}" --replicas=0 >/dev/null || fail_hard "could not quiet ${d}"
+      fi
     done
-    STP_RESTORE_OBS=1
     OBS_EXPECTED=0
 
     # THE FEED ADAPTER GOES DOWN FOR THE SAME TWO REASONS THE CONTROL FEED DOES, and it is a
     # cluster client on the TIP build while the members are about to go historical -- the very
     # mismatch stp_borrow_gateway exists to work around, one Deployment further along. It also
     # ticks 69 instruments into a log that is supposed to hold only this proof's fixtures. The
-    # restore block below scales it back to 1 BEFORE its rebuild_fresh_epoch, so roll_feed_adapter
-    # brings it up and asserts it is sequencing rather than leaving that to hope.
+    # supervisor restores the replica count captured before preparation.
     echo "[stp-prep] feed adapter to 0 (tip client, historical members; and this epoch stays minimal)"
-    ${K} scale deploy/feed-adapter --replicas=0 >/dev/null 2>&1 || true
-    ${K} wait --for=delete pod -l app=feed-adapter --timeout=120s >/dev/null 2>&1
+    _k scale deploy/feed-adapter --replicas=0 >/dev/null || fail_hard "could not quiet feed adapter"
+    _k wait --for=delete pod -l app=feed-adapter --timeout=120s >/dev/null 2>&1 || fail_hard "feed adapter remains running"
 
     echo "[stp-prep] control feed off + fresh epoch minted ON ${STP_IMAGE_PRE}"
-    ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
+    _k set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null || fail_hard "could not disable control feed"
     # WAIT FOR THE SUBSCRIBER TO ACTUALLY BE GONE BEFORE MINTING THE EPOCH. `set env` starts a
     # rollout; it does not finish one. Without this wait the OLD gateway pod -- still
     # CONTROL_FEED_SUBSCRIBER=1 -- is alive while rebuild_fresh_epoch below wipes the PVCs and
@@ -1054,7 +1080,7 @@ for p in "${PROOFS[@]}"; do
     # Measured 2026-08-14. At failure the epoch carried applied=655 on all three members, against
     # ~130 for seed-proof-fixtures alone; the ~510 excess is the universe. Intermittent precisely
     # because it is a race on whether the old pod is still up when the members return.
-    ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
+    _k rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1 || fail_hard "control feed rollout failed"
     rebuild_fresh_epoch "${STP_IMAGE_PRE}" allow-image-change
     # A fresh epoch needs a fresh projection — the engine's counters restart below the trade ids
     # already in SQL, and stp's own preflight (correctly) refuses to run into that. The main heal
@@ -1072,18 +1098,16 @@ for p in "${PROOFS[@]}"; do
         # seeded) but it fails, and reports "runs against a partly-seeded rig" about a rig that is
         # fully seeded. A false alarm in the one place a reader checks for a real one.
         if seed_fixtures fresh; then STP_PREP_SEEDED=1; else
-          echo "[warn] the stp epoch is only partly seeded -- see above"
+          fail_hard "stp preparation seed failed"
         fi
       else
-        echo "[warn] no forwards after borrowing the gateway -- the stp epoch is NOT seeded"
+        fail_hard "no forwards after borrowing the gateway"
       fi
     else
-      echo "[warn] could not borrow the gateway; the stp epoch will NOT be seeded (tip gateway in"
-      echo "       front of historical members refuses every /seed)"
+      fail_hard "could not borrow the gateway for stp preparation"
     fi
-    stp_return_gateway
-    start_forwards || { echo "[fail] no forwards after returning the gateway"; break; }
-    STP_RESTORE_FEED=1
+    stp_return_gateway || fail_hard "borrowed gateway return failed; durable cleanup required"
+    start_forwards || { prerequisite_failed "no forwards after returning the gateway"; break; }
   fi
 
   # yu05-recon's forward-sweep verdict reads LIFETIME counters: ReconciliationService's
@@ -1103,32 +1127,38 @@ for p in "${PROOFS[@]}"; do
   # state the assertion was never measuring, which is the same reason the baseline block above
   # refuses to let a proof inherit an engine build from the run before it.
   if [[ "${p}" == yu05-recon ]]; then
-    ${K} rollout restart deployment/trade-processor >/dev/null 2>&1
-    ${K} rollout status deployment/trade-processor --timeout=300s >/dev/null 2>&1
+    _k rollout restart deployment/trade-processor >/dev/null 2>&1 \
+      || { prerequisite_failed "trade-processor restart failed"; break; }
+    _k rollout status deployment/trade-processor --timeout=300s >/dev/null 2>&1 \
+      || { prerequisite_failed "trade-processor rollout failed"; break; }
     sleep 20   # let the first scheduled sweep run against a settled projection
   fi
 
   # yu08 is the only proof that needs the algo engine; everything else is better off without its
   # traffic moving the counters.
   if [[ "${p}" == yu08-* ]]; then
-    ${K} scale deploy/execution-algo-engine --replicas=1 >/dev/null 2>&1
-    ${K} rollout status deploy/execution-algo-engine --timeout=300s >/dev/null 2>&1
+    _k scale deploy/execution-algo-engine --replicas=1 >/dev/null 2>&1 \
+      || { prerequisite_failed "algo scale-up failed"; break; }
+    _k rollout status deploy/execution-algo-engine --timeout=300s >/dev/null 2>&1 \
+      || { prerequisite_failed "algo rollout failed"; break; }
   else
-    ${K} scale deploy/execution-algo-engine --replicas=0 >/dev/null 2>&1
+    _k scale deploy/execution-algo-engine --replicas=0 >/dev/null 2>&1 \
+      || { prerequisite_failed "algo scale-down failed"; break; }
   fi
 
-  start_forwards || { echo "[fail] could not establish forwards before ${p}"; break; }
+  start_forwards || { prerequisite_failed "could not establish forwards"; break; }
   if [[ "${STP_PREP_SEEDED:-0}" == "1" ]]; then
     echo "  [seed] already seeded by the stp prep through a matched gateway; not re-running"
     STP_PREP_SEEDED=0
   else
-    seed_fixtures || echo "[warn] ${p} runs against a partly-seeded rig -- see above"
+    seed_fixtures || { prerequisite_failed "fixture seed failed"; break; }
   fi
 
   printf "%-34s " "${p}"
-  bash "${script}" > "/tmp/proofrun/${p}.log" 2>&1
+  executed=$((executed + 1))
+  bash "${script}" > "${PROOF_LOG_DIR}/${p}.log" 2>&1
   case $? in
-    0) echo "PASS"; pass=$((pass + 1)); results+=("PASS ${p}") ;;
+    0) echo "PROOF_OK (cleanup pending)"; pass=$((pass + 1)); results+=("PROOF_OK ${p}") ;;
     # "capability absent" was a cause this line cannot know. It was true of the only skippers that
     # existed when it was written (the yu04/yu05 pair, which skip when reference-data's control
     # snapshot is missing) and became a false statement the moment a proof skipped for a different
@@ -1139,28 +1169,12 @@ for p in "${PROOFS[@]}"; do
     2) echo "SKIP (see log)"; skip=$((skip + 1)); results+=("SKIP ${p}") ;;
     *) echo "FAIL"; fail=$((fail + 1)); results+=("FAIL ${p}") ;;
   esac
+  outcomes=$((outcomes + 1))
 
-  if [[ "${STP_RESTORE_FEED:-0}" == "1" && "${p}" == yu13-stp-and-replace ]]; then
-    # Hand the rig back the way the rest of the suite expects it: the proof's own restore trap
-    # returns the image it FOUND, which after the prep above is the historical one. Rebuild the
-    # epoch on the baseline build before turning the feed back on, or the next 510-security replay
-    # lands on a 64-capacity engine.
-    echo "[stp-prep] restoring ${BASELINE_IMAGE} at a fresh epoch, then the feed adapter and control feed"
-    ${K} scale deploy/feed-adapter --replicas=1 >/dev/null 2>&1 || true
-    rebuild_fresh_epoch "${BASELINE_IMAGE}" allow-image-change
-    ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=1 >/dev/null
-    ${K} rollout restart deploy/cluster-gateway >/dev/null
-    ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
-    start_forwards && { seed_fixtures fresh || echo "[warn] restored epoch only partly seeded -- see above"; }
-    if [[ "${STP_RESTORE_OBS:-0}" == "1" ]]; then
-      echo "[stp-prep] restoring the observability stack"
-      for d in grafana loki tempo prometheus otel-collector; do
-        ${K} scale deploy/"${d}" --replicas=1 >/dev/null 2>&1 || true
-      done
-      STP_RESTORE_OBS=0
-      OBS_EXPECTED=1
-    fi
-    STP_RESTORE_FEED=0
+  if [[ "${p}" == yu13-stp-and-replace ]]; then
+    # Last proof in this suite. The supervisor returns exact recorded settings after stopping
+    # owned proof processes; it never mints another epoch or substitutes default replica counts.
+    echo "[stp-prep] recorded configuration will be restored by the cleanup supervisor"
   fi
 done
 
@@ -1173,20 +1187,20 @@ done
 # This is the same defect the comment at the head of the loop describes about a missing proof
 # script -- "reported success having silently run a smaller suite than it claimed" -- which was
 # fixed there and left standing eighty lines below. Fixing the two `break`s would close the two
-# known exits; asserting the loop RAN EVERY PROOF closes the ones nobody has found yet, because it
-# checks the property (all proofs attempted) rather than the mechanism (these two breaks).
-if [[ ${attempted} -ne ${#PROOFS[@]} ]]; then
+# known exits. Attempting preparation is not executing a proof: a last-proof prerequisite failure
+# used to satisfy this guard without entering that proof. Count terminal outcomes separately.
+if [[ ${outcomes} -ne ${#PROOFS[@]} ]]; then
   fail=$((fail + 1))
   echo
-  echo "[fail] TRUNCATED: ${attempted} of ${#PROOFS[@]} proofs attempted -- this run did not finish,"
+  echo "[fail] TRUNCATED: ${outcomes} of ${#PROOFS[@]} proofs have terminal outcomes -- this run did not finish,"
   echo "       and its counts below describe only what ran. Do not read them as a suite result."
 fi
 
 echo
-echo "==== ${pass} passed, ${skip} skipped, ${fail} failed (of ${#PROOFS[@]} proofs, ${attempted} attempted) ===="
+echo "==== proof results: ${pass} succeeded, ${skip} skipped, ${fail} failed (of ${#PROOFS[@]} selected, ${attempted} preparation attempts, ${executed} executed, ${outcomes} terminal outcomes); cleanup pending ===="
 # "${results[@]}" on an EMPTY array trips set -u ("unbound variable") and turned a clean
 # no-proofs-ran outcome into a shell error after the summary had already printed.
 if [[ ${#results[@]} -gt 0 ]]; then
-  printf '%s\n' "${results[@]}" | grep -v '^PASS' || true
+  printf '%s\n' "${results[@]}" | grep -v '^PROOF_OK' || true
 fi
 [[ ${fail} -eq 0 ]]

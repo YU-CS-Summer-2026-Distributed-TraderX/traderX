@@ -9,25 +9,24 @@
 # Then it rolls the members and gateway forward and shows the same two scenarios behave correctly.
 #
 # The members are rolled with their PVCs INTACT, deliberately, so the before/after runs are against
-# the same state machine lineage rather than two different clusters. TWO separate guarantees make
-# that safe, and conflating them is how this comment went stale twice already:
+# the same state machine lineage rather than two different clusters. Distinguish the pair's
+# format identity from admission of the retained boundary:
 #
 #   * FORMAT IDENTITY across the step under proof. The pair is now SYNTHESIZED from one tree (see
-#     IMAGE_PRE below), so both sides write the SAME SNAPSHOT_FORMAT -- 7 today -- and the
-#     pre -> fix roll cannot change format at all. It is the same guarantee the pinned pair gave at
-#     format 3; it is now structural rather than a property of two frozen builds, and it moves with
+#     IMAGE_PRE below), so both sides write the SAME SNAPSHOT_FORMAT and the
+#     pre -> fix roll cannot change format at all. The property moves with
 #     the tree instead of receding from it.
-#   * A WIPED EPOCH AT BOTH ENDS, which keeps whatever the rig was carrying out of this entirely.
-#     run-proofs.sh's stp prep wipes the PVCs and mints this epoch fresh on IMAGE_PRE before the
-#     proof starts, and its restore wipes again (rebuild_fresh_epoch "${BASELINE_IMAGE}") when it
-#     puts the baseline back. That is still required -- not for format now, but because the epoch
-#     must hold only this proof's fixtures, with the control feed off.
+#   * AN EXPLICITLY AUTHORIZED FRESH PROOF EPOCH. The runner's STP preparation requires reset
+#     authorization before minting its fixture epoch on IMAGE_PRE with the control feed off.
+#     RI17 cleanup never wipes storage automatically. Returning to a recorded member image with
+#     PVCs retained requires separately reviewed writer/reader compatibility evidence; absent
+#     evidence leaves cleanup unfinished. RI18 content identity is not that evidence.
 #
 # READER TOLERANCE IS DELIBERATELY NOT RELIED ON, and saying so is still the point: both sides
-# carry MIN_READABLE_SNAPSHOT_FORMAT = 3 and could restore an older epoch, but nothing in this flow
-# exercises that and nothing here should start depending on it. What HAS changed is the asymmetry
+# carry the selected tree's reader policy, but this proof does not qualify arbitrary older epochs
+# or establish retained compatibility. What HAS changed is the asymmetry
 # the old pinned pair had: those builds predated the MIN_READABLE field entirely, so their reader
-# was a strict equality on 3 and could not read a newer epoch under any circumstances. The
+# required exact equality with their historical format and could not read a newer epoch. The
 # synthesized pair has no such hole -- but it has a new one, in the same place, and step 0 below is
 # still the guard: a pair built BEFORE a tip that has since advanced its format meets a snapshot
 # NEWER than it can read. That fails with the build's own explicit "snapshot format N is NEWER
@@ -51,7 +50,9 @@
 # control feed off and the fixture universe seeded through a matched gateway. Step 0 refuses to run
 # without that rather than assert against an epoch it did not get.
 #
-# Both images must be present locally: bash scripts/yu15/build-stp-boundary-images.sh
+# Build the pair locally: bash scripts/yu15/build-stp-boundary-images.sh. The runner also requires
+# selected repository refs to resolve on every node; supply them through explicitly authorized
+# rig preparation. Its admission gate does not repair missing refs automatically.
 set -euo pipefail
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
@@ -98,6 +99,15 @@ QTY=5
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
+# Admit the pair by complete selected input content and verified pre/fix role.
+# The builder records generated context, generation composition, strict revert
+# transformation and packaged classes/resources/dependencies on immutable image
+# configuration. Git revision is provenance; content hashes also cover dirty bytes.
+# Missing/malformed provenance refuses; unchanged regeneration and cache hits pass.
+STP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "${STP_ROOT}/scripts/yu15/stp-image-provenance.py" verify --root "${STP_ROOT}" --role pre --image "${IMAGE_PRE}"
+python3 "${STP_ROOT}/scripts/yu15/stp-image-provenance.py" verify --root "${STP_ROOT}" --role fix --image "${IMAGE_FIX}"
+
 # The trade bridge projects into the `database` deploy on the current rigs (eod-price-db carries
 # the same schema but only EOD pricing data). Override SQL_DB for a rig wired differently.
 # Deployment name and CONTAINER name are not the same thing on every rig: the cluster rig runs
@@ -548,10 +558,9 @@ step "0. preflight"
 # else is asserting against an epoch it did not get. The members' CURRENT image is the available
 # proxy for "who authored this epoch".
 #
-# THE STALENESS CHECK BELOW DOES NOT COVER THIS, and the two are not redundant. That one compares
-# image BUILD DATES, which is a good proxy for "the pair is behind the tree" and no proxy at all for
-# "the pair authored this epoch" -- an epoch minted by a NEWER build than IMAGE_PRE passes every
-# date comparison here.
+# The content admission at startup cannot establish who authored retained state;
+# an epoch from another build can coexist with current pair images. This epoch
+# fence and the content guard check separate preconditions.
 if [[ "${ORIGINAL_IMAGE}" != "${IMAGE_PRE}" && "${ORIGINAL_IMAGE}" != "${IMAGE_FIX}" ]]; then
   fail "the members are on ${ORIGINAL_IMAGE}, so this epoch was not minted on ${IMAGE_PRE}.
   This proof does not mint its own epoch -- the runner does. Run it as:
@@ -564,71 +573,7 @@ fi
 # image is "not yet present" every single time and re-copies 194MB into four nodes. On a host where
 # three busy-spinning Aeron members already burn ~150-200% CPU each, that load can take longer than
 # the whole proof. SKIP_KIND_LOAD=1 when the nodes demonstrably already have both tags.
-# PRESENT IS NOT CONTEMPORANEOUS.
-# `docker image inspect` passes any tag that exists, including one left behind by an earlier
-# generation of the tree -- and build-cluster-image.sh rebuilds the rig's own tag but NOT these two
-# proof-only tags, so every rebuild of the rig strands them a little further behind the source.
-#
-# THE SYNTHESIZED PAIR MADE THIS MORE IMPORTANT, NOT LESS. A pinned pair was ALWAYS behind and
-# everyone knew it. A pair named for the current tree LOOKS current, and goes stale silently the
-# next time anything rebuilds the tip -- at which point the boundary being crossed is no longer the
-# boundary the tags claim. The remedy is now one command, which is the whole point:
-#     bash scripts/yu15/build-stp-boundary-images.sh
-#
-# Rolling the deterministic core BACK to a build older than the state it must recover is not a
-# controlled experiment, it is a snapshot the reader cannot take. Observed 2026-08-05 on this rig,
-# with IMAGE_PRE from 2026-07-22 and the deployed image rebuilt 2026-08-04: loading the barrier
-# snapshot the newer build had just written threw, inside onSnapshotRecord,
-#     java.lang.IllegalStateException: snapshot corrupt: symbol id 64
-# (MAX_SECURITIES was 64 on those builds, so ids ran 0..63) which killed the service agent on all
-# three members with
-#     AgentTerminationException: failed to start service=0
-# The consensus modules stayed alive and the pods stayed READY, so the rig LOOKED healthy while
-# every engine was dead -- and the restore path then hung on a snapshot barrier a dead engine can
-# never take. Today's builds refuse a too-new snapshot with an explicit message instead of that
-# false accusation, but they still refuse it and the engines are still dead.
-# IS THE PAIR STILL THE CURRENT BOUNDARY? A synthesized boundary has exactly one way to go wrong
-# quietly, and this is it.
-#
-# The pinned pair was ALWAYS behind the tree and everyone knew it. A pair named for the current
-# tree LOOKS current and rots silently: change the engine, do not rebuild, and this proof goes on
-# crossing yesterday's boundary while reporting today's. So compare the images against the SOURCE
-# they claim to be built from, and refuse rather than assert against a stale boundary. The remedy
-# is one command, which is the entire reason the pinning was given up.
-#
-# THIS REPLACED A BUILD-DATE COMPARISON AGAINST THE DEPLOYED IMAGE (2026-08-23), which had become
-# vacuous and then actively harmful. It read `IMG_CREATED < DEPLOYED_CREATED` -- but the runner
-# mints this proof's epoch ON IMAGE_PRE, so the deployed image IS one of the pair and the check
-# compared the pair against itself. Whichever side was built second made the other one "stale". It
-# then set SKIP_REGRESSION=1, which ran steps 5-9 against the deployed build -- i.e. asserted that
-# self-trade prevention works against IMAGE_PRE, the build with self-trade prevention REMOVED. That
-# path could not pass in the supported flow and has been removed rather than repaired: with the
-# pair rebuildable by one command there is no such thing as a run that legitimately lacks a
-# pre-change image, only a run that has not built one. Observed on the first synthesized run --
-# "[skip] stale: ...stp-boundary-fix" followed by "[FAIL] member 0 booked a self-trade under STP".
-#
-# python3 rather than `find -newermt` or `date -d`: both spell this differently on BSD and GNU, and
-# this proof already depends on python3 elsewhere.
-STP_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/generated/code/target-generated/order-matcher/src"
-for img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
-  IMG_CREATED="$(docker image inspect "${img}" --format '{{.Created}}' 2>/dev/null || true)"
-  [[ -n "${IMG_CREATED}" ]] || continue   # a missing image is caught by the inspect below
-  [[ -d "${STP_SRC}" ]] || break          # no generated tree here: nothing to compare against
-  NEWER="$(python3 -c '
-import os, sys, datetime
-built = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()
-for root, _, files in os.walk(sys.argv[2]):
-    for f in files:
-        if f.endswith(".java") and os.path.getmtime(os.path.join(root, f)) > built:
-            print(os.path.relpath(os.path.join(root, f), sys.argv[2]))
-            sys.exit(0)
-' "${IMG_CREATED}" "${STP_SRC}")"
-  [[ -z "${NEWER}" ]] || fail "${img} was built ${IMG_CREATED%%T*} and the generated source has moved
-  since (e.g. ${NEWER}). This proof would cross a boundary that is no longer the system's. Rebuild:
-      bash scripts/yu15/build-stp-boundary-images.sh
-  A regenerate that changed nothing still rewrites mtimes and trips this; the rebuild is cheap and
-  the alternative is a green run about an engine nobody is shipping."
-done
+# The pre/fix pair was admitted by content before any rig observation or mutation.
 
 # Only now pay for the load — kind re-copies 194MB into four nodes every time (see below), which is
 # a minute of work to reach a refusal the check above can reach in a second.
