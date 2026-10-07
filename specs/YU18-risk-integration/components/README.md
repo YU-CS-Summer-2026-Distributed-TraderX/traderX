@@ -14,4 +14,6 @@
 
 | [Combined trader workspace](trader-workspace-combined/README.md) | Connected local UI; production auth and remaining migration open | Standalone combined desk and existing console API/server |
 
+| [Synthetic portfolio generator](portfolio-generator/README.md) | Local implementation; coordinator review pending | State-parent risk-portfolio-tools; external engine schema and optional proof |
+
 Adding a directory does not activate generation. Shared files stay at the state parent. Follow [component rules](../../../docs/spec-kit/state-components.md).

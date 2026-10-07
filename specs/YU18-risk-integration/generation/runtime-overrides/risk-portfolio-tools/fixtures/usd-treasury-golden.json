@@ -1,0 +1,95 @@
+{
+  "base_currency": "USD",
+  "compute_greeks": false,
+  "market": {
+    "asof": "2026-01-15",
+    "currencies": {
+      "USD": {
+        "discount_curve": {
+          "rates": [
+            0.03,
+            0.03,
+            0.03,
+            0.03
+          ],
+          "times": [
+            0.0,
+            1.0,
+            5.0,
+            10.0
+          ]
+        }
+      }
+    }
+  },
+  "scenario_risk": false,
+  "schema_version": "2",
+  "trades": [
+    {
+      "accrual_day_count": "ACT/ACT (ICMA)",
+      "coupon_rate": 0.0,
+      "coupon_schedule": [],
+      "currency": "USD",
+      "face_amount": 100000,
+      "maturity_date": "2027-01-15",
+      "redemption_fraction": 1.0,
+      "trade_id": "golden-bill-long",
+      "trade_type": "bond"
+    },
+    {
+      "accrual_day_count": "ACT/ACT (ICMA)",
+      "coupon_rate": 0.0,
+      "coupon_schedule": [],
+      "currency": "USD",
+      "face_amount": -100000,
+      "maturity_date": "2027-01-15",
+      "redemption_fraction": 1.0,
+      "trade_id": "golden-bill-short",
+      "trade_type": "bond"
+    },
+    {
+      "accrual_day_count": "ACT/ACT (ICMA)",
+      "coupon_rate": 0.04,
+      "coupon_schedule": [
+        {
+          "end_date": "2026-04-15",
+          "payment_date": "2026-04-15",
+          "start_date": "2025-10-15"
+        },
+        {
+          "end_date": "2026-10-15",
+          "payment_date": "2026-10-15",
+          "start_date": "2026-04-15"
+        }
+      ],
+      "currency": "USD",
+      "face_amount": 100000,
+      "maturity_date": "2026-10-15",
+      "redemption_fraction": 1.0,
+      "trade_id": "golden-note-long",
+      "trade_type": "bond"
+    },
+    {
+      "accrual_day_count": "ACT/ACT (ICMA)",
+      "coupon_rate": 0.04,
+      "coupon_schedule": [
+        {
+          "end_date": "2026-04-15",
+          "payment_date": "2026-04-15",
+          "start_date": "2025-10-15"
+        },
+        {
+          "end_date": "2026-10-15",
+          "payment_date": "2026-10-15",
+          "start_date": "2026-04-15"
+        }
+      ],
+      "currency": "USD",
+      "face_amount": -100000,
+      "maturity_date": "2026-10-15",
+      "redemption_fraction": 1.0,
+      "trade_id": "golden-note-short",
+      "trade_type": "bond"
+    }
+  ]
+}

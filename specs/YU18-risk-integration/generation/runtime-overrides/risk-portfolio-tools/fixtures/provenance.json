@@ -1,0 +1,12 @@
+{
+  "engine_revision": "2df78cb08f782010f61acffc07d78030580e7639",
+  "expected_refused": 0,
+  "expected_supported": 4,
+  "financial_validation": false,
+  "portfolio_id": "synthetic-ri14-golden-v1",
+  "request": "usd-treasury-golden.json",
+  "sha256": "c6b38b4ae288eff9444a75a41158b51b36d40e19666828509283fa6f56df3322",
+  "source": "independent explicit Treasury cashflow example, not observed market data",
+  "submission_id": "synthetic-ri14-golden-v1",
+  "synthetic": true
+}
