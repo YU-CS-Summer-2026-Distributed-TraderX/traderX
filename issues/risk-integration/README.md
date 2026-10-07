@@ -9,7 +9,7 @@ This is the maintained queue from the professor meeting, mentor resources, integ
 | ID | Workstream | Current status / next step |
 |---|---|---|
 | RI-01 | [Order types](01-order-types.md) | Seven types integrated and locally exercised; deployment-profile performance remains deferred to RI-13 |
-| RI-02 | [Risk container](02-risk-containerization.md) | Original local packaging accepted; latest engine/worker upgrade needs RI-15 acceptance |
+| RI-02 | [Risk container](resolved/02-risk-containerization.md) | Done: original local packaging scope archived; current engine upgrade is RI15 |
 | RI-03 | [Risk pipeline](03-risk-pipeline.md) | Synthetic single-portfolio milestone done; broader service integration and workers in RI-15/16 |
 | RI-04 | [Contract](04-integration-contract.md) | RI16 EOD service corrections reviewed in isolated engine clone; engine handoff/activation and portfolio contract remain |
 | RI-05 | [Market inputs](05-market-inputs.md) | FX readiness, engine spot/curve mapping, observation-time provenance and broader conventions remain open |
@@ -19,7 +19,7 @@ This is the maintained queue from the professor meeting, mentor resources, integ
 | RI-09 | [Reference resources](09-reference-resources.md) | TreasuryDirect/OCC field and convention research queued |
 | RI-10 | [Docusaurus](resolved/10-documentation-refresh.md) | Done, delivered/published by the documentation lane; user-confirmed. Archived; its existing staged addition is preserved. |
 | RI-11 | [Trader Desk](11-trader-workspace-ui.md) | Combined desk and managed order actions integrated5677b007; production auth/isolation, secondary tools/OTC migration and wider acceptance open |
-| RI-12 | [Self-match prevention](12-cross-account-self-match-prevention.md) | Local implementation/recovery proof done; production ownership identity depends on RI-11 |
+| RI-12 | [Self-match prevention](resolved/12-cross-account-self-match-prevention.md) | Done: local engine/group implementation archived; production identity is RI11 |
 | RI-13 | [GKE performance rebaseline](13-gke-performance-rebaseline.md) | Credits-dependent isolated C4D-or-better deployment and gateway scaling/latency/throughput campaign |
 | RI-14 | [Large portfolio generator/load](14-large-portfolio-generation-and-load.md) | Seeded corpus/local driver integrated at a0d6da0b; massive CPU/GPU/cloud campaign waits for credits |
 | RI-15 | [Portfolio service/results](15-portfolio-service-and-risk-results.md) | New request adapter, container upgrade and accepted portfolio analytics/UI queued |
@@ -158,3 +158,5 @@ September 23 review: RI-02 local packaging accepted; RI-01 spec returned with fo
 2026-10-07 class-window local review:13 isolated delivery slices are reviewed and await controlled integration. Canonical remains `a0d6da0b`; staging and user files are preserved. Scope includes proof cleanup, image freshness/admission, reconciliation subjects, replay anchors, tape status, ack metrics, risk gauges, readiness diagnostics, account readouts, OTC refusal audit, projector OOM exit and book-memory accounting. Exact commits/dependencies, focused evidence and remaining limitations are in `/Users/yaakov/dev/lmax/coordination/eod-integration/CLASS-WINDOW-20261007.json`. These are local/source or generated checks, not deployment, HA, throughput or financial acceptance. No implementation lane remains active; storage/upgrade decisions and live/deployment-profile work stay queued.
 
 2026-10-07 integration: all 13 reviewed code/spec deliveries landed in `b0b4c332`. Combined555 focused cases and the console production build passed. RI10, RI17, RI18, RI19, RI22 and RI28 are archived; RI20/21/23/24/25 remain partial, RI26/27 await decisions. No push, deployment, retained rig or financial validation was performed. Existing staged queue additions remain pending, including RI10 at its new resolved path.
+
+October 7 accounting correction: eight scoped entries are archived (RI02/10/12/17/18/19/22/28). The initial six omitted the older completed container and self-match scopes. RI01 has all seven functional types integrated but retains explicit performance/HA acceptance; RI03/06/11/14/16 likewise contain delivered milestones. These are workstreams rather than 28 independent unfixed bugs. Stale top headers/next actions are reconciled; historical planning lists remain dated context.

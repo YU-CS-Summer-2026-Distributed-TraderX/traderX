@@ -1,6 +1,6 @@
 # RI-05 — Market inputs, provenance and supported coverage
 
-Updated: 2026-09-18. Status: partial foundations; fresh-start FX gap observed. Owner: unassigned. Dependencies: RI-04 capability/profile agreement and RI-09 instrument research.
+Updated: 2026-10-07. Status: in progress: market-input foundations exist; broader FX/spot/curve readiness, observation provenance and conventions remain. Maintainer: coordinator; original delivery notes below retain their dates.
 
 Existing market packaging and assumed-curve Treasury acceptance are foundations. The September 18 EUR/GBP/JPY swap submissions returned PRICE_MISSING; source traces that refusal to missing USD conversion rates for credit admission. This is distinct from curve-based swap valuation.
 
@@ -12,4 +12,6 @@ Existing market packaging and assumed-curve Treasury acceptance are foundations.
 - [ ] Publish a current instrument × calculation matrix, separating booking, model marks, accepted valuation and portfolio risk.
 - [ ] Keep tape, modeled, simulated and carried prices distinct; keep assumed inputs visible in results and UI.
 
-Next: scope FX readiness for the next demo and review the current input contract. Done requires missing/stale/unsupported-input tests and explicit coverage in successful partial results. Treasury acceptance does not certify equities, options, swaps, corporate bonds or full portfolio risk.
+Next: Define remaining market-input readiness/provenance and supported coverage against the accepted engine contract.
+
+October 7 status reconciliation: the top status and next action supersede earlier queued/implementation-held headers. Historical unchecked planning lists are not a claim that implemented milestones are absent. Remaining acceptance is not marked complete.

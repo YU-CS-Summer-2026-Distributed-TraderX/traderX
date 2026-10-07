@@ -1,6 +1,6 @@
 # RI-09 — Mentor resources and instrument reference research
 
-Updated: 2026-09-18. Status: queued research; linked landing pages checked. Owner: unassigned. Dependencies: agree specific instrument fields and permitted data use before ingestion.
+Updated: 2026-10-07. Status: queued field-level reference research; original resource links retained. Maintainer: coordinator; original delivery notes below retain their dates.
 
 The Citadel mentor recommended TreasuryDirect and OCC. The applications below are proposed project uses, not claims that either source is already integrated.
 
@@ -28,4 +28,6 @@ Proposed use: verify listed-option contract identity, deliverables, exercise/exp
 - [ ] Verify access, format and permitted use for any automated ingestion; keep vendor/raw data out of the public repository.
 - [ ] Turn agreed examples into reproducible synthetic or otherwise permitted reference tests.
 
-Next: field-level research for one Treasury bill, one note and one standard/adjusted option pair. Done means a reviewed mapping and test evidence, not just a list of URLs. Cross-links: [market inputs](05-market-inputs.md), [integration contract](04-integration-contract.md), [order types](01-order-types.md).
+Next: Map concrete Treasury/option reference fields and permitted test examples.
+
+October 7 status reconciliation: the top status and next action supersede earlier queued/implementation-held headers. Historical unchecked planning lists are not a claim that implemented milestones are absent. Remaining acceptance is not marked complete.
