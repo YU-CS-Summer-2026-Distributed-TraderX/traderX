@@ -5,10 +5,13 @@ Requires Docker and local Node (vm.SourceTextModule). Exercises static ESM depen
 closure and the image's default command. Does not prove Kubernetes or bridge access.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
+import struct
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -41,14 +44,45 @@ def run(*args, timeout=30):
     return subprocess.run(args, check=True, text=True, capture_output=True, timeout=timeout).stdout.strip()
 
 
+def installed_elf(container, directory):
+    """Read installed binaries without starting the container or trusting emulation."""
+    pending = ['/usr/bin/node', '/usr/bin/kubectl', '/usr/bin/dash', '/usr/bin/python3']
+    found = {}
+    while pending:
+        path = pending.pop(0)
+        if path in found:
+            continue
+        dest = directory / str(len(found))
+        run('docker', 'cp', '-L', container + ':' + path, str(dest))
+        data = dest.read_bytes()
+        if data[:6] != b'\x7fELF\x02\x01':
+            raise AssertionError('Expected little-endian ELF64: ' + path)
+        machine = struct.unpack_from('<H', data, 18)[0]
+        entry = {'e_machine': machine, 'sha256': hashlib.sha256(data).hexdigest()}
+        found[path] = entry
+        # PT_INTERP names the actual dynamic loader required by this executable.
+        offset = struct.unpack_from('<Q', data, 32)[0]
+        size, count = struct.unpack_from('<HH', data, 54)
+        for i in range(count):
+            header = offset + i * size
+            if struct.unpack_from('<I', data, header)[0] == 3:
+                start = struct.unpack_from('<Q', data, header + 8)[0]
+                length = struct.unpack_from('<Q', data, header + 32)[0]
+                loader = data[start:start + length].rstrip(b'\0').decode()
+                entry['interpreter'] = loader
+                pending.append(loader)
+    return found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('image')
+    parser.add_argument('--expected-architecture', choices=('arm64', 'amd64'), help='Require this image architecture as well as matching installed ELF binaries')
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1] / 'web-front-end-console')
     parser.add_argument('--evidence', type=Path, required=True, help='New evidence directory (must not exist)')
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=False)
-    report = {'requested_image': args.image, 'checks': [], 'profile': 'owned ephemeral container; read-only; 256 MiB; 1 CPU; loopback HTTP; LOCAL_ONLY=1; no mounts/credentials'}
+    report = {'requested_image': args.image, 'checks': [], 'profile': 'owned ephemeral container; read-only; 256 MiB; 1 CPU; loopback HTTP; LOCAL_ONLY=1; no host mounts/credentials'}
     container = None
     passed = False
     def check(name, condition):
@@ -61,12 +95,20 @@ def main():
         meta = json.loads(run('docker', 'image', 'inspect', args.image))[0]
         identity = meta['Id']
         report.update(image_id=identity, architecture=meta['Architecture'], command=meta['Config']['Cmd'])
+        check('supported declared architecture', meta['Architecture'] in ('arm64', 'amd64'))
+        if args.expected_architecture:
+            check('requested architecture', meta['Architecture'] == args.expected_architecture)
         check('default server command', meta['Config']['Cmd'] == ['node', 'server.mjs'])
         container = run('docker', 'create', '--name', 'lr05-console-test-' + uuid.uuid4().hex[:12],
                         '--read-only', '--memory', '256m', '--cpus', '1', '--pids-limit', '64',
                         '-p', '127.0.0.1::8080', '-e', 'LOCAL_ONLY=1', '-e', 'EDGE_PROXY=127.0.0.1:1',
                         '-e', 'FIX_HOST=127.0.0.1', '-e', 'FIX_PORT=1', identity)
         report['container_id'] = container
+        with tempfile.TemporaryDirectory(prefix='lr05-console-elf-') as directory:
+            report['installed_elf'] = installed_elf(container, Path(directory))
+        expected_machine = {'arm64': 183, 'amd64': 62}[meta['Architecture']]
+        check('installed Node shell kubectl Python and ELF loaders match declared architecture',
+              all(entry['e_machine'] == expected_machine for entry in report['installed_elf'].values()))
         run('docker', 'start', container)
         mapping = run('docker', 'port', container, '8080/tcp')
         check('owned loopback port', mapping.startswith('127.0.0.1:') and '\n' not in mapping)
@@ -114,6 +156,10 @@ def main():
         for tool in ('gcloud', 'kubectl'):
             run('docker', 'exec', container, 'sh', '-c', 'command -v ' + tool)
             check(tool + ' bridge executable retained', True)
+        report['gcloud_version'] = run('docker', 'exec', container, 'gcloud', '--version')
+        check('gcloud starts offline', 'Google Cloud SDK' in report['gcloud_version'])
+        report['kubectl_version'] = json.loads(run('docker', 'exec', container, 'kubectl', 'version', '--client=true', '-o', 'json'))
+        check('kubectl starts offline', bool(report['kubectl_version'].get('clientVersion', {}).get('gitVersion')))
         passed = True
     except Exception as error:
         report['error'] = str(error)
@@ -124,8 +170,8 @@ def main():
             try:
                 logs = subprocess.run(['docker', 'logs', container], text=True, capture_output=True, timeout=15)
                 (args.evidence / 'container.log').write_text(logs.stdout + logs.stderr)
-                run('docker', 'rm', '-f', container)
-                report['cleanup'] = 'owned container removed'
+                run('docker', 'rm', '-fv', container)
+                report['cleanup'] = 'owned container and anonymous volumes removed'
             except Exception as error:
                 report['cleanup_error'] = str(error)
                 passed = False
