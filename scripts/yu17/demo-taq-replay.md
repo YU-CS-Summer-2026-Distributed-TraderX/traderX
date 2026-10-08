@@ -107,7 +107,7 @@ before someone asks.
    Unknown or incomplete codes must alarm, rather than present a corrupt tape as ordinary synthetic
    fallback. Older publishers have no codes: retain the narrow `no extract at` absence match only
    for those versions, and treat other errors as faults. No code implies trading or financial validity.
-   See `specs/YU18-risk-integration/components/tape-status/spec.md`. Return:
+   See `specs/YU18-risk-integration/maintenance/tape-status/spec.md`. Return:
    `bash -c 'source scripts/yu15/lib-replay-epoch.sh; K="kubectl --context kind-traderx-yu12-cluster -n traderx"; fetch_replay_extract_secret; stamp_replay_epoch'`
 
 **After the demo, restore the real anchor** (the jumps de-anchor the clock from the mint):

@@ -53,6 +53,8 @@ Bundle v2 adds hash-pinned instrument terms while preserving v1 bytes and identi
 
 ## Operational checks and readouts
 
-The [component index](components/README.md#october-7-integration) includes proof cleanup, image provenance/admission, scoped reconciliation proofs and replay-anchor validation. Member surfaces expose observed peer coverage, risk capacity and admin account state; the regulatory report includes sequenced OTC refusals through shadow replay. Tape status and gateway ACK metrics distinguish expected behavior from unknown or failed observations. Projector heap-OOM exit and a bounded book-memory tool provide separate process-failure and memory evidence.
+The [maintenance index](maintenance/README.md) includes proof cleanup, image provenance/admission, scoped reconciliation proofs and replay-anchor validation. Member surfaces expose observed peer coverage, risk capacity and admin account state; the regulatory report includes sequenced OTC refusals through shadow replay. Tape status and gateway ACK metrics distinguish expected behavior from unknown or failed observations. Projector heap-OOM exit and a bounded book-memory tool provide separate process-failure and memory evidence.
 
 All October 7 changes are local integrations. Retained upgrades, durable EOD event recovery, external-engine portfolio acceptance and cloud performance work remain separate.
+
+Feature specs live in [components](components/README.md); issue fixes, reliability hardening and diagnostics live in [maintenance](maintenance/README.md). Shared generation/runtime inputs remain at the state parent.

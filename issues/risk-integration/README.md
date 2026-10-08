@@ -44,6 +44,14 @@ Next decisions: agree the RI-15 portfolio contract and external-engine activatio
 
 Completed scopes are archived in [resolved](resolved/README.md). Broad workstreams remain here when sizing, policy, deployment or financial acceptance is still required. Older dated notes record their original state and are superseded by the current table.
 
+## Live-rig validation
+
+Use the [live-rig validation queue](live-rig/README.md) for changes whose remaining acceptance needs actual services, containers or clusters. Keep local implementation status separate from rig proof. At each delivery/review, update the matching LR entry or record why a live rig is not required.
+
+## Task dispatch and closeout
+
+Track bounded assignments in [task records](tasks/README.md). Follow the [task lifecycle skill](/Users/yaakov/dev/lmax/.claude/skills/traderx-task-lifecycle/SKILL.md): dispatch, author/coordinator reconciliation, live-proof disposition, user report and integration approval, verified integration, done/archive and README/spec updates. Reviewed candidates are not done or integrated.
+
 ## Maintenance contract
 
 - Read this index before related work; consult the task and authoritative spec before editing.
@@ -162,3 +170,7 @@ September 23 review: RI-02 local packaging accepted; RI-01 spec returned with fo
 October 7 accounting correction: eight scoped entries are archived (RI02/10/12/17/18/19/22/28). The initial six omitted the older completed container and self-match scopes. RI01 has all seven functional types integrated but retains explicit performance/HA acceptance; RI03/06/11/14/16 likewise contain delivered milestones. These are workstreams rather than 28 independent unfixed bugs. Stale top headers/next actions are reconciled; historical planning lists remain dated context.
 
 October 7 evening integration: eight reviewed delivery slices cover RI09 reference mapping, RI23 synchronous and pipelined queued-task retirement, RI24 engine/reconciliation selected-memory diagnostics and bounded saved-result backing, and RI25 universe/source-identity diagnostics. Completed local scopes are recorded in their workstream files; RI09/23/24/25 remain open for the decisions and acceptance named in the table. No new whole workstream is archived. User staging/private files are preserved; no push, deployment, retained-rig or financial validation.
+
+October 7 new direct assignment: Two directly authorized Sol6.1High lanes: risk-service container qualification and feed reconnect; registry ACTIVE-LANES-20261008.json, prior evening work integratedbf1d13e9. CLAIM/checkouts pending; coordinator reviews before integration. No cloud, push or retained rig activation.
+
+October 7 spec layout: YU18 product/service features remain under components; issue fixes, reliability hardening and diagnostics moved to [maintenance](../../specs/YU18-risk-integration/maintenance/README.md). This is a location/validation change, not new runtime or live acceptance.

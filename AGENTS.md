@@ -144,3 +144,7 @@ Follow [state component rules](docs/spec-kit/state-components.md). YU18-risk-int
 canonical YU18 pack; add order types, service packaging and pipeline feature specs under its
 components/ directory. Keep shared quickstart, architecture, contracts and generation in the parent.
 A feature does not require a new state branch; isolated task worktrees remain available for concurrency.
+
+## Cross-chat task lifecycle
+
+For dispatch, recording deliveries, review/corrections and closeout, follow `/Users/yaakov/dev/lmax/.claude/skills/traderx-task-lifecycle/SKILL.md`. Keep bounded records in `issues/risk-integration/tasks/`; report the reviewed candidate and obtain user approval covering integration scope/target before integrating. Existing explicit approval is not requested again. Record live-proof disposition and archive only the completed scope; update active/resolved/parent/spec/live indexes honestly.
