@@ -46,7 +46,7 @@ Combined validation: 213 generated Java cases (including five allocation gates),
 
 Owner: Codex RI23. Status: locally verified; coordinator review pending. Accepted base22d4c906. The operative YU18 onOwner path reproduces queued callable mutation after actual caller timeout/interruption; a dequeued-but-unstarted reference remains executable too. New atomic start-versus-retirement guard retires/removes only unstarted work. Begun work stays uncertain and retains its original future/execution; no owner interrupt/rollback or new timeout/capacity/policy. Direct pipelined order submissions bypass this path and are unchanged.
 
-See [owner-task-deadline component](../../specs/YU18-risk-integration/components/owner-task-deadline/README.md). All broader RI23 checklists and integration history above remain unchanged. Coordinator owns shared indexes/review/integration.
+See [owner-task-deadline component](../../specs/YU18-risk-integration/maintenance/owner-task-deadline/README.md). All broader RI23 checklists and integration history above remain unchanged. Coordinator owns shared indexes/review/integration.
 
 Owned evening evidence: source12/12, generated48/48 focused lifecycle/encoding/ACK/correlation,0failures/0errors/0skips; original baseline5 reproduced failures and two discriminating negative controls. Four repository gates/25 component packs pass. Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/ri23-owner-deadline-20261007/`. No real cluster/election/HA/performance/financial validation.
 
@@ -59,3 +59,7 @@ Pipeline follow-up evidence: source22/22, generated58/58,0failures/0errors/0skip
 October 7 evening integration: the local milestones above passed coordinator review; delivery-specific historical pending notes are superseded by the final integration record. Broader unchecked deployment, mapping, sizing and recovery work remains open.
 
 Final local outcome: synchronous and pipelined queued tasks use an atomic start/retire claim. A terminated waiter can retire only work that has not started; pipelined retirement returns its acquired permit once. Started/offered requests retain ACK/reaper ownership and an uncertain caller outcome. No election, failover or deployment-performance acceptance is inferred.
+
+October 7 new direct assignment: Bounded feed reconnect after established connection in existing RI23 chat01a1180b-0b33-7651-999b-968a30518263; cold failure/idle safety preserved. CLAIM/checkouts pending; coordinator reviews before integration. No cloud, push or retained rig activation.
+
+October8 feed-reconnect candidate459de827 is coordinator-reviewed, awaiting user integration approval.52independent exact-source tests pass; native cold-failure proof is narrow. LR02 established live recovery/price acceptance remains queued; source is not integrated or done. See tasks/ri23-feed-reconnect.md and live-rig/lr-02-feed-reconnect.md.

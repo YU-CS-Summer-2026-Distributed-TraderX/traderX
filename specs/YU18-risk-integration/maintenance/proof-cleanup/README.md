@@ -38,6 +38,6 @@ An epoch reset in preparation additionally requires `ALLOW_PROOF_RESET=1`, along
 
 The terminal result reports `proof_exit` and `cleanup_exit`. A successful proof with failed cleanup exits 70; a failed or signaled proof retains its original runner status while exposing cleanup failure separately. Preparation attempts, actual executions and terminal outcomes are counted separately; a failed prerequisite on the final selected proof is still a failed proof outcome. Individual proofs report `PROOF_OK (cleanup pending)` until the supervisor finishes. Cleanup has one 660-second command budget, based on the existing 600-second rollout wait plus request overhead. Budget exhaustion retains the journal for a later scoped retry.
 
-See [requirements](spec.md), [implementation](plan.md), [acceptance trace](tasks.md) and [maintained RI-17 issue](../../../../issues/risk-integration/17-interrupted-proof-cleanup.md).
+See [requirements](spec.md), [implementation](plan.md), [acceptance trace](tasks.md) and [maintained RI-17 issue](../../../../issues/risk-integration/resolved/17-interrupted-proof-cleanup.md).
 
 October 7 integration: combined source/generated checks passed in the coordinator candidate. The scoped implementation is integrated locally; original delivery notes retain their dates. Evidence is recorded in the shared coordination review directory `class-window-integration-20261007`. Live deployment, retained HA, performance and financial acceptance are not inferred from these checks.

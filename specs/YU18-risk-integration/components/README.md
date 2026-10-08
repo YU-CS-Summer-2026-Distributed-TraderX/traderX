@@ -18,32 +18,8 @@
 
 Adding a directory does not activate generation. Shared files stay at the state parent. Follow [component rules](../../../docs/spec-kit/state-components.md).
 
-## October 7 integration
+## Reference mapping
 
-These components are implemented and reviewed locally. Combined verification is recorded with the integration delivery; no deployment, HA, throughput or financial acceptance is implied.
+[Instrument reference mapping](instrument-reference-mapping/README.md) records TreasuryDirect/OCC research and synthetic support examples; financial conventions remain decisions.
 
-| Component | Source ownership |
-|---|---|
-| [Proof cleanup](proof-cleanup/README.md) | Root proof runner, persistent journal and supervisor |
-| [STP image provenance](stp-image-provenance/README.md) | Root image builder and proof admission |
-| [Reconciliation proof](reconciliation-proof/README.md) | Root scoped SQL/live subject selection and cleanup |
-| [Image admission](image-admission/README.md) | Root intended-artifact and per-node reference checks |
-| [Replay anchors](replay-anchor-status/README.md) | Root target/storage evidence validator and callers |
-| [Risk gauges](risk-capacity-metrics/README.md) | YU18 member HTTP metrics and current risk accessors |
-| [Readiness diagnostics](readiness-diagnostics/README.md) | YU18 peer observation sampler and member HTTP |
-| [Projector OOM exit](projector-oom-exit/README.md) | YU18 container JVM and deployment configuration |
-| [OTC refusal audit](otc-refusal-audit/README.md) | YU18 shadow regulatory replay and optional decision tap |
-| [Member accounts](member-account-readout/README.md) | YU18 admin HTTP readout of current member risk table |
-| [Book memory accounting](book-memory-accounting/README.md) | Root bounded JVM instrumentation; direct authoritative units |
-| [Tape status](tape-status/README.md) | YU16 producer health and console status renderer |
-| [ACK metrics](ack-metrics/README.md) | YU18 gateway bounded classification history |
-
-## Evening integration, October 7
-
-| Component | Local scope |
-|---|---|
-| [Owner task deadline](owner-task-deadline/README.md) | Atomic retirement before execution, including pipeline permit ownership; started outcomes remain uncertain |
-| [Book and engine memory](book-memory-accounting/README.md) | Bounded direct-source component accounting, with shared roots and exclusions explicit |
-| [Reconciliation memory](reconciliation-memory/README.md) | Actual-method selected reference graphs and capped result backing; full heap and managed SQL path remain unmeasured |
-| [Tape status and coverage](tape-status/README.md) | Offline declared-universe and root/suffix loss diagnostics; no mapping or ingestion change |
-| [Instrument reference mapping](instrument-reference-mapping/README.md) | TreasuryDirect/OCC research and synthetic support examples; financial conventions remain decisions |
+Issue fixes and diagnostic specs are indexed in [maintenance](../maintenance/README.md). They keep their own contracts and task evidence without adding feature components.

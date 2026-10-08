@@ -11,7 +11,7 @@ Accepted contracts retain the existing contract-growth projection; trade reconci
 projection consume their existing outputs.
 
 [Specification](spec.md), [implementation plan](plan.md), [tasks and evidence](tasks.md).
-Authoritative generation remains in the [state parent](../../generation/runtime-overrides/order-matcher/).
+Authoritative generation remains in the [state parent](../../generation/runtime-overrides/order-matcher).
 No retained rig, deployment, financial validation or integration acceptance is claimed.
 
 October 7 integration: combined source/generated checks passed in the coordinator candidate. The scoped implementation is integrated locally; original delivery notes retain their dates. Evidence is recorded in the shared coordination review directory `class-window-integration-20261007`. Live deployment, retained HA, performance and financial acceptance are not inferred from these checks.

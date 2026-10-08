@@ -50,4 +50,4 @@ This dry run inventories invented inputs and writes only a private diagnostic re
 python3 scripts/diagnostics/tape-universe/test_coverage.py
 ```
 
-For isolated generated readers, pass `--publisher-root <generated-root>/code/target-generated/price-publisher`; the same pins and declaration/read semantics must match. The CLI remains a repository diagnostic, not an installed generated service. See the existing [tape-status component](../../../specs/YU18-risk-integration/components/tape-status/README.md).
+For isolated generated readers, pass `--publisher-root <generated-root>/code/target-generated/price-publisher`; the same pins and declaration/read semantics must match. The CLI remains a repository diagnostic, not an installed generated service. See the existing [tape-status component](../../../specs/YU18-risk-integration/maintenance/tape-status/README.md).

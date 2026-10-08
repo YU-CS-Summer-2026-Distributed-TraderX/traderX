@@ -24,7 +24,17 @@ specs/YU18-risk-integration/
     order-types/{README,spec,plan,tasks}.md
     risk-service/{README,spec,plan,tasks}.md
     risk-pipeline/{README,spec,plan,tasks}.md
+  maintenance/
+    README.md
+    owner-task-deadline/{README,spec,plan,tasks}.md
+    reconciliation-memory/{README,spec,plan,tasks}.md
 ```
+
+## Feature and maintenance packs
+
+User direction on 2026-10-07 separates issue fixes and diagnostics from feature components. In YU18, `components/<feature>/` holds product/service capabilities; `maintenance/<fix-or-diagnostic>/` holds reliability corrections, proof tooling and operational diagnostics. Each namespace has a README index and each pack keeps README/spec/plan/tasks. Requirement IDs and implementation owners are unchanged by moving a pack. Names must be unique across both namespaces. Shared generation, runtime overrides, contracts and architecture stay at the state parent.
+
+Examples: order-types and risk-pipeline remain components; owner-task-deadline, feed-reconnect, projector-oom-exit and reconciliation-memory belong to maintenance. A fix does not become a new service merely because it has a spec pack. Other states and worktrees are not automatically migrated.
 
 ## Rules
 
@@ -32,7 +42,7 @@ specs/YU18-risk-integration/
 2. Each new component directory contains README, spec, plan and tasks. Record status, owner, source paths, dependencies, interfaces and executable acceptance expectations. Planning scaffolds must say they are incomplete.
 3. Keep shared quickstart, architecture, contracts and generation files in the state parent. A component links these rather than maintaining divergent copies. Component-specific prose may live beside its spec; generation inputs stay state-level.
 4. Use stable component-scoped requirement IDs. Existing EOD FR-EB/NFR-EB/SC-EB identifiers are preserved. Trace tests to requirements; distinguish source, generated and live evidence.
-5. Generation is explicit. A new spec directory does not automatically create, enable or deploy a service. State renderers compose runtime overrides and include component documents in generated spec-source.
+5. Generation is explicit. A new spec directory does not automatically create, enable or deploy a service. State renderers compose runtime overrides and include both feature and maintenance documents in generated spec-source.
 6. The integration branch remains traderX-risk-integration. Temporary task branches/worktrees may isolate concurrent writers; they are not new state branches. One writer per checkout, coordinated shared-file ownership.
 7. Determine the operative runtime layer before editing. New YU18 features may override inherited components deliberately; do not silently modify earlier state behavior to implement a YU18 feature.
 8. A component may specify an external service boundary. Risk-container implementation remains in the engine repository and its packaging pack remains authoritative there. Link revisions; do not duplicate financial implementations or conflicting packaging specs.
