@@ -283,7 +283,7 @@ public class ReconciliationService {
 
         OrphanSweepResult result = new OrphanSweepResult(
             Instant.now(), localIds.size(), fullHistoryIds.size(), orphans.size(),
-            orphans.size() > MAX_REPORTED_ORPHANS ? orphans.subList(0, MAX_REPORTED_ORPHANS) : orphans);
+            orphans.size() > MAX_REPORTED_ORPHANS ? new ArrayList<>(orphans.subList(0, MAX_REPORTED_ORPHANS)) : orphans);
         lastOrphanSweep = result;
         log.info("Orphan sweep complete: {} local trades, {} full-history trades, {} orphan(s)",
             localIds.size(), fullHistoryIds.size(), orphans.size());

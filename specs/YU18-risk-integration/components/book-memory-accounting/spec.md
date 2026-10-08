@@ -1,6 +1,6 @@
 # Book-memory accounting specification
 
-Status: bounded local tool implemented; source fixtures tested. Owner: Codex RI24 book-memory lane.
+Status: standalone book tool integrated; bounded real-engine extension implemented/source-tested, review pending. Owner: Codex RI24 book-memory lane.
 
 ## Requirements
 
@@ -38,3 +38,28 @@ Status: bounded local tool implemented; source fixtures tested. Owner: Codex RI2
 Tests: `python3 scripts/diagnostics/book-memory/test_book_memory.py`, including installed
 JDK selection through JAVA_HOME. These are direct source/JVM object fixtures; no full
 engine, generated composition, production retention, performance or recovery proof.
+
+
+## Separate engine-component extension
+
+- **FR-BMA06:** Instantiate current actual MatchingEngine/risk/output collaborators with
+  bounded fixture capacities. Measure empty, real onEvent resting and crossed states;
+  record constructor/default versus fixture geometry and actual capacities separately.
+- **FR-BMA07:** Deduplicate explicit roots and engine order entries across free list,
+  index, book and terminal transitions. Separate engine-owned and supplied-component
+  categories; every reference is followed, explicitly excluded with reason, or refused.
+- **FR-BMA08:** Record source/dependency/class/JVM hashes and qualified first-constructor
+  thread-allocation window independently of shallow/reachable sums. Retained/full-member,
+  metrics-descendant and ring-infrastructure-descendant bytes remain unavailable.
+- **NFR-BMA02:** Bound all engine JVM inputs/heap/object counts/timeouts; sanitize ambient
+  JVM/geometry options in owned children, use installed Java/cached offline dependencies,
+  and preserve standalone book code/profile/tests unchanged.
+
+Acceptance: run `python3 scripts/diagnostics/book-memory/test_engine_memory.py`. Pool 8/32
+must change the actual order-entry category while pool-to-book/cross transitions keep it
+constant. Level/count/capacity controls must change their real arrays/books. Account and
+security controls must precede orders, and actual crossing must yield positions +1/-1,
+filled states and terminal retention. Independent inventories include stagedExt and all
+supplied risk arrays; rebuilt omitted-category/shared-root/unknown-object observers must
+refuse. Original 16 book checks continue to pass. Only direct-source/local-JVM component
+accounting is claimed, with explicit graph boundaries and no capacity recommendation.

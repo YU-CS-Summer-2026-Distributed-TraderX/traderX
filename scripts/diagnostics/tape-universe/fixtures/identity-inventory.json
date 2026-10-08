@@ -1,0 +1,102 @@
+{
+  "synthetic": true,
+  "rawObservations": 16,
+  "rawDistinctReaderTuples": 13,
+  "rawRepeatExtraObservations": 3,
+  "CT": {
+    "eligibleObservations": 12,
+    "eligibleDistinctReaderTuples": 9,
+    "repeatExtraObservations": 3,
+    "excludedRows": [
+      12,
+      13,
+      14,
+      15
+    ],
+    "outputSymbols": [
+      "DIFF",
+      "EMPTY",
+      "MERGE",
+      "SAME",
+      "ZERO",
+      "merge"
+    ],
+    "collapseGroups": {
+      "MERGE": {
+        "suffixes": [
+          "A",
+          "B",
+          "a"
+        ],
+        "observationRows": [
+          1,
+          2,
+          3,
+          11
+        ],
+        "lostDistinctions": 2
+      },
+      "EMPTY": {
+        "suffixes": [
+          null,
+          "NULL"
+        ],
+        "observationRows": [
+          8,
+          9,
+          10
+        ],
+        "lostDistinctions": 1
+      }
+    },
+    "lostTupleDistinctions": 3
+  },
+  "CQ": {
+    "eligibleObservations": 13,
+    "eligibleDistinctReaderTuples": 10,
+    "repeatExtraObservations": 3,
+    "excludedRows": [
+      12,
+      13,
+      15
+    ],
+    "outputSymbols": [
+      "DIFF",
+      "EMPTY",
+      "MERGE",
+      "SAME",
+      "VALUE-EMPTY",
+      "ZERO",
+      "merge"
+    ],
+    "collapseGroups": {
+      "MERGE": {
+        "suffixes": [
+          "A",
+          "B",
+          "a"
+        ],
+        "observationRows": [
+          1,
+          2,
+          3,
+          11
+        ],
+        "lostDistinctions": 2
+      },
+      "EMPTY": {
+        "suffixes": [
+          null,
+          "NULL"
+        ],
+        "observationRows": [
+          8,
+          9,
+          10
+        ],
+        "lostDistinctions": 1
+      }
+    },
+    "lostTupleDistinctions": 3
+  }
+}

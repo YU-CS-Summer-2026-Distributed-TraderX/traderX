@@ -37,3 +37,13 @@ These components are implemented and reviewed locally. Combined verification is 
 | [Book memory accounting](book-memory-accounting/README.md) | Root bounded JVM instrumentation; direct authoritative units |
 | [Tape status](tape-status/README.md) | YU16 producer health and console status renderer |
 | [ACK metrics](ack-metrics/README.md) | YU18 gateway bounded classification history |
+
+## Evening integration, October 7
+
+| Component | Local scope |
+|---|---|
+| [Owner task deadline](owner-task-deadline/README.md) | Atomic retirement before execution, including pipeline permit ownership; started outcomes remain uncertain |
+| [Book and engine memory](book-memory-accounting/README.md) | Bounded direct-source component accounting, with shared roots and exclusions explicit |
+| [Reconciliation memory](reconciliation-memory/README.md) | Actual-method selected reference graphs and capped result backing; full heap and managed SQL path remain unmeasured |
+| [Tape status and coverage](tape-status/README.md) | Offline declared-universe and root/suffix loss diagnostics; no mapping or ingestion change |
+| [Instrument reference mapping](instrument-reference-mapping/README.md) | TreasuryDirect/OCC research and synthetic support examples; financial conventions remain decisions |

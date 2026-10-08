@@ -41,6 +41,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -832,9 +833,46 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     private <T> T onOwner(final java.util.concurrent.Callable<T> callable, final long timeoutMs)
             throws Exception {
-        final FutureTask<T> ft = new FutureTask<>(callable);
+        final OwnerTask<T> ft = new OwnerTask<>(callable);
         tasks.add(ft);
-        return ft.get(timeoutMs, TimeUnit.MILLISECONDS);
+        try {
+            return ft.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (final TimeoutException | InterruptedException ex) {
+            if (ft.retireIfUnstarted()) {
+                tasks.remove(ft);
+            }
+            // Once the owner claims start, work may execute/commit after this waiter terminates.
+            // Preserve its future and the original ambiguous exception; never interrupt the owner.
+            throw ex;
+        }
+    }
+
+    /** Start-versus-retirement claim shared by synchronous and pipelined queued tasks. */
+    private static final class OwnerTask<T> extends FutureTask<T> {
+        private static final int WAITING = 0;
+        private static final int STARTED = 1;
+        private static final int RETIRED = 2;
+        private final AtomicInteger startState = new AtomicInteger(WAITING);
+
+        OwnerTask(final java.util.concurrent.Callable<T> callable) {
+            super(callable);
+        }
+
+        @Override public void run() {
+            if (startState.compareAndSet(WAITING, STARTED)) {
+                super.run();
+            }
+        }
+
+        boolean retireIfUnstarted() {
+            if (!startState.compareAndSet(WAITING, RETIRED)) {
+                return false;
+            }
+            // Our start claim, not cancel(false)'s return value, proves the callable cannot run.
+            // Removal may lose to dequeue; the RETIRED state still fences that held reference.
+            super.cancel(false);
+            return true;
+        }
     }
 
     /**
@@ -1131,10 +1169,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     private ExecResult submitPipelined0(final PendingOrder p) {
+        return submitPipelined0(p, ACK_TIMEOUT_MS + 2_000);
+    }
+
+    private ExecResult submitPipelined0(final PendingOrder p, final long waitBudgetMs) {
+        boolean acquired = false;
+        OwnerTask<Void> queuedTask = null;
         try {
             if (!inflight.acquire(ACK_TIMEOUT_MS)) {
                 return null; // window saturated: treat as ambiguous backpressure, never a false reject
             }
+            acquired = true;
             // LATENCY-01 Phase A: t_decoded — owner-queue wait starts as this order is enqueued.
             if (latency != null && latency.sample()) {
                 p.tSubmitNanos = System.nanoTime();
@@ -1157,8 +1202,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 p.traceStartNanos = System.nanoTime();
             }
             // Fire-and-forget on the owner thread: offer + register, no per-order wait.
-            tasks.add(new FutureTask<>(() -> offerPipelined(p), null));
-            final ExecResult result = p.future.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
+            queuedTask = new OwnerTask<>(() -> { offerPipelined(p); return null; });
+            tasks.add(queuedTask);
+            final ExecResult result = p.future.get(waitBudgetMs, TimeUnit.MILLISECONDS);
             // OTEL-01: the root span closes on THIS thread, not the owner's — it covers the residence
             // the client actually experiences, and keeps one of the three span writes off the owner.
             if (p.traceKey != 0L && (p.traceSampled || (result != null && OrderTrace.escalate(result.kind())))) {
@@ -1173,6 +1219,16 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             return result;
         } catch (final Exception e) {
+            if (queuedTask != null && queuedTask.retireIfUnstarted()) {
+                tasks.remove(queuedTask);
+                p.future.complete(null);
+                inflight.release(); // retirement owns only this acquired, never-started slot
+            } else if (queuedTask == null && acquired) {
+                p.future.complete(null);
+                inflight.release(); // failure before task creation, known acquired slot
+            }
+            // Start won: original offer/ack/reap path retains the future and permit, even if
+            // offered is still false during encoding/resolution or an offer is in progress.
             return null; // ambiguous/timeout: caller must not claim rejection
         }
     }
@@ -3181,7 +3237,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             return requestId == 0 ? null : pending.remove(requestId);
         }
 
-        /** Owner thread: an order completed — return its slot to the window. */
+        /** Return a proven owned slot: owner completion or submitter cleanup before start. */
         void release() {
             permits.release();
         }

@@ -1,7 +1,7 @@
 # Book-memory accounting plan
 
-Status: local implementation complete; controlled coordinator review/integration pending.
-Owner: Codex RI24 book-memory lane. Base: a0d6da0bfbef481f301bb1172b6810cb8a4c9e3e.
+Status: standalone book milestone integrated; real-engine extension ready for local review.
+Owner: Codex RI24 book-memory lane. Standalone book base: a0d6da0bfbef481f301bb1172b6810cb8a4c9e3e.
 
 1. Verify operative full-file source owners and current engine default. Read the RI24
    issue without repeating the historical OOM incident as a current rig observation.
@@ -21,3 +21,16 @@ Shared generation/architecture/contracts remain in the state parent. This standa
 tool consumes authoritative units directly and requires no generated source tree.
 Production population/depth/history measurements and full-member retained-heap analysis
 remain future RI13/RI24 work; this plan selects no limits or storage redesign.
+
+
+## Evening engine-component slice
+
+Accepted new base 22d4c9067ce6a01f33678e7cb061c8d0e677e9c3; isolated owned checkout.
+Directly compile sixteen operative current units with nine pinned cached dependencies.
+Use actual account/security/price controls and order/cross commands to populate the engine.
+Identity-deduplicate explicit engine/risk/output/metrics/ring-slot roots with a closed
+reference inventory. Record per-array/class categories and explicit boundary exclusions;
+keep constructor allocation traffic distinct from post-override reachable object sums.
+Verify pool/capacity/geometry controls, independent inventory omissions/shared-root duplication
+and unchanged book checks. Supply raw JSON/commands/hashes. Shared indexes/integration
+remain coordinator-owned; full-member/retained/deployment-profile sizing remains future work.

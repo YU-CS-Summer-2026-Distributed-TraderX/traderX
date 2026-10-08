@@ -1,0 +1,689 @@
+{
+  "purpose": "RI09 field-mapping illustrations only; not an input/result schema or submission document",
+  "traderxBase": "22d4c9067ce6a01f33678e7cb061c8d0e677e9c3",
+  "retrievedAtUtcDate": "2026-10-08",
+  "reviewLocalDate": "2026-10-07",
+  "syntheticOnly": true,
+  "financiallyValidated": false,
+  "acceptedContainerEngineCommit": "992db307f40c1b19de19a0ae43bf653ede3a5bda",
+  "resultSchemaBoundary": "jaxrisk.eod-result.v1 is a result document schema, not a reference input schema",
+  "sources": [
+    {
+      "id": "T1",
+      "title": "Treasury Bills",
+      "url": "https://www.treasurydirect.gov/marketable-securities/treasury-bills/",
+      "version": "HTML; no version/effective date stated",
+      "sectionsRead": "Introduction; Bills at a Glance",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": null
+    },
+    {
+      "id": "T2",
+      "title": "Treasury Notes",
+      "url": "https://www.treasurydirect.gov/marketable-securities/treasury-notes/",
+      "version": "HTML; no version/effective date stated",
+      "sectionsRead": "Introduction; Notes at a Glance",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": null
+    },
+    {
+      "id": "T3",
+      "title": "Understanding Pricing and Interest Rates",
+      "url": "https://www.treasurydirect.gov/marketable-securities/understanding-pricing/",
+      "version": "HTML; no version/effective date stated",
+      "sectionsRead": "Bills; Bonds and Notes",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": null
+    },
+    {
+      "id": "T4",
+      "title": "Treasury Reopenings",
+      "url": "https://www.treasurydirect.gov/auctions/reopenings/",
+      "version": "HTML; no version/effective date stated",
+      "sectionsRead": "Introduction; Security Details",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": null
+    },
+    {
+      "id": "T5",
+      "title": "Announcements, Data & Results",
+      "url": "https://www.treasurydirect.gov/auctions/announcements-data-results/",
+      "version": "HTML; no version/effective date stated",
+      "sectionsRead": "XML/API and URL-change notices only",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": null
+    },
+    {
+      "id": "O0",
+      "title": "Characteristics and Risks of Standardized Options landing page",
+      "url": "https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document",
+      "version": "June 2024 ODD effective June 3, 2024",
+      "sectionsRead": "Version/distribution notice",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": null
+    },
+    {
+      "id": "O1",
+      "title": "Characteristics and Risks of Standardized Options",
+      "url": "https://www.theocc.com/getmedia/a151a9ae-d784-4a15-bdeb-23a029f50b70/riskstoc.pdf",
+      "version": "June 2024",
+      "sectionsRead": "Printed pp.3,7-8,18-21,56-57; PDF pp.4,8-9,19-22,57-58",
+      "retrievedAtUtcDate": "2026-10-08",
+      "exactDownloadedBytesSha256": null,
+      "hashNote": "Read via web extraction; exact remote bytes were not archived or hashed.",
+      "documentEffectiveDate": "2024-06-03",
+      "effectiveDateSource": "O0 landing page; not a date for this fictional option series"
+    }
+  ],
+  "examples": [
+    {
+      "id": "synthetic-bill",
+      "origin": "synthetic",
+      "kind": "bill",
+      "sourceRefs": [
+        "T1",
+        "T3"
+      ],
+      "referenceEffectiveDate": null,
+      "referenceEffectiveDateReason": "No real security selected; fixture dates are assumed, not source effective dates.",
+      "fixtureBundle": "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/shared/bill/v2",
+      "fixtureBundleId": "c3211337d0c3e61b5276613972fd6af9b6e7e8ec18070019963c61fc8c1b525d",
+      "sessionDate": "2025-06-02",
+      "valuationTime": "2025-06-02T16:00:00-04:00",
+      "positionRows": [
+        {
+          "accountId": "22214",
+          "security": "UST-BILL-20251202",
+          "instrumentType": "TREASURY",
+          "quantity": "100000",
+          "contractMultiplier": "1",
+          "costBasis": "0.985000",
+          "closingMark": "0.985000",
+          "markSource": "EOD_SNAPSHOT",
+          "markQuality": "SYNTHETIC",
+          "marketValue": "98500.000000",
+          "unrealizedPnl": "0.000000",
+          "currency": "USD",
+          "counterpartyId": "SYNTH-BUY",
+          "nettingSetId": "SYNTH-NS-B",
+          "coupon": "0",
+          "maturityDate": "2025-12-02",
+          "lastCouponDate": "",
+          "accruedInterestFraction": ""
+        },
+        {
+          "accountId": "42422",
+          "security": "UST-BILL-20251202",
+          "instrumentType": "TREASURY",
+          "quantity": "-100000",
+          "contractMultiplier": "1",
+          "costBasis": "0.985000",
+          "closingMark": "0.985000",
+          "markSource": "EOD_SNAPSHOT",
+          "markQuality": "SYNTHETIC",
+          "marketValue": "-98500.000000",
+          "unrealizedPnl": "0.000000",
+          "currency": "USD",
+          "counterpartyId": "SYNTH-SELL",
+          "nettingSetId": "SYNTH-NS-S",
+          "coupon": "0",
+          "maturityDate": "2025-12-02",
+          "lastCouponDate": "",
+          "accruedInterestFraction": ""
+        }
+      ],
+      "termsArtifact": {
+        "entries": [
+          {
+            "identity": {
+              "security": "UST-BILL-20251202",
+              "source": "positions"
+            },
+            "instrumentType": "TREASURY",
+            "missingTerms": [],
+            "provenance": {
+              "description": "Synthetic reference supplement. Coupon/maturity/currency agree with exporter. Issue, denomination, redemption and explicit regular schedule are fixture assumptions. Calendar NONE, unadjusted payments, zero lag and same-day settlement deliberately match the exporter session-date accrual basis; these are not asserted market conventions.",
+              "origin": "synthetic"
+            },
+            "terms": {
+              "businessDayAdjustment": "UNADJUSTED",
+              "calendar": "NONE",
+              "couponFrequency": "NONE",
+              "couponRatePercent": "0",
+              "currency": "USD",
+              "dayCount": "NOT_APPLICABLE",
+              "faceDenomination": "100",
+              "firstCouponDate": null,
+              "issueDate": "2025-06-02",
+              "maturityDate": "2025-12-02",
+              "paymentLagBusinessDays": 0,
+              "penultimateCouponDate": null,
+              "priceBasis": "clean-fraction-of-par",
+              "quantityUnit": "signed-currency-face",
+              "redemptionFraction": "1",
+              "schedule": [],
+              "settlementDays": 0,
+              "stubConvention": "NONE"
+            }
+          }
+        ],
+        "schema": "traderx.instrument-terms.v1"
+      },
+      "units": {
+        "quantity": "signed USD face",
+        "contractMultiplier": "1; no denomination rescaling",
+        "coupon": "annual percent",
+        "costBasis": "clean fraction of par; synthetic mark",
+        "closingMark": "clean fraction of par; synthetic mark",
+        "marketValue": "signed USD clean book value, not engine NPV",
+        "unrealizedPnl": "signed USD book arithmetic",
+        "accruedInterestFraction": "fraction of par, blank for bill",
+        "faceDenomination": "USD denomination; not quantity multiplier",
+        "redemptionFraction": "dimensionless"
+      },
+      "fieldProvenance": {
+        "sourceDefinitions": "T1/T2/T3 support product concepts only; source pages supply none of these example values.",
+        "existingExportFields": "All positionRows are copied from the original tracked synthetic production-export fixtures.",
+        "syntheticSupplement": "All termsArtifact entries are copied from the original tracked synthetic reference supplement; calendars, lags, issue dates and schedules remain assumptions.",
+        "mappingIds": [
+          "T-ID",
+          "T-TYPE",
+          "T-CURRENCY",
+          "T-FACE",
+          "T-ISSUE",
+          "T-MATURITY",
+          "T-COUPON",
+          "T-FREQUENCY",
+          "T-DAYCOUNT",
+          "T-SCHEDULE",
+          "T-STUB",
+          "T-CALENDAR",
+          "T-LAGS",
+          "T-REDEMPTION",
+          "T-PRICE",
+          "T-ACCRUAL"
+        ]
+      },
+      "representable": [
+        "positions schema 3",
+        "instrument-terms v1 in bundle v2"
+      ],
+      "unsupportedOrUnknown": {
+        "verifiedIssuerIdentifier": null,
+        "originalVsReopeningIssueDate": "unknown for real reference",
+        "actualSettlementCalendar": "not established",
+        "sourceMarketQuote": "not acquired"
+      },
+      "boundary": {
+        "termsValidation": "existing synthetic artifact structurally accepted",
+        "provisionalLocalInputProfile": "accepted original exact bundle only",
+        "containerInputProfile": "accepted original exact bill bundle only",
+        "enginePricingExecuted": false,
+        "financiallyValidatedByThisTask": false
+      },
+      "openDecisionIds": [
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D8"
+      ]
+    },
+    {
+      "id": "synthetic-note",
+      "origin": "synthetic",
+      "kind": "fixed-coupon-note",
+      "sourceRefs": [
+        "T2",
+        "T3",
+        "T4"
+      ],
+      "referenceEffectiveDate": null,
+      "referenceEffectiveDateReason": "No real security selected; fixture dates are assumed, not source effective dates.",
+      "fixtureBundle": "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/shared/note/v2",
+      "fixtureBundleId": "1b64bdcb2497423a72ddd7ca70b664a9a1cf6b8b6b595a562b87e6b2ac211dc9",
+      "sessionDate": "2025-06-02",
+      "valuationTime": "2025-06-02T16:00:00-04:00",
+      "positionRows": [
+        {
+          "accountId": "22214",
+          "security": "UST-NOTE-20261215",
+          "instrumentType": "TREASURY",
+          "quantity": "100000",
+          "contractMultiplier": "1",
+          "costBasis": "1.015000",
+          "closingMark": "1.015000",
+          "markSource": "EOD_SNAPSHOT",
+          "markQuality": "SYNTHETIC",
+          "marketValue": "101500.000000",
+          "unrealizedPnl": "0.000000",
+          "currency": "USD",
+          "counterpartyId": "SYNTH-BUY",
+          "nettingSetId": "SYNTH-NS-B",
+          "coupon": "4.0",
+          "maturityDate": "2026-12-15",
+          "lastCouponDate": "2024-12-15",
+          "accruedInterestFraction": "0.018571"
+        },
+        {
+          "accountId": "42422",
+          "security": "UST-NOTE-20261215",
+          "instrumentType": "TREASURY",
+          "quantity": "-100000",
+          "contractMultiplier": "1",
+          "costBasis": "1.015000",
+          "closingMark": "1.015000",
+          "markSource": "EOD_SNAPSHOT",
+          "markQuality": "SYNTHETIC",
+          "marketValue": "-101500.000000",
+          "unrealizedPnl": "0.000000",
+          "currency": "USD",
+          "counterpartyId": "SYNTH-SELL",
+          "nettingSetId": "SYNTH-NS-S",
+          "coupon": "4.0",
+          "maturityDate": "2026-12-15",
+          "lastCouponDate": "2024-12-15",
+          "accruedInterestFraction": "0.018571"
+        }
+      ],
+      "termsArtifact": {
+        "entries": [
+          {
+            "identity": {
+              "security": "UST-NOTE-20261215",
+              "source": "positions"
+            },
+            "instrumentType": "TREASURY",
+            "missingTerms": [],
+            "provenance": {
+              "description": "Synthetic reference supplement. Coupon/maturity/currency agree with exporter. Issue, denomination, redemption and explicit regular schedule are fixture assumptions. Calendar NONE, unadjusted payments, zero lag and same-day settlement deliberately match the exporter session-date accrual basis; these are not asserted market conventions.",
+              "origin": "synthetic"
+            },
+            "terms": {
+              "businessDayAdjustment": "UNADJUSTED",
+              "calendar": "NONE",
+              "couponFrequency": "6M",
+              "couponRatePercent": "4.0",
+              "currency": "USD",
+              "dayCount": "ACT/ACT (ICMA)",
+              "faceDenomination": "100",
+              "firstCouponDate": "2025-06-15",
+              "issueDate": "2024-12-15",
+              "maturityDate": "2026-12-15",
+              "paymentLagBusinessDays": 0,
+              "penultimateCouponDate": "2026-06-15",
+              "priceBasis": "clean-fraction-of-par",
+              "quantityUnit": "signed-currency-face",
+              "redemptionFraction": "1",
+              "schedule": [
+                {
+                  "endDate": "2025-06-15",
+                  "paymentDate": "2025-06-15",
+                  "startDate": "2024-12-15"
+                },
+                {
+                  "endDate": "2025-12-15",
+                  "paymentDate": "2025-12-15",
+                  "startDate": "2025-06-15"
+                },
+                {
+                  "endDate": "2026-06-15",
+                  "paymentDate": "2026-06-15",
+                  "startDate": "2025-12-15"
+                },
+                {
+                  "endDate": "2026-12-15",
+                  "paymentDate": "2026-12-15",
+                  "startDate": "2026-06-15"
+                }
+              ],
+              "settlementDays": 0,
+              "stubConvention": "NONE"
+            }
+          }
+        ],
+        "schema": "traderx.instrument-terms.v1"
+      },
+      "units": {
+        "quantity": "signed USD face",
+        "contractMultiplier": "1; no denomination rescaling",
+        "coupon": "annual percent",
+        "costBasis": "clean fraction of par; synthetic mark",
+        "closingMark": "clean fraction of par; synthetic mark",
+        "marketValue": "signed USD clean book value, not engine NPV",
+        "unrealizedPnl": "signed USD book arithmetic",
+        "accruedInterestFraction": "fraction of par, blank for bill",
+        "faceDenomination": "USD denomination; not quantity multiplier",
+        "redemptionFraction": "dimensionless"
+      },
+      "fieldProvenance": {
+        "sourceDefinitions": "T1/T2/T3 support product concepts only; source pages supply none of these example values.",
+        "existingExportFields": "All positionRows are copied from the original tracked synthetic production-export fixtures.",
+        "syntheticSupplement": "All termsArtifact entries are copied from the original tracked synthetic reference supplement; calendars, lags, issue dates and schedules remain assumptions.",
+        "mappingIds": [
+          "T-ID",
+          "T-TYPE",
+          "T-CURRENCY",
+          "T-FACE",
+          "T-ISSUE",
+          "T-MATURITY",
+          "T-COUPON",
+          "T-FREQUENCY",
+          "T-DAYCOUNT",
+          "T-SCHEDULE",
+          "T-STUB",
+          "T-CALENDAR",
+          "T-LAGS",
+          "T-REDEMPTION",
+          "T-PRICE",
+          "T-ACCRUAL"
+        ]
+      },
+      "representable": [
+        "positions schema 3",
+        "instrument-terms v1 in bundle v2"
+      ],
+      "unsupportedOrUnknown": {
+        "verifiedIssuerIdentifier": null,
+        "originalVsReopeningIssueDate": "unknown for real reference",
+        "actualSettlementCalendar": "not established",
+        "sourceMarketQuote": "not acquired"
+      },
+      "boundary": {
+        "termsValidation": "existing synthetic artifact structurally accepted",
+        "provisionalLocalInputProfile": "accepted original exact bundle only",
+        "containerInputProfile": "refused: unsupported input scope; container accepts bill only",
+        "enginePricingExecuted": false,
+        "financiallyValidatedByThisTask": false
+      },
+      "openDecisionIds": [
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D8"
+      ]
+    },
+    {
+      "id": "synthetic-standard-option",
+      "origin": "synthetic",
+      "kind": "standard-listed-option",
+      "sourceRefs": [
+        "O0",
+        "O1"
+      ],
+      "referenceEffectiveDate": null,
+      "referenceEffectiveDateReason": "Fictional series; no listing specification or applicable OCC memo exists for it.",
+      "illustrativeReference": {
+        "fictionalUnderlyingId": "SYNTHETIC:SYNX:COMMON-A",
+        "shareClass": "COMMON-A (fictional; no alias mapping)",
+        "nominalExercisePrice": "50.000",
+        "exercisePriceUnit": "USD quote units",
+        "expiryDate": "2027-12-17",
+        "exerciseStyle": "AMERICAN",
+        "settlementType": "PHYSICAL",
+        "settlementDays": null,
+        "calendar": null,
+        "expiryCutoffTime": null,
+        "premiumMultiplier": "100",
+        "exerciseConsiderationMultiplier": "100",
+        "aggregateExerciseConsiderationPerContract": "5000.000",
+        "deliverablesPerContract": [
+          {
+            "fictionalSecurityId": "SYNTHETIC:SYNX:COMMON-A",
+            "quantity": "100",
+            "unit": "shares"
+          }
+        ],
+        "cashDeliverablesPerContract": [],
+        "memoReference": null,
+        "adjustmentEffectiveDate": null
+      },
+      "candidatePositionRow": {
+        "accountId": "90001",
+        "security": "SYNX271217C00050000",
+        "instrumentType": "OPTION",
+        "quantity": "2",
+        "contractMultiplier": "100",
+        "costBasis": "2.000000",
+        "closingMark": "2.500000",
+        "markSource": "CLUSTER_LAST_TRADE_AT_N",
+        "markQuality": "LAST_TRADE",
+        "marketValue": "500.000000",
+        "unrealizedPnl": "100.000000",
+        "currency": "USD",
+        "counterpartyId": "SYNTH-OPTION",
+        "nettingSetId": "SYNTH-OPTION-NS",
+        "coupon": "",
+        "maturityDate": "",
+        "lastCouponDate": "",
+        "accruedInterestFraction": ""
+      },
+      "referenceAssumptions": "Every identity, date, style, numeric term and mark is invented. The letter-only root illustrates current parser behavior, not an actual listed series.",
+      "units": {
+        "quantity": "signed option contracts",
+        "contractMultiplier": "premium/book-value factor; not a deliverable share count",
+        "costBasis": "invented USD premium quote units",
+        "closingMark": "invented USD premium quote units",
+        "marketValue": "signed USD book arithmetic only",
+        "unrealizedPnl": "signed USD book arithmetic only",
+        "nominalExercisePrice": "USD quote units",
+        "aggregateExerciseConsiderationPerContract": "USD per contract; hypothetical, not settlement output"
+      },
+      "fieldProvenance": {
+        "allValues": "author-created synthetic illustration; none obtained from market data",
+        "mappingIds": [
+          "O-ID",
+          "O-EXPIRY",
+          "O-RIGHT",
+          "O-STRIKE",
+          "O-QUANTITY",
+          "O-MULTIPLIER",
+          "O-DELIVERABLE",
+          "O-STYLE",
+          "O-SETTLEMENT",
+          "O-ADJUSTMENT",
+          "O-PRICE"
+        ]
+      },
+      "representable": [
+        "candidatePositionRow field names and decimal cells in positions schema 3",
+        "C4/C5 standard unpadded symbol tail: root SYNX, expiry 271217, call, strike thousandths 50000"
+      ],
+      "unsupportedFields": [
+        "deliverablesPerContract",
+        "cashDeliverablesPerContract",
+        "exerciseConsiderationMultiplier",
+        "aggregateExerciseConsiderationPerContract",
+        "exerciseStyle",
+        "settlementType",
+        "settlementDays",
+        "calendar",
+        "expiryCutoffTime",
+        "memoReference",
+        "adjustmentEffectiveDate",
+        "verifiedUnderlyingAndShareClass"
+      ],
+      "unknownFields": [
+        "actual listing/series identity",
+        "actual adjustment memo/version",
+        "actual effective dates",
+        "actual expiry cutoff/calendar/settlement"
+      ],
+      "boundary": {
+        "csvValidation": "candidate row can pass existing structural parser; not a complete authenticated export",
+        "symbolParser": "recognized by C4/C5; C4 multiplier 100",
+        "termsValidation": "refused: initial terms profile supports only Treasury and swap",
+        "containerInputProfile": "outside exact synthetic bill allowlist",
+        "provisionalLocalInputProfile": "outside exact bill/note allowlist",
+        "engineAtAcceptedContainerPin": "OPTION not in supported instrument types; missing terms in v1 instead yield TERMS_NOT_SUPPLIED; source-inspected, not executed",
+        "enginePricingExecuted": false,
+        "financiallyValidatedByThisTask": false
+      },
+      "openDecisionIds": [
+        "D5",
+        "D6",
+        "D7",
+        "D8"
+      ]
+    },
+    {
+      "id": "synthetic-adjusted-option",
+      "origin": "synthetic",
+      "kind": "adjusted-listed-option",
+      "sourceRefs": [
+        "O0",
+        "O1"
+      ],
+      "referenceEffectiveDate": null,
+      "referenceEffectiveDateReason": "Fictional series; no listing specification or applicable OCC memo exists for it.",
+      "illustrativeReference": {
+        "fictionalUnderlyingId": "SYNTHETIC:SYNX:COMMON-A",
+        "shareClass": "COMMON-A (fictional; no alias mapping)",
+        "nominalExercisePrice": "50.000",
+        "exercisePriceUnit": "USD quote units",
+        "expiryDate": "2027-12-17",
+        "exerciseStyle": "AMERICAN",
+        "settlementType": "PHYSICAL",
+        "settlementDays": null,
+        "calendar": null,
+        "expiryCutoffTime": null,
+        "premiumMultiplier": "100",
+        "exerciseConsiderationMultiplier": "100",
+        "aggregateExerciseConsiderationPerContract": "5000.000",
+        "deliverablesPerContract": [
+          {
+            "fictionalSecurityId": "SYNTHETIC:SYNX:COMMON-A",
+            "quantity": "10",
+            "unit": "shares"
+          }
+        ],
+        "cashDeliverablesPerContract": [],
+        "memoReference": null,
+        "adjustmentEffectiveDate": "2027-10-01"
+      },
+      "candidatePositionRow": {
+        "accountId": "90001",
+        "security": "SYNX1271217C00050000",
+        "instrumentType": "OPTION",
+        "quantity": "2",
+        "contractMultiplier": "100",
+        "costBasis": "2.000000",
+        "closingMark": "2.500000",
+        "markSource": "CLUSTER_LAST_TRADE_AT_N",
+        "markQuality": "LAST_TRADE",
+        "marketValue": "500.000000",
+        "unrealizedPnl": "100.000000",
+        "currency": "USD",
+        "counterpartyId": "SYNTH-OPTION",
+        "nettingSetId": "SYNTH-OPTION-NS",
+        "coupon": "",
+        "maturityDate": "",
+        "lastCouponDate": "",
+        "accruedInterestFraction": ""
+      },
+      "referenceAssumptions": "Every identity, date, style, numeric term and mark is invented. Counterpart hypothesizes a reverse split, retains exercise consideration factor 100 and reduces delivered shares to 10; no OCC determination is asserted.",
+      "units": {
+        "quantity": "signed option contracts",
+        "contractMultiplier": "premium/book-value factor; not a deliverable share count",
+        "costBasis": "invented USD premium quote units",
+        "closingMark": "invented USD premium quote units",
+        "marketValue": "signed USD book arithmetic only",
+        "unrealizedPnl": "signed USD book arithmetic only",
+        "nominalExercisePrice": "USD quote units",
+        "aggregateExerciseConsiderationPerContract": "USD per contract; hypothetical, not settlement output"
+      },
+      "fieldProvenance": {
+        "allValues": "author-created synthetic illustration; none obtained from market data",
+        "mappingIds": [
+          "O-ID",
+          "O-EXPIRY",
+          "O-RIGHT",
+          "O-STRIKE",
+          "O-QUANTITY",
+          "O-MULTIPLIER",
+          "O-DELIVERABLE",
+          "O-STYLE",
+          "O-SETTLEMENT",
+          "O-ADJUSTMENT",
+          "O-PRICE"
+        ]
+      },
+      "representable": [
+        "candidatePositionRow field names and decimal cells in positions schema 3"
+      ],
+      "unsupportedFields": [
+        "deliverablesPerContract",
+        "cashDeliverablesPerContract",
+        "exerciseConsiderationMultiplier",
+        "aggregateExerciseConsiderationPerContract",
+        "exerciseStyle",
+        "settlementType",
+        "settlementDays",
+        "calendar",
+        "expiryCutoffTime",
+        "memoReference",
+        "adjustmentEffectiveDate",
+        "verifiedUnderlyingAndShareClass"
+      ],
+      "unknownFields": [
+        "actual listing/series identity",
+        "actual adjustment memo/version",
+        "actual effective dates",
+        "actual expiry cutoff/calendar/settlement"
+      ],
+      "boundary": {
+        "csvValidation": "candidate row can pass existing structural parser; not a complete authenticated export",
+        "symbolParser": "not recognized; numeric root fails C4 and C5; C4 fallback multiplier 1, C3 nonbond classification EQUITY",
+        "termsValidation": "refused: initial terms profile supports only Treasury and swap",
+        "containerInputProfile": "outside exact synthetic bill allowlist",
+        "provisionalLocalInputProfile": "outside exact bill/note allowlist",
+        "engineAtAcceptedContainerPin": "OPTION not in supported instrument types; missing terms in v1 instead yield TERMS_NOT_SUPPLIED; source-inspected, not executed",
+        "enginePricingExecuted": false,
+        "financiallyValidatedByThisTask": false
+      },
+      "openDecisionIds": [
+        "D5",
+        "D6",
+        "D7",
+        "D8"
+      ]
+    }
+  ],
+  "implementationSourceAndSchemaSha256": {
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/api/eod_routes.py": "a6fcb7a612aeff1234afd7b363c330338838642d1f96556621e8a191e2ef00d0",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/bundle.py": "3baaaa4fc22f881135b3c57275c52eb4df8c4cb8f8d2e06f9e9752914f8b51b0",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/capabilities.py": "dfc9a837a3b8c23041b813164112d4421882c314e03327213e6b4dcafc1be4b4",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/conventions.py": "4ccc5c1f20323a612b132ff60706f4bcc89d920cfe07bc07d2681167108ce92f",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/normalize.py": "a74506c43b7f81d7db382686b3f0a8e41daa5a84476e136b0095afaf9d6b77e4",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/pipeline.py": "0b17e111d2f74744e5d90f0849bc2dbc8e4e02e1efcceee22e30bcf048182cd2",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/schema.py": "95bdddc383a95550eab6b02a52f3837859d0c195e16c15b508b8a20d0742d6dc",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/schema_version.py": "48af6ee49c87ebcb1dc307c15f283ed20425b8a679d2050929c92b11ae1a0310",
+    "Alex@992db307f40c1b19de19a0ae43bf653ede3a5bda:engine/integration/terms.py": "9ab3e646ae867efd1bdfad544c0395d63e0a0fdf0c73299001c13f0e21dadc5c",
+    "specs/YU14-listed-equity-options/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OccSymbol.java": "9a02cd4ac06221aa505bb90634c32ddf1f54392dee2e9f7dde87b95ff10f47e5",
+    "specs/YU15-eod-risk-extract/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractCsv.java": "482e8748dfc5c13d37bdc8588a05848f971e3308dc006db70d636f136d1c3440",
+    "specs/YU15-eod-risk-extract/generation/runtime-overrides/price-publisher/src/option-quotes.js": "8c82acf62868963b44670bcd665c3ada031788e4b3ed458691cc82ffcb7aabf4",
+    "specs/YU16-cdm-instruments/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractCsv.java": "a4038175192d0a220957472daa010709aa85dbb31320e3d31f55dc5080d5ccb3",
+    "specs/YU16-cdm-instruments/generation/runtime-overrides/reference-data/src/instruments/cdm-catalog.ts": "a2298c1297b0a64fcdcc3a3517a1690ed0ffa6278dc856310d45c04327c2bd04",
+    "specs/YU17-otc-rates/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractCsv.java": "115735afb3f5d21e880e45106efcbce56f994b9e2d75ca5574b497a9b847a634",
+    "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/bundle.py": "91e30c600a2bf5dc063d7e26f9a37da6336606facfa0a75c4d8800f29d87b07d",
+    "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/container-result-schema.json": "18b8822933963145610e6025d545bc8facdcec0519067669361c9a2b9e541a46",
+    "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/container_adapter.py": "41467c1e5c9813d73d06d9ac05132e1b4c4eed9f4c395058a7dafc00adfb275b",
+    "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/instrument_terms.py": "cf6881b16d09b74556d6ace9b4587907fa79daa1e822c8c78cf29b094979380c",
+    "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/pricing_result.py": "0c55e81444dbb01fd5c99d8ae1c730325cc8c08739f3ff71dc89e9aafd091181",
+    "specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/worker_protocol.py": "7b203c274b9ca144b6103fcaabaa5fedefccdd1af33e5046b17e00b991335b4b",
+    "specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractMain.java": "0621b16354bcae0ab7b0d659ec603f9bd4afd6c424a20022789171cd36ada2d6"
+  }
+}

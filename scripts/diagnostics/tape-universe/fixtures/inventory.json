@@ -1,0 +1,61 @@
+{
+  "declared": [
+    "AAA",
+    "BRK.B",
+    "BRK/A",
+    "MISSING"
+  ],
+  "tapeAvailable": [
+    "AAA",
+    "BRK",
+    "BRK.B",
+    "BRK/A",
+    "TAPE-ONLY",
+    "aaa"
+  ],
+  "overlap": [
+    "AAA",
+    "BRK.B",
+    "BRK/A"
+  ],
+  "declaredWithoutTape": [
+    "MISSING"
+  ],
+  "tapeExcludedByDeclaration": [
+    "BRK",
+    "TAPE-ONLY",
+    "aaa"
+  ],
+  "directory": {
+    "declaredMissingFromDirectory": [
+      "BRK/A",
+      "MISSING"
+    ],
+    "tapeMissingFromDirectory": [
+      "BRK/A",
+      "TAPE-ONLY",
+      "aaa"
+    ],
+    "overlapMissingFromDirectory": [
+      "BRK/A"
+    ]
+  },
+  "print": {
+    "sampleSymbols": [
+      "AAA",
+      "BRK/A",
+      "TAPE-ONLY"
+    ],
+    "sampleWithoutTape": [],
+    "staticDeclaredTapeCandidates": [
+      "AAA",
+      "BRK/A"
+    ],
+    "sampleExcludedByDeclaration": [
+      "TAPE-ONLY"
+    ],
+    "declaredTapeWithoutSample": [
+      "BRK.B"
+    ]
+  }
+}

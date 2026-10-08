@@ -14,6 +14,9 @@ Current YU18 work is specified in [YU18 risk integration](specs/YU18-risk-integr
 
 The October 7 integration adds interrupted-proof cleanup, content-based image admission, scoped reconciliation proofs and explicit replay anchors. Member readouts show observed readiness, risk capacity and admin account state. The regulatory report includes sequenced OTC refusals; tape status and gateway ACK metrics have explicit failure/unknown categories. Projector JVMs exit on heap OOM, and a bounded diagnostic measures book-owned shallow memory separately from shared orders.
 
+The evening updates retire abandoned queued gateway work and conserve pipeline permits. Offline tools inspect declared tape coverage, source identity loss and selected engine/reconciliation memory graphs. TreasuryDirect/OCC mapping records supported fields and unresolved conventions. These local checks do not establish production sizing, financial correctness or live recovery.
+
+
 These changes have local source/generated checks. They do not establish deployed HA, retained-upgrade compatibility, current throughput/latency or financial pricing acceptance. The maintained [risk work queue](issues/risk-integration/README.md) records remaining work.
 
 ## Canonical Project Layout

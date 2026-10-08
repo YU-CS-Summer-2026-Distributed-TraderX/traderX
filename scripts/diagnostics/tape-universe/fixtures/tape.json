@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "source": "SYNTHETIC-OFFLINE-INVENTORY",
+  "windowSeconds": 10,
+  "sessionSeconds": 10,
+  "compression": 1,
+  "days": [
+    {
+      "date": "2025-02-03",
+      "openMs": 1738593000000
+    }
+  ],
+  "prices": {
+    "AAA": [
+      [
+        200
+      ]
+    ],
+    "BRK.B": [
+      [
+        201
+      ]
+    ],
+    "BRK/A": [
+      [
+        202
+      ]
+    ],
+    "BRK": [
+      [
+        203
+      ]
+    ],
+    "aaa": [
+      [
+        204
+      ]
+    ],
+    "TAPE-ONLY": [
+      [
+        205
+      ]
+    ]
+  }
+}

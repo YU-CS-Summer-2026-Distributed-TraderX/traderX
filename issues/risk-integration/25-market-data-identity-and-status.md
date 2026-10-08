@@ -4,13 +4,13 @@ Updated: 2026-10-07. Status: in progress (structured tape status integrated; ide
 
 ## Current finding
 
-Absent/corrupt extracts share the same health shape and differ only in prose. PRICE_TICKERS still limits the replay universe. TAQ ingestion drops SYM_SUFFIX; historical truncated/duplicated stored objects require live revalidation.
+The prior absent/corrupt shape ambiguity is resolved by integrated structured status/reason codes. PRICE_TICKERS still limits the replay universe. TAQ ingestion drops SYM_SUFFIX; historical truncated/duplicated stored objects require live revalidation.
 
 Verified by current-source review; local reproductions and limits are recorded in [October 7 triage](open-issue-triage-2026-10-07.md). Historical runtime observations remain historical.
 
 ## Work
 
-- [ ] Add stable producer status/reason codes for missing, malformed and loaded tape, preserving readable detail.
+- [x] Add stable producer status/reason codes for missing, malformed and loaded tape, preserving readable detail.
 - [ ] Reconcile configured ticker/reference universe and available tape; identify uncovered symbols explicitly.
 - [ ] Preserve security identity when normalizing root/suffix; settle mapping using source conventions before ingestion changes.
 - [ ] Revalidate stored-object integrity when authorized; no deletion/re-ingest or TAQ-to-Parquet conversion is authorized here.
@@ -18,7 +18,7 @@ Verified by current-source review; local reproductions and limits are recorded i
 
 ## Acceptance
 
-- [ ] Synthetic absent/corrupt/loaded fixtures return distinct machine-readable outcomes.
+- [x] Synthetic absent/corrupt/loaded fixtures return distinct machine-readable outcomes.
 - [ ] Class-share fixtures cannot merge two securities.
 - [ ] Historical cloud data counts stay unverified until measured; no sampling claim inferred from medians.
 
@@ -45,3 +45,17 @@ Scope: local source/test work only when assigned. No push, deployment, retained-
 Producer health and the console consume structured tape state/reason codes, distinguishing missing, corrupt, unaddressable clock, replay, pause and completion. Generated publisher/console tests passed. Source/ticker identity, share classes, reference-universe breadth and licensed data work remain open.
 
 Combined validation: 213 generated Java cases (including five allocation gates), 142 generated publisher/console cases, 171 operational-script cases, 13 OOM checks and 16 memory checks passed. The console production build and five repository gates passed. These are scoped local/source/generated results, not live HA, deployment-profile performance or financial acceptance. Evidence: shared coordinator `review-evidence/class-window-integration-20261007`.
+
+## Evening offline declared-universe coverage
+
+2026-10-07: codex-tape-status owns the bounded offline diagnostic milestone in an isolated checkout at accepted `22d4c906`. Locally verified, coordinator review pending. Explicit supplied declaration and tape metadata, optional exact CSV directory and decoded print sample, preserve source-role differences and exact identities. This makes exclusions observable; it does not reconcile/widen the production universe, normalize classes, inspect stored cloud objects, or establish admission/financial validity. Prior structured tape status is integrated; broader RI25 tasks remain open. Shared index updates are coordinator-owned.
+
+Offline diagnostic acceptance: 18 actual CLI cases pass against source and generated reader roots; exact four-reader parity and prior 87 status/consumer cases pass. Deliberate wrong-overlap/omitted-exclusion implementation controls fail. Synthetic fixture inventory proves exact role-specific overlap/gaps and private deterministic provenance; no current cloud universe/admission/financial claim. Diagnostic milestone alone is implemented; production reconciliation/widening and security identity remain undecided and open.
+
+## Offline source identity loss follow-up
+
+2026-10-07 evening: source-identity diagnostic/proof locally verified, coordinator review pending, dependent on locally reviewed81eb3184 universe candidate. Current YU07 CT/CQ AST-isolated SELECT is exercised on owned synthetic CSV only; separate reader tuple repetitions from distinct root/suffix tuples sharing output symbol. Exact filter/null/type scope and private hashes are required. No actual TAQ conversion, ingestion, stored data, alias mapping, normalized key, production universe, finance, core, or cloud changes. Original identity/storage decisions remain unresolved.
+
+Source identity milestone evidence: current pinned YU07 SELECT/reader/filter on invented CT/CQ proves root-only output loses three reader-tuple distinctions in each eligible fixture, with repeated observations classified separately. Source/generated13 CLI cases pass, stalled-child20s control is reaped, exact ingester parity and prior105 diagnostic/status/consumer cases pass. Omitted-suffix/wrong-projection private implementation variants fail. This is source/reader behavior evidence only; canonical root/suffix mapping, actual vendor data and stored integrity remain unmeasured/unresolved.
+
+October 7 evening integration: the local milestones above passed coordinator review; delivery-specific historical pending notes are superseded by the final integration record. Broader unchecked deployment, mapping, sizing and recovery work remains open.

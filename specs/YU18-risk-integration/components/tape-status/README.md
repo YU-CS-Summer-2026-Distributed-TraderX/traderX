@@ -13,3 +13,9 @@ Run `node --test specs/YU16-cdm-instruments/generation/runtime-overrides/price-p
 R1 rejects unrepresentable day/window timestamps at load with EXTRACT_INVALID_SCHEMA and nonfinite/unaddressable runtime clock arithmetic with CLOCK_UNADDRESSABLE. Inclusive Date boundaries and ordinary valid replay/pause/held outputs remain exercised. See FR-TS-04.
 
 October 7 integration: combined source/generated checks passed in the coordinator candidate. The scoped implementation is integrated locally; original delivery notes retain their dates. Evidence is recorded in the shared coordination review directory `class-window-integration-20261007`. Live deployment, retained HA, performance and financial acceptance are not inferred from these checks.
+
+Evening offline coverage diagnostic: `scripts/diagnostics/tape-universe/coverage.py` and its reader bridge compare explicit declaration/tape roles with optional supplied CSV/print snapshots. See its README and FR-TS-05/06; locally verified, coordinator review pending. Existing runtime source and structured status are unchanged.
+
+Offline evidence: 18 CLI acceptance tests pass against source and private generated readers; four reader files match byte-for-byte. Earlier structured status is already integrated in accepted 22d4c906; this new diagnostic is a separate local delivery and does not alter that runtime.
+
+RI25 source identity follow-up: `scripts/diagnostics/tape-universe/source_identity.py` observes current YU07 CT/CQ pure SELECT identity projection with cached DuckDB, preserving filter/type scope and distinguishing repeated tuples from distinct-tuple collapse. See SOURCE-IDENTITY.md and FR-TS-07/08. Locally verified, coordinator review pending; ingesters/data/mapping remain unchanged. Dependency: reviewed universe candidate81eb3184, not yet canonical integrated.

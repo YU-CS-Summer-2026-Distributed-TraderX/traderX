@@ -16,7 +16,7 @@ This is the maintained queue from the professor meeting, mentor resources, integ
 | RI-06 | [Recovery](06-recovery.md) | Managed identity, catch-up, automatic recovery and Desk wiring integrated locally; retained deployment/HA acceptance remains |
 | RI-07 | [Acceptance/demo](07-acceptance-and-demo.md) | Local proofs delivered; maintain full-rig repeatability, second-person demonstration and broader risk coverage |
 | RI-08 | [Build/deployment](08-build-and-deployment.md) | Local CI/container gates integrated; external-engine upgrade and cloud rollout verification open |
-| RI-09 | [Reference resources](09-reference-resources.md) | TreasuryDirect/OCC field and convention research queued |
+| RI-09 | [Reference resources](09-reference-resources.md) | TreasuryDirect/OCC field mapping and synthetic examples reviewed locally; convention, identity and ingestion decisions remain |
 | RI-10 | [Docusaurus](resolved/10-documentation-refresh.md) | Done, delivered/published by the documentation lane; user-confirmed. Archived; its existing staged addition is preserved. |
 | RI-11 | [Trader Desk](11-trader-workspace-ui.md) | Combined desk and managed order actions integrated5677b007; production auth/isolation, secondary tools/OTC migration and wider acceptance open |
 | RI-12 | [Self-match prevention](resolved/12-cross-account-self-match-prevention.md) | Done: local engine/group implementation archived; production identity is RI11 |
@@ -30,14 +30,14 @@ This is the maintained queue from the professor meeting, mentor resources, integ
 | RI-20 | [Deploy and proof paths do not verify intended image contents](20-deployment-image-provenance.md) | Offline image admission integrated; immutable deployment pins/provenance and rollout verification open. |
 | RI-21 | [Managed identities and SQL recovery need a coordinated deployment path](21-managed-recovery-deployment-and-dr.md) | Replay anchors integrated; managed startup, SQL DR/migrations and retained deployment open. |
 | RI-22 | [OTC rejection audit and risk/admission readouts are missing](resolved/22-audit-and-admission-observability.md) | Done locally: gauges, admin member accounts and sequenced OTC refusal audit. |
-| RI-23 | [Readiness, gateway saturation and feed reconnect need stronger contracts](23-readiness-and-failover-service.md) | Readiness observations integrated; quorum/routing/gateway/feed outage policy and live proof open. |
-| RI-24 | [Venue breadth and projector work need measured memory bounds](24-bounded-runtime-memory.md) | OOM exit and measured book accounting integrated; full-engine/projector bounds, liveness and recovery open. |
-| RI-25 | [Tape identity, availability status and replay universe need cleanup](25-market-data-identity-and-status.md) | Structured tape status integrated; source/ticker identity and universe work open. |
+| RI-23 | [Readiness, gateway saturation and feed reconnect need stronger contracts](23-readiness-and-failover-service.md) | Readiness observations and queued-task retirement integrated locally; pipeline permits conserved. Started outcomes remain uncertain; quorum/routing/feed policy and live proof open. |
+| RI-24 | [Venue breadth and projector work need measured memory bounds](24-bounded-runtime-memory.md) | Book/engine/reconciliation selected-memory diagnostics integrated; saved orphan reports now copy only the capped ID prefix. Full heap, sizing, liveness and recovery open. |
+| RI-25 | [Tape identity, availability status and replay universe need cleanup](25-market-data-identity-and-status.md) | Structured status, offline universe coverage and source-identity diagnostics integrated locally. Root/suffix mapping, production universe and stored-data integrity remain open. |
 | RI-26 | [Retained upgrades across historical snapshot and capacity changes lack proof](26-retained-format-upgrade-proof.md) | Blocked on supported retained writer/reader boundary and upgrade barrier. |
 | RI-27 | [NATS rebind recovers subscriptions but loses EOD messages](27-eod-message-durability.md) | Blocked on durable EOD storage/regeneration and replay semantics. |
 | RI-28 | [Gateway unmatched-ack counter includes expected continuation fills](resolved/28-gateway-ack-metric-semantics.md) | Done locally: bounded ACK reason metrics; ambiguity remains explicit. |
 
-Current order: RI-17/18 proof reliability lanes are authorized now. Integrate the reviewed RI-16 engine foundation through an explicit handoff, then agree RI-15 portfolio contract. RI-19–28 record remaining triage work; RI-13 and large-scale RI-14/16 wait for credits and authorization. These priorities do not assign queued work.
+Next decisions: agree the RI-15 portfolio contract and external-engine activation, RI-25 root/suffix identity, RI-26 retained upgrade boundary and RI-27 EOD durability. RI-13 and large-scale RI-14/16 wait for credits. RI-23/24 retain deployment, sizing and recovery acceptance beyond the local fixes. These priorities do not assign queued work.
 
 
 ## Resolved issues
@@ -160,3 +160,5 @@ September 23 review: RI-02 local packaging accepted; RI-01 spec returned with fo
 2026-10-07 integration: all 13 reviewed code/spec deliveries landed in `b0b4c332`. Combined555 focused cases and the console production build passed. RI10, RI17, RI18, RI19, RI22 and RI28 are archived; RI20/21/23/24/25 remain partial, RI26/27 await decisions. No push, deployment, retained rig or financial validation was performed. Existing staged queue additions remain pending, including RI10 at its new resolved path.
 
 October 7 accounting correction: eight scoped entries are archived (RI02/10/12/17/18/19/22/28). The initial six omitted the older completed container and self-match scopes. RI01 has all seven functional types integrated but retains explicit performance/HA acceptance; RI03/06/11/14/16 likewise contain delivered milestones. These are workstreams rather than 28 independent unfixed bugs. Stale top headers/next actions are reconciled; historical planning lists remain dated context.
+
+October 7 evening integration: eight reviewed delivery slices cover RI09 reference mapping, RI23 synchronous and pipelined queued-task retirement, RI24 engine/reconciliation selected-memory diagnostics and bounded saved-result backing, and RI25 universe/source-identity diagnostics. Completed local scopes are recorded in their workstream files; RI09/23/24/25 remain open for the decisions and acceptance named in the table. No new whole workstream is archived. User staging/private files are preserved; no push, deployment, retained-rig or financial validation.
