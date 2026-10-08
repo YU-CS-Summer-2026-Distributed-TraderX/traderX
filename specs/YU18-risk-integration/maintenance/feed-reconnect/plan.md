@@ -1,6 +1,6 @@
 # Feed reconnect plan
 
-Author: Codex RI23. Status: locally verified; coordinator review needed.
+Author: Codex RI23. Status: integrated locally; required live acceptance pending.
 
 1. Verify fresh accepted checkout and inheritedYU12 operative source. Reproduce actual closed offer/full flush and initial DNS refusal with synthetic IO.
 2. Add a full YU18 adapter override with generation-owned state, bounded recovery and visible cold/exhaustion/cleanup failure. Retain existing parser/codec/flush/keepalive conventions and distinguish unknown offers from committed effects.

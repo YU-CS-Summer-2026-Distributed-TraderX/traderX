@@ -1,12 +1,12 @@
 # RI23 task — Bounded feed reconnect recovery
 
-Updated: 2026-10-08. Status: reviewed; awaiting user integration approval. Author: codex-readiness-diagnostics. Coordinator: current TraderX coordinator.
+Updated: 2026-10-08. Status: integrated; acceptance pending. Author: codex-readiness-diagnostics. Coordinator: current TraderX coordinator.
 
 Parent: [RI23](../23-readiness-and-failover-service.md). Outcome: reconnect after an established cluster connection, visible cold-start/exhaustion failure, safe session/symbol mappings and resource ownership. Gateway/core/financial semantics, retained rigs and cloud deployment are excluded.
 
 ## Authorization and routing
 
-User approved the two recommendations and said `ok start those`. Implementation and bounded owned local proofs authorized; integration approval pending. Target after approval: `traderX-risk-integration`, preserved index/user edits; no push/deploy.
+User approved the two recommendations and said `ok start those`. Implementation and bounded owned local proofs authorized; integration approved by user on2026-10-08 (`ok, integrate`). Target after approval: `traderX-risk-integration`, preserved index/user edits; no push/deploy.
 
 Chat `01a1180b-0b33-7651-999b-968a30518263`, verified active; gpt-6.1-sol High. Own status `codex-readiness-diagnostics.txt`. Parent coordination handoff `HANDOFF-CODEX-FEED-RECONNECT-20261008.md`; current routing `ACTIVE-LANES-20261008.json`.
 
@@ -26,6 +26,12 @@ Pending candidate review/corrections, concrete user report and integration appro
 
 ## October 8 review outcome
 
-Coordinator independently ran52focused exact-source Java21 tests:0failure/error/skip. Verified72author evidence hashes and reviewed432virtual retry scenarios plus three discriminating mutation controls. Supplied52generated cases/native cold-failure and parity evidence reviewed. No blocking source-level issue found. Proposed target: TraderX-risk-integration; user integration approval pending. No source merged or task archived.
+Coordinator independently ran52focused exact-source Java21 tests:0failure/error/skip. Verified72author evidence hashes and reviewed432virtual retry scenarios plus three discriminating mutation controls. Supplied52generated cases/native cold-failure and parity evidence reviewed. No blocking source-level issue found. Proposed target: TraderX-risk-integration; user integration approved by user on2026-10-08 (`ok, integrate`). No source merged or task archived.
 
 Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/ri23-feed-coordinator-20261008/review.md`. Native cold refusal establishes FAILED_START/oneattempt/exit1/cleanup only. Required LR02 established live recovery/price effects remain open; even an approved code integration must retain acceptance-pending status until that scenario passes or the user explicitly defers it. Local10s/100ms/1s retry settings are provisional for deployment, not GKE recovery measurements.
+
+## October 8 approved integration
+
+User explicitly approved `459de827` into TraderX-risk-integration. Source integration commit `e1dcf097` contains the exact approved runtime/test bytes; the integration preserves the intervening user docs/layout commit `0cc43a0c`. Full YU18 generation and52focused generated tests passed with0failure/error/skip. Native cold proof applicability is unchanged. Source integration and these current status notes supersede earlier pending/unmerged statements.
+
+The required LR02 established-session/member/endpoint recovery, fresh mappings and actual price/book application remain unexecuted. Task status is integrated; acceptance pending, not done/resolved. No archive, retained rig, GKE deployment or push. Remaining live run requires separate task-specific authorization.

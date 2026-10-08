@@ -7,7 +7,7 @@ This queue records behavior that still needs an actual service, container or clu
 | ID | Proof | Status | Parent work |
 |---|---|---|---|
 | [LR-01](lr-01-gateway-lifecycle.md) | Gateway timeout and permit lifecycle | queued | RI-23 |
-| [LR-02](lr-02-feed-reconnect.md) | Feed reconnect and symbol registration | queued: candidate459de827 reviewed; established live proof open | RI-23 |
+| [LR-02](lr-02-feed-reconnect.md) | Feed reconnect and symbol registration | queued:459de827 integrated; established live proof open | RI-23 |
 | [LR-03](lr-03-risk-container-pipeline.md) | Risk container lifecycle and TraderX connection | Stage A passed for image24206883/profile; Stage B blocked | RI-15/16 |
 | [LR-04](lr-04-managed-recovery-ha.md) | Managed projection recovery across actual failover | blocked on supported recovery profile | RI-06/21/26 |
 | [LR-05](lr-05-deployment-artifacts.md) | Intended image and deployment artifact verification | blocked on reviewed immutable artifacts | RI-20/08 |

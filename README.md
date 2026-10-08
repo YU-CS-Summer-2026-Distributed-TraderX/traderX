@@ -119,3 +119,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 Copyright 2023 UBS, FINOS, Morgan Stanley.
 
 Distributed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+
+The feed adapter now retries lost established Aeron connections within a bounded incident budget and re-registers symbols for each new session. Initial failure and exhausted recovery remain visible. Local tests pass; established live recovery and price application are tracked in LR02.

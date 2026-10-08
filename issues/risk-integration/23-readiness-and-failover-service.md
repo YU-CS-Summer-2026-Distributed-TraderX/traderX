@@ -63,3 +63,9 @@ Final local outcome: synchronous and pipelined queued tasks use an atomic start/
 October 7 new direct assignment: Bounded feed reconnect after established connection in existing RI23 chat01a1180b-0b33-7651-999b-968a30518263; cold failure/idle safety preserved. CLAIM/checkouts pending; coordinator reviews before integration. No cloud, push or retained rig activation.
 
 October8 feed-reconnect candidate459de827 is coordinator-reviewed, awaiting user integration approval.52independent exact-source tests pass; native cold-failure proof is narrow. LR02 established live recovery/price acceptance remains queued; source is not integrated or done. See tasks/ri23-feed-reconnect.md and live-rig/lr-02-feed-reconnect.md.
+
+## October 8 feed integration
+
+User-approved459de827 is integrated locally viae1dcf097. A full YU18 FeedAdapterMain override provides bounded established-session recovery, fresh per-session symbol mappings/nonces, visible cold/exhaustion/cleanup failures and pending latest-value preservation. Already-offered prices are not replayed; unknown effects may duplicate. Parser/scales/flush/core/gateway/wire conventions remain unchanged.
+
+Combined full generation and52focused generated cases pass; earlier52independent source cases and72artifact hashes were reviewed. LR02 established live recovery/actualprice application remains queued, with native cold refusal a separate narrow milestone. This supersedes current review/integration-pending notes above; the task remains integrated/acceptancepending and broaderRI23 remains open. See maintenance/feed-reconnect and its task/LR records.

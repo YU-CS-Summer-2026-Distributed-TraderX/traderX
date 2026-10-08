@@ -174,3 +174,5 @@ October 7 evening integration: eight reviewed delivery slices cover RI09 referen
 October 7 new direct assignment: Two directly authorized Sol6.1High lanes: risk-service container qualification and feed reconnect; registry ACTIVE-LANES-20261008.json, prior evening work integratedbf1d13e9. CLAIM/checkouts pending; coordinator reviews before integration. No cloud, push or retained rig activation.
 
 October 7 spec layout: YU18 product/service features remain under components; issue fixes, reliability hardening and diagnostics moved to [maintenance](../../specs/YU18-risk-integration/maintenance/README.md). This is a location/validation change, not new runtime or live acceptance.
+
+October8 integration: feed reconnect459de827 is incorporated locally viae1dcf097 after direct user approval; fullgeneration/52generated cases pass. Its bounded task remains integrated/acceptancepending for LR02 established live recovery/price proof. User0cc43a0c docs/layout commit is preserved; no whole RI23/task archive or cloud/push.
