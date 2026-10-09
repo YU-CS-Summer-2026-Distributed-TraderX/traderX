@@ -1,6 +1,6 @@
 # Generation derivation specification
 
-Status: local implementation and acceptance complete; review/integration pending. Owner: Codex RI20-GENERATION-DERIVATION. Parent issue/task/index changes are coordinator-owned proposals. No live rig is required to qualify this pre-build source guard; LR05 remains separate.
+Status: integrated locally, 2026-10-09, from `ca9cb5dd`; local acceptance complete. Owner: Codex RI20-GENERATION-DERIVATION. Parent issue/task/index changes are coordinator-owned proposals. No live rig is required to qualify this pre-build source guard; LR05 remains separate.
 
 ## Requirements
 

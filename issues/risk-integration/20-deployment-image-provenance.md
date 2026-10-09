@@ -2,7 +2,7 @@
 
 Updated: 2026-10-07. Status: in progress (offline admission integrated; deployment provenance/pinning remains). Maintainer: coordinator. Integrated source revision: `b0b4c33276c93c9aae545019320d606f7f0d0c2d`.
 
-## Current finding
+## Original finding (historical; integrated local milestones below)
 
 A baseline proof suite skips node tag resolvability unless rebuilding. Legacy GKE deployment selects an old state/context without a rendered-image provenance guard. Historical live tag mismatches are not current observations.
 
@@ -47,3 +47,9 @@ The user approved console candidate `8f4623d26251292a629b2e6a1c40dd9632e428ad` (
 ## October 9 fresh-rig audit corrections
 
 The [six-finding audit correction task](resolved/live-audit-fixes-20261009.md) is complete: the user approved candidate e5adf9361a35d75ab2e6233d8fba7dc90e24bd84 into traderX-risk-integration. FIX workspace and encoded administrator-path bypasses, legacy epoch parent links, startup credential retry, partial EOD reporting and cluster scrape selection were corrected. Focused native arm64/local synthetic live controls passed for that candidate; implementation and verification evidence are in parent coordination/eod-integration/live-rig-evidence/20261009-review36-fixes/. No managed Desk recovery, historical SQL migration, external financial calculation or GKE release acceptance is inferred. Broader RI/LR workstreams remain open.
+
+## October 9 generation-derivation closeout
+
+The human explicitly approved integration of reviewed `ca9cb5dd` into `traderX-risk-integration` in the author chat ("sorry, i meant you integrate it now"). The local build-input guard is integrated; [the bounded task is done](resolved/ri20-generation-derivation.md). Original cluster/STP unsafe acceptance and fixed pre-build refusal were measured with external tool doubles. Independent private full generation covers 30 states and four current component contexts; author/coordinator controls and canonical integration evidence are recorded in parent `coordination/eod-integration/review-evidence/ri20-integration-20261009/`.
+
+This supersedes earlier RI20 generation-guard queued/awaiting-approval statements only. Current owner/generated inputs are verified before compilation, including ancestor/add/remove/pruning and supported STP transformations. RI20 stays open for real immutable deployment artifacts, pinning, platform/digest/live target/rollout and retained compatibility qualification; LR05 is separate and unclosed. No rig/image build or deployment is implied.

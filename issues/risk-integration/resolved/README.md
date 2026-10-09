@@ -15,6 +15,7 @@ These bounded RI scopes and completed maintenance tasks are complete at their st
 | [RI-22](22-audit-and-admission-observability.md) | Gauges, account readouts and sequenced OTC refusals | Deployment and financial acceptance are separate |
 | [RI-28](28-gateway-ack-metric-semantics.md) | Bounded ACK classification/metric semantics | Gateway lifecycle live proof: RI23/LR01 |
 | [Fresh-rig audit corrections](live-audit-fixes-20261009.md) | Six console/epoch/monitoring findings; approved integration and focused fresh local live regressions | Managed recovery, historical-data repair, financial and cloud qualification remain separate |
+| [RI20 generation-derivation](ri20-generation-derivation.md) | Approved local build-input guard integrated from `ca9cb5dd`; current full ancestry/contexts verified | RI20/LR05 production artifact/deployment/retained compatibility remain open |
 | [Console runtime packaging](lr05-console-packaging.md) | Missing runtime module and native-platform packaging; approved integration with unchanged measured context | RI11/RI20 and LR05 release/GKE/authenticated-flow work remain open |
 
 The October7 evening integration `bf1d13e9` adds completed milestones inside RI09/23/24/25; those broad workstreams remain active. The reviewed risk-service container candidate `077ffac` has passed LR03StageA for its exact image/profile, but is not incorporated into an approved target. It is not a resolved integrated task; connected StageB remains open.

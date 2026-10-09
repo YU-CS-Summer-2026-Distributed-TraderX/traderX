@@ -9,6 +9,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Book and engine memory accounting](book-memory-accounting/README.md) | See pack tasks and linked RI/LR evidence |
 | [Console runtime packaging](console-runtime-packaging/README.md) | Bounded correction integrated; broader LR05 qualification remains open |
 | [October 8 live-rig proof record](live-rig-acceptance/README.md) | Integrated historical closed-lease fixtures; do not execute without a new scope |
+| [Generated build-input derivation](generation-derivation/README.md) | Done: approved local guard integration; LR05 remains separate |
 | [Image admission](image-admission/README.md) | See pack tasks and linked RI/LR evidence |
 | [Member account readouts](member-account-readout/README.md) | See pack tasks and linked RI/LR evidence |
 | [OTC refusal audit](otc-refusal-audit/README.md) | See pack tasks and linked RI/LR evidence |

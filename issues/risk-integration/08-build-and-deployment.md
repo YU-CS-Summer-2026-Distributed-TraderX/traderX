@@ -20,3 +20,5 @@ Next: Qualify missing external-engine/deployment gates and controlled rollout; d
 2026-09-24 coordinator reconciliation: user reports CI passes on push. Hosted pass is user-reported; exact run/SHA was not independently inspected here. Remove generic hosted-CI verification from the immediate task queue; external engine checkout wiring and deployment verification remain open. No new lane assigned.
 
 October 7 status reconciliation: the top status and next action supersede earlier queued/implementation-held headers. Historical unchecked planning lists are not a claim that implemented milestones are absent. Remaining acceptance is not marked complete.
+
+October 9: [full-ancestry build-input derivation](resolved/ri20-generation-derivation.md) is integrated from reviewed `ca9cb5dd`. The cluster/service/STP paths refuse stale rendered contexts before compiler/image effects. This completes the bounded local guard; external-engine and deployment/promotion/rollback qualification remain open.

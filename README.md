@@ -121,3 +121,7 @@ Copyright 2023 UBS, FINOS, Morgan Stanley.
 Distributed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
 
 The feed adapter now retries lost established Aeron connections within a bounded incident budget and re-registers symbols for each new session. Initial failure and exhausted recovery remain visible. Local tests pass; established live recovery and price application are tracked in LR02.
+
+## October 9 build-input derivation
+
+The cluster, service and STP builders verify complete selected build contexts against independent private full-ancestry generation before compilation/image operations. Stale renders refuse; ordinary builds use private admitted copies. See [generation derivation](specs/YU18-risk-integration/maintenance/generation-derivation/README.md). This local guard is integrated from `ca9cb5dd`; it adds generation latency and leaves deployment/retained compatibility qualification separate.

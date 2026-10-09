@@ -58,3 +58,5 @@ The [maintenance index](maintenance/README.md) includes proof cleanup, image pro
 All October 7 changes are local integrations. Retained upgrades, durable EOD event recovery, external-engine portfolio acceptance and cloud performance work remain separate.
 
 Feature specs live in [components](components/README.md); issue fixes, reliability hardening and diagnostics live in [maintenance](maintenance/README.md). Shared generation/runtime inputs remain at the state parent.
+
+October 9: the [generation-derivation maintenance pack](maintenance/generation-derivation/README.md) is integrated from `ca9cb5dd`. Builders independently verify full ancestry and current source bytes before image work. This closes the local stale-render build prerequisite; deployment artifacts and retained compatibility remain separate.

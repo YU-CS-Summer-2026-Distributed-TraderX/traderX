@@ -17,3 +17,7 @@ At completion move only the completed task record to [resolved](../resolved/READ
 The user approved console candidate `8f4623d26251292a629b2e6a1c40dd9632e428ad` (including `fcba84f4`) and archival proof candidate `055581fdef5b08bf24757384c8167723384b7d97` into `traderX-risk-integration`. The console packaging task is [done and archived](../resolved/lr05-console-packaging.md); the proof drivers remain historical fixtures for the closed October 8 lease. This entry supersedes earlier awaiting-approval/source-not-integrated statements for these two candidates only. Independent full-ancestry generation, source/render parity and scoped checks are recorded under parent `coordination/eod-integration/review-evidence/review36-20261008/integration/`. No rig/container was restarted. Existing native image/connected evidence applies to unchanged build-context bytes. Broader RI/LR release, authenticated Desk, revised amd64, cloud, retained recovery, financial and sizing obligations remain open.
 
 Completed bounded slice: [console runtime packaging](../resolved/lr05-console-packaging.md). The broader live campaign record retains its independent LR limitations; only its archival proof source was integrated.
+
+## October 9 completed build guard
+
+[RI20-GENERATION-DERIVATION](../resolved/ri20-generation-derivation.md) is done after direct human approval and canonical integration of `ca9cb5dd`, with full ancestry/render/guard checks. This supersedes its earlier active/awaiting-approval entries. RI20 and LR05 retain separate deployment/retained compatibility obligations.
