@@ -1,0 +1,11 @@
+# October 8 owned live-rig proof drivers
+
+These are task-scoped fixtures for the closed `traderx-lr-20261008-01a11baa` lease. Do not run them against retained rigs or recreate the lease without new authorization. The private client configuration is removed after cleanup. This directory changes no application implementation.
+
+The operator checks actual time and ordinary/weekly usage before each bounded sequence, records the owned target and artifact identities, and invokes one frozen fault driver at a time. `instrument*.py` constructs separate source copies/images; production timeout, retirement, permit, core and wire logic stay unchanged in positive controls. The omission image deliberately removes the actual retirement claim and is never an accepted source artifact.
+
+`lr01*.py` exercises native HTTP/binary owner boundaries, interruption, uncertainty, saturation and queued-work election. `reconcile-identities.py` checks existing regulatory/SQL effects; accepted legacy audit rows do not expose direct request keys. `lr02*.py` measures native references/session/resource observations. A new JVM in `lr02-cold-storage.py` proves cold registration, not preservation of a populated cache. `lr06.py` measures bounded populations and point samples; it is not a sizing benchmark. `artifacts*.py` distinguishes index/platform/config identity and compares actual imported layers/runtime configuration. `export-epoch.py` preserves stopped owned PVC byte archives without certifying restore compatibility.
+
+Each tool has fixed fixture names and evidence paths under the local coordination directory. The exact first-run failed expectations, ineffective PID1 signals, missing log/termination witnesses, platform refusals and successful controls are retained there. Post-run observer corrections are documented; do not describe every current helper byte as the version that ran each historical attempt.
+
+The final ledger is `/Users/yaakov/dev/lmax/coordination/eod-integration/live-rig-evidence/20261008/FINAL-LEDGER.json`. Private CA captures and temporary source/build directories are excluded from the shareable evidence manifest. Shared queue/index review and canonical integration remain coordinator/user responsibilities.

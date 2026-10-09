@@ -35,3 +35,7 @@ Built immutable artifact set with trusted provenance and explicit target; cloud 
 - Cleanup and remaining qualification: pending.
 
 Keep failed and inconclusive attempts with their evidence. Complete only the scenario actually exercised; record any untested tier separately.
+
+## October 8 approved integration
+
+The user approved console candidate `8f4623d26251292a629b2e6a1c40dd9632e428ad` (including `fcba84f4`) and archival proof candidate `055581fdef5b08bf24757384c8167723384b7d97` into `traderX-risk-integration`. The console packaging task is [done and archived](../resolved/lr05-console-packaging.md); the proof drivers remain historical fixtures for the closed October 8 lease. This entry supersedes earlier awaiting-approval/source-not-integrated statements for these two candidates only. Independent full-ancestry generation, source/render parity and scoped checks are recorded under parent `coordination/eod-integration/review-evidence/review36-20261008/integration/`. No rig/container was restarted. Existing native image/connected evidence applies to unchanged build-context bytes. Broader RI/LR release, authenticated Desk, revised amd64, cloud, retained recovery, financial and sizing obligations remain open.
