@@ -6,6 +6,8 @@ These bounded RI scopes and completed maintenance tasks are complete at their st
 
 | ID | Completed scope | Remaining qualification elsewhere |
 |---|---|---|
+| [RI16 C8 upstream upgrade](ri16-upstream-c8-upgrade.md) | Reviewed corrected service e770f912 approved and incorporated in owned external-engine target | LR03B connected portfolio contract; original-engine adoption/readiness/fleet remain open |
+| [Risk container qualification](ri15-16-risk-container-upgrade.md) | Approved owned container/service integration with exact corrected image80c885f8 applicability | Broader financial/production/native/GPU/connected acceptance remains separate |
 | [RI-02](02-risk-containerization.md) | Original local risk-container packaging | Current service upgrade and connected portfolio contract: RI15/16 and LR03 |
 | [RI-10](10-documentation-refresh.md) | Docusaurus refresh, delivered/published by its lane | Later feature changes need normal documentation maintenance |
 | [RI-12](12-cross-account-self-match-prevention.md) | Local cross-account self-match protection | Production identity/isolation: RI11; compatible deployment remains separate |
@@ -18,7 +20,7 @@ These bounded RI scopes and completed maintenance tasks are complete at their st
 | [RI20 generation-derivation](ri20-generation-derivation.md) | Approved local build-input guard integrated from `ca9cb5dd`; current full ancestry/contexts verified | RI20/LR05 production artifact/deployment/retained compatibility remain open |
 | [Console runtime packaging](lr05-console-packaging.md) | Missing runtime module and native-platform packaging; approved integration with unchanged measured context | RI11/RI20 and LR05 release/GKE/authenticated-flow work remain open |
 
-The October7 evening integration `bf1d13e9` adds completed milestones inside RI09/23/24/25; those broad workstreams remain active. The reviewed risk-service container candidate `077ffac` has passed LR03StageA for its exact image/profile, but is not incorporated into an approved target. It is not a resolved integrated task; connected StageB remains open.
+The October7 evening integration `bf1d13e9` adds completed milestones inside RI09/23/24/25; those broad workstreams remain active. The updated risk-service candidate `e770f912` is now incorporated into its human-approved owned external-engine target. These two bounded records are resolved; historical077 acceptance is retained, and connected StageB/original Alex adoption remain open.
 
 ## Closeout rule
 

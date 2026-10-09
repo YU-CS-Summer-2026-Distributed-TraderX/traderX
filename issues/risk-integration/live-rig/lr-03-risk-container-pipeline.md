@@ -1,6 +1,6 @@
 # LR-03 — Risk container lifecycle and TraderX connection
 
-Updated: 2026-10-07. Status: Stage A passed for named image/profile; Stage B blocked. Owner: unassigned validation lane; coordinator maintains queue.
+Updated: 2026-10-09. Status: Stage A passed for corrected C8 image/profile, owned integration complete; Stage B blocked/unexecuted. Coordinator maintains acceptance; history retained.
 
 Parent work: [RI-15/16](../15-portfolio-service-and-risk-results.md). This entry tracks acceptance evidence; it is not a separate implementation contract.
 
@@ -8,7 +8,7 @@ Parent work: [RI-15/16](../15-portfolio-service-and-risk-results.md). This entry
 
 Rig: Owned disposable CPU container and volumes; then disposable TraderX-to-service pipeline.
 
-Candidate: accepted packaging077ffacfc0de9c93caad9592184d73884bf3449b, image24206883 (full identity below), service796ca5df. Pin the exact tested commit, generated source, image and configuration before execution.
+Current approved owned target: `e770f912baed47214220ce92e3de99a876781c68` in `/Users/yaakov/dev/lmax/jax-risk-container-upgrade`; corrected image `sha256:80c885f8305067421a4c34af3eeef95ab1eca5a38376e9dcc689f8fe8bd5483d`, build `98367871`, upstream C8. Historical 077/image24206883 acceptance remains below.
 
 ## Existing evidence
 
@@ -24,15 +24,15 @@ Separate lifecycle stubs from real synthetic pricing. Observe actual execution o
 
 ## Dependencies
 
-Packaging candidate review for A; accepted request/result capability and TraderX adapter for B. No new financial convention or original-engine activation implied.
+Stage A corrected profile is reviewed and incorporated into its approved owned engine target; Stage B still requires accepted request/result capability and the TraderX adapter. No new financial convention or original-engine activation implied.
 
 ## Result record
 
-- Claim/worktree/runner: pending.
-- Tested revisions, images and rig identity: pending.
-- Commands, actual outcomes, artifacts and negative controls: pending.
-- Verdict: not executed for this entry.
-- Cleanup and remaining qualification: pending.
+- Claim/worktree/runner: author C8/R1 qualification; approved owned engine integration after RI20 release, no new runtime lease.
+- Tested revisions/images: C8 service candidate `e770f912baed47214220ce92e3de99a876781c68`, measured `sha256:80c885f8305067421a4c34af3eeef95ab1eca5a38376e9dcc689f8fe8bd5483d`, build98367871; exact case identities/mounts/commands in R1 evidence.
+- Outcomes: author16 actual-container groups and880 installed-image passes reviewed; coordinator139 focused checks/HTTP control/image identity verified. Unchanged runtime context97 hashes rechecked at incorporation.
+- Verdict: Stage A passed for corrected named profile; Stage B unexecuted/blocked.
+- Cleanup: author owned resources removed; no new container for byte-identical incorporation. Stage B, native/GPU/fleet/production and general financial acceptance remain separate.
 
 Keep failed and inconclusive attempts with their evidence. Complete only the scenario actually exercised; record any untested tier separately.
 
@@ -41,3 +41,10 @@ Keep failed and inconclusive attempts with their evidence. Complete only the sce
 Stage A passed for image `sha256:242068836a9453d7c732159e32bef3716790a9ded5bb975ca585d9384dd3921c`, OCI build92024cd, service796ca5df and packaging077ffac. Coordinator independently repeated14actual-container groups;835installed-image regressions were reviewed from supplied nonzero XML (one missing-reference skip,11slow deselected). Linux/amd64 on ARM64 Docker Desktop emulation,2CPUs/2GiB/noextraswap/256PIDs/nonroot/read-only root, explicit durable mounts. Real four-position synthetic USD base pricing is separate from stub-price crash/lifecycle overlays. All owned containers removed.
 
 Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/ri16-container-coordinator-20261008/review.md`; raw owned run `/private/tmp/ri16-container-coordinator-proof-20261008`. No deployment/nativeGPU/fleet/general financial/worker-drain-readiness claim. Stage B remains unexecuted: this did not exercise TraderX export, account/run/provenance-bound adapter or result intake. Original engine incorporation and connected API contract remain separate.
+
+
+## October 9 corrected C8 acceptance and integration
+
+Current image80c885f8 (full identity above) supersedes the first C8 candidate26/imageeecd only for the reviewed correction. Candidate26 failed a synthetic same-current-key/unknown-bound-contract invariant; the earlier15-group observations and that failure remain preserved separately. R1 returned409 without mutating historical rows; fresh current key priced. Coordinator independently reran139 focused checks and the HTTP control, verified73 evidence/97 runtime hashes and inspected image metadata. Author880 installed-image tests and16 actual-container groups were reviewed, not independently repeated by coordinator.
+
+Approved owned target fast-forward077->e770f912 preserves history and exact measured runtime bytes. No original Alex incorporation, TraderX connected portfolio pipeline, deployment or financial blanket approval. Queue/EOD/cache/input mounts, CPU2/2GiB/PIDs256/nonroot/read-only and Linuxamd64-emulated scope remain exact. Lifecycle placeholders are separate from real synthetic pricing/calibration. Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/ri16-upstream-c8-r1-20261009/review.md`; integration evidence in parent coordination/ri16-c8-integration-20261009. Stage B remains blocked on accepted account/run/provenance-bound portfolio adapter/contract.

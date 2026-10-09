@@ -22,8 +22,8 @@ This is the maintained queue from the professor meeting, mentor resources, integ
 | RI-12 | [Self-match prevention](resolved/12-cross-account-self-match-prevention.md) | Done: local engine/group implementation archived; production identity is RI11 |
 | RI-13 | [GKE performance rebaseline](13-gke-performance-rebaseline.md) | Credits-dependent isolated C4D-or-better deployment and gateway scaling/latency/throughput campaign |
 | RI-14 | [Large portfolio generator/load](14-large-portfolio-generation-and-load.md) | Seeded corpus/local driver integrated at a0d6da0b; massive CPU/GPU/cloud campaign waits for credits |
-| RI-15 | [Portfolio service/results](15-portfolio-service-and-risk-results.md) | New request adapter, container upgrade and accepted portfolio analytics/UI queued |
-| RI-16 | [Risk jobs/worker scaling](16-risk-job-lifecycle-and-worker-scaling.md) | Local identity/recovery foundation reviewed in separate engine clone; readiness/backpressure and worker scaling remain |
+| RI-15 | [Portfolio service/results](15-portfolio-service-and-risk-results.md) | Owned C8 service/container integrated; connected adapter, portfolio financial acceptance and analytics/UI remain open |
+| RI-16 | [Risk jobs/worker scaling](16-risk-job-lifecycle-and-worker-scaling.md) | Owned C8 identity/recovery/container integration done; readiness, backpressure, retention and fleet remain open |
 | RI-17 | [Interrupted proofs leave borrowed rig state behind](resolved/17-interrupted-proof-cleanup.md) | Done locally: journaled cleanup and retained rollback refusal; 24 combined checks passed. |
 | RI-18 | [STP image freshness depends on file timestamps](resolved/18-stp-image-content-freshness.md) | Done locally: content/role/payload provenance replaces mtimes; 23 combined checks passed. |
 | RI-19 | [Forward reconciliation proof mutates an out-of-window trade](resolved/19-reconciliation-proof-subject.md) | Done locally: attributable SQL/live subjects and owned orphan cleanup; 55 combined checks passed. |
@@ -186,3 +186,27 @@ The user approved console candidate `8f4623d26251292a629b2e6a1c40dd9632e428ad` (
 The [six-finding audit correction task](resolved/live-audit-fixes-20261009.md) is complete: the user approved candidate e5adf9361a35d75ab2e6233d8fba7dc90e24bd84 into traderX-risk-integration. FIX workspace and encoded administrator-path bypasses, legacy epoch parent links, startup credential retry, partial EOD reporting and cluster scrape selection were corrected. Focused native arm64/local synthetic live controls passed for that candidate; implementation and verification evidence are in parent coordination/eod-integration/live-rig-evidence/20261009-review36-fixes/. No managed Desk recovery, historical SQL migration, external financial calculation or GKE release acceptance is inferred. Broader RI/LR workstreams remain open.
 
 October 9: [RI20 generation-derivation](resolved/ri20-generation-derivation.md) is done for approved local integration of `ca9cb5dd`; its [maintenance pack](../../specs/YU18-risk-integration/maintenance/generation-derivation/README.md) records source/generated acceptance. RI20/LR05 deployment and compatibility obligations remain open. This supersedes earlier awaiting-integration text for this bounded task; unrelated RI16/RI29 work is unchanged.
+
+
+## October 9 approved owned-engine integration
+
+Direct human approval covered exact reviewed `e770f912baed47214220ce92e3de99a876781c68` and owned target
+`/Users/yaakov/dev/lmax/jax-risk-container-upgrade`, branch
+`codex/risk-container-upgrade`. After RI20 validated closeout/release at
+`d24078f0`, the target fast-forwarded safely from `077ffac` to that exact tree,
+preserving history. All 97 runtime context hashes equal the measured image
+`sha256:80c885f8305067421a4c34af3eeef95ab1eca5a38376e9dcc689f8fe8bd5483d` (build `98367871`). No image was rebuilt or container started for
+unchanged bytes. Focused target tests and tree/hash checks verify incorporation.
+Author 880 installed-image passes and 16 actual-container groups were reviewed;
+coordinator independently passed 139 focused checks plus HTTP refusal/fresh-key
+controls and inspected source/image identities. Lifecycle stubs remain separate
+from real synthetic USD pricing/calibration. Prior 26/imageeecd failed the expanded
+bound-ID provenance invariant; that failure and earlier profiles remain historical.
+
+The bounded [C8 upgrade](resolved/ri16-upstream-c8-upgrade.md) and
+[container qualification](resolved/ri15-16-risk-container-upgrade.md) are done
+for this approved owned integration. Original Alex and service-review clone are
+unchanged. This does not copy pricing into TraderX generation, activate a service,
+push/deploy, or approve broad financial/fleet behavior. LR03 Stage A applies only
+to the corrected named image/profile; connected Stage B remains unexecuted and
+blocked on accepted account/run/provenance-bound adapter/contract.

@@ -7,7 +7,6 @@ A task records an implementable scope, its chat, review, live acceptance and int
 | Task | Parent | Current state |
 |---|---|---|
 | [Fresh-rig audit corrections](../resolved/live-audit-fixes-20261009.md) | Audit F1–F6 / LR05 identity | Done: approved implementation integrated; local live checks passed |
-| [Risk-service container qualification](ri15-16-risk-container-upgrade.md) | RI15/16 | Reviewed; awaiting integration target/approval. LR03StageA passed; connected StageB separate |
 | [Feed reconnect](ri23-feed-reconnect.md) | RI23 | Integrated; acceptance pending; LR02 established live proof outstanding |
 
 At completion move only the completed task record to [resolved](../resolved/README.md), update this link and the parent/index/spec/live entries, and preserve historical evidence. The entire RI parent stays open if it has other work. READY and a successful live test alone do not make a task integrated or done.
@@ -21,3 +20,8 @@ Completed bounded slice: [console runtime packaging](../resolved/lr05-console-pa
 ## October 9 completed build guard
 
 [RI20-GENERATION-DERIVATION](../resolved/ri20-generation-derivation.md) is done after direct human approval and canonical integration of `ca9cb5dd`, with full ancestry/render/guard checks. This supersedes its earlier active/awaiting-approval entries. RI20 and LR05 retain separate deployment/retained compatibility obligations.
+
+
+## October 9 completed owned risk integration
+
+[RI16 C8 upgrade](../resolved/ri16-upstream-c8-upgrade.md) and [risk container qualification](../resolved/ri15-16-risk-container-upgrade.md) are done for approved owned target e770f912 after RI20 validated release. This supersedes earlier pending/correction/approval text for these bounded tasks only. LR03B and broad RI15/16 remain open; original Alex and TraderX runtime pricing are unchanged.

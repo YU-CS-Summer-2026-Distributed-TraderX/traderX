@@ -1,6 +1,6 @@
 # RI-16 — Reliable risk-job submission and portfolio worker scaling
 
-Updated: 2026-10-07. Status: in progress: lifecycle/recovery foundation reviewed in isolated engine clone; engine handoff/activation, backpressure and worker scaling remain. Maintainer: coordinator; original delivery notes below retain their dates.
+Updated: 2026-10-09. Status: owned C8 identity/recovery/container integration complete; readiness, backpressure, retention, fleet and original-engine/production adoption remain open. Maintainer: coordinator; dated history retained.
 
 ## Existing foundation
 
@@ -16,7 +16,7 @@ Alex has SQLite WAL jobs, atomic claims, one process-held worker lock per queue,
 - Define per-portfolio/account isolation, durable inputs/results and correlation/provenance. Multi-host workers must be authorized and tested separately from local-device sharding.
 - Prove crash before/after enqueue, lost acknowledgment, duplicate submissions, interrupted work, result publication and API/worker restart. Local fault tests first; cloud horizontal scaling deferred until credits.
 
-Next: Activate the reviewed service changes under agreed engine ownership, then bound worker capacity/backpressure.
+Next: agree readiness/backpressure/retention and worker-fleet capacity policy, retaining LR03 Stage B and original-engine/production adoption as separate authorized work.
 
 2026-10-07: Local implementation authorized and dispatched on Sol6.1 High, task 01a116fd-2fce-77f1-a561-3b03472f0722. Exact isolated checkout CLAIM pending. Scope per dated coordinator handoff; cloud scaling remains deferred.
 
@@ -27,3 +27,27 @@ October 7 status reconciliation: the top status and next action supersede earlie
 October 7 new direct assignment: Current reviewed service container/restart qualification in same RI16 chat; no worker fleet or original-engine activation. CLAIM/checkouts pending; coordinator reviews before integration. No cloud, push or retained rig activation.
 
 October 7 container milestone reviewed: packaging077ffac/image24206883 based on service796ca5df. Coordinator repeated14actual-container groups successfully; scoped LR03StageA passed. Original-engine incorporation, TraderX connected adapter/contract, general financial acceptance and fleet/readiness policies remain open. See live-rig/lr-03-risk-container-pipeline.md; no deployment/self-integration.
+
+
+## October 9 approved owned-engine integration
+
+Direct human approval covered exact reviewed `e770f912baed47214220ce92e3de99a876781c68` and owned target
+`/Users/yaakov/dev/lmax/jax-risk-container-upgrade`, branch
+`codex/risk-container-upgrade`. After RI20 validated closeout/release at
+`d24078f0`, the target fast-forwarded safely from `077ffac` to that exact tree,
+preserving history. All 97 runtime context hashes equal the measured image
+`sha256:80c885f8305067421a4c34af3eeef95ab1eca5a38376e9dcc689f8fe8bd5483d` (build `98367871`). No image was rebuilt or container started for
+unchanged bytes. Focused target tests and tree/hash checks verify incorporation.
+Author 880 installed-image passes and 16 actual-container groups were reviewed;
+coordinator independently passed 139 focused checks plus HTTP refusal/fresh-key
+controls and inspected source/image identities. Lifecycle stubs remain separate
+from real synthetic USD pricing/calibration. Prior 26/imageeecd failed the expanded
+bound-ID provenance invariant; that failure and earlier profiles remain historical.
+
+The bounded [C8 upgrade](resolved/ri16-upstream-c8-upgrade.md) and
+[container qualification](resolved/ri15-16-risk-container-upgrade.md) are done
+for this approved owned integration. Original Alex and service-review clone are
+unchanged. This does not copy pricing into TraderX generation, activate a service,
+push/deploy, or approve broad financial/fleet behavior. LR03 Stage A applies only
+to the corrected named image/profile; connected Stage B remains unexecuted and
+blocked on accepted account/run/provenance-bound adapter/contract.

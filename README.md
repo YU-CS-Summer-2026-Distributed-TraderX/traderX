@@ -125,3 +125,8 @@ The feed adapter now retries lost established Aeron connections within a bounded
 ## October 9 build-input derivation
 
 The cluster, service and STP builders verify complete selected build contexts against independent private full-ancestry generation before compilation/image operations. Stale renders refuse; ordinary builds use private admitted copies. See [generation derivation](specs/YU18-risk-integration/maintenance/generation-derivation/README.md). This local guard is integrated from `ca9cb5dd`; it adds generation latency and leaves deployment/retained compatibility qualification separate.
+
+
+## October 9 owned risk-service integration
+
+The reviewed C8 risk service and pinned CPU container are incorporated at `e770f912` in the human-approved owned external-engine target `jax-risk-container-upgrade`. This preserves upstream pricing, durable submission identity and validated old-store provenance/refusal behavior. Exact runtime hashes match corrected image80c885f8; no service activation or original Alex checkout change occurred. See [completed C8 task](issues/risk-integration/resolved/ri16-upstream-c8-upgrade.md) and [LR03](issues/risk-integration/live-rig/lr-03-risk-container-pipeline.md). Connected TraderX portfolio acceptance, broader financial/fleet/production work remain separate.
