@@ -1,3 +1,6 @@
+import {canonicalRequestTarget, edgePath} from './request-path.mjs';
+import {createInternalToken} from './internal-token.mjs';
+import {pnlStatus} from './eod-pnl-status.mjs';
 import {deskProxyTarget} from './desk-orders.mjs';
 import { createDeskSessions } from './desk-session.mjs';
 import { createTreasuryDemo } from './treasury-demo.mjs';
@@ -135,7 +138,7 @@ const ADMIN_MUTATIONS = [
 ];
 
 const needsAuth = (method, p) =>
-  ADMIN_MUTATIONS.some(m => (m.method === null || m.method === method) && m.re.test(p));
+  ADMIN_MUTATIONS.some(m => (m.method === null || m.method === method) && m.re.test(edgePath(p).toLowerCase()));
 
 // Paths the edge proxy already knows how to route. Identical list to proxy.conf.mjs's plain()
 // entries — if one gains a route, so must the other.
@@ -700,21 +703,7 @@ function eodChain(req, res, url) {
         + `| grep "eod pnl marked" | grep "date=${date}" | tail -1 || true`,
         { shell: '/bin/sh', timeout: 25000 }).toString().trim();
     } catch { /* the log is a bonus signal; the row count still stands on its own */ }
-    const marked = Number(/accounts=(\d+)/.exec(summary)?.[1] ?? NaN);
-    const halted = Number(/halted=(\d+)/.exec(summary)?.[1] ?? NaN);
-    if (Number.isFinite(n) && n > 0) {
-      out.pnl = { state: 'ok', rows: n, halted: Number.isFinite(halted) ? halted : null,
-        detail: `${n} position PnL row(s)` + (halted > 0 ? `, ${halted} account(s) halted` : '') };
-    } else if (Number.isFinite(halted) && halted > 0) {
-      out.pnl = { state: 'halted', rows: 0, halted,
-        detail: `ran and refused: ${halted} account(s) halted on a position whose security has no `
-          + `closing price in this snapshot. The chain continued — this is the fail-safe working, `
-          + `not a stall.` };
-    } else if (summary) {
-      out.pnl = { state: 'ok', rows: 0, halted: 0, detail: 'ran with nothing to mark' };
-    } else {
-      out.pnl = { state: 'pending', rows: 0, detail: 'position-service has not marked this session yet' };
-    }
+    out.pnl = pnlStatus(n, summary);
   } catch {
     out.pnl = { state: 'unreadable', detail: 'could not read eod_position_pnl' };
   }
@@ -841,41 +830,17 @@ function eodChain(req, res, url) {
 // behalf. Reads stay open because the console does the authenticating; changes still need a login
 // because ADMIN_MUTATIONS refuses them BEFORE the proxy ever runs. The credential stops being an
 // ambient grant handed to the browser and becomes something this process spends on request.
-let INTERNAL_JWT = '';
-const JWT_TTL_S = 3600;
-
-function mintInternalToken() {
-  if (!MASTER_SECRET) return;
-  const body = JSON.stringify({ subject: 'console', accounts: [], admin: true, ttlSeconds: JWT_TTL_S });
-  const req = http.request({
-    host: EDGE_HOST, port: Number(EDGE_PORT), path: '/trade-processor/auth/dev-token', method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
-               'x-auth-master-secret': MASTER_SECRET },
-  }, (r) => {
-    const chunks = [];
-    r.on('data', (c) => chunks.push(c));
-    r.on('end', () => {
-      const t = Buffer.concat(chunks).toString().trim();
-      // Shape-test, don't truthiness-test: an error page is a non-empty string too, and storing one
-      // would send garbage as a Bearer token on every read for the next half hour.
-      if (r.statusCode === 200 && t.split('.').length === 3) INTERNAL_JWT = t;
-      else console.log(`[console] internal token mint failed: HTTP ${r.statusCode}`);
-    });
-  });
-  req.on('error', (e) => console.log(`[console] internal token mint unreachable: ${e.message}`));
-  req.end(body);
-}
-// Routes whose upstream demands an admin JWT. The console attaches its own on the caller's behalf;
-// a WRITE among them has already been refused by ADMIN_MUTATIONS unless the caller signed in.
-const NEEDS_INTERNAL_JWT = (p) =>
-  p.startsWith('/trade-processor/') || p.startsWith('/order-matcher/regulatory');
-
 const [EDGE_HOST, EDGE_PORT] = EDGE.split(':');
-
-mintInternalToken();
-// Refresh well inside the TTL. A token that expires mid-demo presents as a panel losing its data
-// for no visible reason, which is the failure this whole file keeps being written to avoid.
-setInterval(mintInternalToken, (JWT_TTL_S / 2) * 1000).unref?.();
+const internalToken = MASTER_SECRET ? createInternalToken({mint: async () => {
+  const response = await fetch(`http://${EDGE}/trade-processor/auth/dev-token`, {
+    method: 'POST', headers: {'Content-Type': 'application/json', 'x-auth-master-secret': MASTER_SECRET},
+    body: JSON.stringify({subject: 'console', accounts: [], admin: true, ttlSeconds: 3600}),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (response.status !== 200) throw Error(`HTTP ${response.status}`);
+  return (await response.text()).trim();
+}}) : {get: () => ''};
+const NEEDS_INTERNAL_JWT = p => p.startsWith('/trade-processor/') || p.startsWith('/order-matcher/regulatory');
 
 // ---- ADR-073: the sandbox --------------------------------------------------------------------
 // A SEPARATE proxy, not three more PROXY_PREFIXES entries, because those all resolve to edge-proxy
@@ -1071,9 +1036,11 @@ function proxyToEdge(req, res, rewrite) {
   // Attach the console's OWN token, overwriting anything the client sent. Overwriting is the point:
   // a stale or forged Authorization header from the page must not decide what the upstream sees, and
   // a client whose own token expired must not lose a read it is entitled to.
-  const reqPath = req.url ?? '';
-  if (INTERNAL_JWT && NEEDS_INTERNAL_JWT(reqPath)) {
-    headers['authorization'] = `Bearer ${INTERNAL_JWT}`;
+  const reqPath = edgePath((req.url ?? '').split('?')[0]);
+  if (NEEDS_INTERNAL_JWT(reqPath)) {
+    const token = internalToken.get();
+    if (!token) return json(res, 503, {code: 'internal_auth_unavailable', error: 'Service authentication is recovering. Try again shortly.'});
+    headers['authorization'] = `Bearer ${token}`;
     delete headers['Authorization'];
   }
   // The master secret is NEVER forwarded. It is this process's credential for minting its own
@@ -1091,7 +1058,7 @@ const deskSessions = createDeskSessions({
   file: process.env.DESK_USERS_FILE,
   checkAdmin: password => checkPassword(ADMIN_USER,password),
   upstream: async (url,options) => {
-    const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json',...(INTERNAL_JWT?{'Authorization':`Bearer ${INTERNAL_JWT}`}:{})},body:options.body===undefined?undefined:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
+    const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json',...(internalToken.get()?{'Authorization':`Bearer ${internalToken.get()}`}:{})},body:options.body===undefined?undefined:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
     return {status:r.status,body:await r.json()};
   },
   enableAccount: async (accountId,groupId,admit=true) => {
@@ -1106,7 +1073,9 @@ const deskSessions = createDeskSessions({
 });
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? '/', 'http://x');
+  try { req.url = canonicalRequestTarget(req.url ?? '/'); }
+  catch { return json(res, 400, {error: 'Invalid request path.'}); }
+  const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   if(p.startsWith('/desk-api/')) {
     if(process.env.LOCAL_ONLY!=='1')return json(res,404,{error:'Local desk profiles are not enabled.'});
@@ -1154,12 +1123,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/taq/table') return taqTable(req, res, url);
     return json(res, 404, { error: `no tape surface at ${p}` });
   }
-  if (p.startsWith('/fixorder')) {
+  if (p === '/fixorder') {
     if (req.method !== 'POST') return json(res, 405, {});
     try { return json(res, 200, await fixOrder(JSON.parse(await readBody(req)))); }
     catch (e) { return json(res, 502, { error: String(e) }); }
   }
-  if (p === '/healthz') return json(res, 200, { ok: true });
+  if (p === '/healthz') return json(res, 200, { ok: true, serviceAuth: internalToken.get() ? 'ready' : MASTER_SECRET ? 'recovering' : 'not-configured' });
 
   // ---- auth ----
   if (p === '/auth/me') {
@@ -1192,7 +1161,7 @@ const server = http.createServer(async (req, res) => {
   // TTL, with nothing recording who asked. Refused for everyone, signed in or not: the console
   // authenticates on your behalf now, so there is no reason for a browser to hold one.
   if (isOperatorControl(req.url)) return json(res, 403, OPERATOR_CONTROL_REFUSAL);
-  if (p === '/trade-processor/auth/dev-token') {
+  if (edgePath(p).toLowerCase() === '/trade-processor/auth/dev-token') {
     return json(res, 403, { code: 'mint_disabled',
       error: 'the console authenticates on your behalf; it does not issue tokens' });
   }

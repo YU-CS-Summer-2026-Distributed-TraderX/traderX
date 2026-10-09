@@ -40,13 +40,24 @@ kubectl --context "${CTX}" get ns "${NS}" >/dev/null 2>&1 || {
   exit 1
 }
 
+# Select only declared cluster-tier services; retain unhealthy targets for diagnosis.
+PROM_STAGE="$(mktemp -d)"; trap 'rm -rf "${PROM_STAGE}"' EXIT
+kubectl --context "${CTX}" -n "${NS}" get services -o json > "${PROM_STAGE}/services.json"
+MEMBERS="$(kubectl --context "${CTX}" -n "${NS}" get statefulset order-matcher-cluster -o jsonpath='{.spec.replicas}')"
+python3 "${ROOT}/scripts/yu15/render-cluster-prometheus.py" --services "${PROM_STAGE}/services.json" \
+  --namespace "${NS}" --members "${MEMBERS}" --output "${PROM_STAGE}/prometheus.json"
+
 # Configmaps BEFORE the deployments that mount them, so nothing starts against a missing volume.
 echo "[apply] configmaps"
 for f in observability-otel-configmap observability-tempo-configmap \
          observability-prometheus-configmap observability-loki-configmap \
          observability-promtail-configmap observability-grafana-datasources-configmap \
          observability-grafana-dashboard-providers-configmap observability-grafana-dashboards-configmap; do
-  ${K} apply -f "${BASE}/${f}.yaml"
+  if [[ "${f}" == observability-prometheus-configmap ]]; then
+    ${K} apply -f "${PROM_STAGE}/prometheus.json"
+  else
+    ${K} apply -f "${BASE}/${f}.yaml"
+  fi
 done
 
 echo "[apply] deployments + services"

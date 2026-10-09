@@ -6,6 +6,7 @@ A task records an implementable scope, its chat, review, live acceptance and int
 
 | Task | Parent | Current state |
 |---|---|---|
+| [Fresh-rig audit corrections](live-audit-fixes-20261009.md) | Audit F1–F6 / LR05 identity | Source/generated/live checks passed; awaiting integration approval |
 | [Risk-service container qualification](ri15-16-risk-container-upgrade.md) | RI15/16 | Reviewed; awaiting integration target/approval. LR03StageA passed; connected StageB separate |
 | [Feed reconnect](ri23-feed-reconnect.md) | RI23 | Integrated; acceptance pending; LR02 established live proof outstanding |
 

@@ -35,6 +35,12 @@ for f in promtail-serviceaccount promtail-clusterrole promtail-clusterrolebindin
   resolve "${f}"
 done
 
+# The cluster profile uses one gateway alias and no baseline blackbox probes.
+"${K[@]}" get services -o json > "${STAGE}/services.json"
+MEMBERS="$("${K[@]}" get statefulset order-matcher-cluster -o jsonpath='{.spec.replicas}')"
+python3 "${ROOT}/scripts/yu15/render-cluster-prometheus.py" --services "${STAGE}/services.json" \
+  --namespace "${NS}" --members "${MEMBERS}" --output "${STAGE}/observability-prometheus-configmap.yaml"
+
 echo "[apply] configmaps"
 for f in "${STAGE}"/observability-*.yaml; do "${K[@]}" apply -f "${f}" >/dev/null; done
 echo "[apply] deployments + services"

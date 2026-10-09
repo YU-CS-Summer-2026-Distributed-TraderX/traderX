@@ -20,10 +20,10 @@ type StageState = string;
 /** Only these are claims about health; everything else is reported, not interpreted. */
 const GOOD = new Set(['ok']);
 const BAD = new Set(['halted', 'unreadable', 'failed']);
-const WARN = new Set(['draft']);
+const WARN = new Set(['draft', 'partial', 'unverified']);
 // 'failed' joined after a publish triggered the extract, the extract threw, and this panel
 // reported 'remote' and 'pending' -- both of which read as WAITING -- through every refresh.
-const KNOWN = new Set(['ok', 'draft', 'pending', 'halted', 'not-configured', 'unreadable', 'remote', 'failed']);
+const KNOWN = new Set(['ok', 'draft', 'pending', 'halted', 'not-configured', 'unreadable', 'remote', 'failed', 'partial', 'unverified']);
 
 interface Stage {
   state: StageState;
@@ -81,7 +81,7 @@ const localDate = () => {
       <button type="button" class="card-tog" (click)="open.set(!open())">
         <span class="arrow">{{ open() ? '▾' : '▸' }}</span><h2>Today's end of day</h2>
       </button>
-      <help-tip text="The four stages are one pipeline, not four features. Closing a session mints a price version; publishing that version is what starts the risk extract; the extract takes a cut at an exact consensus sequence, byte-identical on every member; and the cut is then either published to a bucket or left on the pod, depending on where this rig points its sink. Each stage is read from a different place — prices over HTTP, PnL only as database rows, the cut from the risk-extract pod's volume, the published copy from the bucket — which is why this is one call to the console's own server rather than something the browser can assemble." />
+      <help-tip text="The four stages are one pipeline, not four features. Closing a session mints a price version; publishing that version is what starts the risk extract; the extract takes a cut at an exact consensus sequence, byte-identical on every member; and the cut is then either published to a bucket or left on the pod, depending on where this rig points its sink. Each stage is read from a different place — prices over HTTP, PnL from database rows and the account completion summary, the cut from the risk-extract pod's volume, the published copy from the bucket — which is why this is one call to the console's own server rather than something the browser can assemble." />
       <span class="spacer"></span>
       <label class="field">Business date
         <input type="date" [(ngModel)]="date" name="d" [disabled]="busy()">

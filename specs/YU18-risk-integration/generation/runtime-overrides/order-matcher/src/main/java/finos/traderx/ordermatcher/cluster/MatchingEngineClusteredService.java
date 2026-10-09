@@ -722,11 +722,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (bridgeUrl != null && !bridgeUrl.isBlank()) {
             // Epoch-qualified order ids so the read-model key never collides across incarnations
             // (brief 05 item 0). Managed runs use the persisted descriptor; legacy keeps its configured prefix.
-            final String epoch = System.getenv("CLUSTER_EPOCH");
+            final String configuredEpoch = System.getenv("CLUSTER_EPOCH");
+            final String epoch = configuredEpoch == null || configuredEpoch.isBlank() ? "1" : configuredEpoch;
             tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, 1 << 16);
             tradeBridge.start();
             orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
-                epoch == null || epoch.isBlank() ? "1" : epoch, runDescriptor, 1 << 16);
+                epoch, runDescriptor, 1 << 16);
             orderBridge.start();
         }
         final String extractUrl = System.getenv("RISK_EXTRACT_NATS_URL");

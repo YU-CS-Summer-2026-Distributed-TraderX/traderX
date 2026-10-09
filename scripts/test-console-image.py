@@ -129,7 +129,7 @@ def main():
                 raise AssertionError('default command exited: ' + json.dumps(state))
             try:
                 status, _, body = get('/healthz')
-                if status == 200 and json.loads(body) == {'ok': True}:
+                if status == 200 and json.loads(body).get('ok') is True:
                     break
             except (OSError, ValueError):
                 pass

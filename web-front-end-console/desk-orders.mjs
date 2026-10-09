@@ -47,7 +47,7 @@ export function deskProxyTarget(rawUrl) {
   let path=String(rawUrl??'').split(/[?#]/)[0];
   for(let i=0;i<3;i++){try{const decoded=decodeURIComponent(path);if(decoded===path)break;path=decoded;}catch{return {invalid:true};}}
   path=path.replace(/\\/g,'/').replace(/\/+/g,'/').toLowerCase().replace(/^\/legacy(?=\/)/,'');
-  const mutation=/^(?:\/order-matcher|\/gw\/\d+)\/(?:orders|cancel|replace|trades)(?:\/|$)/.test(path);
+  const mutation=/^\/fixorder(?:\/|$)/.test(path) || /^(?:\/order-matcher|\/gw\/\d+)\/(?:orders|cancel|replace|trades)(?:\/|$)/.test(path);
   const account=path.match(/\/accounts\/(\d+)\/(?:orders|trades|positions)\/?$/) || path.match(/^\/position-service\/(?:positions|trades)\/(\d+)\/?$/);
   return {mutation,account:account?Number(account[1]):null};
 }

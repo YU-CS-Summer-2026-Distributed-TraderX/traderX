@@ -4,6 +4,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 
 | Pack | Status |
 |---|---|
+| [Fresh-rig audit corrections](live-audit-fixes/README.md) | Source/generated/live checks passed; awaiting integration approval |
 | [ACK classification metrics](ack-metrics/README.md) | See pack tasks and linked RI/LR evidence |
 | [Book and engine memory accounting](book-memory-accounting/README.md) | See pack tasks and linked RI/LR evidence |
 | [Console runtime packaging](console-runtime-packaging/README.md) | Bounded correction integrated; broader LR05 qualification remains open |
