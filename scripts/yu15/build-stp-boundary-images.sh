@@ -27,8 +27,8 @@
 #
 # WHAT A SYNTHESIZED PAIR DOES NOT PROVE, stated here because the proof's PASS line cannot say it:
 # recovery across a genuine historical format-and-capacity gap. The July pair spanned four snapshot
-# formats and a 16x capacity change; this pair spans neither -- both sides write SNAPSHOT_FORMAT 7
-# and hold MAX_SECURITIES 1024, so the roll is 7 -> 7 with an identical symbol table. That is the
+# formats and a 16x capacity change; this pair spans neither -- both sides share the selected tree's snapshot format
+# and symbol capacity. That is the
 # BEHAVIOURAL boundary and nothing else. Nothing currently covers the format-and-capacity one.
 # (issues/open/nothing-proves-recovery-across-a-real-format-and-capacity-gap.md)
 #
@@ -46,6 +46,8 @@ fail() { echo "[fail] $*" >&2; exit 1; }
 
 [[ -d "${OM}" ]] || fail "generated order-matcher missing; generate the selected state first"
 
+# Independently derive the full ancestry before snapshotting selected inputs;
+# the provenance helper refuses stale renders and arbitrary prepared-role copies.
 # Snapshot all selected inputs before compilation. Strictly apply the pre transform
 # in that snapshot; compile both roles through one recipe and attach provenance to
 # each image. Docker cache hits are valid when the recorded bytes still match.

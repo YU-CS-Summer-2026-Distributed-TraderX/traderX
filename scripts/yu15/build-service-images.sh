@@ -18,7 +18,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-GEN="${ROOT}/generated/code/target-generated"
+source "${ROOT}/scripts/yu15/lib-state-image.sh"
+BUILD_STATE="${BUILD_STATE:-$(state_pack "${ROOT}")}"
 TAG="${YU15_SERVICE_TAG:-yu15}"
 
 SERVICES=("$@")
@@ -26,12 +27,13 @@ if [[ ${#SERVICES[@]} -eq 0 ]]; then
   SERVICES=(trade-processor position-service price-publisher)
 fi
 
-[[ -d "${GEN}" ]] || {
-  echo "[fail] no rendered tree at ${GEN}"
-  echo "[hint] bash pipeline/generate-state.sh YU15-eod-risk-extract"
-  exit 1
-}
-
+guards=()
+for service in "${SERVICES[@]}"; do guards+=(--component "${service}"); done
+exec python3 "${ROOT}/scripts/yu15/generation-derivation.py" execute --root "${ROOT}" --state "${BUILD_STATE}" "${guards[@]}" -- bash -s -- "${TAG}" "${SERVICES[@]}" <<'BUILD_SERVICES'
+set -euo pipefail
+GEN="${DERIVED_BUILD_ROOT}"
+TAG="$1"; shift
+SERVICES=("$@")
 for svc in "${SERVICES[@]}"; do
   dir="${GEN}/${svc}"
   [[ -d "${dir}" ]] || { echo "[fail] not in the rendered tree: ${svc}"; exit 1; }
@@ -57,3 +59,5 @@ for svc in "${SERVICES[@]}"; do
 done
 
 echo "[ok] built ${#SERVICES[@]} service image(s) at tag ${TAG}"
+
+BUILD_SERVICES

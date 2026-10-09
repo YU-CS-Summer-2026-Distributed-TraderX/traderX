@@ -9,6 +9,7 @@ Labels are a local builder attestation, not an authenticated remote producer ide
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -104,7 +105,7 @@ def selected(root):
         if not (context / name).is_file():
             raise ValueError(f'missing generated build input: {context / name}')
     recipe = []
-    for name in ('build-stp-boundary-images.sh', 'stp-image-provenance.py'):
+    for name in ('build-stp-boundary-images.sh', 'stp-image-provenance.py', 'generation-derivation.py'):
         path = root / 'scripts/yu15' / name
         recipe.append([name, digest(path.read_bytes())])
     patch = selected_patch(root)
@@ -128,25 +129,31 @@ def transform(root, context):
             run(args, stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def prepare(root, work):
-    before = selected(root)
-    context = root / 'generated/code/target-generated/order-matcher'
-    copy_context(context, work / 'fix')
-    copy_context(context, work / 'pre')
-    transform(root, work / 'pre')
-    if before != selected(root) or tree_hash(work / 'fix') != before['sourceSha256']:
-        raise ValueError('build inputs changed while preparing the private snapshot')
-    revision = run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
-                   capture_output=True, text=True).stdout.strip()
-    if not re.fullmatch(r'[0-9a-f]{40,64}', revision):
-        raise ValueError('source revision unavailable')
-    manifest = dict(schema=SCHEMA, selected=before, sourceRevision=revision,
-                    roles={role: tree_hash(work / role) for role in ('pre', 'fix')})
-    if manifest['roles']['pre'] == manifest['roles']['fix']:
-        raise ValueError('pre transformation did not change the source')
-    (work / 'prepared.json').write_bytes(canonical(manifest))
-    print('[ok] prepared immutable pre/fix input snapshots')
+def derived(root, context, role):
+    spec = importlib.util.spec_from_file_location('stp_derivation', root / 'scripts/yu15/generation-derivation.py')
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module.validated(root, ['order-matcher'], candidate=context, role=role)
 
+
+def prepare(root, work):
+    context = root / 'generated/code/target-generated/order-matcher'
+    with derived(root, context, 'fix') as (contexts, _receipt, _log):
+        before = selected(root)
+        copy_context(contexts / 'order-matcher', work / 'fix')
+        copy_context(contexts / 'order-matcher', work / 'pre')
+        transform(root, work / 'pre')
+        if before != selected(root) or tree_hash(work / 'fix') != before['sourceSha256']:
+            raise ValueError('build inputs changed while preparing the private snapshot')
+        revision = run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                       capture_output=True, text=True).stdout.strip()
+        if not re.fullmatch(r'[0-9a-f]{40,64}', revision):
+            raise ValueError('source revision unavailable')
+        manifest = dict(schema=SCHEMA, selected=before, sourceRevision=revision,
+                        roles={role: tree_hash(work / role) for role in ('pre', 'fix')})
+        if manifest['roles']['pre'] == manifest['roles']['fix']:
+            raise ValueError('pre transformation did not change the source')
+        (work / 'prepared.json').write_bytes(canonical(manifest))
+        print('[ok] prepared immutable pre/fix input snapshots')
 
 def inspect(image):
     args = ['docker', 'image', 'inspect', image]
@@ -256,39 +263,43 @@ def build(root, work, role, tag):
     context = work / role
     if prepared['selected'] != selected(root) or prepared['roles'][role] != tree_hash(context):
         raise ValueError('selected inputs or prepared role changed before build')
-    toolchain = host_toolchain()
-    bases = base_inputs(context)
-    print(f'[build] {role}: clean bootJar from private content snapshot', flush=True)
-    run(['./gradlew', '--no-daemon', '-q', 'clean', 'bootJar'], cwd=context)
-    if prepared['roles'][role] != tree_hash(context) or prepared['selected'] != selected(root):
-        raise ValueError('build inputs changed during compilation')
-    jars = [p for p in (context / 'build/libs').glob('*.jar') if not p.name.endswith('-plain.jar')]
-    if len(jars) != 1:
-        raise ValueError(f'expected exactly one boot jar, found {len(jars)}')
-    jar = jars[0]
-    provenance = dict(schema=SCHEMA, role=role, **prepared['selected'],
-                      roleSha256=prepared['roles'][role], sourceRevision=prepared['sourceRevision'],
-                      toolchainSha256=toolchain, bases=bases,
-                      jarSha256=digest(jar.read_bytes()), payloadSha256=payload_from_jar(jar),
-                      platform=os.environ.get('YU15_PLATFORM', 'native'))
-    # Pin every external FROM to the inspected immutable repository digest. Do not
-    # change the authoritative Dockerfile; this deterministic transformation is
-    # part of the recipe fingerprint. Temporary file lies outside the context.
-    dockerfile = (context / 'Dockerfile.cluster').read_text()
-    for base in bases:
-        dockerfile = re.sub(r'(?im)^(\s*FROM\s+)' + re.escape(base['reference']) + r'(?=\s|$)',
-                            lambda m: m[1] + base['pinned'], dockerfile)
-    with tempfile.NamedTemporaryFile(prefix='ri18-dockerfile-', mode='w') as file:
-        file.write(dockerfile); file.flush()
-        args = ['docker', 'build', '-f', file.name, '--build-arg',
-                'JAR_FILE=' + jar.relative_to(context).as_posix(), '--label',
-                LABEL + '=' + canonical(provenance).decode(), '-t', tag]
-        if provenance['platform'] != 'native':
-            args += ['--platform', provenance['platform']]
-        run(args + [str(context)])
-    verify(root, tag, role, prepared=prepared)
-    print(f'[ok] {tag}: {role} provenance and packaged payload verified')
-
+    with derived(root, context, role) as (contexts, _receipt, _log):
+        context = contexts / 'order-matcher'
+        toolchain = host_toolchain()
+        bases = base_inputs(context)
+        print(f'[build] {role}: clean bootJar from private content snapshot', flush=True)
+        run(['./gradlew', '--no-daemon', '-q', 'clean', 'bootJar'], cwd=context)
+        if prepared['roles'][role] != tree_hash(context) or prepared['selected'] != selected(root):
+            raise ValueError('build inputs changed during compilation')
+        jars = [p for p in (context / 'build/libs').glob('*.jar') if not p.name.endswith('-plain.jar')]
+        if len(jars) != 1:
+            raise ValueError(f'expected exactly one boot jar, found {len(jars)}')
+        jar = jars[0]
+        revision = run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+        if not re.fullmatch(r'[0-9a-f]{40,64}', revision):
+            raise ValueError('source revision unavailable')
+        provenance = dict(schema=SCHEMA, role=role, **prepared['selected'],
+                          roleSha256=prepared['roles'][role], sourceRevision=revision,
+                          toolchainSha256=toolchain, bases=bases,
+                          jarSha256=digest(jar.read_bytes()), payloadSha256=payload_from_jar(jar),
+                          platform=os.environ.get('YU15_PLATFORM', 'native'))
+        # Pin every external FROM to the inspected immutable repository digest. Do not
+        # change the authoritative Dockerfile; this deterministic transformation is
+        # part of the recipe fingerprint. Temporary file lies outside the context.
+        dockerfile = (context / 'Dockerfile.cluster').read_text()
+        for base in bases:
+            dockerfile = re.sub(r'(?im)^(\s*FROM\s+)' + re.escape(base['reference']) + r'(?=\s|$)',
+                                lambda m: m[1] + base['pinned'], dockerfile)
+        with tempfile.NamedTemporaryFile(prefix='ri18-dockerfile-', mode='w') as file:
+            file.write(dockerfile); file.flush()
+            args = ['docker', 'build', '-f', file.name, '--build-arg',
+                    'JAR_FILE=' + jar.relative_to(context).as_posix(), '--label',
+                    LABEL + '=' + canonical(provenance).decode(), '-t', tag]
+            if provenance['platform'] != 'native':
+                args += ['--platform', provenance['platform']]
+            run(args + [str(context)])
+        verify(root, tag, role, prepared=prepared)
+        print(f'[ok] {tag}: {role} provenance and packaged payload verified')
 
 def verify(root, image, role, prepared=None):
     data = inspect(image)

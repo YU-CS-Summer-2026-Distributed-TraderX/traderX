@@ -20,13 +20,14 @@ LABEL = 'dev.traderx.stp.provenance'
 class EntrypointControls(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='ri18-control-')
-        self.root = Path(self.tmp.name)
+        self.base = Path(self.tmp.name)
+        self.root = self.base / 'tree'; self.root.mkdir()
         self.om = self.root / 'generated/code/target-generated/order-matcher'
-        self.bin = self.root / 'bin'; self.bin.mkdir()
-        self.store = self.root / 'fixture-store'; self.store.mkdir()
+        self.bin = self.base / 'bin'; self.bin.mkdir()
+        self.store = self.base / 'fixture-store'; self.store.mkdir()
         (self.root / 'scripts/yu15').mkdir(parents=True)
         (self.root / 'scripts/proofs').mkdir(parents=True)
-        for name in ('build-stp-boundary-images.sh', 'stp-image-provenance.py'):
+        for name in ('build-stp-boundary-images.sh', 'stp-image-provenance.py', 'generation-derivation.py'):
             shutil.copy2(ROOT / 'scripts/yu15' / name, self.root / 'scripts/yu15' / name)
         shutil.copy2(ROOT / 'scripts/proofs/yu13-stp-and-replace.sh', self.root / 'scripts/proofs/proof.sh')
         for name in ('docker', 'kubectl', 'kind', 'java', 'git'):
@@ -50,7 +51,22 @@ class EntrypointControls(unittest.TestCase):
         for name in ('stp-boundary-revert.patch', 'stp-boundary-revert-yu18.patch'):
             (self.root / 'scripts/yu15' / name).write_text(''.join(patch))
         (self.root / 'pipeline').mkdir(); (self.root / 'pipeline/generator.sh').write_text('fixture composition\n')
-        (self.root / 'specs').mkdir()
+        # Independent synthetic full-ancestry source for the new derivation gate.
+        # External tools/store are outside source, and generation never copies the
+        # candidate generated context back into its own expected output.
+        (self.root / 'specs/YU18-risk-integration/generation/runtime-overrides/order-matcher').mkdir(parents=True)
+        shutil.copytree(self.om, self.root / 'templates/order-matcher')
+        (self.root / 'catalog').mkdir()
+        (self.root / 'catalog/state-catalog.json').write_text(json.dumps({'states': [{'id':'YU18-risk-integration','previous':[]}]}))
+        (self.root / 'pipeline/generate-state.sh').write_text('''#!/bin/bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+target="$root/generated/code/target-generated/order-matcher"
+mkdir -p "$(dirname "$target")"
+rm -rf "$target"
+cp -R "$root/templates/order-matcher" "$target"
+cp -R "$root/specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/." "$target/"
+''')
         self.env = dict(os.environ, PATH=str(self.bin) + ':' + os.environ['PATH'],
                         RI18_FIXTURE_STORE=str(self.store), GRADLE_USER_HOME=str(self.root / 'gradle-home'),
                         STP_PRE_TAG='ri18:pre', STP_FIX_TAG='ri18:fix', IMAGE_PRE='ri18:pre', IMAGE_FIX='ri18:fix')
@@ -202,6 +218,7 @@ class EntrypointControls(unittest.TestCase):
 
     def test_resolved_base_pin_and_change(self):
         (self.om / 'Dockerfile.cluster').write_text('FROM fixture-base:21\nARG JAR_FILE\nCOPY ${JAR_FILE} /app.jar\n')
+        (self.root / 'templates/order-matcher/Dockerfile.cluster').write_bytes((self.om / 'Dockerfile.cluster').read_bytes())
         self.images(lambda v: v.__setitem__('fixture-base:21',
             dict(Id='sha256:' + 'b' * 64, RepoDigests=['fixture-base@sha256:' + 'c' * 64], Config={'Labels': {}})))
         self.build_pair()

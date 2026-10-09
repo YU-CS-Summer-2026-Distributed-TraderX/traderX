@@ -4,12 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
-# OM_DIR overrides the source tree, and exists for exactly one caller:
-# build-stp-boundary-images.sh builds the `pre` side of yu13-stp-and-replace's version
-# boundary from a PATCHED COPY of the generated tree. The copy is what keeps the shared
-# generated/ directory -- which other lanes build from, with no lock -- from ever holding a
-# tree with self-trade prevention removed. Everything else uses the default and should.
+# OM_DIR names an explicit copy; OM_ROLE=fix/pre must select current source or
+# the known STP transform. Independent full generation validates it before build.
 OM="${OM_DIR:-${ROOT}/generated/code/target-generated/order-matcher}"
+BUILD_STATE="${BUILD_STATE:-$(state_pack "${ROOT}")}"
+ROLE="${OM_ROLE:-fix}"
+if [[ -n "${OM_DIR:-}" && -z "${OM_ROLE:-}" ]]; then
+  echo "[fail] OM_DIR requires explicit OM_ROLE=fix or pre; arbitrary overrides are not derived" >&2; exit 1
+fi
 # DERIVED, like everything else that answers "which build is this". The default used to be a
 # literal traderx/cluster-node:yu15, so running this from the YU16 worktree built YU16 code and
 # stamped it :yu15 — overwriting the YU15 image in the local daemon with something that is not
@@ -18,13 +20,12 @@ OM="${OM_DIR:-${ROOT}/generated/code/target-generated/order-matcher}"
 # state_tag, not declared_cluster_image: the manifests are the authority for what RUNS, but this
 # builds what this worktree IS. On a state with no cluster manifest layer those differ, and tagging
 # YU17 code :yu16 because YU16's manifests are the ones it would apply is exactly the poison.
-IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-traderx/cluster-node:$(state_tag "${ROOT}")}}"
+IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-traderx/cluster-node:$(echo "${BUILD_STATE%%-*}" | tr "[:upper:]" "[:lower:]")}}"
 
-[[ -d "${OM}" ]] || {
-  echo "[fail] generated order-matcher missing; run: bash pipeline/generate-state-$(state_pack "${ROOT}").sh"
-  exit 1
-}
-
+exec python3 "${ROOT}/scripts/yu15/generation-derivation.py" execute --root "${ROOT}" --state "${BUILD_STATE}" --component order-matcher --candidate "${OM}" --role "${ROLE}" -- bash -s -- "${IMAGE}" <<'BUILD_CLUSTER'
+set -euo pipefail
+OM="${DERIVED_BUILD_ROOT}/order-matcher"
+IMAGE="$1"
 # `clean`, and it is load-bearing rather than tidiness. Generation writes sources with mtimes OLDER
 # than the previously compiled output, so gradle's up-to-date check judges compileJava current and
 # bootJar packages classes predating the regeneration. The image is then tagged for a build it does
@@ -56,3 +57,5 @@ docker build ${DOCKER_NO_CACHE:+--no-cache} ${YU15_PLATFORM:+--platform ${YU15_P
   -t "${IMAGE}" "${OM}"
 
 echo "[ok] built ${IMAGE}"
+
+BUILD_CLUSTER

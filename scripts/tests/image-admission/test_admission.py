@@ -40,7 +40,7 @@ class DeploymentControls(unittest.TestCase):
         self.bin = self.root / 'bin'; self.bin.mkdir()
         for tool in ('kubectl', 'docker'):
             shutil.copy2(HERE / 'fake-command.py', self.bin / tool); (self.bin / tool).chmod(0o755)
-        for file in ('start-cluster-gke.sh', 'image-admission.py', 'stp-image-provenance.py'):
+        for file in ('start-cluster-gke.sh', 'image-admission.py', 'stp-image-provenance.py', 'generation-derivation.py'):
             target = self.root / 'scripts/yu15' / file; target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / 'scripts/yu15' / file, target)
         states = [dict(id='YU17-otc-rates', previous=[]), dict(id='YU18-risk-integration', previous=['YU17-otc-rates'])]
@@ -255,7 +255,10 @@ class DeploymentControls(unittest.TestCase):
             for name in ('build-stp-boundary-images.sh','stp-boundary-revert-yu18.patch','stp-boundary-revert.patch'):
                 shutil.copy2(control.root/'scripts/yu15'/name,self.root/'scripts/yu15'/name)
             shutil.copytree(control.root/'pipeline',self.root/'pipeline')
+            shutil.copytree(control.root/'templates',self.root/'templates')
             env=dict(control.env)
+            render=subprocess.run(['bash',str(self.root/'pipeline/generate-state.sh'),'YU18-risk-integration'],env=env,cwd=self.root,capture_output=True,text=True,timeout=25)
+            self.assertEqual(0,render.returncode,render.stdout+render.stderr)
             p=subprocess.run(['bash',str(self.root/'scripts/yu15/build-stp-boundary-images.sh')],env=env,cwd=self.root,capture_output=True,text=True,timeout=25)
             self.assertEqual(0,p.returncode,p.stdout+p.stderr)
             built=json.loads((control.store/'images.json').read_text())['ri18:fix']
