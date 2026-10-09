@@ -56,15 +56,18 @@ if [[ -f "${SCRIPTS_SRC}/lib/generated-state-detection.ps1" ]]; then
   cp "${SCRIPTS_SRC}/lib/generated-state-detection.ps1" "${SCRIPTS_DST}/lib/"
 fi
 
+# Select exactly the same scripts before copying them in one process. The
+# destination was cleared above, and no consumer reads these until after selection.
+script_sources=()
 copy_script_if_exists() {
   local name="$1"
   if [[ -f "${SCRIPTS_SRC}/${name}" ]]; then
-    cp "${SCRIPTS_SRC}/${name}" "${SCRIPTS_DST}/"
+    script_sources+=("${SCRIPTS_SRC}/${name}")
   fi
   if [[ "${name}" == *.sh ]]; then
     local ps_name="${name%.sh}.ps1"
     if [[ -f "${SCRIPTS_SRC}/${ps_name}" ]]; then
-      cp "${SCRIPTS_SRC}/${ps_name}" "${SCRIPTS_DST}/"
+      script_sources+=("${SCRIPTS_SRC}/${ps_name}")
     fi
   fi
 }
@@ -134,10 +137,10 @@ normalize_containerized_compose_cors_origins() {
 # Always include helper test scripts used by state smoke wrappers.
 shopt -s nullglob
 for test_script in "${SCRIPTS_SRC}"/test-*.sh; do
-  cp "${test_script}" "${SCRIPTS_DST}/"
+  script_sources+=("${test_script}")
 done
 for test_script in "${SCRIPTS_SRC}"/test-*.ps1; do
-  cp "${test_script}" "${SCRIPTS_DST}/"
+  script_sources+=("${test_script}")
 done
 shopt -u nullglob
 
@@ -629,6 +632,10 @@ case "${STATE_ID}" in
     ;;
 esac
 
+if ((${#script_sources[@]})); then
+  cp "${script_sources[@]}" "${SCRIPTS_DST}/"
+fi
+
 case "${STATE_ID}" in
   004-*|005-*|006-*|007-*|008-*|009-*|YU01-lmax-sequencer|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway|YU04-durable-control-feeds|YU05-post-trade-compliance|YU06-eod-price-production|YU07-historical-tick-store|YU08-execution-algo-engine|YU09-ops-hardening|YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options|YU15-eod-risk-extract|YU16-cdm-instruments|YU17-otc-rates|YU18-risk-integration)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
@@ -642,25 +649,30 @@ case "${STATE_ID}" in
 esac
 
 # Mark copied scripts as local-runtime scripts and disable re-generation there.
+shell_scripts=()
 for script in "${SCRIPTS_DST}"/*.sh; do
   [[ -f "${script}" ]] || continue
-  if ! rg -q '^export TRADERX_SKIP_GENERATE=1$' "${script}"; then
-    perl -0pi -e 's#set -euo pipefail\n#set -euo pipefail\n\nexport TRADERX_LOCAL_RUNTIME_SCRIPT=1\nexport TRADERX_SKIP_GENERATE=1\nif [[ -z "\${TRADERX_GENERATED_ROOT:-}" ]]; then\n  TRADERX_GENERATED_ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")/../../.." && pwd)"\n  export TRADERX_GENERATED_ROOT\nfi\n#' "${script}"
-  fi
-  chmod +x "${script}"
+  shell_scripts+=("${script}")
 done
-chmod +x "${SCRIPTS_DST}/lib/resolve-socketio-client-path.sh"
-chmod +x "${SCRIPTS_DST}/lib/generated-state-detection.sh"
-chmod +x "${SCRIPTS_DST}/lib/build-jvm-jar.sh"
-chmod +x "${SCRIPTS_DST}/lib/kubernetes-smoke-readiness.sh"
-chmod +x "${SCRIPTS_DST}/lib/observability-runtime.sh"
+if ((${#shell_scripts[@]})); then
+  perl -0pi -e 'unless (/^export TRADERX_SKIP_GENERATE=1$/m) { s#set -euo pipefail\n#set -euo pipefail\n\nexport TRADERX_LOCAL_RUNTIME_SCRIPT=1\nexport TRADERX_SKIP_GENERATE=1\nif [[ -z "\${TRADERX_GENERATED_ROOT:-}" ]]; then\n  TRADERX_GENERATED_ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")/../../.." && pwd)"\n  export TRADERX_GENERATED_ROOT\nfi\n#; }' "${shell_scripts[@]}"
+  chmod +x "${shell_scripts[@]}"
+fi
+chmod +x \
+  "${SCRIPTS_DST}/lib/resolve-socketio-client-path.sh" \
+  "${SCRIPTS_DST}/lib/generated-state-detection.sh" \
+  "${SCRIPTS_DST}/lib/build-jvm-jar.sh" \
+  "${SCRIPTS_DST}/lib/kubernetes-smoke-readiness.sh" \
+  "${SCRIPTS_DST}/lib/observability-runtime.sh"
 
+powershell_scripts=()
 for script in "${SCRIPTS_DST}"/*.ps1; do
   [[ -f "${script}" ]] || continue
-  if ! rg -q '^\$env:TRADERX_LOCAL_RUNTIME_SCRIPT = '\''1'\''' "${script}"; then
-    perl -0pi -e 's#\$ErrorActionPreference = '\''Stop'\''\n#\$ErrorActionPreference = '\''Stop'\''\n\n\$env:TRADERX_LOCAL_RUNTIME_SCRIPT = '\''1'\''\n\$env:TRADERX_SKIP_GENERATE = '\''1'\''\nif ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('\''TRADERX_GENERATED_ROOT'\''))) {\n  \$env:TRADERX_GENERATED_ROOT = (Resolve-Path (Join-Path \$PSScriptRoot '\''../../..'\'')).Path\n}\n#' "${script}"
-  fi
+  powershell_scripts+=("${script}")
 done
+if ((${#powershell_scripts[@]})); then
+  perl -0pi -e 'unless (/^\$env:TRADERX_LOCAL_RUNTIME_SCRIPT = '\''1'\''/m) { s#\$ErrorActionPreference = '\''Stop'\''\n#\$ErrorActionPreference = '\''Stop'\''\n\n\$env:TRADERX_LOCAL_RUNTIME_SCRIPT = '\''1'\''\n\$env:TRADERX_SKIP_GENERATE = '\''1'\''\nif ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('\''TRADERX_GENERATED_ROOT'\''))) {\n  \$env:TRADERX_GENERATED_ROOT = (Resolve-Path (Join-Path \$PSScriptRoot '\''../../..'\'')).Path\n}\n#; }' "${powershell_scripts[@]}"
+fi
 
 # Recreate component-compat symlinks used by uncontainerized/edge scripts.
 link_component() {
