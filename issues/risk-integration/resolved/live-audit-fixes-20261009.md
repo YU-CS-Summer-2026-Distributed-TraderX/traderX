@@ -2,7 +2,7 @@
 
 Updated: 2026-10-09. Status: done; approved candidate integrated and verified. Author: codex-review36.
 
-Human request: “fix the issues” following the six-finding live audit. Scope is F1–F6 and focused local/live regression checks. Chat: 01a11e05-cee0-7f23-b49e-76a6c35b5547. Checkout `traderX-review36-integration`, branch `codex/review36-integration`, accepted base `4a1402a6179c33e3af88a0264558fda092f74cd0`. Canonical `traderX-risk-integration` remains read-only with user edits preserved. Integration target: traderX-risk-integration, direct user approval recorded 2026-10-09 ("approved") for e5adf936 into traderX-risk-integration.
+Human request: “fix the issues” following the six-finding live audit. Scope is F1–F6 and focused local/live regression checks. Chat: 01a11e05-cee0-7f23-b49e-76a6c35b5547. Checkout `traderX-review36-integration`, branch `codex/review36-integration`, accepted base `4a1402a6179c33e3af88a0264558fda092f74cd0`. During implementation, canonical `traderX-risk-integration` was kept read-only; approved integration subsequently preserved user edits. Integration target: traderX-risk-integration, direct user approval recorded 2026-10-09 ("approved") for e5adf936 into traderX-risk-integration.
 
 Source owners: root web-front-end-console; specs/YU18-risk-integration/generation/runtime-overrides/order-matcher; scripts/yu15 observability entrypoints/renderer. [Maintenance pack](../../../specs/YU18-risk-integration/maintenance/live-audit-fixes/README.md). Linked [LR05](../live-rig/lr-05-deployment-artifacts.md) provides the artifact identity boundary; this task does not close its wider deployment obligations.
 
@@ -18,7 +18,7 @@ All six corrections passed focused live regression checks on fresh synthetic clu
 
 The first FIX regression attempt used a stale Service name and failed before submission; the corrected Service was used for the successful run. One workspace read ran while the intentional authentication outage was still recovering and returned 503; it passed after the recovery gate. Failed attempts remain in raw evidence. No ambiguous order was resubmitted.
 
-Owned rig removed after export. Original fourteen containers and twenty-nine volumes were preserved. The raw baseline also included this task's temporary packaging-test container, which its own test removed; the cleanup reconciliation documents that overlap. Canonical HEAD/staging and twenty dirty/untracked files retain their prior hashes. Original audit evidence remains immutable.
+Owned rig removed after export. Original fourteen containers and twenty-nine volumes were preserved. The raw baseline also included this task's temporary packaging-test container, which its own test removed; the cleanup reconciliation documents that overlap. Audit cleanup preserved canonical HEAD/staging and twenty dirty/untracked file hashes; approved integration later advanced HEAD while preserving those user file bytes and staging. Original audit evidence remains immutable.
 
 The revised GKE entrypoint is source/render tested only; no cloud deployment occurred. No retained-data repair, managed Desk recovery, external pricing or broader RI/LR acceptance is claimed. Candidate e5adf9361a35d75ab2e6233d8fba7dc90e24bd84 was fast-forwarded into traderX-risk-integration after direct approval. Post-integration console and monitoring tests passed; full YU18 generation and runtime-source parity were verified. See fix evidence `REPORT.md` for exact controls and limits.
 
