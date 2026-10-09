@@ -1,6 +1,6 @@
 # Generation performance maintenance
 
-Status: local candidate; review and canonical integration pending. Owner: Codex RI29-GENERATION-PERFORMANCE.
+Status: integrated locally after direct human approval, 2026-10-09, from `c0140ef9`; bounded local scope done. Owner: Codex RI29-GENERATION-PERFORMANCE.
 
 The runtime-harness installer batches selected script copies, Perl header normalization and executable-mode updates. It still selects and installs scripts separately for every ancestor state. Full generation, patches, pruning, dependency behavior and RI20 independent current-source derivation remain in place. No persistent output cache or receipt fast path is introduced.
 

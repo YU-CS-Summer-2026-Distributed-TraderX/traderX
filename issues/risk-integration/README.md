@@ -42,6 +42,8 @@ Next decisions: agree the RI-15 portfolio contract and external-engine activatio
 
 ## Resolved issues
 
+[RI-29 local generation performance](resolved/29-generation-performance.md) is done after direct approval and integration of `c0140ef9`; warmed/offline/skip-lock-refresh elapsed medians improve 28–32%, with cache-dependent profiles unverified.
+
 Completed scopes are archived in [resolved](resolved/README.md). Broad workstreams remain here when sizing, policy, deployment or financial acceptance is still required. Older dated notes record their original state and are superseded by the current table.
 
 ## Live-rig validation

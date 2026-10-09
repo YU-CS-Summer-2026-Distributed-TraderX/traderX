@@ -130,3 +130,7 @@ The cluster, service and STP builders verify complete selected build contexts ag
 ## October 9 owned risk-service integration
 
 The reviewed C8 risk service and pinned CPU container are incorporated at `e770f912` in the human-approved owned external-engine target `jax-risk-container-upgrade`. This preserves upstream pricing, durable submission identity and validated old-store provenance/refusal behavior. Exact runtime hashes match corrected image80c885f8; no service activation or original Alex checkout change occurred. See [completed C8 task](issues/risk-integration/resolved/ri16-upstream-c8-upgrade.md) and [LR03](issues/risk-integration/live-rig/lr-03-risk-container-pipeline.md). Connected TraderX portfolio acceptance, broader financial/fleet/production work remain separate.
+
+## Local generation performance
+
+Approved `c0140ef9` is integrated locally via `d76641d6`. Actual warmed/offline/skip-lock-refresh median times were 90.14 to 64.51s (fresh generation), 92.36 to 63.10s (rerun) and 90.46 to 65.30s (private derivation), about 28–32% lower elapsed medians. Full ancestry/current-input admission remains required; no stage or persistent cache was removed. State 009 offline vendoring and lockfile-refresh-enabled profiles remain inconclusive. See [generation performance](specs/YU18-risk-integration/maintenance/generation-performance/README.md) and [completed RI29](issues/risk-integration/resolved/29-generation-performance.md). Local source/generated verification does not establish runtime or deployment performance.

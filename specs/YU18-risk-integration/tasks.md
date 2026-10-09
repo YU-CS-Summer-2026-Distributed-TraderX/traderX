@@ -21,3 +21,10 @@ Updated: 2026-09-23. This index links component-owned task lists; their checkbox
 - [x] Prepare the reviewed fast-forward delivery for the risk-integration branch; preserve unrelated staging and working edits.
 
 The [component index](components/README.md#october-7-integration) owns links to their task lists. Live HA, retained compatibility, deployment and financial acceptance remain open.
+
+## October 9 generation performance
+
+- [x] Integrate reviewed and directly approved script-installation batching from `c0140ef9`, preserving full-ancestry/current-input admission and exact generated behavior.
+- [x] Verify full generation/derivation, six scoped controls and final source/generated maintenance docs; reuse reviewed unchanged-byte timing/failure evidence.
+
+See [generation-performance tasks](maintenance/generation-performance/tasks.md) and [resolved RI29 task](../../issues/risk-integration/resolved/ri29-generation-performance.md). The measured 28–32% elapsed-median improvements apply to warmed/offline/skip-lock-refresh generation and derivation; unavailable cache-dependent profiles and runtime/deployment performance remain unverified.

@@ -4,6 +4,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 
 | Pack | Status |
 |---|---|
+| [Generation performance](generation-performance/README.md) | Done: approved local batching/current-input parity; warmed offline profile only |
 | [Fresh-rig audit corrections](live-audit-fixes/README.md) | Done: approved integration and local live checks passed |
 | [ACK classification metrics](ack-metrics/README.md) | See pack tasks and linked RI/LR evidence |
 | [Book and engine memory accounting](book-memory-accounting/README.md) | See pack tasks and linked RI/LR evidence |

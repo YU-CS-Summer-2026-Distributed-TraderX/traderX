@@ -25,3 +25,7 @@ Completed bounded slice: [console runtime packaging](../resolved/lr05-console-pa
 ## October 9 completed owned risk integration
 
 [RI16 C8 upgrade](../resolved/ri16-upstream-c8-upgrade.md) and [risk container qualification](../resolved/ri15-16-risk-container-upgrade.md) are done for approved owned target e770f912 after RI20 validated release. This supersedes earlier pending/correction/approval text for these bounded tasks only. LR03B and broad RI15/16 remain open; original Alex and TraderX runtime pricing are unchanged.
+
+## October 9 completed generation performance
+
+[RI29-GENERATION-PERFORMANCE](../resolved/ri29-generation-performance.md) is done after direct human approval and canonical integration of `c0140ef9`. Full generation/current-input derivation and scoped controls pass; reviewed warmed/offline/skip-lock-refresh timing evidence remains applicable to unchanged installer bytes. State 009/cache-dependent profiles remain inconclusive. This supersedes earlier pending RI29 dispatch/review notes for this bounded scope only.

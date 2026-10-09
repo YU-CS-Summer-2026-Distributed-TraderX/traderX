@@ -1,6 +1,6 @@
 # Generation performance plan
 
-Owner: Codex RI29-GENERATION-PERFORMANCE. Status: local candidate; review/integration pending.
+Owner: Codex RI29-GENERATION-PERFORMANCE. Status: integrated locally, 2026-10-09, from approved `c0140ef9`.
 
 1. Verify RI20 LOCAL release and accepted `d24078f0`, create a fresh independent owned checkout and claim exact paths. Preserve canonical/shared records and concurrent risk integration.
 2. Inventory full 30-state generation and RI20 capture/reference/role paths. Profile helpers and distinguish inclusive parent time from exclusive work. The observed runtime installer is the largest helper, about 37.47 seconds across 30 calls in the diagnostic profile.

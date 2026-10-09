@@ -1,6 +1,6 @@
 # Generation performance specification
 
-Status: local candidate; local validation complete; review/integration pending. Owner: Codex RI29-GENERATION-PERFORMANCE.
+Status: integrated locally after direct human approval, 2026-10-09, from `c0140ef9`; local validation complete. Owner: Codex RI29-GENERATION-PERFORMANCE.
 
 - FR-GP01: Preserve each state's selected script set, optional PowerShell companions, missing-optional handling and mandatory libraries. Copy selection may be batched only before the first destination consumer. Retain parent ordering, intermediate normalization, patch/prune behavior and fresh output generation.
 - FR-GP02: Preserve shell and PowerShell guard predicates, first-header insertion, every other byte, file membership, executable modes and compatibility symlink targets. Each file must evaluate its own guard. Empty script selections must not pass literal glob names to tools. Required input failures remain nonzero.
