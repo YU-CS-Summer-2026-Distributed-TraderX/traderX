@@ -10,7 +10,7 @@ This queue records behavior that still needs an actual service, container or clu
 | [LR-02](lr-02-feed-reconnect.md) | Feed reconnect and symbol registration | queued:459de827 integrated; established live proof open | RI-23 |
 | [LR-03](lr-03-risk-container-pipeline.md) | Risk container lifecycle and TraderX connection | Stage A passed for image24206883/profile; Stage B blocked | RI-15/16 |
 | [LR-04](lr-04-managed-recovery-ha.md) | Managed projection recovery across actual failover | blocked on supported recovery profile | RI-06/21/26 |
-| [LR-05](lr-05-deployment-artifacts.md) | Intended image and deployment artifact verification | blocked on reviewed immutable artifacts | RI-20/08 |
+| [LR-05](lr-05-deployment-artifacts.md) | Intended image and deployment artifact verification | Local content/endpoint milestone passed for e5adf936; mismatch/managed/cloud gates open | RI-20/08 |
 | [LR-06](lr-06-memory-workloads.md) | Representative engine and projector memory workloads | queued for bounded local campaign; production sizing deferred | RI-24/13 |
 | [LR-07](lr-07-gke-performance.md) | GKE throughput, latency and resource isolation rebaseline | deferred: credits and cloud authorization | RI-13 |
 
@@ -31,3 +31,9 @@ Research documents and narrow collection-copy correctness do not automatically n
 ## October 8 approved integration
 
 The user approved console candidate `8f4623d26251292a629b2e6a1c40dd9632e428ad` (including `fcba84f4`) and archival proof candidate `055581fdef5b08bf24757384c8167723384b7d97` into `traderX-risk-integration`. The console packaging task is [done and archived](../resolved/lr05-console-packaging.md); the proof drivers remain historical fixtures for the closed October 8 lease. This entry supersedes earlier awaiting-approval/source-not-integrated statements for these two candidates only. Independent full-ancestry generation, source/render parity and scoped checks are recorded under parent `coordination/eod-integration/review-evidence/review36-20261008/integration/`. No rig/container was restarted. Existing native image/connected evidence applies to unchanged build-context bytes. Broader RI/LR release, authenticated Desk, revised amd64, cloud, retained recovery, financial and sizing obligations remain open.
+
+## October 9 local artifact and audit milestone
+
+The [completed bounded audit corrections](../resolved/live-audit-fixes-20261009.md), approved candidate e5adf9361a35d75ab2e6233d8fba7dc90e24bd84, were exercised on fresh local kind cluster traderx-auditfix-20261009-01a11e05 with synthetic data and new PVCs. Eighty-four node-image comparisons, twenty-eight pod-image comparisons and ten served-payload hashes matched. Nineteen native console-image checks passed. Valid/forbidden FIX, encoded admin mutation, legacy epoch joins, delayed authentication startup, partial PnL and eleven healthy selected metrics targets had attributable controls. Raw hashes, failed instrument attempts and successful corrections are preserved in parent coordination/eod-integration/live-rig-evidence/20261009-review36-fixes/.
+
+The rig was exported and removed; original fourteen containers and twenty-nine volumes were preserved. This passes the named local content/endpoint milestone. Deliberate mismatched-image admission controls, a separately accepted managed profile, revised amd64 and GKE rollout qualification remain open, so LR05 as a whole is not closed. Runtime bytes were unchanged by approved integration and its documentation closeout.

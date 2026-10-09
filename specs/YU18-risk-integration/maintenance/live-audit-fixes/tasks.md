@@ -6,4 +6,5 @@
 - [x] Verify all six corrections on a fresh synthetic local rig with positive/negative controls.
 - [x] Export evidence and verify owned cleanup.
 - [x] Commit the reviewed candidate.
-- [ ] Obtain approval covering candidate and canonical integration target; integrate separately.
+- [x] Obtain direct user approval and integrate e5adf936 into traderX-risk-integration.
+- [x] Verify post-integration composition/tests, archive this bounded task and retain broader qualification limits.

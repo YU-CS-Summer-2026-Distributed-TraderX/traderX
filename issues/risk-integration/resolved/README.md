@@ -2,7 +2,7 @@
 
 Updated: 2026-10-08. Maintainer: TraderX coordinator.
 
-These eight bounded RI scopes and the console packaging task are complete at their stated evidence level. Source/generated tests do not establish deployment, retained HA, current performance or general financial acceptance. RI10 publication is user-confirmed. The original staged RI10/RI12 additions remain preserved and pending their original commit workflow.
+These bounded RI scopes and completed maintenance tasks are complete at their stated evidence level. Source/generated tests do not establish deployment, retained HA, current performance or general financial acceptance. RI10 publication is user-confirmed. The original staged RI10/RI12 additions remain preserved and pending their original commit workflow.
 
 | ID | Completed scope | Remaining qualification elsewhere |
 |---|---|---|
@@ -14,6 +14,7 @@ These eight bounded RI scopes and the console packaging task are complete at the
 | [RI-19](19-reconciliation-proof-subject.md) | Attributable reconciliation subjects and cleanup | Broader recovery acceptance: RI06/21/LR04 |
 | [RI-22](22-audit-and-admission-observability.md) | Gauges, account readouts and sequenced OTC refusals | Deployment and financial acceptance are separate |
 | [RI-28](28-gateway-ack-metric-semantics.md) | Bounded ACK classification/metric semantics | Gateway lifecycle live proof: RI23/LR01 |
+| [Fresh-rig audit corrections](live-audit-fixes-20261009.md) | Six console/epoch/monitoring findings; approved integration and focused fresh local live regressions | Managed recovery, historical-data repair, financial and cloud qualification remain separate |
 | [Console runtime packaging](lr05-console-packaging.md) | Missing runtime module and native-platform packaging; approved integration with unchanged measured context | RI11/RI20 and LR05 release/GKE/authenticated-flow work remain open |
 
 The October7 evening integration `bf1d13e9` adds completed milestones inside RI09/23/24/25; those broad workstreams remain active. The reviewed risk-service container candidate `077ffac` has passed LR03StageA for its exact image/profile, but is not incorporated into an approved target. It is not a resolved integrated task; connected StageB remains open.
