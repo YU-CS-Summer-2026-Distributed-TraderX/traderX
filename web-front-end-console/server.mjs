@@ -1,3 +1,4 @@
+import {createCliRunner} from './cli-runner.mjs';
 import {canonicalRequestTarget, edgePath} from './request-path.mjs';
 import {createInternalToken} from './internal-token.mjs';
 import {pnlStatus} from './eod-pnl-status.mjs';
@@ -25,7 +26,7 @@ import { isOperatorControl, OPERATOR_CONTROL_REFUSAL } from './operator-control.
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { exec, execFile, execFileSync, execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -158,8 +159,9 @@ const json = (res, code, body) => {
 };
 
 // ---- GCS archive (dev: gcloud on the laptop; here: Workload Identity) --------------------------
-const execShell = (command, options) => new Promise((resolve,reject) => exec(command,options,(error,stdout) => error?reject(error):resolve(stdout)));
-const execArgs = (command, args, options) => new Promise((resolve,reject) => execFile(command,args,options,(error,stdout) => error?reject(error):resolve(stdout)));
+const cliReads=createCliRunner({limit:Number(process.env.CONSOLE_CLI_CONCURRENCY??2)});
+const execShell=cliReads.shell, execArgs=cliReads.args;
+console.log(`[console] CLI read processes capped at ${cliReads.stats().limit}; shared shell/argv queue bounded at64 to protect the demo memory budget.`);
 const gcsCache = new Map();
 const gcs = async (cmd) => (await execShell(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 })).toString();
 
@@ -1155,7 +1157,7 @@ const server = http.createServer(async (req, res) => {
     try { return json(res, 200, await fixOrder(JSON.parse(await readBody(req)))); }
     catch (e) { return json(res, 502, { error: String(e) }); }
   }
-  if (p === '/healthz') return json(res, 200, { ok: true, serviceAuth: internalToken.get() ? 'ready' : MASTER_SECRET ? 'recovering' : 'not-configured' });
+  if (p === '/healthz') return json(res, 200, { ok: true, cliReads:cliReads.stats(), serviceAuth: internalToken.get() ? 'ready' : MASTER_SECRET ? 'recovering' : 'not-configured' });
 
   // ---- auth ----
   if (p === '/auth/me') {

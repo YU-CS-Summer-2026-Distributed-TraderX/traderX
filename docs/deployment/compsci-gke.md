@@ -279,3 +279,15 @@ checks that storage/cluster reads do not block sign-in, health or unrelated API
 requests. A failed connection now reports a connection failure, rather than
 assuming a developer proxy is absent. Existing CLI timeouts and unreadable-stage
 semantics remain in force.
+
+CLI read subprocesses share a bounded scheduler (default two active,64queued;
+`CONSOLE_CLI_CONCURRENCY` permits the measured comparison values1/2/3). Unbounded
+parallel GCS reads caused a recorded768Mi OOM during a cold EOD page load. Both
+shell and argv-based readers now consume the same slots; overflow fails explicitly.
+`/healthz` reports only scheduler counts, not commands or credentials. Validate peak
+cgroup memory and cold-page latency together before changing this bound.
+
+The option story reads the selected contract's admitted engine reference via
+`/m0/bbo` and reuses it across both tickets. A drifting display quote cannot silently
+replace the engine's collar reference; a missing reference refuses the preset.
+No further synthetic orders are needed merely to verify field selection.

@@ -14,7 +14,7 @@ const CONVENTIONS = [
   'GBP-SONIA-1Y-ACT365F', 'JPY-TONA-1Y-ACT365F',
 ];
 
-interface Preset { label: string; apply: (t: TicketPanel) => void; }
+interface Preset { label: string; apply: (t: TicketPanel) => void | Promise<void>; }
 
 const iso = (daysFromNow: number) => {
   const d = new Date(Date.now() + daysFromNow * 86_400_000);
@@ -22,15 +22,19 @@ const iso = (daysFromNow: number) => {
 };
 
 let optionStory: {symbol: string; price: number} | null = null;
-function listedOption(t: TicketPanel, rest: boolean): void {
-  const date = new Date().toISOString().slice(0,10);
-  if(rest || !optionStory || (parseOcc(optionStory.symbol)?.expiry ?? '') < date) {
+async function listedOption(t: TicketPanel, rest: boolean): Promise<void> {
+  const now=Date.now();
+  const unexpired=(expiry:string)=>Date.parse(expiry+'T21:00:00Z')>now;
+  if(rest || !optionStory || !unexpired(parseOcc(optionStory.symbol)?.expiry ?? '')) {
     const symbol = Object.keys(t.api.prices()).filter(k => {
       const o=parseOcc(k), price=t.api.prices()[k]?.price;
-      return o?.underlying==='AAPL' && o.callPut==='Call' && o.strike===240 && o.expiry>=date && Number.isFinite(price) && price>0;
+      return o?.underlying==='AAPL' && o.callPut==='Call' && o.strike===240 && unexpired(o.expiry) && Number.isFinite(price) && price>0;
     }).sort()[0];
     if(!symbol) throw Error('No unexpired quoted AAPL 240 call is available. Wait for the option quotes before selecting this story.');
-    optionStory={symbol,price:Math.round(t.api.prices()[symbol].price*1000)/1000};
+    const r=await t.api.load<{books:{ticker:string;ref:number;mark:number}[]}>('/m0/bbo');
+    const ref=r.status===200?r.body?.books?.find(b=>b.ticker===symbol)?.ref:undefined;
+    if(!ref || !Number.isFinite(ref))throw Error('No admitted engine reference is available for this option. The story was not selected.');
+    optionStory={symbol,price:ref};
   }
   t.cls.set('Option');t.occSymbol.set(optionStory.symbol);t.limitPrice=optionStory.price;
   t.accountId=rest?42422:22214;t.side=rest?'Sell':'Buy';t.quantity=5;
@@ -453,11 +457,13 @@ export class TicketPanel {
     });
   }
 
-  usePreset(index: string | number): void {
+  async usePreset(index: string | number): Promise<void> {
     const p = PRESETS[Number(index)];
     if (p) {
-      try { p.apply(this); this.last.set(null); }
+      this.busy.set(true);
+      try { await p.apply(this); this.last.set(null); }
       catch(e) { this.last.set({ok:false,text:e instanceof Error?e.message:'The preset is unavailable.'}); }
+      finally { this.busy.set(false); }
     }
   }
 
