@@ -13,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 PROJECT = 'project-compsci-484414'
 REGISTRY = f'us-east1-docker.pkg.dev/{PROJECT}/traderx-demo/'
 NAMESPACE = 'traderx'
+CUSTOM_WORKLOADS = {'order-matcher-cluster','cluster-gateway','risk-extract',
+                    'people-service','account-service','trade-service','trade-processor',
+                    'position-service','price-publisher','reference-data','execution-algo-engine',
+                    'web-front-end-angular','web-front-end-console','api-explorer'}
 BUCKETS = {
     'traderx-505400-risk-extracts': f'{PROJECT}-traderx-risk-extracts',
     'traderx-505400-order-matcher-journal-archive': f'{PROJECT}-traderx-journal-archive',
@@ -50,6 +54,8 @@ def validate(docs):
         if pod:
             for c in pod.get('containers', []) + pod.get('initContainers', []):
                 image = c['image']
+                if doc['metadata']['name'] in CUSTOM_WORKLOADS:
+                    require(image.startswith(REGISTRY), 'custom workload image has no CompSci registry identity')
                 require('traderx-505400' not in image and not image.startswith('traderx/'), 'old/local image')
                 if 'docker.pkg.dev' in image:
                     require(image.startswith(REGISTRY), 'wrong project/repository')
@@ -123,7 +129,9 @@ def prepare(output, tag, dns):
             if doc['kind'] == 'Deployment': doc['spec']['replicas'] = 1
         for container in pod.get('containers', []) + pod.get('initContainers', []):
             image = container['image']
-            if image.startswith('traderx/') or 'docker.pkg.dev/traderx-' in image:
+            if image.startswith('traderx-api-explorer:'):
+                container['image'] = REGISTRY + 'api-explorer:' + tag
+            elif image.startswith('traderx/') or 'docker.pkg.dev/traderx-' in image:
                 name = image.rsplit('/', 1)[-1].split(':')[0].split('@')[0]
                 container['image'] = REGISTRY + name + ':' + tag
             env = container.setdefault('env', [])

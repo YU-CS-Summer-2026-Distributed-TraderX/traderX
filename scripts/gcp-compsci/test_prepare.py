@@ -47,6 +47,12 @@ class Rendering(unittest.TestCase):
         next(d for d in docs if d['kind']=='Service')['spec']['type']='LoadBalancer'
         with self.assertRaises(AssertionError): module.validate(docs)
 
+    def test_unmapped_local_image(self):
+        docs=copy.deepcopy(self.docs)
+        api=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='api-explorer')
+        module.podspec(api)['containers'][0]['image']='traderx-api-explorer:local'
+        with self.assertRaises(AssertionError): module.validate(docs)
+
     def test_empty_population(self):
         with self.assertRaises(AssertionError): module.validate([])
 
