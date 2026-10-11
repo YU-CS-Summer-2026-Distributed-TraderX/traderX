@@ -53,8 +53,9 @@ requires per-image payload review and deployment admission before apply. Pass
 the private/public immutable pins from reviewed locks. Both locks are required
 together; public pins must select the recorded linux/amd64 manifest and private
 pins must agree with the recorded registry identity.
-The existing RI20 GKE entrypoint cannot consume this custom profile without an
-explicit compatible admission adapter; do not use it or disable its checks.
+The inherited fixed-path RI20 GKE entrypoint does not consume this custom profile.
+Use the explicit `scripts/gcp-compsci/admit.py` companion below; the inherited
+admission path and its refusal rules remain unchanged.
 
 The candidate adds opt-in `SOURCE_DATE_EPOCH` for reproducible UI timestamps and
 preserves a credential-free origin URL in the isolated derivation repository.
@@ -110,8 +111,14 @@ Identity does not replace that credential. Provision a dedicated HMAC key for
 `traderx-risk-extract@project-compsci-484414.iam.gserviceaccount.com` into the private
 Kubernetes Secret `risk-extract-gcs-hmac` (keys `access-key-id`, `secret-access-key`).
 Never paste the HMAC secret, store it in tracked YAML, or reuse a journal credential.
-The dedicated HMAC was privately created on October 11. Its live storage
-create/read/overwrite-denial proof remains pending.
+The dedicated HMAC was privately created on October 11. An actual-container proof
+using the pinned Java sink created three unique synthetic objects (69 body bytes),
+verified exact reads before/after both overwrite forms, received three unconditional
+and three conditional 403 AccessDenied refusals, and rejected the wrong-secret
+control with 403 SignatureDoesNotMatch. The proof objects are retained. The earlier
+probe URI ending with a slash produced a double slash and failed signing; read-only
+reconciliation found no objects, and correcting only the harness URI passed. The
+runtime pack uses the bucket root URI and required no IAM or image change.
 
 `scripts/gcp-compsci/provision-secrets.py` generates random app/DB/Grafana credentials
 and a Node-compatible console scrypt hash. It saves values in an explicit owner-only
@@ -135,6 +142,38 @@ with a separate root password. The readiness probe reads runtime credentials.
 Grafana also uses a private Secret reference.
 
 ## Before application deployment
+
+The companion's `compiled-context-v1` provider binds independently derived full
+ancestry, original build context/labels and separately measured reference/actual
+application payload entries. Java archives are compared by all entry bytes;
+the .NET publish and console static output are independently compiled, Node
+recipes independently rebuilt, and API Explorer content matched to source.
+Actual executable architecture measurements bind the exact image IDs.
+`locked-upstream-v1` covers the eight reviewed upstream immutable OCI manifests,
+configurations and layers; it does not claim their upstream source was rebuilt.
+OCI indexes must select exactly one recorded amd64 child. Root-console ownership
+and upstream images are explicit, without inventing RI18 producer labels.
+
+Package measurements with `prepare-admission.py`, then run:
+
+```bash
+python3 scripts/gcp-compsci/admit.py \
+  --root "$PWD" \
+  --rendered <evidence>/candidate.yaml \
+  --expected <evidence>/expected.json \
+  --artifacts <evidence>/artifacts.json \
+  --derivation <evidence>/derivation.json \
+  --output <new-admitted-directory> \
+  --context gke_project-compsci-484414_us-east1-b_traderx-demo \
+  --project project-compsci-484414 --location us-east1-b \
+  --cluster traderx-demo --namespace traderx
+```
+
+Admission is read-only and writes the exact admitted manifest snapshot. Changed
+source/evidence/payload/target/platform, missing slots, duplicate images and empty
+populations are refused. A new source revision needs a fresh independent derivation;
+unchanged complete contexts can retain the independently measured payload evidence.
+The caller must obtain rollout approval before applying the admitted snapshot.
 
 1. Review exact candidate images, registry digests and source/packaged payload evidence.
 2. Verify scoped storage create/read/overwrite-denial with the provisioned HMAC.
