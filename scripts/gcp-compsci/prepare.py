@@ -23,6 +23,84 @@ BUCKETS = {
     'traderx-taq-raw': f'{PROJECT}-traderx-taq-raw',
 }
 
+# Initial cold-demo envelopes. These are scheduler/startup budgets, not measured
+# production capacity. Live startup/load qualification is a separate gate.
+SUPPORT_BUDGETS = {
+    'people-service': ('100m', '256Mi', '1', '640Mi'),
+    'account-service': ('100m', '256Mi', '1', '640Mi'),
+    'trade-service': ('100m', '256Mi', '1', '640Mi'),
+    'edge-proxy': ('25m', '32Mi', '500m', '64Mi'),
+    'web-front-end-angular': ('200m', '512Mi', '1', '2Gi'),
+    'api-explorer': ('25m', '64Mi', '500m', '128Mi'),
+    'tempo': ('50m', '128Mi', '500m', '256Mi'),
+    'prometheus': ('100m', '256Mi', '1', '512Mi'),
+    'loki': ('50m', '128Mi', '500m', '256Mi'),
+    'grafana': ('50m', '128Mi', '500m', '256Mi'),
+    'otel-collector': ('50m', '128Mi', '500m', '256Mi'),
+}
+
+
+def secret_env(container, name, secret, key):
+    env = container.setdefault('env', [])
+    env[:] = [e for e in env if e['name'] != name]
+    env.append({'name': name, 'valueFrom': {'secretKeyRef': {'name': secret, 'key': key}}})
+
+
+def configure_private_runtime(docs):
+    for doc in docs:
+        pod = podspec(doc)
+        if not pod: continue
+        name = doc['metadata']['name']
+        for c in pod.get('containers', []) + pod.get('initContainers', []):
+            for entry in list(c.get('env', [])):
+                if entry['name'] in ('DATABASE_DBUSER', 'RISK_EXTRACT_JDBC_USER'):
+                    secret_env(c, entry['name'], 'mariadb-credentials', 'username')
+                if entry['name'] in ('DATABASE_DBPASS', 'RISK_EXTRACT_JDBC_PASSWORD'):
+                    secret_env(c, entry['name'], 'mariadb-credentials', 'password')
+            if name == 'eod-price-db':
+                for var,key in [('MARIADB_USER','username'), ('MARIADB_PASSWORD','password'),
+                                ('MARIADB_ROOT_PASSWORD','root-password')]:
+                    secret_env(c, var, 'mariadb-credentials', key)
+                if c['name'] == 'mariadb':
+                    c['readinessProbe']['exec']['command'] = ['sh','-ec',
+                        'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -e "SELECT 1" >/dev/null']
+            if name == 'grafana':
+                secret_env(c, 'GF_SECURITY_ADMIN_PASSWORD', 'grafana-credentials', 'admin-password')
+        for c in pod.get('containers', []):
+            if name in SUPPORT_BUDGETS:
+                cpu,mem,cap,memcap = SUPPORT_BUDGETS[name]
+                c['resources'] = {'requests': {'cpu': cpu, 'memory': mem},
+                                  'limits': {'cpu': cap, 'memory': memcap}}
+                if name in ('people-service','account-service','trade-service'):
+                    jvm_options = '-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError'
+                    c.setdefault('env', []).append({'name': 'JAVA_TOOL_OPTIONS', 'value': jvm_options})
+
+
+def pin_images(docs, published, public):
+    require_ref = lambda ref: isinstance(ref,str) and re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}',ref)
+    private = published['images']
+    used = set()
+    for doc in docs:
+        pod = podspec(doc)
+        if not pod: continue
+        for c in pod.get('containers', []) + pod.get('initContainers', []):
+            ref = c['image']
+            if ref.startswith(REGISTRY):
+                name = ref[len(REGISTRY):].split(':')[0]
+                item = private[name]
+                target = item['reference']
+                assert target.startswith(REGISTRY+name+'@'), 'private repository mismatch'
+                assert target == item['registryMetadata']['image_summary']['fully_qualified_digest'], 'registry digest mismatch'
+                used.add(name)
+            else:
+                item = public[ref]; target = item['reference']
+                digest = target.split('@',1)[-1]
+                assert any(m['digest']==digest and m.get('platform',{})=={'architecture':'amd64','os':'linux'}
+                           for m in item['manifest']['manifests']), 'public image is not the recorded amd64 manifest'
+            assert require_ref(target), 'immutable image reference required'
+            c['image'] = target
+    assert used == set(private), 'private image coverage differs from published inventory'
+
 
 def read(path):
     return [d for d in yaml.safe_load_all(path.read_text()) if d]
@@ -60,12 +138,18 @@ def validate(docs):
                 if 'docker.pkg.dev' in image:
                     require(image.startswith(REGISTRY), 'wrong project/repository')
                 require(':latest' not in image, 'floating latest image')
+                for entry in c.get('env', []):
+                    if entry['name'] in ('MARIADB_PASSWORD','MARIADB_ROOT_PASSWORD','DATABASE_DBPASS',
+                        'RISK_EXTRACT_JDBC_PASSWORD','GF_SECURITY_ADMIN_PASSWORD','RISK_CONTROL_TOKEN',
+                        'ADMIN_PASSWORD_HASH','AUTH_SESSION_SECRET','AUTH_JWT_SECRET','AUTH_MASTER_SECRET'):
+                        require('value' not in entry and 'secretKeyRef' in entry.get('valueFrom', {}),
+                                'private credential must use a Secret reference')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
 
 
-def prepare(output, tag, dns):
+def prepare(output, tag, dns, published_path=None, public_path=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = ROOT / 'generated/code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -155,7 +239,12 @@ def prepare(output, tag, dns):
     for old,new in BUCKETS.items(): raw = raw.replace(old,new)
     raw = re.sub(r'resolver [0-9.]+ ', f'resolver {dns} ', raw)
     docs = list(yaml.safe_load_all(raw))
+    configure_private_runtime(docs)
+    assert bool(published_path) == bool(public_path), 'both private and public image locks required'
+    if published_path:
+        pin_images(docs, json.loads(published_path.read_text()), json.loads(public_path.read_text()))
     validate(docs)
+    raw = yaml.safe_dump_all(docs, sort_keys=False)
     (output / 'candidate.yaml').write_text(raw)
     secrets = {}
     images = set()
@@ -188,15 +277,21 @@ def prepare(output, tag, dns):
             requests[side]['memoryMi'] += memory(req.get('memory','0'))*count
     report = {'target':{'project':PROJECT,'cluster':'traderx-demo','zone':'us-east1-b','namespace':NAMESPACE},
               'state':'YU18-risk-integration','sourceCommit':subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip(),
+              'rendererSha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'scope':'cold synthetic demo candidate; no retained-state, financial or performance acceptance',
               'resources':len(docs),'images':sorted(images),'inputFiles':inputs,
               'requiredSecretKeys':{k:sorted(v) for k,v in secrets.items()}, 'declaredRequests':requests,
               'workloadsWithoutCompleteRequests':unbounded,
               'candidateSha256':hashlib.sha256(raw.encode()).hexdigest(),
               'deploymentReady':False,
-              'remainingGates':['publish and pin exact image digests','review per-image payload evidence',
+              'resourceQualification':'provisional cold-demo startup envelopes; production/load qualification pending',
+              'imageLocks':None if not published_path else {
+                  'privateSha256':hashlib.sha256(published_path.read_bytes()).hexdigest(),
+                  'publicSha256':hashlib.sha256(public_path.read_bytes()).hexdigest(),
+                  'imageSourceCommit':json.loads(published_path.read_text())['sourceCommit']},
+              'remainingGates':['review per-image payload evidence and compatible admission',
                   'provision scoped storage credentials and private application secrets',
-                  'approve additional engine-pool nodes','server dry-run and live end-to-end proof']}
+                  'verify node resource fit','server dry-run and live end-to-end proof']}
     (output/'plan.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
 
@@ -206,8 +301,10 @@ if __name__=='__main__':
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--tag',required=True)
     p.add_argument('--dns-ip',required=True)
+    p.add_argument('--published',type=Path)
+    p.add_argument('--public-lock',type=Path)
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
-    prepare(args.output.resolve(),args.tag,args.dns_ip)
+    prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock)

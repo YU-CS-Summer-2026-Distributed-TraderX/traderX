@@ -48,8 +48,11 @@ The build runner admits all selected contexts against independent full-ancestry
 generation before compiling anything. The root-owned console has a separate
 content-hashed snapshot. Evidence includes derivation, context hashes and actual
 Docker image IDs/architectures. No push/apply occurs. The renderer's `candidate.yaml`
-is intentionally not deployment-ready: local candidate tags must be replaced by
-published immutable repository digests, and per-image payload evidence reviewed.
+requires per-image payload review and deployment admission before apply. Pass
+`--published <published.json> --public-lock <public-image-lock.json>` to reproduce
+the private/public immutable pins from reviewed locks. Both locks are required
+together; public pins must select the recorded linux/amd64 manifest and private
+pins must agree with the recorded registry identity.
 The existing RI20 GKE entrypoint cannot consume this custom profile without an
 explicit compatible admission adapter; do not use it or disable its checks.
 
@@ -62,31 +65,38 @@ remain unchanged when the variable is unset.
 ## Node plan
 
 Existing `default-pool`: one `e2-standard-4` support node.
-Proposed additional `engine-pool`: three `e2-standard-4` nodes, one member per node,
+User-created `engine-pool`: three `c4d-standard-8` nodes, one member per node,
 taint `traderx-engine=true:NoSchedule`. Each member requests three CPUs and 8 GiB,
 exactly as its inherited configuration. Gateway/console replicas are one for the
 initial functional demo. Anti-affinity must keep members on separate hostnames.
 No autoscaling, spot nodes, performance tuning or full-HA gateway claim.
 
-Prepared command for the additional pool (do not run during offline preparation):
+Operator creation command (do not repeat for the existing pool):
 
 ```bash
 gcloud container node-pools create engine-pool \
   --project=project-compsci-484414 --cluster=traderx-demo --zone=us-east1-b \
-  --node-locations=us-east1-b --num-nodes=3 --machine-type=e2-standard-4 \
-  --disk-type=pd-balanced --disk-size=30 --image-type=COS_CONTAINERD \
+  --account=aseif@mail.yu.edu \
+  --node-locations=us-east1-b --num-nodes=3 --machine-type=c4d-standard-8 \
+  --disk-type=hyperdisk-balanced --disk-size=100 --image-type=COS_CONTAINERD \
+  --boot-disk-provisioned-iops=3000 --boot-disk-provisioned-throughput=140 \
+  --enable-gvnic \
   --service-account=traderx-gke-nodes@project-compsci-484414.iam.gserviceaccount.com \
   --scopes=https://www.googleapis.com/auth/cloud-platform \
   --workload-metadata=GKE_METADATA --node-taints=traderx-engine=true:NoSchedule
 ```
 
-This adds three paid nodes; the existing support node remains. Total nominal
-resources become 16 vCPUs / 64 GiB across four nodes. No pool was created by preparation.
+The operator created the pool; all four nodes were API-verified Ready on October 11.
+Nominal resources are 28 vCPUs / 109 GiB across four nodes. The engine pool remains
+tainted and the member manifest requires separate hostnames.
 
-`plan.json` records declared CPU/memory requests, not measured capacity. Services
-without explicit requests need runtime measurement; the support node has not been
-qualified for the complete stack. Additional nodes require an explicit paid-compute
-operation; preparation creates none. Check quota/stock before node-pool creation.
+The renderer declares initial CPU/memory envelopes for the eleven previously
+unbounded support workloads. These are cold-demo startup budgets, not production
+sizing. Support requests are 2.4 CPUs / 4,960 MiB; existing system pods requested
+0.89 CPUs / 1,679 MiB at the October 11 observation. Together they fit the observed
+support allocatable 3.92 CPUs / 13,273 MiB. This is scheduler-budget fit;
+startup/load, throttling and memory behavior still require live observation.
+Additional capacity remains an explicit paid-compute operation.
 
 ## Storage authentication
 
@@ -100,20 +110,36 @@ Identity does not replace that credential. Provision a dedicated HMAC key for
 `traderx-risk-extract@project-compsci-484414.iam.gserviceaccount.com` into the private
 Kubernetes Secret `risk-extract-gcs-hmac` (keys `access-key-id`, `secret-access-key`).
 Never paste the HMAC secret, store it in tracked YAML, or reuse a journal credential.
-HMAC provisioning and create/read/overwrite-denial live proof remain pending.
+The dedicated HMAC was privately created on October 11. Its live storage
+create/read/overwrite-denial proof remains pending.
+
+`scripts/gcp-compsci/provision-secrets.py` generates random app/DB/Grafana credentials
+and a Node-compatible console scrypt hash. It saves values in an explicit owner-only
+directory outside the checkout and submits Secret objects over stdin, keeping
+values out of command arguments and output. Existing Secrets must match saved
+credentials; no implicit rotation. HMAC creation is marked before submission;
+uncertain outcomes refuse automatic retry.
+
+October 11 setup created and read-back verified `auth-secrets`,
+`mariadb-credentials`, `grafana-credentials` and `risk-extract-gcs-hmac`.
+Local material is in `/Users/yaakov/.config/traderx/compsci/credentials.json` (0600),
+with the one-time HMAC response retained in the same 0700 directory. Private
+console/Grafana passwords are in that file; keep its values out of Git and board posts.
 
 The console uses direct Workload Identity for read-only archive access. Required
 application secrets are listed in `plan.json`; do not use the inherited seeded
 console password or public development signing keys. Database credentials must
 match the database bootstrap configuration. Optional sandbox credentials do not
-enable a sandbox here.
+enable a sandbox here. Database bootstrap, migration and clients use the same Secret
+with a separate root password. The readiness probe reads runtime credentials.
+Grafana also uses a private Secret reference.
 
 ## Before application deployment
 
 1. Review exact candidate images, registry digests and source/packaged payload evidence.
-2. Configure private application secrets and scoped storage authentication.
-3. Approve/create the additional engine pool and verify member placement.
-4. Validate the exact immutable pack with server dry-run; create the schema before DB boot.
+2. Verify scoped storage create/read/overwrite-denial with the provisioned HMAC.
+3. Verify application member placement on the already-created engine pool.
+4. Review the exact immutable pack's server dry-run; create the schema before DB boot.
 5. Apply only the reviewed pack, then compare running image IDs with the lock.
 6. Prove authenticated order -> engine booking -> SQL/read model and extract storage
    with nonempty effects and failed overwrite control. Record scenario and identities.

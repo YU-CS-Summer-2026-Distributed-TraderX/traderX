@@ -69,6 +69,52 @@ class Rendering(unittest.TestCase):
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')
         self.assertEqual(engine['spec']['template']['spec']['initContainers'],[])
 
+    def test_database_bootstrap_and_clients_use_same_secret(self):
+        seen = set()
+        for doc in self.docs:
+            pod = module.podspec(doc)
+            if not pod: continue
+            for c in pod.get('containers',[]) + pod.get('initContainers',[]):
+                for entry in c.get('env',[]):
+                    if entry['name'] in ('MARIADB_PASSWORD','DATABASE_DBPASS','RISK_EXTRACT_JDBC_PASSWORD'):
+                        self.assertEqual(entry['valueFrom']['secretKeyRef'],
+                            {'name':'mariadb-credentials','key':'password'})
+                        self.assertNotIn('value',entry); seen.add(doc['metadata']['name'])
+        self.assertTrue({'eod-price-db','risk-extract','reference-data','account-service','trade-processor','position-service'} <= seen)
+
+    def test_seeded_grafana_password_removed(self):
+        grafana=next(d for d in self.docs if d['metadata']['name']=='grafana' and module.podspec(d))
+        entry=next(e for e in module.podspec(grafana)['containers'][0]['env'] if e['name']=='GF_SECURITY_ADMIN_PASSWORD')
+        self.assertEqual(entry['valueFrom']['secretKeyRef'],{'name':'grafana-credentials','key':'admin-password'})
+        self.assertNotIn('value',entry)
+
+    def test_inline_database_password_is_refused(self):
+        docs=copy.deepcopy(self.docs)
+        db=next(d for d in docs if d['metadata']['name']=='eod-price-db' and module.podspec(d))
+        module.podspec(db)['containers'][0]['env'].append({'name':'MARIADB_PASSWORD','value':'public-default'})
+        with self.assertRaises(AssertionError):module.validate(docs)
+
+    def test_all_workloads_have_complete_scheduler_requests(self):
+        for doc in self.docs:
+            pod=module.podspec(doc)
+            if not pod: continue
+            for c in pod['containers']:
+                self.assertTrue({'cpu','memory'} <= set(c['resources']['requests']),doc['metadata']['name'])
+
+    def test_half_specified_lock_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(AssertionError):
+                module.prepare(Path(temp)/'candidate','test','10.93.0.10',Path('missing'),None)
+
+    def test_public_platform_and_private_registry_binding_refused(self):
+        docs=copy.deepcopy(self.docs)
+        # Minimal public/foreign controls are independent of the real lock files.
+        pod=next(module.podspec(d) for d in docs if module.podspec(d))
+        pod['containers'][0]['image']='nginx:test'
+        pub={'nginx:test':{'reference':'nginx@sha256:'+'a'*64,'manifest':{'manifests':[
+            {'digest':'sha256:'+'a'*64,'platform':{'architecture':'arm64','os':'linux'}}]}}}
+        with self.assertRaises(AssertionError):module.pin_images(docs,{'images':{}},pub)
+
 
 class UiMetadata(unittest.TestCase):
     def render(self, folder, epoch):
