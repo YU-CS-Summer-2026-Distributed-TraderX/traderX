@@ -202,3 +202,26 @@ After account initialization, run `python3 scripts/gcp-compsci/initialize-refere
 The bootstrap reapplies the existing session phase as an acknowledgement fence only while all members agree and their queues are empty. It verifies all three members have applied the returned sequence, then checks the complete gateway control inventory and Amazon member marks. The gateway inventory is not a direct member security-table readout. Use the command without `--apply` for read-only inventory and Amazon-mark verification. Check the deployed counterparty CSV covers every directory account. No market order, trade, external feed fetch, or TAQ conversion is part of initialization.
 
 The Accounts page renders its controls only for a signed-in administrator; account creation and enable/disable are also server-gated. Requested password changes update the private credential file and Secret-backed scrypt hash, rotate the console session key, and require a console rollout. Never put a plaintext password in source, deployment manifests or evidence reports.
+
+## Optional restricted external console
+
+The base admitted pack remains internal. Separately authorized external access uses
+`console-external`, selecting only the console on TCP80 →8080. Reserve the regional
+IPv4 address `traderx-console` in `us-east1`, then render with
+`scripts/gcp-compsci/render-frontend-access.py --address <reserved-ip> --source <your-public-ip>`.
+The renderer accepts only one public IPv4 source and emits a /32 allowlist; it cannot
+render an unrestricted public endpoint. Review and server-dry-run the emitted Service
+before applying it to the explicit CompSci context. This separate Service does not
+change images, the internal Service, or engine state. GKE creates a backend-service
+external load balancer and source-restricted firewall rule. The reserved address and
+load balancer remain billable resources until explicitly removed.
+
+Open `http://<reserved-ip>/`. This profile is HTTP, not TLS: the source restriction
+limits reachability but does not encrypt sign-in traffic. Use the existing encrypted
+port-forward path for credential entry until HTTPS is configured. If your network's
+public IP changes, rerender and apply the /32 allowlist. Do not widen it to 0.0.0.0/0.
+
+The Today's end of day error mentioning a dev proxy can also mean a dropped connection.
+Check the actual `/eod/chain?date=YYYY-MM-DD` response and the connection before changing
+EOD state. A failed port-forward can leave the loaded SPA visible while every refresh
+fails. A chain read is read-only; never trigger another close or publish to repair access.
