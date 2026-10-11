@@ -24,3 +24,13 @@ test('signed-in control replaces browser credentials with server credentials',()
 test('missing private control credential fails closed',()=>{
   const x=harness(true,undefined);assert.equal(x.calls.length,0);assert.equal(x.replies[0].status,503);
 });
+
+test('account creation is server-gated while trading directory reads remain available',async()=>{
+  const {edgePath}=await import('./request-path.mjs');
+  const context={edgePath};
+  vm.runInNewContext(source.slice(source.indexOf('const ADMIN_MUTATIONS ='),source.indexOf('// Paths the edge proxy'))+'\nglobalThis.needsAuth=needsAuth;',context);
+  assert.equal(context.needsAuth('POST','/account-service/account/'),true);
+  assert.equal(context.needsAuth('POST','/legacy/account-service/account/'),true);
+  assert.equal(context.needsAuth('GET','/account-service/account/'),false);
+  assert.equal(context.needsAuth('POST','/order-matcher/risk/control/account'),true);
+});

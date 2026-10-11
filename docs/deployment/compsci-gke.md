@@ -193,3 +193,12 @@ semantics; retained-data deletion and source-bucket cleanup are separate operati
 After a cold application rollout, run `python3 scripts/gcp-compsci/initialize-accounts.py --apply` from the CompSci checkout. This reads the nonempty live directory, admits absent accounts through the sequenced control endpoint, and verifies each directory ID is enabled on all three member engine tables. This includes Test Account 20 (22214). Existing explicit suspensions fail closed for operator review. The command without `--apply` only verifies. An ambiguous submission stops; reconcile member state before rerunning.
 
 The console Accounts controls require administrator sign-in. The hosted server supplies its private control credential; a browser-provided token cannot override it. The table records this browser session's successful commands, not a live engine-state readout. Initialization does not submit orders, import TAQ data, or change retained positions.
+
+
+## Full demo reference initialization
+
+After account initialization, run `python3 scripts/gcp-compsci/initialize-reference-data.py --apply`. It compares the complete instrument catalog with its control snapshot, registers the catalog and configured publisher option chain, keeps matured/expired securities disabled, and sequences missing demo marks from the existing publisher while preserving existing marks. It does not fabricate prices for unquoted instruments or non-USD FX rates. Limit orders may supply a price for unquoted enabled instruments; market-order pricing remains limited to the available demo marks.
+
+The bootstrap reapplies the existing session phase as an acknowledgement fence only while all members agree and their queues are empty. It verifies all three members have applied the returned sequence, then checks the complete gateway control inventory and Amazon member marks. The gateway inventory is not a direct member security-table readout. Use the command without `--apply` for read-only inventory and Amazon-mark verification. Check the deployed counterparty CSV covers every directory account. No market order, trade, external feed fetch, or TAQ conversion is part of initialization.
+
+The Accounts page renders its controls only for a signed-in administrator; account creation and enable/disable are also server-gated. Requested password changes update the private credential file and Secret-backed scrypt hash, rotate the console session key, and require a console rollout. Never put a plaintext password in source, deployment manifests or evidence reports.

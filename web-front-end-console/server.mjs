@@ -119,6 +119,7 @@ function readToken(req) {
 // the trading page offers both to anyone — so gating them there would be a fence with no field
 // behind it, which is the same reason order entry was never on this list.
 const ADMIN_MUTATIONS = [
+  { method: 'POST', re: /^\/account-service\/account(?:\/|$)/ },
   { method: null, re: /^\/order-matcher\/risk\/control(?:\/|$)/ },
   { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
   { method: null,   re: /^\/trade-processor\/recon\/orphan-sweep$/ },
