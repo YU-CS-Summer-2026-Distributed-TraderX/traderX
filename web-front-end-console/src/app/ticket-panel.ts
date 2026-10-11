@@ -21,6 +21,21 @@ const iso = (daysFromNow: number) => {
   return d.toISOString().slice(0, 10);
 };
 
+let optionStory: {symbol: string; price: number} | null = null;
+function listedOption(t: TicketPanel, rest: boolean): void {
+  const date = new Date().toISOString().slice(0,10);
+  if(rest || !optionStory || (parseOcc(optionStory.symbol)?.expiry ?? '') < date) {
+    const symbol = Object.keys(t.api.prices()).filter(k => {
+      const o=parseOcc(k), price=t.api.prices()[k]?.price;
+      return o?.underlying==='AAPL' && o.callPut==='Call' && o.strike===240 && o.expiry>=date && Number.isFinite(price) && price>0;
+    }).sort()[0];
+    if(!symbol) throw Error('No unexpired quoted AAPL 240 call is available. Wait for the option quotes before selecting this story.');
+    optionStory={symbol,price:Math.round(t.api.prices()[symbol].price*1000)/1000};
+  }
+  t.cls.set('Option');t.occSymbol.set(optionStory.symbol);t.limitPrice=optionStory.price;
+  t.accountId=rest?42422:22214;t.side=rest?'Sell':'Buy';t.quantity=5;
+}
+
 // One preset per demo story. Each fills the whole ticket; Submit is the only remaining click.
 const PRESETS: Preset[] = [
   { label: 'Equity — buy 100 IBM @ 200', apply: t => {
@@ -33,12 +48,8 @@ const PRESETS: Preset[] = [
   // procedure after a proof-suite run: yu15-option-persistence deletes every trade and position
   // whose security is >15 chars (i.e. every OCC symbol) and restores only the catalog rows, so
   // option positions vanish while the contracts stay tradeable. Two clicks put them back.
-  { label: 'Listed option 1/2 — rest an offer (AAPL Dec-26 240 Call)', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL261218C00240000'); t.accountId = 42422;
-      t.side = 'Sell'; t.quantity = 5; t.limitPrice = 3.80; } },
-  { label: 'Listed option 2/2 — lift it → print, position, both sides', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL261218C00240000'); t.accountId = 22214;
-      t.side = 'Buy'; t.quantity = 5; t.limitPrice = 3.80; } },
+  { label: 'Listed option 1/2 — rest an offer (unexpired AAPL 240 Call)', apply: t => listedOption(t,true) },
+  { label: 'Listed option 2/2 — lift it → print, position, both sides', apply: t => listedOption(t,false) },
   { label: 'Treasury bill — $100k face, fraction of par', apply: t => {
       t.cls.set('Treasury'); t.ticker.set('UST-BILL-20270812'); t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },
   { label: 'Corporate — GS 5.75% 2036, 30/360 day count', apply: t => {
@@ -444,7 +455,10 @@ export class TicketPanel {
 
   usePreset(index: string | number): void {
     const p = PRESETS[Number(index)];
-    if (p) { p.apply(this); this.last.set(null); }
+    if (p) {
+      try { p.apply(this); this.last.set(null); }
+      catch(e) { this.last.set({ok:false,text:e instanceof Error?e.message:'The preset is unavailable.'}); }
+    }
   }
 
   async submit(): Promise<void> {

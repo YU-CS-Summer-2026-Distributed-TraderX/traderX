@@ -268,6 +268,6 @@ The console validates browser Origin at its own proxy boundary, then removes it 
 the internal hop; backend localhost CORS no longer rejects hosted EOD/reconciliation
 requests. Foreign origins are refused before credential forwarding. FIX starts its
 quote subscription even when opened directly, and missing marks give an explicit
-message. The listed-option story selects the admitted December2026 contract rather
-than the expired September2026 contract. A remote extract is complete only when its
+message. The listed-option story selects an unexpired quoted AAPL240call (December2026 on this rig), records
+the offered price, and reuses it for the second ticket. A remote extract is complete only when its
 service READY verdict confirms production, with the recorded version in its detail.
