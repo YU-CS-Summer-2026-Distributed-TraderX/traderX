@@ -9,8 +9,10 @@
   by the generated admission/control reports, not this task list.
 - Initial application rollout and canonical integration: explicitly approved and
   complete at fa074662, with authenticated live order/SQL/EOD/extract proof.
-  The subsequent hosted demo candidate is separate and not yet integrated.
+  The subsequent hosted demo repair candidate1132510f was separately approved
+  and integrated at85afc999; full-ancestry context parity and20focused checks pass.
   See [resolved initial task](../../../../issues/risk-integration/resolved/compsci-gke-admission-20261011.md)
+  [resolved hosted repairs](../../../../issues/risk-integration/resolved/compsci-demo-repairs-20261011.md)
   and [current queue supplement](../../../../issues/risk-integration/20261011-current-index.md).
 
 Raw proof and review records live in the parent coordination directory under

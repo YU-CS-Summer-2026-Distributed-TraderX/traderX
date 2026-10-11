@@ -1,7 +1,15 @@
 # TraderX on the CompSci project
 
+October11 accepted state: the initial pack and hosted repairs through `1132510f`
+are approved and integrated in canonical (merge `85afc999`). Trusted HTTPS works at
+`https://demo.yaakovseif.dev` and `https://desk.yaakovseif.dev`, restricted to the
+operator network by Cloud Armor. The old plaintext Service/address is retired.
+All four EOD stages, authenticated controls and repaired presets were verified live.
+See the [completed repair record](../../issues/risk-integration/resolved/compsci-demo-repairs-20261011.md)
+and [current queue](../../issues/risk-integration/20261011-current-index.md).
+
 Preparation target: project `project-compsci-484414`, cluster `traderx-demo`,
-zone `us-east1-b`, namespace `traderx`. Source base: `238dd1f4` (accepted YU18).
+zone `us-east1-b`, namespace `traderx`. Initial preparation base: `238dd1f4` (accepted YU18 at that time).
 This is a fresh cold synthetic demo profile. It does not establish retained-state
 compatibility, connected portfolio risk, financial correctness or benchmark capacity.
 Alex's risk engine is not upgraded or deployed by this profile.
@@ -21,8 +29,9 @@ schema comes first. It uses the CompSci registry and these migrated buckets:
 Only the extract writer and console consume storage in this initial profile.
 TAQ reader permission is prepared for a separate explicit replay workload; the
 publisher does not fetch or reinterpret the raw vendor dataset automatically.
-Legacy restore and backup jobs are excluded. All Services are internal ClusterIP;
-there is no Ingress, external load balancer, automatic seed job or automatic EOD cut.
+Legacy restore and backup jobs are excluded. The base admitted pack uses internal ClusterIP Services;
+the separately authorized HTTPS resources below add the hosted frontend. The base
+pack has no automatic seed job or automatic EOD cut.
 Use local port forwarding for the first proof. Source buckets stay intact.
 
 The engine retains the inherited `emptyDir` demo storage. Pod/node loss can destroy
@@ -291,3 +300,11 @@ The option story reads the selected contract's admitted engine reference via
 `/m0/bbo` and reuses it across both tickets. A drifting display quote cannot silently
 replace the engine's collar reference; a missing reference refuses the preset.
 No further synthetic orders are needed merely to verify field selection.
+
+The October11 cold-read sizing proof compared21 actual EOD/archive GET requests.
+Two CLI slots peaked at219MiB of the768MiB limit, completed the full read workload
+in29s and the chain in10s, without restarts. One slot took51s at146MiB; three took25s
+at277MiB. These are bounded demo observations, not production sizing. Canonical
+integration regenerated all30 ancestry states in an isolated copy and matched
+all11 generated runtime contexts to the reviewed deployment. Its20focused tests
+and global quality gates passed; the separate broad suite's RI31 gaps remain open.

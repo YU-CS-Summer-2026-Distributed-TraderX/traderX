@@ -4,7 +4,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 
 | Pack | Status |
 |---|---|
-| [CompSci cold-demo admission](compsci-gke-admission/README.md) | Initial admitted pack integrated at fa074662 and live proof passed; later hosted repair candidate awaits canonical approval |
+| [CompSci cold-demo admission](compsci-gke-admission/README.md) | Done for the approved initial pack and hosted repairs through1132510f; broader performance/retained-state qualification remains separate |
 | [Generation performance](generation-performance/README.md) | Done: approved local batching/current-input parity; warmed offline profile only |
 | [Fresh-rig audit corrections](live-audit-fixes/README.md) | Done: approved integration and local live checks passed |
 | [ACK classification metrics](ack-metrics/README.md) | See pack tasks and linked RI/LR evidence |
