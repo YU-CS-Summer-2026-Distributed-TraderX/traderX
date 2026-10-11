@@ -271,3 +271,11 @@ quote subscription even when opened directly, and missing marks give an explicit
 message. The listed-option story selects an unexpired quoted AAPL240call (December2026 on this rig), records
 the offered price, and reuses it for the second ticket. A remote extract is complete only when its
 service READY verdict confirms production, with the recorded version in its detail.
+
+EOD chain, extract-volume and GCS archive reads use asynchronous child processes.
+The local HTTP concurrency test starts the actual console against slow fake CLI
+readers and requires /healthz to answer before the EOD request completes. This
+checks that storage/cluster reads do not block sign-in, health or unrelated API
+requests. A failed connection now reports a connection failure, rather than
+assuming a developer proxy is absent. Existing CLI timeouts and unreadable-stage
+semantics remain in force.

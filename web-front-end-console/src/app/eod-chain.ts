@@ -226,7 +226,7 @@ export class EodChain {
       if (r.status !== 200 || !r.body || typeof r.body !== 'object' || !('prices' in r.body)) {
         this.chain.set(null);
         this.error.set(typeof r.body === 'string' || !r.body
-          ? 'the EOD chain endpoint did not answer with a chain — the console server serves it, so a dev session needs the /eod proxy route'
+          ? (r.status === 0 ? 'The console connection failed while reading the EOD chain. Reconnect and refresh.' : `The EOD endpoint returned no chain (HTTP ${r.status}).`)
           : `could not read the chain (HTTP ${r.status})`);
         return;
       }

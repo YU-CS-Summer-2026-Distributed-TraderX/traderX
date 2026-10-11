@@ -25,7 +25,7 @@ import { isOperatorControl, OPERATOR_CONTROL_REFUSAL } from './operator-control.
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, execSync } from 'node:child_process';
+import { exec, execFile, execFileSync, execSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -158,15 +158,17 @@ const json = (res, code, body) => {
 };
 
 // ---- GCS archive (dev: gcloud on the laptop; here: Workload Identity) --------------------------
+const execShell = (command, options) => new Promise((resolve,reject) => exec(command,options,(error,stdout) => error?reject(error):resolve(stdout)));
+const execArgs = (command, args, options) => new Promise((resolve,reject) => execFile(command,args,options,(error,stdout) => error?reject(error):resolve(stdout)));
 const gcsCache = new Map();
-const gcs = (cmd) => execSync(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 }).toString();
+const gcs = async (cmd) => (await execShell(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 })).toString();
 
-function gcsBypass(req, res, url) {
+async function gcsBypass(req, res, url) {
   try {
     if (url.pathname === '/gcs/extracts') {
       const hit = gcsCache.get('ls');
       if (!hit || Date.now() - hit.at > 60_000) {
-        const files = gcs(`ls -r '${BUCKET}/**'`).split('\n').filter(l => l.endsWith('.cut') || l.endsWith('.csv'));
+        const files = (await gcs(`ls -r '${BUCKET}/**'`)).split('\n').filter(l => l.endsWith('.cut') || l.endsWith('.csv'));
         gcsCache.set('ls', { at: Date.now(), body: JSON.stringify({ bucket: BUCKET, files }) });
       }
       return json(res, 200, gcsCache.get('ls').body);
@@ -176,7 +178,7 @@ function gcsBypass(req, res, url) {
       // Same guard as the dev bypass: one bucket, no quote injection into the shell command.
       if (!p.startsWith(`${BUCKET}/`) || p.includes("'")) return json(res, 400, {});
       if (!gcsCache.has(p)) {
-        const content = gcs(`cat '${p}'`);
+        const content = await gcs(`cat '${p}'`);
         gcsCache.set(p, { body: JSON.stringify({ path: p, sha256: createHash('sha256').update(content).digest('hex'), content }) });
       }
       return json(res, 200, gcsCache.get(p).body);
@@ -213,16 +215,16 @@ function kdbBypass(req, res) {
 // ---- EOD extract bridge: the rig's OWN cut sink, not the GCS archive --------------------------
 // sha256 is taken ON THE POD so it is the same number the proofs and the three members report.
 const extractCache = { at: 0, body: '' };
-function extractBypass(req, res) {
+async function extractBypass(req, res) {
   try {
     if (Date.now() - extractCache.at > 30_000) {
-      const pod = execSync(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
-        { shell: '/bin/sh', timeout: 20000 }).toString().trim();
-      const out = execSync(
+      const pod = (await execShell(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
+        { shell: '/bin/sh', timeout: 20000 })).toString().trim();
+      const out = (await execShell(
         `kubectl -n ${NS} exec ${pod} -- sh -c ` +
         `'for f in /data/risk-extracts/*/*/*; do [ -f "$f" ] || continue; ` +
         `echo "==FILE $f $(sha256sum $f | cut -d\\  -f1)"; cat $f; done'`,
-        { shell: '/bin/sh', timeout: 30000 }).toString();
+        { shell: '/bin/sh', timeout: 30000 })).toString();
       const files = out.split('==FILE ').slice(1).map(chunk => {
         const nl = chunk.indexOf('\n');
         const [p, sha256] = chunk.slice(0, nl).trim().split(' ');
@@ -643,13 +645,15 @@ const podByLabel = (label) => execSync(
   `kubectl -n ${NS} get pods -l ${label} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
   { shell: '/bin/sh', timeout: 20000 }).toString().trim();
 
-const sqlQuery = (q) => execFileSync('kubectl', [
-  '-n', NS, 'exec', podByLabel('app=eod-price-db'), '--', 'sh', '-ec',
-  'MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -N -B -e "$1"',
-  'sh', q],
-  { timeout: 25000 }).toString().trim();
+const podByLabelAsync = async label => (await execShell(
+  `kubectl -n ${NS} get pods -l ${label} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
+  {shell:'/bin/sh',timeout:20000})).trim();
+const sqlQueryAsync = async q => (await execArgs('kubectl',[
+  '-n',NS,'exec',await podByLabelAsync('app=eod-price-db'),'--','sh','-ec',
+  'MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -N -B -e "$1"','sh',q],
+  {timeout:25000})).trim();
 
-function eodChain(req, res, url) {
+async function eodChain(req, res, url) {
   const date = (url.searchParams.get('date') ?? '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: 'date=YYYY-MM-DD required' });
   // THE SERVER'S BUSINESS DATE, so the page never has to guess it. `/eod/session/close` defaults to
@@ -663,14 +667,14 @@ function eodChain(req, res, url) {
   // machine that mints it.
   let businessDate = '';
   try {
-    businessDate = execSync(
-      `kubectl -n ${NS} exec ${podByLabel('app=trade-processor')} -- date -u +%F`,
-      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+    businessDate = (await execShell(
+      `kubectl -n ${NS} exec ${await podByLabelAsync('app=trade-processor')} -- date -u +%F`,
+      { shell: '/bin/sh', timeout: 20000 })).toString().trim();
   } catch { /* absent is reported as absent; the page must not fall back to the browser's date */ }
   const out = { date, businessDate, prices: null, pnl: null, extract: null, published: null };
 
   try {
-    const rows = sqlQuery(
+    const rows = await sqlQueryAsync(
       `SELECT version, status, instrument_count, flagged_count, published_at FROM eod_price_session `
       + `WHERE session_date='${date}' ORDER BY version DESC LIMIT 1;`);
     if (!rows) {
@@ -700,13 +704,13 @@ function eodChain(req, res, url) {
   // The count is the wrong instrument, so ask the service what it did. The summary line carries the
   // verdict; only fall back to "pending" when there is genuinely no run to describe.
   try {
-    const n = Number(sqlQuery(`SELECT COUNT(*) FROM eod_position_pnl WHERE session_date='${date}';`));
+    const n = Number(await sqlQueryAsync(`SELECT COUNT(*) FROM eod_position_pnl WHERE session_date='${date}';`));
     let summary = '';
     try {
-      summary = execSync(
-        `kubectl -n ${NS} logs ${podByLabel('app=position-service')} --tail=4000 2>/dev/null `
+      summary = (await execShell(
+        `kubectl -n ${NS} logs ${await podByLabelAsync('app=position-service')} --tail=4000 2>/dev/null `
         + `| grep "eod pnl marked" | grep "date=${date}" | tail -1 || true`,
-        { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+        { shell: '/bin/sh', timeout: 25000 })).toString().trim();
     } catch { /* the log is a bonus signal; the row count still stands on its own */ }
     out.pnl = pnlStatus(n, summary);
   } catch {
@@ -725,9 +729,9 @@ function eodChain(req, res, url) {
   // operator is asking at this point in the chain. Only the service's own log knows.
   let verdict = null;
   try {
-    const log = execSync(
-      `kubectl -n ${NS} logs ${podByLabel('app=risk-extract')} --tail=4000 2>/dev/null || true`,
-      { shell: '/bin/sh', timeout: 25000, maxBuffer: 16 * 1024 * 1024 }).toString();
+    const log = (await execShell(
+      `kubectl -n ${NS} logs ${await podByLabelAsync('app=risk-extract')} --tail=4000 2>/dev/null || true`,
+      { shell: '/bin/sh', timeout: 25000, maxBuffer: 16 * 1024 * 1024 })).toString();
     // Scanned in order rather than grepped: RISK-EXTRACT-FAILED carries no date of its own, so the
     // only thing that attributes it to a session is the trigger line above it.
     let cur = '';
@@ -753,19 +757,19 @@ function eodChain(req, res, url) {
   // volume is empty" and "no cut was produced" are the same observation only when the sink is local.
   let sink = '';
   try {
-    sink = execSync(
-      `kubectl -n ${NS} get pod ${podByLabel('app=risk-extract')} -o jsonpath=`
+    sink = (await execShell(
+      `kubectl -n ${NS} get pod ${await podByLabelAsync('app=risk-extract')} -o jsonpath=`
       + `'{.spec.containers[0].env[?(@.name=="RISK_EXTRACT_SINK_URI")].value}'`,
-      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+      { shell: '/bin/sh', timeout: 20000 })).toString().trim();
   } catch { /* unknown sink is reported as unknown, never assumed */ }
   const remoteSink = sink.startsWith('gs://');
 
   try {
-    const pod = execSync(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
-      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
-    const listed = execSync(
+    const pod = (await execShell(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
+      { shell: '/bin/sh', timeout: 20000 })).toString().trim();
+    const listed = (await execShell(
       `kubectl -n ${NS} exec ${pod} -- sh -c 'ls -1 /data/risk-extracts/${date}/*/* 2>/dev/null || true'`,
-      { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+      { shell: '/bin/sh', timeout: 25000 })).toString().trim();
     const files = listed ? listed.split('\n').filter(Boolean) : [];
     out.extract = files.length
       ? { state: 'ok', pod, sink, files, detail: `${files.length} artifact(s) cut on ${pod}` }
@@ -790,8 +794,8 @@ function eodChain(req, res, url) {
   if(process.env.LOCAL_ONLY === '1') {
     out.published={state:'not-configured',detail:'Cloud archive reads are disabled for this local session.'};
   } else try {
-    const listed = execSync(`gcloud storage ls -r '${BUCKET}/**' 2>/dev/null || true`,
-      { shell: '/bin/sh', timeout: 30000 }).toString();
+    const listed = (await execShell(`gcloud storage ls -r '${BUCKET}/**' 2>/dev/null || true`,
+      { shell: '/bin/sh', timeout: 30000 })).toString();
     const files = listed.split('\n').map(s => s.trim()).filter(s => s.includes(date) && !s.endsWith(':') && !s.endsWith('/'));
     // "Nothing in the bucket" means two different things, and only one of them is waiting. If the
     // sink is not pointed at gs:// then nothing will EVER arrive, however long anyone watches — so
