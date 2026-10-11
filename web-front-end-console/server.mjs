@@ -119,6 +119,7 @@ function readToken(req) {
 // the trading page offers both to anyone — so gating them there would be a fence with no field
 // behind it, which is the same reason order entry was never on this list.
 const ADMIN_MUTATIONS = [
+  { method: null, re: /^\/order-matcher\/risk\/control(?:\/|$)/ },
   { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
   { method: null,   re: /^\/trade-processor\/recon\/orphan-sweep$/ },
   // The end-of-day chain. These three are the clearest overrides in the system: closing a session
@@ -1044,6 +1045,13 @@ function proxyToEdge(req, res, rewrite) {
     if (!token) return json(res, 503, {code: 'internal_auth_unavailable', error: 'Service authentication is recovering. Try again shortly.'});
     headers['authorization'] = `Bearer ${token}`;
     delete headers['Authorization'];
+  }
+  // Spend the private control credential only after the admin gate; it never reaches the page.
+  if (/^\/order-matcher\/risk\/control(?:\/|$)/.test(reqPath.toLowerCase())) {
+    if (!readToken(req)) return json(res, 401, {code: 'admin_auth_required', error: 'sign in as an administrator to make this change'});
+    if (!process.env.RISK_CONTROL_TOKEN) return json(res, 503, {code: 'risk_control_unavailable', error: 'Account controls are not configured on this console.'});
+    headers['x-risk-control-token'] = process.env.RISK_CONTROL_TOKEN;
+    headers['x-risk-operator'] = 'console-admin';
   }
   // The master secret is NEVER forwarded. It is this process's credential for minting its own
   // token, not a header to sprinkle on proxied traffic.

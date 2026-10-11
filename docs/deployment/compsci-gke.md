@@ -186,3 +186,10 @@ The caller must obtain rollout approval before applying the admitted snapshot.
 Do not infer deployment acceptance from rendering, image build or Kubernetes readiness.
 Before stopping compute, export required evidence/state and document the cold-start
 semantics; retained-data deletion and source-bucket cleanup are separate operations.
+
+
+## Demo account initialization
+
+After a cold application rollout, run `python3 scripts/gcp-compsci/initialize-accounts.py --apply` from the CompSci checkout. This reads the nonempty live directory, admits absent accounts through the sequenced control endpoint, and verifies each directory ID is enabled on all three member engine tables. This includes Test Account 20 (22214). Existing explicit suspensions fail closed for operator review. The command without `--apply` only verifies. An ambiguous submission stops; reconcile member state before rerunning.
+
+The console Accounts controls require administrator sign-in. The hosted server supplies its private control credential; a browser-provided token cannot override it. The table records this browser session's successful commands, not a live engine-state readout. Initialization does not submit orders, import TAQ data, or change retained positions.

@@ -17,7 +17,7 @@ const NOTE_KEY = 'traderx-console-account-risk';
     </div>
 
     <table>
-      <thead><tr><th class="num">id</th><th>name</th><th>engine risk state</th><th></th></tr></thead>
+      <thead><tr><th class="num">id</th><th>name</th><th>last console command</th><th></th></tr></thead>
       <tbody>
         @for (a of api.accounts(); track a.id) {
           <tr>
@@ -32,9 +32,8 @@ const NOTE_KEY = 'traderx-console-account-risk';
         } @empty { <tr><td colspan="4" class="faint">account service unreachable</td></tr> }
       </tbody>
     </table>
-    <div class="sub note">The engine exposes no read surface for account risk state — the control
-      snapshot carries instruments only. This column reports what this console last applied, not
-      what the engine holds; a suspended account proves itself by rejecting ACCOUNT_DISABLED.</div>
+    <div class="sub note">Sign in as an administrator to enable or disable an account. This column records successful
+      commands from this browser session; it is not a live reading of the engine account table.</div>
 
     <div class="card-head sect">
       <h2>New account</h2>
@@ -66,9 +65,8 @@ export class AccountsPanel implements OnInit {
   readonly busy = signal(false);
   readonly steps = signal<Step[]>([]);
   /**
-   * accountId -> what this console last applied. Persisted, because the engine has no read surface
-   * for account risk state: if this were in-memory only, a refresh would blank the column and the
-   * operator would have no record at all of which accounts they had suspended.
+   * accountId -> what this console last applied. Persisted for this browser session.
+   * It is command history, not an authoritative engine-state readout.
    */
   readonly note = signal<Record<number, string>>(
     JSON.parse(sessionStorage.getItem(NOTE_KEY) ?? '{}'));
