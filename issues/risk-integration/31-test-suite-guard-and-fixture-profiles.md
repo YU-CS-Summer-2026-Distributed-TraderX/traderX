@@ -1,0 +1,13 @@
+# RI31 — Repair suite guards and isolate incompatible test fixtures
+
+Updated: 2026-10-11. Status: open; discovered during the user-authorized full-suite run. Owner: coordinator triage; implementation unassigned.
+
+Canonical source snapshot: fa074662 plus the existing user edits, independently copied before generation. No original user file or staging was changed. Evidence: parent coordination `review-evidence/compsci-gke-20261011/canonical-full-qa-20261011/`.
+
+Three state wrapper guards fail against current generation: YU05 requires obsolete `recon.control.token=` despite JWT control configuration; YU09 and YU10 require a literal JVM wrapper invocation even though the independent fresh-JAR guard checks pass. Repair assertions against the operative behavior and include a negative control; do not simply remove checks. YU01 requires a running legacy state009 Compose rig and was not executed end to end; this precondition does not authorize resurrecting the retired single-BLP tier.
+
+The 733-test matcher population includes six skipped cases. Its first full run fails six member account-readout cases without the required synthetic JWT fixture. A full rerun with that fixture passes those cases but conflicts with FIX tests' separate hardcoded JWT secret, and one HA test times out. Isolated member-readout and default-fixture HA/FIX runs pass. Preserve all attempts; define separate supported fixture profiles or per-test configuration, then obtain a single attributable full-suite verdict. Do not call isolated passes a green full invocation. Investigate the HA timeout under the matched profile before calling it only environmental.
+
+Trade-processor's 106 cases pass with the fixture's required Java21 `--add-opens=java.base/java.util=ALL-UNNAMED`; its two initial reflection failures are preserved. People-service builds with .NET9, zero warnings/errors, but no test project exists. Reference-data is Nest/Jest (23 passing), not a Gradle component. YU18's canonical and compatibility wrappers pass after installing the required pinned Python/jsonschema environment (167 cases). The initially skipped tick-store synthetic suite was run separately with pinned DuckDB: 24 passing; no private tape was converted.
+
+Acceptance: every wrapper's executable contract tested with failure controls; documented per-component toolchain and fixture profiles; nonzero test-report reconciliation, explicit skips and unavailable live prerequisites; retain failed attempts and qualify financial/live coverage separately. Follow the bounded task/review/live-proof/integration lifecycle before implementation or closeout.

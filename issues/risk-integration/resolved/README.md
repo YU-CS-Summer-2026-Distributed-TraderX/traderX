@@ -6,6 +6,7 @@ These bounded RI scopes and completed maintenance tasks are complete at their st
 
 | ID | Completed scope | Remaining qualification elsewhere |
 |---|---|---|
+| [CompSci initial admission](compsci-gke-admission-20261011.md) | Approved fa074662 integrated; initial authenticated cold-demo proof passed | [Later hosted repairs](../tasks/compsci-demo-repairs-20261011.md) awaiting their own integration approval; RI13/LR07 and RI30 remain open |
 | [RI-29](29-generation-performance.md) / [bounded task](ri29-generation-performance.md) | Approved local generator batching with full-output/current-input parity; warmed offline elapsed medians reduced 28–32% | State 009/lock-refresh-enabled profiles unverified; no runtime/deployment claim |
 | [RI16 C8 upstream upgrade](ri16-upstream-c8-upgrade.md) | Reviewed corrected service e770f912 approved and incorporated in owned external-engine target | LR03B connected portfolio contract; original-engine adoption/readiness/fleet remain open |
 | [Risk container qualification](ri15-16-risk-container-upgrade.md) | Approved owned container/service integration with exact corrected image80c885f8 applicability | Broader financial/production/native/GPU/connected acceptance remains separate |
