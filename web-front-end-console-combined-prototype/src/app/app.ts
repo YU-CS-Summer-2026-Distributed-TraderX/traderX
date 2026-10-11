@@ -1,3 +1,4 @@
+import {DeskProfile} from './profile';
 import { FormsModule } from '@angular/forms';
 import { SignIn } from '../../../web-front-end-console/src/app/sign-in';
 import { Component, HostListener, computed, effect, inject, signal } from '@angular/core';
@@ -31,7 +32,7 @@ import { Desk } from './desk';
         }
       </nav>
       <span class="spacer"></span>
-      <span class="pill fixture" [title]="desk.connected ? 'Connected to local services' : fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
+      <span class="pill fixture" [title]="desk.connected ? 'Connected to trading services' : fixtureLabel">{{ desk.connected ? 'Connected rig' : 'synthetic data' }}</span>
       <div class="pop-host">
         <button type="button" class="user" (click)="toggle('user')" [attr.aria-expanded]="open() === 'user'"
                 aria-haspopup="true" data-testid="user-menu">{{ u.name }} ▾</button>
@@ -62,13 +63,13 @@ import { Desk } from './desk';
                 @if (f.built !== 'fixture') { <em [hidden]="desk.connected">{{ f.built === 'proposed' ? 'proposed' : 'placed, not rebuilt' }}</em> }
               </a>
             }
-            <a class="demo-console" href="http://127.0.0.1:4321" target="_blank" rel="noopener"><b>Demo console ↗</b><span>Open the original console</span></a>
+            <a class="demo-console" [href]="profile.demoUrl()" target="_blank" rel="noopener"><b>Demo console ↗</b><span>Open the original console</span></a>
           </nav>
         }
       </div>
     } @else {
       <span class="spacer"></span>
-      <span class="pill fixture" [title]="desk.connected ? 'Connected to local services' : fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
+      <span class="pill fixture" [title]="desk.connected ? 'Connected to trading services' : fixtureLabel">{{ desk.connected ? 'Connected rig' : 'synthetic data' }}</span>
     }
   </div>
   <div class="context-bar">
@@ -114,6 +115,7 @@ import { Desk } from './desk';
   `,
 })
 export class App {
+  readonly profile=inject(DeskProfile);
   readonly session = inject(Session);
   private router = inject(Router);
   readonly desk = inject(Desk);   // started with the shell so the fixture feed runs from first paint
@@ -197,18 +199,18 @@ export class App {
     <p class="eyebrow">TRADER WORKSPACE</p>
     <h1>A clear view<br>of your trading day.</h1>
     <p>Markets, orders, positions and risk.<br>One account context across your desk.</p>
-    <div class="login-note"><b>Local trading desk</b><p>Sign in with a username to open or create a workspace. Trading accounts and orders use the local rig.</p></div>
+    <div class="login-note"><b>Trading desk</b><p>Sign in to open a workspace connected to the trading services.</p></div>
   </section>
   <section class="card login-card" aria-labelledby="login-h">
     <h2 id="login-h">Open your workspace</h2>
     @if(session.connected) {
       <form (ngSubmit)="login()">
         <label class="field">Username<input name="username" autocomplete="username" maxlength="48" [(ngModel)]="username" required data-testid="username"></label>
-        <label class="field">Admin password <span class="faint">(optional)</span><input name="adminPassword" type="password" autocomplete="current-password" [(ngModel)]="adminPassword" data-testid="admin-password"></label>
+        <label class="field">Operator password <span class="faint">{{ profile.passwordRequired() ? '(required)' : '(optional for admin)' }}</span><input name="adminPassword" type="password" autocomplete="current-password" [(ngModel)]="adminPassword" data-testid="admin-password"></label>
         <p class="state">New here? Enter a username to create your workspace. Add trading accounts after signing in.</p>
-        <button class="btn-primary" type="submit" [disabled]="busy || !username.trim()" data-testid="login-submit">{{busy?'Opening…':'Open workspace'}}</button>
+        <button class="btn-primary" type="submit" [disabled]="busy || !username.trim() || (profile.passwordRequired() && !adminPassword)" data-testid="login-submit">{{busy?'Opening…':'Open workspace'}}</button>
         @if(error){<p role="alert" class="banner bad">{{error}}</p>}
-        <p class="faint">Local demo: usernames are not private credentials. Admin features require the admin password.</p>
+        <p class="faint">Demo workspace names are public selectors. {{ profile.passwordRequired() ? 'This hosted demo requires the operator password for every session.' : 'Admin features require the operator password.' }}</p>
       </form>
     } @else {
       <ul class="users">@for(u of users;track u.id){<li><button class="identity" (click)="go(u.id)" [attr.data-testid]="'login-'+u.id">{{u.name}}</button></li>}</ul>
@@ -219,6 +221,7 @@ export class App {
   `,
 })
 export class LoginPage {
+  readonly profile=inject(DeskProfile);
   readonly session = inject(Session);
   private router = inject(Router);
   private route = inject(ActivatedRoute);

@@ -186,3 +186,108 @@ The caller must obtain rollout approval before applying the admitted snapshot.
 Do not infer deployment acceptance from rendering, image build or Kubernetes readiness.
 Before stopping compute, export required evidence/state and document the cold-start
 semantics; retained-data deletion and source-bucket cleanup are separate operations.
+
+
+## Demo account initialization
+
+After a cold application rollout, run `python3 scripts/gcp-compsci/initialize-accounts.py --apply` from the CompSci checkout. This reads the nonempty live directory, admits absent accounts through the sequenced control endpoint, and verifies each directory ID is enabled on all three member engine tables. This includes Test Account 20 (22214). Existing explicit suspensions fail closed for operator review. The command without `--apply` only verifies. An ambiguous submission stops; reconcile member state before rerunning.
+
+The console Accounts controls require administrator sign-in. The hosted server supplies its private control credential; a browser-provided token cannot override it. The table records this browser session's successful commands, not a live engine-state readout. Initialization does not submit orders, import TAQ data, or change retained positions.
+
+
+## Full demo reference initialization
+
+After account initialization, run `python3 scripts/gcp-compsci/initialize-reference-data.py --apply`. It compares the complete instrument catalog with its control snapshot, registers the catalog and configured publisher option chain, keeps matured/expired securities disabled, and sequences missing demo marks from the existing publisher while preserving existing marks. It does not fabricate prices for unquoted instruments or non-USD FX rates. Limit orders may supply a price for unquoted enabled instruments; market-order pricing remains limited to the available demo marks.
+
+The bootstrap reapplies the existing session phase as an acknowledgement fence only while all members agree and their queues are empty. It verifies all three members have applied the returned sequence, then checks the complete gateway control inventory and Amazon member marks. The gateway inventory is not a direct member security-table readout. Use the command without `--apply` for read-only inventory and Amazon-mark verification. Check the deployed counterparty CSV covers every directory account. No market order, trade, external feed fetch, or TAQ conversion is part of initialization.
+
+The Accounts page renders its controls only for a signed-in administrator; account creation and enable/disable are also server-gated. Requested password changes update the private credential file and Secret-backed scrypt hash, rotate the console session key, and require a console rollout. Never put a plaintext password in source, deployment manifests or evidence reports.
+
+## Optional restricted external console
+
+The base admitted pack remains internal. Separately authorized external access uses
+`console-external`, selecting only the console on TCP80 →8080. Reserve the regional
+IPv4 address `traderx-console` in `us-east1`, then render with
+`scripts/gcp-compsci/render-frontend-access.py --address <reserved-ip> --source <your-public-ip>`.
+The renderer accepts only one public IPv4 source and emits a /32 allowlist; it cannot
+render an unrestricted public endpoint. Review and server-dry-run the emitted Service
+before applying it to the explicit CompSci context. This separate Service does not
+change images, the internal Service, or engine state. GKE creates a backend-service
+external load balancer and source-restricted firewall rule. The reserved address and
+load balancer remain billable resources until explicitly removed.
+
+Open `http://<reserved-ip>/`. This profile is HTTP, not TLS: the source restriction
+limits reachability but does not encrypt sign-in traffic. Use the existing encrypted
+port-forward path for credential entry until HTTPS is configured. If your network's
+public IP changes, rerender and apply the /32 allowlist. Do not widen it to 0.0.0.0/0.
+
+The Today's end of day error mentioning a dev proxy can also mean a dropped connection.
+Check the actual `/eod/chain?date=YYYY-MM-DD` response and the connection before changing
+EOD state. A failed port-forward can leave the loaded SPA visible while every refresh
+fails. A chain read is read-only; never trigger another close or publish to repair access.
+
+## HTTPS console at demo.yaakovseif.dev
+
+The separate `scripts/gcp-compsci/https-frontend.json` provisions a GKE managed
+certificate, frontend HTTP-to-HTTPS redirect, console-only Service, BackendConfig
+and Ingress. Its global static address is `traderx-console-https` (`34.54.116.2`).
+Name.com needs an A record `demo` pointing to that address. Do not add an AAAA
+record for this IPv4-only endpoint or replace the domain's other records.
+
+Before applying the manifest, create and verify the Cloud Armor policy
+`traderx-console-network`: default priority2147483647 denies403; priority1000
+allows only the operator's current public IPv4 /32. Both rules must enforce,
+not preview. BackendConfig attaches this policy to the console backend. The
+policy is required before exposure; never temporarily allow all sources for
+certificate issuance. Google manages certificate renewal. The frontend preserves
+`X-Forwarded-Proto: https`, which causes the existing console login handler to
+set its HttpOnly/SameSite cookie Secure.
+
+Completion requires certificate Active, valid hostname TLS without skipping
+verification, the actual backend's securityPolicy attached, HTTP redirection,
+signed-out account controls401, authenticated login with a Secure cookie, and
+EOD refresh over HTTPS. Resource creation alone is not acceptance. Once verified,
+retire the separately created plaintext console-external Service and regional
+traderx-console address; keep all application pods, images and state intact.
+HTTPS provisioning and DNS may take time. Until certificate validation passes,
+do not enter credentials or bypass a browser certificate warning.
+
+## Hosted Desk and demo corrections (October 11)
+
+`desk.yaakovseif.dev` uses a separate single-replica Desk Deployment, 1Gi membership
+PVC, admitted-console-based amd64 image, and the same network-restricted Cloud Armor
+policy. `render-desk-deployment.py` derives the Secret references, service account,
+resource limits and bridge endpoints from the exact admitted console Deployment.
+Its Recreate strategy preserves the single-process session/file contract. A new
+`desk-https` managed certificate is added to the existing HTTPS Ingress; the original
+console certificate is preserved. Name.com needs a `desk` A record to34.54.116.2.
+This profile adds one support workload, no engine node. Operator password is required
+for every hosted Desk session. Workspace names are not production trader identities.
+
+The console validates browser Origin at its own proxy boundary, then removes it on
+the internal hop; backend localhost CORS no longer rejects hosted EOD/reconciliation
+requests. Foreign origins are refused before credential forwarding. FIX starts its
+quote subscription even when opened directly, and missing marks give an explicit
+message. The listed-option story selects an unexpired quoted AAPL240call (December2026 on this rig), records
+the offered price, and reuses it for the second ticket. A remote extract is complete only when its
+service READY verdict confirms production, with the recorded version in its detail.
+
+EOD chain, extract-volume and GCS archive reads use asynchronous child processes.
+The local HTTP concurrency test starts the actual console against slow fake CLI
+readers and requires /healthz to answer before the EOD request completes. This
+checks that storage/cluster reads do not block sign-in, health or unrelated API
+requests. A failed connection now reports a connection failure, rather than
+assuming a developer proxy is absent. Existing CLI timeouts and unreadable-stage
+semantics remain in force.
+
+CLI read subprocesses share a bounded scheduler (default two active,64queued;
+`CONSOLE_CLI_CONCURRENCY` permits the measured comparison values1/2/3). Unbounded
+parallel GCS reads caused a recorded768Mi OOM during a cold EOD page load. Both
+shell and argv-based readers now consume the same slots; overflow fails explicitly.
+`/healthz` reports only scheduler counts, not commands or credentials. Validate peak
+cgroup memory and cold-page latency together before changing this bound.
+
+The option story reads the selected contract's admitted engine reference via
+`/m0/bbo` and reuses it across both tickets. A drifting display quote cannot silently
+replace the engine's collar reference; a missing reference refuses the preset.
+No further synthetic orders are needed merely to verify field selection.

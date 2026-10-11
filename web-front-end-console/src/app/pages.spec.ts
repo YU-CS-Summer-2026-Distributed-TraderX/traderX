@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signal, NO_ERRORS_SCHEMA } from '@angular/core';
 import { Api } from './api';
-import { AdminPage, ReplayPage } from './pages';
+import { AdminPage, ReplayPage, AccountsPage } from './pages';
 
 /**
  * The session driver is signed-in only.
@@ -99,5 +99,24 @@ describe('ReplayPage — the tape is behind sign-in', () => {
     expect(clock).not.toBeNull();
     expect(tape).not.toBeNull();
     expect(collar).not.toBeNull();
+  });
+});
+
+
+describe('AccountsPage sign-in gate', () => {
+  const authUser = signal<string | null>(null);
+  beforeEach(() => {
+    authUser.set(null);
+    TestBed.configureTestingModule({providers: [{provide: Api, useValue: {authUser, authPrompt: signal(false)}}]});
+    TestBed.overrideComponent(AccountsPage, {set: {imports: [], schemas: [NO_ERRORS_SCHEMA]}});
+  });
+  it('withholds account controls until signed in and removes them after sign-out', () => {
+    const f = TestBed.createComponent(AccountsPage); f.detectChanges();
+    expect(f.nativeElement.querySelector('accounts-panel')).toBeNull();
+    expect(f.nativeElement.textContent).toContain('Sign in to manage accounts');
+    authUser.set('admin'); f.detectChanges();
+    expect(f.nativeElement.querySelector('accounts-panel')).not.toBeNull();
+    authUser.set(null); f.detectChanges();
+    expect(f.nativeElement.querySelector('accounts-panel')).toBeNull();
   });
 });

@@ -415,11 +415,8 @@ export class Api {
    * state — orders from an account the engine has never been told about are refused UNKNOWN_ACCOUNT,
    * which is why creating one in the account service alone is not enough to trade.
    *
-   * The token is the gateway's own default: no rig currently sets RISK_CONTROL_TOKEN, so
-   * ClusterGatewayMain's env("RISK_CONTROL_TOKEN", "dev-risk-control") stands on every tier.
-   * A rig that does set it will answer 401 here, and the panel says so rather than pretending the
-   * control landed. (Said "unset on the kind rig" until 2026-08-20, which read as a kind-only
-   * fact and left the cloud tier looking unaccounted for.)
+   * The legacy local proxy accepts its development credential. The hosted console requires an
+   * admin session and replaces this header with its private server-side control credential.
    */
   riskControl<T>(action: string, body: unknown): Promise<{ status: number; body: T | null }> {
     return this.load<T>(`/order-matcher/risk/control/${action}`, {

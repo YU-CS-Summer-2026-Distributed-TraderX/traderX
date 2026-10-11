@@ -32,4 +32,4 @@ ENV PORT=8080 STATIC_ROOT=/app/dist/web-front-end-console/browser
 EXPOSE 8080
 CMD ["node", "server.mjs"]
 
-COPY treasury-demo.mjs request-path.mjs internal-token.mjs eod-pnl-status.mjs ./
+COPY treasury-demo.mjs request-path.mjs internal-token.mjs eod-pnl-status.mjs eod-extract-status.mjs cli-runner.mjs ./

@@ -207,9 +207,19 @@ export class CorpusPage {
 @Component({
   selector: 'accounts-page',
   imports: [AccountsPanel],
-  template: `<section class="card" style="max-width: 820px"><accounts-panel /></section>`,
+  template: `
+    @if (api.authUser()) {
+      <section class="card" style="max-width: 820px"><accounts-panel /></section>
+    } @else {
+      <section class="card">
+        <h2>Trading accounts</h2>
+        <p>Sign in to manage accounts and their trading permissions.</p>
+        <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
+      </section>
+    }
+  `,
 })
-export class AccountsPage {}
+export class AccountsPage { readonly api = inject(Api); }
 
 @Component({
   selector: 'fix-page',

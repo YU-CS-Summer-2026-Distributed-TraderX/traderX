@@ -1,3 +1,4 @@
+import {DeskProfile} from './profile';
 import { Component, computed, inject, input } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { feature } from './features';
@@ -81,9 +82,10 @@ import { Session } from './session';
   `,
 })
 export class ToolPage {
+  readonly profile=inject(DeskProfile);
   demoPath(id:string):string {
     const paths:Record<string,string>={algos:'admin',tca:'',replay:'replay',corpus:'corpus',sandbox:'sandbox',fix:'fix',presets:'','sandbox-admin':'sandbox'};
-    return 'http://127.0.0.1:4321/'+(paths[id]??'');
+    return this.profile.demoUrl()+(paths[id]??'');
   }
   readonly desk = inject(Desk);
   readonly session = inject(Session);

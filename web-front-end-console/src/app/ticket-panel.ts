@@ -14,12 +14,31 @@ const CONVENTIONS = [
   'GBP-SONIA-1Y-ACT365F', 'JPY-TONA-1Y-ACT365F',
 ];
 
-interface Preset { label: string; apply: (t: TicketPanel) => void; }
+interface Preset { label: string; apply: (t: TicketPanel) => void | Promise<void>; }
 
 const iso = (daysFromNow: number) => {
   const d = new Date(Date.now() + daysFromNow * 86_400_000);
   return d.toISOString().slice(0, 10);
 };
+
+let optionStory: {symbol: string; price: number} | null = null;
+async function listedOption(t: TicketPanel, rest: boolean): Promise<void> {
+  const now=Date.now();
+  const unexpired=(expiry:string)=>Date.parse(expiry+'T21:00:00Z')>now;
+  if(rest || !optionStory || !unexpired(parseOcc(optionStory.symbol)?.expiry ?? '')) {
+    const symbol = Object.keys(t.api.prices()).filter(k => {
+      const o=parseOcc(k), price=t.api.prices()[k]?.price;
+      return o?.underlying==='AAPL' && o.callPut==='Call' && o.strike===240 && unexpired(o.expiry) && Number.isFinite(price) && price>0;
+    }).sort()[0];
+    if(!symbol) throw Error('No unexpired quoted AAPL 240 call is available. Wait for the option quotes before selecting this story.');
+    const r=await t.api.load<{books:{ticker:string;ref:number;mark:number}[]}>('/m0/bbo');
+    const ref=r.status===200?r.body?.books?.find(b=>b.ticker===symbol)?.ref:undefined;
+    if(!ref || !Number.isFinite(ref))throw Error('No admitted engine reference is available for this option. The story was not selected.');
+    optionStory={symbol,price:ref};
+  }
+  t.cls.set('Option');t.occSymbol.set(optionStory.symbol);t.limitPrice=optionStory.price;
+  t.accountId=rest?42422:22214;t.side=rest?'Sell':'Buy';t.quantity=5;
+}
 
 // One preset per demo story. Each fills the whole ticket; Submit is the only remaining click.
 const PRESETS: Preset[] = [
@@ -33,12 +52,8 @@ const PRESETS: Preset[] = [
   // procedure after a proof-suite run: yu15-option-persistence deletes every trade and position
   // whose security is >15 chars (i.e. every OCC symbol) and restores only the catalog rows, so
   // option positions vanish while the contracts stay tradeable. Two clicks put them back.
-  { label: 'Listed option 1/2 — rest an offer (AAPL Sep-26 240 Call)', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL260918C00240000'); t.accountId = 42422;
-      t.side = 'Sell'; t.quantity = 5; t.limitPrice = 3.80; } },
-  { label: 'Listed option 2/2 — lift it → print, position, both sides', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL260918C00240000'); t.accountId = 22214;
-      t.side = 'Buy'; t.quantity = 5; t.limitPrice = 3.80; } },
+  { label: 'Listed option 1/2 — rest an offer (unexpired AAPL 240 Call)', apply: t => listedOption(t,true) },
+  { label: 'Listed option 2/2 — lift it → print, position, both sides', apply: t => listedOption(t,false) },
   { label: 'Treasury bill — $100k face, fraction of par', apply: t => {
       t.cls.set('Treasury'); t.ticker.set('UST-BILL-20270812'); t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },
   { label: 'Corporate — GS 5.75% 2036, 30/360 day count', apply: t => {
@@ -442,9 +457,14 @@ export class TicketPanel {
     });
   }
 
-  usePreset(index: string | number): void {
+  async usePreset(index: string | number): Promise<void> {
     const p = PRESETS[Number(index)];
-    if (p) { p.apply(this); this.last.set(null); }
+    if (p) {
+      this.busy.set(true);
+      try { await p.apply(this); this.last.set(null); }
+      catch(e) { this.last.set({ok:false,text:e instanceof Error?e.message:'The preset is unavailable.'}); }
+      finally { this.busy.set(false); }
+    }
   }
 
   async submit(): Promise<void> {

@@ -1,6 +1,8 @@
+import {createCliRunner} from './cli-runner.mjs';
 import {canonicalRequestTarget, edgePath} from './request-path.mjs';
 import {createInternalToken} from './internal-token.mjs';
 import {pnlStatus} from './eod-pnl-status.mjs';
+import {remoteExtractStatus} from './eod-extract-status.mjs';
 import {deskProxyTarget} from './desk-orders.mjs';
 import { createDeskSessions } from './desk-session.mjs';
 import { createTreasuryDemo } from './treasury-demo.mjs';
@@ -119,6 +121,8 @@ function readToken(req) {
 // the trading page offers both to anyone — so gating them there would be a fence with no field
 // behind it, which is the same reason order entry was never on this list.
 const ADMIN_MUTATIONS = [
+  { method: 'POST', re: /^\/account-service\/account(?:\/|$)/ },
+  { method: null, re: /^\/order-matcher\/risk\/control(?:\/|$)/ },
   { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
   { method: null,   re: /^\/trade-processor\/recon\/orphan-sweep$/ },
   // The end-of-day chain. These three are the clearest overrides in the system: closing a session
@@ -155,15 +159,18 @@ const json = (res, code, body) => {
 };
 
 // ---- GCS archive (dev: gcloud on the laptop; here: Workload Identity) --------------------------
+const cliReads=createCliRunner({limit:Number(process.env.CONSOLE_CLI_CONCURRENCY??2)});
+const execShell=cliReads.shell, execArgs=cliReads.args;
+console.log(`[console] CLI read processes capped at ${cliReads.stats().limit}; shared shell/argv queue bounded at64 to protect the demo memory budget.`);
 const gcsCache = new Map();
-const gcs = (cmd) => execSync(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 }).toString();
+const gcs = async (cmd) => (await execShell(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 })).toString();
 
-function gcsBypass(req, res, url) {
+async function gcsBypass(req, res, url) {
   try {
     if (url.pathname === '/gcs/extracts') {
       const hit = gcsCache.get('ls');
       if (!hit || Date.now() - hit.at > 60_000) {
-        const files = gcs(`ls -r '${BUCKET}/**'`).split('\n').filter(l => l.endsWith('.cut') || l.endsWith('.csv'));
+        const files = (await gcs(`ls -r '${BUCKET}/**'`)).split('\n').filter(l => l.endsWith('.cut') || l.endsWith('.csv'));
         gcsCache.set('ls', { at: Date.now(), body: JSON.stringify({ bucket: BUCKET, files }) });
       }
       return json(res, 200, gcsCache.get('ls').body);
@@ -173,7 +180,7 @@ function gcsBypass(req, res, url) {
       // Same guard as the dev bypass: one bucket, no quote injection into the shell command.
       if (!p.startsWith(`${BUCKET}/`) || p.includes("'")) return json(res, 400, {});
       if (!gcsCache.has(p)) {
-        const content = gcs(`cat '${p}'`);
+        const content = await gcs(`cat '${p}'`);
         gcsCache.set(p, { body: JSON.stringify({ path: p, sha256: createHash('sha256').update(content).digest('hex'), content }) });
       }
       return json(res, 200, gcsCache.get(p).body);
@@ -210,16 +217,16 @@ function kdbBypass(req, res) {
 // ---- EOD extract bridge: the rig's OWN cut sink, not the GCS archive --------------------------
 // sha256 is taken ON THE POD so it is the same number the proofs and the three members report.
 const extractCache = { at: 0, body: '' };
-function extractBypass(req, res) {
+async function extractBypass(req, res) {
   try {
     if (Date.now() - extractCache.at > 30_000) {
-      const pod = execSync(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
-        { shell: '/bin/sh', timeout: 20000 }).toString().trim();
-      const out = execSync(
+      const pod = (await execShell(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
+        { shell: '/bin/sh', timeout: 20000 })).toString().trim();
+      const out = (await execShell(
         `kubectl -n ${NS} exec ${pod} -- sh -c ` +
         `'for f in /data/risk-extracts/*/*/*; do [ -f "$f" ] || continue; ` +
         `echo "==FILE $f $(sha256sum $f | cut -d\\  -f1)"; cat $f; done'`,
-        { shell: '/bin/sh', timeout: 30000 }).toString();
+        { shell: '/bin/sh', timeout: 30000 })).toString();
       const files = out.split('==FILE ').slice(1).map(chunk => {
         const nl = chunk.indexOf('\n');
         const [p, sha256] = chunk.slice(0, nl).trim().split(' ');
@@ -640,13 +647,15 @@ const podByLabel = (label) => execSync(
   `kubectl -n ${NS} get pods -l ${label} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
   { shell: '/bin/sh', timeout: 20000 }).toString().trim();
 
-const sqlQuery = (q) => execFileSync('kubectl', [
-  '-n', NS, 'exec', podByLabel('app=eod-price-db'), '--', 'sh', '-ec',
-  'MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -N -B -e "$1"',
-  'sh', q],
-  { timeout: 25000 }).toString().trim();
+const podByLabelAsync = async label => (await execShell(
+  `kubectl -n ${NS} get pods -l ${label} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
+  {shell:'/bin/sh',timeout:20000})).trim();
+const sqlQueryAsync = async q => (await execArgs('kubectl',[
+  '-n',NS,'exec',await podByLabelAsync('app=eod-price-db'),'--','sh','-ec',
+  'MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -N -B -e "$1"','sh',q],
+  {timeout:25000})).trim();
 
-function eodChain(req, res, url) {
+async function eodChain(req, res, url) {
   const date = (url.searchParams.get('date') ?? '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: 'date=YYYY-MM-DD required' });
   // THE SERVER'S BUSINESS DATE, so the page never has to guess it. `/eod/session/close` defaults to
@@ -660,14 +669,14 @@ function eodChain(req, res, url) {
   // machine that mints it.
   let businessDate = '';
   try {
-    businessDate = execSync(
-      `kubectl -n ${NS} exec ${podByLabel('app=trade-processor')} -- date -u +%F`,
-      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+    businessDate = (await execShell(
+      `kubectl -n ${NS} exec ${await podByLabelAsync('app=trade-processor')} -- date -u +%F`,
+      { shell: '/bin/sh', timeout: 20000 })).toString().trim();
   } catch { /* absent is reported as absent; the page must not fall back to the browser's date */ }
   const out = { date, businessDate, prices: null, pnl: null, extract: null, published: null };
 
   try {
-    const rows = sqlQuery(
+    const rows = await sqlQueryAsync(
       `SELECT version, status, instrument_count, flagged_count, published_at FROM eod_price_session `
       + `WHERE session_date='${date}' ORDER BY version DESC LIMIT 1;`);
     if (!rows) {
@@ -697,13 +706,13 @@ function eodChain(req, res, url) {
   // The count is the wrong instrument, so ask the service what it did. The summary line carries the
   // verdict; only fall back to "pending" when there is genuinely no run to describe.
   try {
-    const n = Number(sqlQuery(`SELECT COUNT(*) FROM eod_position_pnl WHERE session_date='${date}';`));
+    const n = Number(await sqlQueryAsync(`SELECT COUNT(*) FROM eod_position_pnl WHERE session_date='${date}';`));
     let summary = '';
     try {
-      summary = execSync(
-        `kubectl -n ${NS} logs ${podByLabel('app=position-service')} --tail=4000 2>/dev/null `
+      summary = (await execShell(
+        `kubectl -n ${NS} logs ${await podByLabelAsync('app=position-service')} --tail=4000 2>/dev/null `
         + `| grep "eod pnl marked" | grep "date=${date}" | tail -1 || true`,
-        { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+        { shell: '/bin/sh', timeout: 25000 })).toString().trim();
     } catch { /* the log is a bonus signal; the row count still stands on its own */ }
     out.pnl = pnlStatus(n, summary);
   } catch {
@@ -722,9 +731,9 @@ function eodChain(req, res, url) {
   // operator is asking at this point in the chain. Only the service's own log knows.
   let verdict = null;
   try {
-    const log = execSync(
-      `kubectl -n ${NS} logs ${podByLabel('app=risk-extract')} --tail=4000 2>/dev/null || true`,
-      { shell: '/bin/sh', timeout: 25000, maxBuffer: 16 * 1024 * 1024 }).toString();
+    const log = (await execShell(
+      `kubectl -n ${NS} logs ${await podByLabelAsync('app=risk-extract')} --tail=4000 2>/dev/null || true`,
+      { shell: '/bin/sh', timeout: 25000, maxBuffer: 16 * 1024 * 1024 })).toString();
     // Scanned in order rather than grepped: RISK-EXTRACT-FAILED carries no date of its own, so the
     // only thing that attributes it to a session is the trigger line above it.
     let cur = '';
@@ -750,19 +759,19 @@ function eodChain(req, res, url) {
   // volume is empty" and "no cut was produced" are the same observation only when the sink is local.
   let sink = '';
   try {
-    sink = execSync(
-      `kubectl -n ${NS} get pod ${podByLabel('app=risk-extract')} -o jsonpath=`
+    sink = (await execShell(
+      `kubectl -n ${NS} get pod ${await podByLabelAsync('app=risk-extract')} -o jsonpath=`
       + `'{.spec.containers[0].env[?(@.name=="RISK_EXTRACT_SINK_URI")].value}'`,
-      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+      { shell: '/bin/sh', timeout: 20000 })).toString().trim();
   } catch { /* unknown sink is reported as unknown, never assumed */ }
   const remoteSink = sink.startsWith('gs://');
 
   try {
-    const pod = execSync(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
-      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
-    const listed = execSync(
+    const pod = (await execShell(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
+      { shell: '/bin/sh', timeout: 20000 })).toString().trim();
+    const listed = (await execShell(
       `kubectl -n ${NS} exec ${pod} -- sh -c 'ls -1 /data/risk-extracts/${date}/*/* 2>/dev/null || true'`,
-      { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+      { shell: '/bin/sh', timeout: 25000 })).toString().trim();
     const files = listed ? listed.split('\n').filter(Boolean) : [];
     out.extract = files.length
       ? { state: 'ok', pod, sink, files, detail: `${files.length} artifact(s) cut on ${pod}` }
@@ -778,9 +787,7 @@ function eodChain(req, res, url) {
         // With a gs:// sink the cut never touches this volume, so an empty directory says nothing
         // about whether a cut happened — `published` is the stage that knows. Saying "no cut yet"
         // here would report a completed chain as a stalled one.
-        ? { state: 'remote', pod, sink, files: [],
-            detail: `the sink is ${sink}, so cuts go straight to the bucket and never land on this `
-              + `volume — see the published stage for whether one was produced` }
+        ? remoteExtractStatus(pod, sink, verdict)
         : { state: 'pending', pod, sink, files: [], detail: 'no cut for this date yet — it follows eod.pnl.done' };
   } catch {
     out.extract = { state: 'unreadable', detail: 'could not read the risk-extract volume' };
@@ -789,8 +796,8 @@ function eodChain(req, res, url) {
   if(process.env.LOCAL_ONLY === '1') {
     out.published={state:'not-configured',detail:'Cloud archive reads are disabled for this local session.'};
   } else try {
-    const listed = execSync(`gcloud storage ls -r '${BUCKET}/**' 2>/dev/null || true`,
-      { shell: '/bin/sh', timeout: 30000 }).toString();
+    const listed = (await execShell(`gcloud storage ls -r '${BUCKET}/**' 2>/dev/null || true`,
+      { shell: '/bin/sh', timeout: 30000 })).toString();
     const files = listed.split('\n').map(s => s.trim()).filter(s => s.includes(date) && !s.endsWith(':') && !s.endsWith('/'));
     // "Nothing in the bucket" means two different things, and only one of them is waiting. If the
     // sink is not pointed at gs:// then nothing will EVER arrive, however long anyone watches — so
@@ -1034,7 +1041,16 @@ async function sandboxResults(req, res) {
 }
 
 function proxyToEdge(req, res, rewrite) {
+  // The console is the browser boundary. Validate here, then omit browser-only Origin
+  // on the authenticated internal hop so backend CORS does not compare HTTPS to pod HTTP.
+  const origin = req.headers.origin;
+  try {
+    if (origin && new URL(origin).host !== req.headers.host)
+      return json(res, 403, {error: 'Cross-origin request refused.'});
+  } catch { return json(res, 403, {error: 'Invalid origin.'}); }
   const headers = { ...req.headers };
+  delete headers.origin;
+  delete headers.Origin;
   // Attach the console's OWN token, overwriting anything the client sent. Overwriting is the point:
   // a stale or forged Authorization header from the page must not decide what the upstream sees, and
   // a client whose own token expired must not lose a read it is entitled to.
@@ -1044,6 +1060,13 @@ function proxyToEdge(req, res, rewrite) {
     if (!token) return json(res, 503, {code: 'internal_auth_unavailable', error: 'Service authentication is recovering. Try again shortly.'});
     headers['authorization'] = `Bearer ${token}`;
     delete headers['Authorization'];
+  }
+  // Spend the private control credential only after the admin gate; it never reaches the page.
+  if (/^\/order-matcher\/risk\/control(?:\/|$)/.test(reqPath.toLowerCase())) {
+    if (!readToken(req)) return json(res, 401, {code: 'admin_auth_required', error: 'sign in as an administrator to make this change'});
+    if (!process.env.RISK_CONTROL_TOKEN) return json(res, 503, {code: 'risk_control_unavailable', error: 'Account controls are not configured on this console.'});
+    headers['x-risk-control-token'] = process.env.RISK_CONTROL_TOKEN;
+    headers['x-risk-operator'] = 'console-admin';
   }
   // The master secret is NEVER forwarded. It is this process's credential for minting its own
   // token, not a header to sprinkle on proxied traffic.
@@ -1055,9 +1078,11 @@ function proxyToEdge(req, res, rewrite) {
   req.pipe(up);
 }
 
-// Local desk stores membership outside the source checkout. The existing operator guard remains.
+// Demo workspace membership stays outside source; cloud operator access requires a password.
+const DESK_PROFILE = process.env.LOCAL_ONLY === '1' || process.env.DESK_DEMO_PROFILE === '1';
 const deskSessions = createDeskSessions({
   file: process.env.DESK_USERS_FILE,
+  requireAdmin: process.env.DESK_DEMO_PROFILE === '1',
   checkAdmin: password => checkPassword(ADMIN_USER,password),
   upstream: async (url,options) => {
     const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json',...(internalToken.get()?{'Authorization':`Bearer ${internalToken.get()}`}:{})},body:options.body===undefined?undefined:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
@@ -1066,10 +1091,10 @@ const deskSessions = createDeskSessions({
   enableAccount: async (accountId,groupId,admit=true) => {
     if(!process.env.DESK_RISK_CONTROL_TOKEN)return false;
     if(!Number.isSafeInteger(groupId)||groupId<=0)return false;
-    const grouped=await fetch(`http://${EDGE}/order-matcher/risk/control/self-match-group`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-owner-group'},body:JSON.stringify({accountId,groupId}),signal:AbortSignal.timeout(10000)});
+    const grouped=await fetch(`http://${EDGE}/order-matcher/risk/control/self-match-group`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'desk-owner-group'},body:JSON.stringify({accountId,groupId}),signal:AbortSignal.timeout(10000)});
     if(!grouped.ok || (await grouped.json()).outcome!=='APPLIED')return false;
     if(!admit)return true; // Login configures protection without re-enabling an operator-disabled account.
-    const r=await fetch(`http://${EDGE}/order-matcher/risk/control/account`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-account-create'},body:JSON.stringify({accountId,enabled:true}),signal:AbortSignal.timeout(10000)});
+    const r=await fetch(`http://${EDGE}/order-matcher/risk/control/account`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'desk-account-create'},body:JSON.stringify({accountId,enabled:true}),signal:AbortSignal.timeout(10000)});
     return r.ok;
   }
 });
@@ -1080,7 +1105,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   if(p.startsWith('/desk-api/')) {
-    if(process.env.LOCAL_ONLY!=='1')return json(res,404,{error:'Local desk profiles are not enabled.'});
+    if(!DESK_PROFILE)return json(res,404,{error:'Desk profiles are not enabled.'});
+    if(p==='/desk-api/profile' && req.method==='GET') return json(res,200,{passwordRequired:process.env.DESK_DEMO_PROFILE==='1',demoConsoleUrl:process.env.DEMO_CONSOLE_URL??(process.env.LOCAL_ONLY==='1'?'http://127.0.0.1:4321':'')});
     res.setHeader('Cache-Control','no-store');
     // Same-origin browser writes only; non-browser callers may omit Origin.
     const origin=req.headers.origin;
@@ -1089,9 +1115,10 @@ const server = http.createServer(async (req, res) => {
       const body=req.method==='POST'?JSON.parse(await readBody(req)):{};
       const r=await deskSessions.handle(req,p,body);
       if(r.cookie) {
-        const cookies=[r.cookie];
+        const secure=(req.headers['x-forwarded-proto']??'').split(',')[0].trim()==='https';
+        const cookies=[r.cookie + (secure ? '; Secure' : '')];
         if(p==='/desk-api/login'||p==='/desk-api/logout')cookies.push(r.admin
-          ? `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`
+          ? `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`
           : `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
         res.setHeader('Set-Cookie',cookies);
       }
@@ -1100,7 +1127,7 @@ const server = http.createServer(async (req, res) => {
   }
   // Local workspace requests must use the account/run checked order path. The existing
   // Demo console remains an operator surface behind its separately checked admin session.
-  if(process.env.LOCAL_ONLY==='1' && !readToken(req)) {
+  if(DESK_PROFILE && !readToken(req)) {
     const target=deskProxyTarget(req.url);
     if(target.invalid)return json(res,400,{error:'Invalid path.'});
     if(req.method!=='GET' && target.mutation)return json(res,403,{error:'Use the workspace order endpoint.'});
@@ -1130,7 +1157,7 @@ const server = http.createServer(async (req, res) => {
     try { return json(res, 200, await fixOrder(JSON.parse(await readBody(req)))); }
     catch (e) { return json(res, 502, { error: String(e) }); }
   }
-  if (p === '/healthz') return json(res, 200, { ok: true, serviceAuth: internalToken.get() ? 'ready' : MASTER_SECRET ? 'recovering' : 'not-configured' });
+  if (p === '/healthz') return json(res, 200, { ok: true, cliReads:cliReads.stats(), serviceAuth: internalToken.get() ? 'ready' : MASTER_SECRET ? 'recovering' : 'not-configured' });
 
   // ---- auth ----
   if (p === '/auth/me') {

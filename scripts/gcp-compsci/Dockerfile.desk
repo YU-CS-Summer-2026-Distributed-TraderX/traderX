@@ -1,0 +1,14 @@
+ARG CONSOLE_IMAGE
+FROM node:20-bookworm AS build
+WORKDIR /src
+COPY web-front-end-console /src/web-front-end-console
+COPY web-front-end-console-combined-prototype /src/web-front-end-console-combined-prototype
+RUN npm ci --prefix web-front-end-console --no-audit --no-fund \
+ && npm ci --prefix web-front-end-console-combined-prototype --no-audit --no-fund
+WORKDIR /src/web-front-end-console-combined-prototype
+RUN npx ng build --configuration production
+
+# The exact newly admitted console pin supplies the verified server and native amd64 runtime.
+FROM ${CONSOLE_IMAGE}
+COPY --from=build /src/web-front-end-console-combined-prototype/dist/web-front-end-console-combined-prototype /app/desk-dist
+ENV STATIC_ROOT=/app/desk-dist/browser DESK_DEMO_PROFILE=1 DESK_USERS_FILE=/data/desk/users.json DEMO_CONSOLE_URL=https://demo.yaakovseif.dev/

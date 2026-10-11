@@ -4,7 +4,7 @@ import {deskOrderAction} from './desk-orders.mjs';
 import {randomBytes} from 'node:crypto';
 import {existsSync,readFileSync,writeFileSync,renameSync,mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
-export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=Date.now}) {
+export function createDeskSessions({file,checkAdmin,upstream,enableAccount,requireAdmin=false,now=Date.now}) {
   const users=file && existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};
   const sessions=new Map();
   let queue=Promise.resolve();
@@ -19,6 +19,7 @@ export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=D
     if(path==='/desk-api/login' && req.method==='POST') {
       const name=String(body.username??'').trim();
       if(!/^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,47}$/.test(name))return {status:400,body:{error:'Use 1–48 letters, numbers, spaces, dots, underscores or hyphens.'}};
+      if(requireAdmin && !body.adminPassword)return {status:401,body:{error:'This hosted demo requires the operator password.'}};
       const admin=!!body.adminPassword;
       if(admin&&!checkAdmin(body.adminPassword))return {status:401,body:{error:'Incorrect admin password.'}};
       const key='user:'+name.toLowerCase();

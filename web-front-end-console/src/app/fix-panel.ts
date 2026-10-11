@@ -61,6 +61,7 @@ interface Msg { type: string; typeName: string; raw: string; fields: Field[]; }
       <button type="button" (click)="atMarket()" [disabled]="busy()">Price at market</button>
     </form>
 
+    @if (priceError()) { <div class="banner bad">{{ priceError() }}</div> }
     @if (last(); as r) {
       @if (r.error) { <div class="banner bad">{{ r.error }}</div> }
       @for (m of r.messages; track $index) {
@@ -107,9 +108,17 @@ export class FixPanel {
   readonly busy = signal(false);
   readonly last = signal<{ messages: { dir: string; msg: Msg }[]; error?: string; received?: string[] } | null>(null);
 
+  readonly priceError = signal('');
+  constructor() { this.api.watchPrices(); }
+
   atMarket(): void {
+    this.priceError.set('');
     const p = this.api.prices()[this.symbol.trim().toUpperCase()];
-    if (p) this.limitPrice = Math.round((p.price + (this.side === 'Buy' ? 0.05 : -0.05)) * 100) / 100;
+    if (!p || !Number.isFinite(p.price) || p.price <= 0) {
+      this.priceError.set('No positive live mark is available for this symbol. Wait for a quote or enter an explicit limit price.');
+      return;
+    }
+    this.limitPrice = Math.round((p.price + (this.side === 'Buy' ? 0.05 : -0.05)) * 100) / 100;
   }
 
   async send(): Promise<void> {
