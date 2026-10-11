@@ -225,3 +225,29 @@ The Today's end of day error mentioning a dev proxy can also mean a dropped conn
 Check the actual `/eod/chain?date=YYYY-MM-DD` response and the connection before changing
 EOD state. A failed port-forward can leave the loaded SPA visible while every refresh
 fails. A chain read is read-only; never trigger another close or publish to repair access.
+
+## HTTPS console at demo.yaakovseif.dev
+
+The separate `scripts/gcp-compsci/https-frontend.json` provisions a GKE managed
+certificate, frontend HTTP-to-HTTPS redirect, console-only Service, BackendConfig
+and Ingress. Its global static address is `traderx-console-https` (`34.54.116.2`).
+Name.com needs an A record `demo` pointing to that address. Do not add an AAAA
+record for this IPv4-only endpoint or replace the domain's other records.
+
+Before applying the manifest, create and verify the Cloud Armor policy
+`traderx-console-network`: default priority2147483647 denies403; priority1000
+allows only the operator's current public IPv4 /32. Both rules must enforce,
+not preview. BackendConfig attaches this policy to the console backend. The
+policy is required before exposure; never temporarily allow all sources for
+certificate issuance. Google manages certificate renewal. The frontend preserves
+`X-Forwarded-Proto: https`, which causes the existing console login handler to
+set its HttpOnly/SameSite cookie Secure.
+
+Completion requires certificate Active, valid hostname TLS without skipping
+verification, the actual backend's securityPolicy attached, HTTP redirection,
+signed-out account controls401, authenticated login with a Secure cookie, and
+EOD refresh over HTTPS. Resource creation alone is not acceptance. Once verified,
+retire the separately created plaintext console-external Service and regional
+traderx-console address; keep all application pods, images and state intact.
+HTTPS provisioning and DNS may take time. Until certificate validation passes,
+do not enter credentials or bypass a browser certificate warning.

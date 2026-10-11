@@ -1,0 +1,120 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "networking.gke.io/v1beta1",
+      "kind": "FrontendConfig",
+      "metadata": {
+        "name": "console-https",
+        "namespace": "traderx"
+      },
+      "spec": {
+        "redirectToHttps": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "apiVersion": "cloud.google.com/v1",
+      "kind": "BackendConfig",
+      "metadata": {
+        "name": "console-https",
+        "namespace": "traderx"
+      },
+      "spec": {
+        "securityPolicy": {
+          "name": "traderx-console-network"
+        },
+        "healthCheck": {
+          "type": "HTTP",
+          "requestPath": "/healthz",
+          "port": 8080
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "console-https",
+        "namespace": "traderx",
+        "annotations": {
+          "cloud.google.com/neg": "{\"ingress\":true}",
+          "cloud.google.com/backend-config": "{\"default\":\"console-https\"}"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "selector": {
+          "app": "web-front-end-console"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.gke.io/v1",
+      "kind": "ManagedCertificate",
+      "metadata": {
+        "name": "console-https",
+        "namespace": "traderx"
+      },
+      "spec": {
+        "domains": [
+          "demo.yaakovseif.dev"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "console-https",
+        "namespace": "traderx",
+        "annotations": {
+          "kubernetes.io/ingress.class": "gce",
+          "kubernetes.io/ingress.global-static-ip-name": "traderx-console-https",
+          "networking.gke.io/managed-certificates": "console-https",
+          "networking.gke.io/v1beta1.FrontendConfig": "console-https"
+        }
+      },
+      "spec": {
+        "defaultBackend": {
+          "service": {
+            "name": "console-https",
+            "port": {
+              "number": 8080
+            }
+          }
+        },
+        "rules": [
+          {
+            "host": "demo.yaakovseif.dev",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "console-https",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
