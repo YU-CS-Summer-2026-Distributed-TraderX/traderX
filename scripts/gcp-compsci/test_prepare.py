@@ -98,4 +98,36 @@ class UiMetadata(unittest.TestCase):
             self.assertFalse(path.exists())
 
 
+class ExplorerMetadata(unittest.TestCase):
+    def render(self, folder, epoch):
+        (folder/'trade-service').mkdir(parents=True)
+        result=subprocess.run(['bash',str(module.ROOT/'pipeline/install-generated-api-explorer.sh'),
+                               'YU18-risk-integration',str(folder),str(folder/'components')],
+                              env=dict(os.environ,SOURCE_DATE_EPOCH=epoch,npm_config_offline='true'),
+                              capture_output=True,text=True)
+        return result,folder/'api-explorer/catalog.json'
+
+    def test_fixed_clock_reproduces_explorer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            a,pa=self.render(Path(temp)/'a','1791690000')
+            b,pb=self.render(Path(temp)/'b','1791690000')
+            self.assertEqual(a.returncode,0,a.stderr);self.assertEqual(b.returncode,0,b.stderr)
+            self.assertEqual(pa.read_bytes(),pb.read_bytes())
+            import json
+            self.assertTrue(json.loads(pa.read_text())['services'])
+
+    def test_changed_clock_changes_explorer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            a,pa=self.render(Path(temp)/'a','1791690000')
+            b,pb=self.render(Path(temp)/'b','1791690001')
+            self.assertEqual(a.returncode,0,a.stderr);self.assertEqual(b.returncode,0,b.stderr)
+            self.assertNotEqual(pa.read_bytes(),pb.read_bytes())
+
+    def test_invalid_clock_refuses_catalog(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,path=self.render(Path(temp),'invalid')
+            self.assertNotEqual(result.returncode,0)
+            self.assertFalse(path.exists())
+
+
 if __name__=='__main__': unittest.main()

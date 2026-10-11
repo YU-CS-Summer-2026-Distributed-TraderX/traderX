@@ -956,7 +956,14 @@ for (const def of serviceDefs) {
 }
 
 const runtimeCatalog = {
-  generatedAtUtc: new Date().toISOString(),
+  generatedAtUtc: (() => {
+    const epoch = process.env.SOURCE_DATE_EPOCH;
+    if (epoch !== undefined && !/^[0-9]+$/.test(epoch)) {
+      throw new Error('SOURCE_DATE_EPOCH must be nonnegative integer seconds');
+    }
+    return epoch === undefined ? new Date().toISOString()
+      : new Date(Number(epoch) * 1000).toISOString();
+  })(),
   stateId,
   mountPath,
   pubSubInspectorEnabled,
