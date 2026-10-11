@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import os
+import subprocess
 import yaml
 
 spec=importlib.util.spec_from_file_location('prepare',Path(__file__).with_name('prepare.py'))
@@ -60,6 +62,40 @@ class Rendering(unittest.TestCase):
         self.assertFalse(any(d['kind']=='Secret' for d in self.docs))
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')
         self.assertEqual(engine['spec']['template']['spec']['initContainers'],[])
+
+
+class UiMetadata(unittest.TestCase):
+    def render(self, folder, epoch):
+        target=folder/'web-front-end/angular/main/assets'
+        target.mkdir(parents=True,exist_ok=True)
+        env=dict(os.environ,SOURCE_DATE_EPOCH=epoch)
+        result=subprocess.run(['bash',str(module.ROOT/'pipeline/install-generated-ui-state-metadata.sh'),
+                               'YU18-risk-integration',str(folder),str(folder/'components')],
+                              env=env,capture_output=True,text=True)
+        return result,target/'state-ui.json'
+
+    def test_fixed_clock_reproduces_actual_producer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            a,pa=self.render(Path(temp)/'a','1791690000')
+            b,pb=self.render(Path(temp)/'b','1791690000')
+            self.assertEqual(a.returncode,0,a.stderr);self.assertEqual(b.returncode,0,b.stderr)
+            self.assertEqual(pa.read_bytes(),pb.read_bytes())
+            import json
+            value=json.loads(pa.read_text())
+            self.assertTrue(value['sourceBranchUrl'].startswith('https://github.com/'))
+
+    def test_different_clock_changes_produced_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            a,pa=self.render(Path(temp)/'a','1791690000')
+            b,pb=self.render(Path(temp)/'b','1791690001')
+            self.assertEqual(a.returncode,0,a.stderr);self.assertEqual(b.returncode,0,b.stderr)
+            self.assertNotEqual(pa.read_bytes(),pb.read_bytes())
+
+    def test_malformed_clock_refuses_before_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,path=self.render(Path(temp),'not-a-time')
+            self.assertNotEqual(result.returncode,0)
+            self.assertFalse(path.exists())
 
 
 if __name__=='__main__': unittest.main()

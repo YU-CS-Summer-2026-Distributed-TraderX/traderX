@@ -116,6 +116,15 @@ def validated(root, components, *, state=None, candidate=None, role='fix'):
             raise ValueError(f'missing generated build context {name}: generate the full selected state first')
     hashes = {name: p.tree_hash(path) for name, path in actual.items()}
     before = inputs(root)
+    # origin is a generation input for UI lineage links, not a fetch source.
+    # Preserve it in independent Git administration instead of silently emitting
+    # empty links. Never copy credential-bearing URLs into build metadata.
+    origin_result = subprocess.run(['git','-C',str(root),'config','--get','remote.origin.url'],
+                                   capture_output=True,text=True,check=False)
+    origin = origin_result.stdout.strip() if origin_result.returncode == 0 else ''
+    from urllib.parse import urlsplit
+    if '://' in origin and (urlsplit(origin).username or urlsplit(origin).password):
+        raise ValueError('credential-bearing origin URL cannot be a build metadata input')
     with tempfile.TemporaryDirectory(prefix='traderx-derivation-') as temp:
         base = Path(temp).resolve(); reference = base / 'source'
         copy_inputs(root, reference, before)
@@ -128,6 +137,9 @@ def validated(root, components, *, state=None, candidate=None, role='fix'):
         subprocess.run(['git', '-C', str(reference), 'fetch', '--quiet', '--no-tags', '--depth=1', str(root), 'HEAD'], check=True, capture_output=True, stdin=subprocess.DEVNULL)
         subprocess.run(['git', '-C', str(reference), 'reset', '--soft', 'FETCH_HEAD'], check=True, capture_output=True, stdin=subprocess.DEVNULL)
         subprocess.run(['git', '-C', str(reference), 'read-tree', 'HEAD'], check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        if origin:
+            subprocess.run(['git','-C',str(reference),'config','remote.origin.url',origin],
+                           check=True,capture_output=True,stdin=subprocess.DEVNULL)
         env = {k:v for k,v in os.environ.items() if not k.startswith('TRADERX_') and k not in ('BUILD_STATE', 'OM_DIR', 'OM_ROLE')}
         env.update(TRADERX_GENERATED_ROOT=str(reference / 'generated'), TRADERX_SKIP_LOCKFILE_REFRESH='1',
                    npm_config_offline='true', NPM_CONFIG_OFFLINE='true')
@@ -159,6 +171,7 @@ def validated(root, components, *, state=None, candidate=None, role='fix'):
         receipt = dict(schema='traderx-generation-derivation-v1', state=state, ancestry=ancestry,
                        sourceInputsSha256=source_hash(before), sourceInputFiles=sum(x[1]=='file' for x in before),
                        role=role, contexts=expected, generationLogSha256=hashlib.sha256(log.read_bytes()).hexdigest())
+        receipt['generationMetadata'] = {'origin':origin,'sourceDateEpoch':os.environ.get('SOURCE_DATE_EPOCH')}
         print('[ok] current full-ancestry derivation: ' + json.dumps(receipt, sort_keys=True), flush=True)
         yield contexts, receipt, log
 

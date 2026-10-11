@@ -35,6 +35,14 @@ const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
 const explicitRepoUrl = process.env.TRADERX_SOURCE_REPO_URL || '';
+// Reproducible image preparation may pin the build clock. Normal interactive
+// generation retains its real timestamp; malformed pins fail before output.
+const epoch = process.env.SOURCE_DATE_EPOCH;
+if (epoch !== undefined && !/^[0-9]+$/.test(epoch)) {
+  throw new Error('SOURCE_DATE_EPOCH must be nonnegative integer seconds');
+}
+const generatedAtUtc = epoch === undefined
+  ? new Date().toISOString() : new Date(Number(epoch) * 1000).toISOString();
 
 const stateCatalogPath = path.join(root, 'catalog', 'state-catalog.json');
 const stateCatalog = JSON.parse(fs.readFileSync(stateCatalogPath, 'utf8'));
@@ -174,7 +182,7 @@ const metadata = {
   stateId: activeState.id,
   stateTitle: activeState.title || activeState.id,
   stateTrack: activeState.track || 'unknown',
-  generatedAtUtc: new Date().toISOString(),
+  generatedAtUtc,
   sourceBranch: activeBranch,
   sourceBranchUrl: repoBaseUrl && activeBranch ? `${repoBaseUrl}/tree/${branchUrlEncode(activeBranch)}` : '',
   lineageLinkUrl: repoBaseUrl ? `${repoBaseUrl}/blob/main/docs/learning-paths/index.md` : '',

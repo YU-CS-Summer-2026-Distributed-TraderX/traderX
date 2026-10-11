@@ -35,6 +35,7 @@ Run from this owned checkout. Use JDK 21 and Python with `PyYAML==6.0.3`.
 Docker must be running; builds target `linux/amd64` explicitly.
 
 ```bash
+export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-risk-integration
 python3 scripts/gcp-compsci/prepare.py --output /private/tmp/compsci-manifests \
   --tag <unique-candidate-tag> --dns-ip <actual-kube-dns-service-IP>
@@ -51,6 +52,12 @@ is intentionally not deployment-ready: local candidate tags must be replaced by
 published immutable repository digests, and per-image payload evidence reviewed.
 The existing RI20 GKE entrypoint cannot consume this custom profile without an
 explicit compatible admission adapter; do not use it or disable its checks.
+
+The candidate adds opt-in `SOURCE_DATE_EPOCH` for reproducible UI timestamps and
+preserves a credential-free origin URL in the isolated derivation repository.
+This fixes independently measured metadata-only differences; exact context hashing
+and rejection of changed build inputs remain enabled. Default generation timestamps
+remain unchanged when the variable is unset.
 
 ## Node plan
 
