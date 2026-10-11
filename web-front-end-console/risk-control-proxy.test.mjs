@@ -8,7 +8,7 @@ function harness(signedIn,secret) {
   const context={process:{env:{RISK_CONTROL_TOKEN:secret}},edgePath:p=>p,NEEDS_INTERNAL_JWT:()=>false,
     readToken:()=>signedIn,json:(_res,status,body)=>replies.push({status,body}),EDGE_HOST:'edge',EDGE_PORT:'8080',
     http:{request:options=>{calls.push(options);return {on(){}};}}};
-  vm.runInNewContext(source.slice(source.indexOf('function proxyToEdge('),source.indexOf('// Local desk stores'))+'\nglobalThis.run=proxyToEdge;',context);
+  vm.runInNewContext(source.slice(source.indexOf('function proxyToEdge('),source.indexOf('// Demo workspace'))+'\nglobalThis.run=proxyToEdge;',context);
   const req={url:'/order-matcher/risk/control/account',method:'POST',headers:{'x-risk-control-token':'browser-forged','x-risk-operator':'browser'},pipe(){}};
   context.run(req,{});return {calls,replies};
 }
@@ -33,4 +33,21 @@ test('account creation is server-gated while trading directory reads remain avai
   assert.equal(context.needsAuth('POST','/legacy/account-service/account/'),true);
   assert.equal(context.needsAuth('GET','/account-service/account/'),false);
   assert.equal(context.needsAuth('POST','/order-matcher/risk/control/account'),true);
+});
+
+test('same-origin hosted POST omits Origin on internal hop',()=>{
+ const calls=[],replies=[];
+ const context={URL,process:{env:{}},edgePath:p=>p,NEEDS_INTERNAL_JWT:()=>true,
+ internalToken:{get:()=> 'server-test'},json:(_r,status)=>replies.push(status),EDGE_HOST:'edge',EDGE_PORT:'8080',
+ http:{request:o=>{calls.push(o);return {on(){}};}}};
+ vm.runInNewContext(source.slice(source.indexOf('function proxyToEdge('),source.indexOf('// Demo workspace'))+'\nglobalThis.run=proxyToEdge;',context);
+ context.run({url:'/trade-processor/recon/orphan-sweep',method:'POST',headers:{origin:'https://demo.example',host:'demo.example'},pipe(){}},{});
+ assert.equal(calls.length,1);assert.equal(calls[0].headers.origin,undefined);assert.equal(calls[0].headers.authorization,'Bearer server-test');
+});
+test('foreign origin is refused before privileged forwarding',()=>{
+ let forwarded=false;const replies=[];
+ const context={URL,json:(_r,status)=>replies.push(status),http:{request:()=>{forwarded=true;}}};
+ vm.runInNewContext(source.slice(source.indexOf('function proxyToEdge('),source.indexOf('// Demo workspace'))+'\nglobalThis.run=proxyToEdge;',context);
+ context.run({url:'/trade-processor/eod/session/close',method:'POST',headers:{origin:'https://foreign.example',host:'demo.example'},pipe(){}},{});
+ assert.equal(forwarded,false);assert.deepEqual(replies,[403]);
 });

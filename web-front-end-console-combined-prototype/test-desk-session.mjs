@@ -54,3 +54,12 @@ test('accounts in one workspace share a persistent group; another workspace gets
  opts.enableAccount=async()=>false;assert.equal((await login(createDeskSessions(opts),'Alice')).status,503);
  }finally{rmSync(dir,{recursive:true});}
 });
+test('hosted operator profile requires a valid password before any workspace is created',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'desk-hosted-'));
+ try {
+ const s=createDeskSessions({file:join(dir,'users.json'),requireAdmin:true,checkAdmin:p=>p==='test-only'});
+ assert.equal((await login(s,'Chris')).status,401);
+ assert.equal((await login(s,'Chris','wrong')).status,401);
+ const a=await login(s,'Chris','test-only');assert.equal(a.status,200);assert.deepEqual(a.body.roles,['trader','admin']);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});

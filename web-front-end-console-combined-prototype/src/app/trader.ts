@@ -1,3 +1,4 @@
+import {DeskProfile} from './profile';
 import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
@@ -211,7 +212,7 @@ export class MarketsPage {
       @for (p of products; track p) { <button type="button" [class.on]="product() === p" [attr.aria-pressed]="product() === p" (click)="setProduct(p)">{{ p }}</button> }
     </div>
     @if (product() === 'Swap' || product() === 'Swaption') {
-      <a href="http://127.0.0.1:4321" target="_blank" rel="noopener">Open Demo console ↗</a><p class="state">Swap and swaption tickets are available in Demo console. Use its contract form to enter dates, notional and conventions.</p>
+      <a [href]="profile.demoUrl()" target="_blank" rel="noopener">Open Demo console ↗</a><p class="state">Swap and swaption tickets are available in Demo console. Use its contract form to enter dates, notional and conventions.</p>
     } @else {
       <form (ngSubmit)="submit()" aria-describedby="tk-check">
         <label class="field">Instrument
@@ -330,6 +331,7 @@ export class MarketsPage {
   `,
 })
 export class OrdersPage {
+  readonly profile=inject(DeskProfile);
   readonly desk = inject(Desk);
   readonly session = inject(Session);
   readonly fmtPrice = fmtPrice; readonly fmtQty = fmtQty; readonly reasonText = reasonText;

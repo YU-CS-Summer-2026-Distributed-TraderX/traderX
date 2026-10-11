@@ -1,6 +1,7 @@
 import {canonicalRequestTarget, edgePath} from './request-path.mjs';
 import {createInternalToken} from './internal-token.mjs';
 import {pnlStatus} from './eod-pnl-status.mjs';
+import {remoteExtractStatus} from './eod-extract-status.mjs';
 import {deskProxyTarget} from './desk-orders.mjs';
 import { createDeskSessions } from './desk-session.mjs';
 import { createTreasuryDemo } from './treasury-demo.mjs';
@@ -780,9 +781,7 @@ function eodChain(req, res, url) {
         // With a gs:// sink the cut never touches this volume, so an empty directory says nothing
         // about whether a cut happened — `published` is the stage that knows. Saying "no cut yet"
         // here would report a completed chain as a stalled one.
-        ? { state: 'remote', pod, sink, files: [],
-            detail: `the sink is ${sink}, so cuts go straight to the bucket and never land on this `
-              + `volume — see the published stage for whether one was produced` }
+        ? remoteExtractStatus(pod, sink, verdict)
         : { state: 'pending', pod, sink, files: [], detail: 'no cut for this date yet — it follows eod.pnl.done' };
   } catch {
     out.extract = { state: 'unreadable', detail: 'could not read the risk-extract volume' };
@@ -1036,7 +1035,16 @@ async function sandboxResults(req, res) {
 }
 
 function proxyToEdge(req, res, rewrite) {
+  // The console is the browser boundary. Validate here, then omit browser-only Origin
+  // on the authenticated internal hop so backend CORS does not compare HTTPS to pod HTTP.
+  const origin = req.headers.origin;
+  try {
+    if (origin && new URL(origin).host !== req.headers.host)
+      return json(res, 403, {error: 'Cross-origin request refused.'});
+  } catch { return json(res, 403, {error: 'Invalid origin.'}); }
   const headers = { ...req.headers };
+  delete headers.origin;
+  delete headers.Origin;
   // Attach the console's OWN token, overwriting anything the client sent. Overwriting is the point:
   // a stale or forged Authorization header from the page must not decide what the upstream sees, and
   // a client whose own token expired must not lose a read it is entitled to.
@@ -1064,9 +1072,11 @@ function proxyToEdge(req, res, rewrite) {
   req.pipe(up);
 }
 
-// Local desk stores membership outside the source checkout. The existing operator guard remains.
+// Demo workspace membership stays outside source; cloud operator access requires a password.
+const DESK_PROFILE = process.env.LOCAL_ONLY === '1' || process.env.DESK_DEMO_PROFILE === '1';
 const deskSessions = createDeskSessions({
   file: process.env.DESK_USERS_FILE,
+  requireAdmin: process.env.DESK_DEMO_PROFILE === '1',
   checkAdmin: password => checkPassword(ADMIN_USER,password),
   upstream: async (url,options) => {
     const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json',...(internalToken.get()?{'Authorization':`Bearer ${internalToken.get()}`}:{})},body:options.body===undefined?undefined:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
@@ -1075,10 +1085,10 @@ const deskSessions = createDeskSessions({
   enableAccount: async (accountId,groupId,admit=true) => {
     if(!process.env.DESK_RISK_CONTROL_TOKEN)return false;
     if(!Number.isSafeInteger(groupId)||groupId<=0)return false;
-    const grouped=await fetch(`http://${EDGE}/order-matcher/risk/control/self-match-group`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-owner-group'},body:JSON.stringify({accountId,groupId}),signal:AbortSignal.timeout(10000)});
+    const grouped=await fetch(`http://${EDGE}/order-matcher/risk/control/self-match-group`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'desk-owner-group'},body:JSON.stringify({accountId,groupId}),signal:AbortSignal.timeout(10000)});
     if(!grouped.ok || (await grouped.json()).outcome!=='APPLIED')return false;
     if(!admit)return true; // Login configures protection without re-enabling an operator-disabled account.
-    const r=await fetch(`http://${EDGE}/order-matcher/risk/control/account`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-account-create'},body:JSON.stringify({accountId,enabled:true}),signal:AbortSignal.timeout(10000)});
+    const r=await fetch(`http://${EDGE}/order-matcher/risk/control/account`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'desk-account-create'},body:JSON.stringify({accountId,enabled:true}),signal:AbortSignal.timeout(10000)});
     return r.ok;
   }
 });
@@ -1089,7 +1099,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   if(p.startsWith('/desk-api/')) {
-    if(process.env.LOCAL_ONLY!=='1')return json(res,404,{error:'Local desk profiles are not enabled.'});
+    if(!DESK_PROFILE)return json(res,404,{error:'Desk profiles are not enabled.'});
+    if(p==='/desk-api/profile' && req.method==='GET') return json(res,200,{passwordRequired:process.env.DESK_DEMO_PROFILE==='1',demoConsoleUrl:process.env.DEMO_CONSOLE_URL??(process.env.LOCAL_ONLY==='1'?'http://127.0.0.1:4321':'')});
     res.setHeader('Cache-Control','no-store');
     // Same-origin browser writes only; non-browser callers may omit Origin.
     const origin=req.headers.origin;
@@ -1098,9 +1109,10 @@ const server = http.createServer(async (req, res) => {
       const body=req.method==='POST'?JSON.parse(await readBody(req)):{};
       const r=await deskSessions.handle(req,p,body);
       if(r.cookie) {
-        const cookies=[r.cookie];
+        const secure=(req.headers['x-forwarded-proto']??'').split(',')[0].trim()==='https';
+        const cookies=[r.cookie + (secure ? '; Secure' : '')];
         if(p==='/desk-api/login'||p==='/desk-api/logout')cookies.push(r.admin
-          ? `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`
+          ? `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`
           : `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
         res.setHeader('Set-Cookie',cookies);
       }
@@ -1109,7 +1121,7 @@ const server = http.createServer(async (req, res) => {
   }
   // Local workspace requests must use the account/run checked order path. The existing
   // Demo console remains an operator surface behind its separately checked admin session.
-  if(process.env.LOCAL_ONLY==='1' && !readToken(req)) {
+  if(DESK_PROFILE && !readToken(req)) {
     const target=deskProxyTarget(req.url);
     if(target.invalid)return json(res,400,{error:'Invalid path.'});
     if(req.method!=='GET' && target.mutation)return json(res,403,{error:'Use the workspace order endpoint.'});

@@ -33,11 +33,11 @@ const PRESETS: Preset[] = [
   // procedure after a proof-suite run: yu15-option-persistence deletes every trade and position
   // whose security is >15 chars (i.e. every OCC symbol) and restores only the catalog rows, so
   // option positions vanish while the contracts stay tradeable. Two clicks put them back.
-  { label: 'Listed option 1/2 — rest an offer (AAPL Sep-26 240 Call)', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL260918C00240000'); t.accountId = 42422;
+  { label: 'Listed option 1/2 — rest an offer (AAPL Dec-26 240 Call)', apply: t => {
+      t.cls.set('Option'); t.occSymbol.set('AAPL261218C00240000'); t.accountId = 42422;
       t.side = 'Sell'; t.quantity = 5; t.limitPrice = 3.80; } },
   { label: 'Listed option 2/2 — lift it → print, position, both sides', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL260918C00240000'); t.accountId = 22214;
+      t.cls.set('Option'); t.occSymbol.set('AAPL261218C00240000'); t.accountId = 22214;
       t.side = 'Buy'; t.quantity = 5; t.limitPrice = 3.80; } },
   { label: 'Treasury bill — $100k face, fraction of par', apply: t => {
       t.cls.set('Treasury'); t.ticker.set('UST-BILL-20270812'); t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },

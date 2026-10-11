@@ -69,3 +69,19 @@ All accounts created in one local workspace share a stable self-match group. The
 Login configures existing workspace accounts and waits for a committed group acknowledgement before opening the session. It does not re-enable an operator-disabled account. New account creation sets its group before admission. The group lives in cluster snapshots/log replay and in the local workspace membership file. Existing unrelated seed accounts remain separate unless an operator explicitly groups them.
 
 This local mapping treats a workspace as an owner for demonstrations. Public usernames are not verified beneficial ownership or production authentication. An operator can group accounts across workspaces through the authenticated /risk/control/self-match-group endpoint. Group assignments are positive integers and apply in log order to existing and future orders; ordinary account admission does not clear them.
+
+## CompSci hosted operator demo
+
+The optional GKE profile uses `DESK_DEMO_PROFILE=1`, a separately built Desk static
+bundle over the admitted console server, one replica with a persistent membership
+volume, and the same private operator password. Every hosted workspace login
+requires that password. The frontend reads its password requirement and Demo
+console URL from `/desk-api/profile`; localhost links are not embedded in the
+hosted navigation. TLS sessions use Secure/HttpOnly/SameSite cookies.
+
+This is a network-restricted operator demo. Workspace names remain public selectors;
+it is not production trader authentication or tenant isolation. Use its single
+replica and Recreate strategy; independent replicas cannot share this local file
+and in-memory session model. Account admission and owner groups still pass through
+sequenced, credential-protected control endpoints. Existing demo accounts are not
+silently assigned to a new workspace.

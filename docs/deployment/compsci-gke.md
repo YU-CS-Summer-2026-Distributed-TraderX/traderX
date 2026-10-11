@@ -251,3 +251,23 @@ retire the separately created plaintext console-external Service and regional
 traderx-console address; keep all application pods, images and state intact.
 HTTPS provisioning and DNS may take time. Until certificate validation passes,
 do not enter credentials or bypass a browser certificate warning.
+
+## Hosted Desk and demo corrections (October 11)
+
+`desk.yaakovseif.dev` uses a separate single-replica Desk Deployment, 1Gi membership
+PVC, admitted-console-based amd64 image, and the same network-restricted Cloud Armor
+policy. `render-desk-deployment.py` derives the Secret references, service account,
+resource limits and bridge endpoints from the exact admitted console Deployment.
+Its Recreate strategy preserves the single-process session/file contract. A new
+`desk-https` managed certificate is added to the existing HTTPS Ingress; the original
+console certificate is preserved. Name.com needs a `desk` A record to34.54.116.2.
+This profile adds one support workload, no engine node. Operator password is required
+for every hosted Desk session. Workspace names are not production trader identities.
+
+The console validates browser Origin at its own proxy boundary, then removes it on
+the internal hop; backend localhost CORS no longer rejects hosted EOD/reconciliation
+requests. Foreign origins are refused before credential forwarding. FIX starts its
+quote subscription even when opened directly, and missing marks give an explicit
+message. The listed-option story selects the admitted December2026 contract rather
+than the expired September2026 contract. A remote extract is complete only when its
+service READY verdict confirms production, with the recorded version in its detail.
