@@ -101,6 +101,10 @@ class Rendering(unittest.TestCase):
             for c in pod['containers']:
                 self.assertTrue({'cpu','memory'} <= set(c['resources']['requests']),doc['metadata']['name'])
 
+    def test_angular_uses_the_packaged_start_script(self):
+        doc=next(d for d in self.docs if d['metadata']['name']=='web-front-end-angular' and module.podspec(d))
+        self.assertEqual(module.podspec(doc)['containers'][0]['args'],['npm','run','start'])
+
     def test_half_specified_lock_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(AssertionError):

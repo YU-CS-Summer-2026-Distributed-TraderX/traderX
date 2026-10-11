@@ -79,6 +79,12 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
     require(len(receipt['contexts'])==11,'incomplete selected build-context population')
     require(plan.get('imageSourceCommit')=='6156ad222b3445cb12d58e9c4905c7dcd68c2222','unreviewed image dependency')
     require(ri20.sha(plan.get('imageSourceInputsSha256')),'missing original image build-input identity')
+    builds=plan.get('buildSources')
+    require(isinstance(builds,dict) and builds and
+            all(re.fullmatch(r'[0-9a-f]{40}',commit) and ri20.sha(value) for commit,value in builds.items()),
+            'missing/malformed explicit per-build source identities')
+    require(builds.get(plan['imageSourceCommit'])==plan['imageSourceInputsSha256'],
+            'original dependency build identity differs')
     actual_slots=ri20.slots(ri20.documents(rendered),TARGET['namespace'])
     require(actual_slots==plan.get('slots'),'exact image-slot coverage/reference mismatch')
     require(artifacts.get('schema')=='traderx-compsci-inspected-artifacts-v1','unsupported measured inventory')
@@ -122,8 +128,10 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
                 require(derive.provenance(root).tree_hash(root/'generated/code/target-generated'/component)==current,'generated context changed after derivation')
             require(current==want.get('contextSha256')==got.get('contextSha256'),'intended/source context differs')
             labels=config.get('config',{}).get('Labels',{})
-            require(labels.get('dev.traderx.source.commit')==plan['imageSourceCommit'],'image source label differs')
-            require(labels.get('dev.traderx.derivation.sha256')==plan['imageSourceInputsSha256'],'image full-build-input label differs')
+            build_commit=want.get('sourceCommit');build_inputs=want.get('sourceInputsSha256')
+            require(builds.get(build_commit)==build_inputs and ri20.sha(build_inputs),'unreviewed per-image build identity')
+            require(labels.get('dev.traderx.source.commit')==build_commit,'image source label differs')
+            require(labels.get('dev.traderx.derivation.sha256')==build_inputs,'image full-build-input label differs')
             if derive.provenance(root).LABEL in labels:
                 require(ri20.decode(labels[derive.provenance(root).LABEL]).get('role')=='fix','STP pre payload refused')
             expected_entries=ri20.decode(read_evidence(evidence,want['payload']))

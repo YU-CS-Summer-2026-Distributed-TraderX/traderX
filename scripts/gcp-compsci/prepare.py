@@ -67,6 +67,10 @@ def configure_private_runtime(docs):
             if name == 'grafana':
                 secret_env(c, 'GF_SECURITY_ADMIN_PASSWORD', 'grafana-credentials', 'admin-password')
         for c in pod.get('containers', []):
+            if name == 'web-front-end-angular':
+                # The inherited development image CMD names a removed script.
+                # This packaged script builds production assets and serves on WEB_SERVICE_PORT.
+                c['args'] = ['npm', 'run', 'start']
             if name in SUPPORT_BUDGETS:
                 cpu,mem,cap,memcap = SUPPORT_BUDGETS[name]
                 c['resources'] = {'requests': {'cpu': cpu, 'memory': mem},

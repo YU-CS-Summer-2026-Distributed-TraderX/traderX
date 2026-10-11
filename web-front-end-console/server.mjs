@@ -640,9 +640,11 @@ const podByLabel = (label) => execSync(
   `kubectl -n ${NS} get pods -l ${label} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
   { shell: '/bin/sh', timeout: 20000 }).toString().trim();
 
-const sqlQuery = (q) => execSync(
-  `kubectl -n ${NS} exec ${podByLabel('app=eod-price-db')} -- mariadb -utraderx -ptraderx traderx -N -B -e ${JSON.stringify(q)}`,
-  { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+const sqlQuery = (q) => execFileSync('kubectl', [
+  '-n', NS, 'exec', podByLabel('app=eod-price-db'), '--', 'sh', '-ec',
+  'MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -N -B -e "$1"',
+  'sh', q],
+  { timeout: 25000 }).toString().trim();
 
 function eodChain(req, res, url) {
   const date = (url.searchParams.get('date') ?? '').trim();

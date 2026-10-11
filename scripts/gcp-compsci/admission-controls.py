@@ -39,6 +39,7 @@ def controls(root, folder):
     inventory_mutation('duplicate inspected image',lambda i:i['artifacts'].append(copy.deepcopy(i['artifacts'][0])))
     inventory_mutation('wrong platform',lambda i:i['artifacts'][0].update(platform='linux/arm64'))
     inventory_mutation('wrong inspected image ID',lambda i:i['artifacts'][0].update(imageId='sha256:'+'0'*64))
+    plan_mutation('unknown per-image build',lambda p:p['artifacts'][inventory['artifacts'][0]['reference']].update(sourceCommit='0'*40))
     inventory_mutation('unbounded evidence path',lambda i:i['artifacts'][0]['payload'].update(path='../outside.json'))
     inventory_mutation('changed evidence hash',lambda i:i['artifacts'][0]['payload'].update(sha256='0'*64))
     first=inventory['artifacts'][0];old=admit.read_evidence

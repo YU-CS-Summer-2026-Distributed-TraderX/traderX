@@ -37,6 +37,7 @@ def package(measured, published_path, upstream_path, build_dir, derivation_path,
     admit.require(len(published['images'])==len(original['images'])==12 and len(upstream)==8,'incomplete input image population')
     plan={'schema':'traderx-compsci-intended-deployment-v1','target':admit.TARGET,'state':'YU18-risk-integration',
           'imageSourceCommit':published['sourceCommit'],'imageSourceInputsSha256':original_receipt['sourceInputsSha256'],
+          'buildSources':{},
           'contexts':fresh['contexts'],'consoleSourceSha256':console['sha256'],
           'renderedSha256':admit.digest(rendered_path.read_bytes()),
           'slots':admit.ri20.slots(admit.ri20.documents(rendered_path.read_text()),'traderx'),
@@ -49,11 +50,20 @@ def package(measured, published_path, upstream_path, build_dir, derivation_path,
         admit.require(old['imageId']==item['imageId'] and old['contextSha256']==item['sourceContextSha256'],'published/build mapping differs')
         component=old['component'];context=console['sha256'] if component=='web-front-end-console' else fresh['contexts'][component]
         admit.require(context==old['contextSha256'],'source context does not match intended image')
+        build_commit=item.get('sourceCommit',published['sourceCommit'])
+        build_inputs=item.get('sourceInputsSha256',original_receipt['sourceInputsSha256'])
+        admit.require(build_commit==old.get('sourceCommit',original['sourceCommit']) and
+                      build_inputs==old.get('sourceInputsSha256',original_receipt['sourceInputsSha256']),
+                      'published/original per-image build identity differs')
+        admit.require(build_commit not in plan['buildSources'] or plan['buildSources'][build_commit]==build_inputs,
+                      'conflicting build-input identity for source commit')
+        plan['buildSources'][build_commit]=build_inputs
         manifest=read(measured/'private-oci'/(name+'-manifest.json'))
         child=measured/'private-oci'/(name+'-platform-manifest.json')
         selected=read(child) if child.exists() else manifest
         config=read(measured/'private-oci'/(name+'-config.json'))
         want={'provider':'compiled-context-v1','platform':'linux/amd64','component':component,
+              'sourceCommit':build_commit,'sourceInputsSha256':build_inputs,
               'contextSha256':context,'imageId':item['imageId'],'configDigest':selected['config']['digest'],
               'uncompressedLayers':config['rootfs']['diff_ids'],
               'payloadSha256':admit.payload(comparison['expectedEntries']),
