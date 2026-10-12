@@ -1,11 +1,12 @@
 # Resolved risk-integration issues and tasks
 
-Updated: 2026-10-08. Maintainer: TraderX coordinator.
+Updated: 2026-10-11. Maintainer: TraderX coordinator.
 
 These bounded RI scopes and completed maintenance tasks are complete at their stated evidence level. Source/generated tests do not establish deployment, retained HA, current performance or general financial acceptance. RI10 publication is user-confirmed. The original staged RI10/RI12 additions remain preserved and pending their original commit workflow.
 
 | ID | Completed scope | Remaining qualification elsewhere |
 |---|---|---|
+| [RI31 local suite repairs](ri31-suite-guards.md) | Approved `82736585` integrated at `17e95ea0`; guards/fixtures, local suite and canonical generation checks pass | Historical HA cause, generated People test coverage and live/PowerShell/financial/dedicated-hardware qualifications remain in [RI31](../31-test-suite-guard-and-fixture-profiles.md) |
 | [CompSci hosted demo repairs](compsci-demo-repairs-20261011.md) | Approved1132510f integrated at85afc999; live demo gates and canonical integration checks passed | RI13/LR07 performance qualification, RI30 historical data and RI31 full-suite gaps remain open |
 | [CompSci initial admission](compsci-gke-admission-20261011.md) | Approved fa074662 integrated; initial authenticated cold-demo proof passed | [Hosted repairs](compsci-demo-repairs-20261011.md) now separately approved/integrated; RI13/LR07 and RI30 remain open |
 | [RI-29](29-generation-performance.md) / [bounded task](ri29-generation-performance.md) | Approved local generator batching with full-output/current-input parity; warmed offline elapsed medians reduced 28–32% | State 009/lock-refresh-enabled profiles unverified; no runtime/deployment claim |

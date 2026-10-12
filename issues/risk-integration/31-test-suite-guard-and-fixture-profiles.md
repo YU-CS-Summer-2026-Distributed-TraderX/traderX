@@ -1,6 +1,6 @@
 # RI31 — Repair suite guards and isolate incompatible test fixtures
 
-Updated: 2026-10-11. Status: local candidate ready for review in `traderX-ri31-suite`, branch `codex/ri31-suite`, base `67a32d6b`. Author: coordinator Codex `01a12b5c`; source integration awaits separate user approval. The historical HA cause and wider live/coverage obligations remain qualified below.
+Updated: 2026-10-11. Status: bounded local suite repairs integrated and done at `17e95ea0`; this RI parent remains open for the historical HA diagnosis and broader coverage/live qualifications. Approved source `82736585`. Author/coordinator: Codex `01a12b5c`.
 
 Canonical source snapshot: fa074662 plus the existing user edits, independently copied before generation. No original user file or staging was changed. Evidence: parent coordination `review-evidence/compsci-gke-20261011/canonical-full-qa-20261011/`.
 
@@ -22,4 +22,6 @@ The local suite records each attempt and nonzero executed counts, including skip
 
 Limits: generated People has no test project; its build and the 16 baseline People cases do not prove generated-service coverage. YU01's retired single-BLP profile, foundational/live mutation scripts, PowerShell wrappers, private/vendor-data and financial/dedicated-hardware qualification remain explicitly unexecuted. The documentation build passes with two pre-existing broken-anchor warnings pointing to components#october-7-integration; those are a separate documentation follow-up. This local host used JDK21, Node25.8.1 and ChromeHeadless154; Node emitted its non-LTS warning.
 
-Evidence: parent coordination `review-evidence/ri31-suite-20261011/`, including retained first failures and scoped corrective runs. See [bounded task](tasks/ri31-suite-guards.md) and [execution guide](../../docs/testing/local-suite.md). Canonical remains unchanged with all 20 original dirty/private paths and staging preserved. Do not mark this parent resolved or deploy the candidate from local test success alone.
+Evidence: parent coordination `review-evidence/ri31-suite-20261011/`, including retained first failures and scoped corrective runs. See [bounded task](resolved/ri31-suite-guards.md) and [execution guide](../../docs/testing/local-suite.md). Canonical contains the approved candidate via `17e95ea0`, with all 20 original dirty/private paths and staging preserved. Do not mark this parent resolved or deploy the candidate from local test success alone.
+
+Integration verification: exact31 candidate paths match;14 integrated-source controls, full30-state independent source-copy generation,12 tested-context comparisons, four operative UI fixtures, seven installed guard cases and final global/component gates pass. See the [resolved bounded task](resolved/ri31-suite-guards.md). The whole RI31 parent is not archived because its explicitly unexecuted/unknown qualifications remain separate.

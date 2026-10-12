@@ -1,0 +1,25 @@
+# RI31-SUITE-GUARDS — Reproducible test suite and executable guards
+
+Updated: 2026-10-11. Status: done for the approved local suite-repair scope; broader RI31 qualifications remain open. Coordinator/author: Codex 01a12b5c-4c93-7e62-b90a-3e56223dee78, host local.
+
+Parent: [RI31](../31-test-suite-guard-and-fixture-profiles.md); [maintenance spec](../../../specs/YU18-risk-integration/maintenance/test-suite-profiles/README.md). Human requests fixing remaining RI31 failures and continuing full tests/scripts. Owned checkout `traderX-ri31-suite`, branch `codex/ri31-suite`, base `67a32d6b`; canonical target `traderX-risk-integration` retains 20 original dirty/private paths and staging. Human approved exact 82736585 into this target; no deployment/push/TAQ conversion/shared-rig mutation.
+
+Claim scripts/ci and test-state guards, local fresh-JAR wrapper, operative test-only Gradle/JUnit overlays and scoped documentation. Preserve deterministic-core/runtime/auth behavior; investigate before widening implementation. Raw evidence parent coordination/review-evidence/ri31-suite-20261011. Required local/generated/container proofs execute in owned paths. GKE live proof not required for test-only changes; broader campaign/production qualification stays separate.
+
+Confirmed base `67a32d6b` diagnosis: the canonical local start wrapper lacked a build-jvm-jar call while the Dockerfile copied build/libs. This is a missing build step, rather than the issue's earlier claim of regex drift. The actual launcher now rebuilds before Docker; adverse controls prove missing or failed Gradle cannot reach the image build. The member-readout and FIX authentication fixtures also reproduced their incompatible key assumptions. One synthetic test-worker key now serves both fixture paths.
+
+Further wrapper finding: after fixing the launcher guard, YU10 fails on a nonexistent state-local DR document. Its spec explicitly inherits YU09's unchanged recovery machinery; the guard now checks that actual inherited document rather than inventing a YU10 file. The failed attempt is retained in states-first. The targeted full YU10 rerun passed after the serial state loop; generation remained sequential.
+
+Local delivery: the original wrapper/authentication/reflection failures are repaired, and the full available local sweep passes after scoped preparation and legacy fixture corrections. Source includes baseline UI test fixtures and explicit YU18 current-layer test overlays plus their leaf renderer wiring. All production Java/TypeScript service bodies remain unchanged. Historical HA cause is unproven despite two full current-profile passes; retain that limitation. Fourteen report/guard/identity controls, installed guard controls, source-input parity and all required global/component gates accompany delivery.
+
+The human directly approved this exact candidate into traderX-risk-integration, and scoped integration verification passed. No deployment or broader live campaign is inferred. Generated People coverage, existing disabled cases and separate live-rig/financial qualification remain outside a green local verdict. Review/evidence is under parent coordination/review-evidence/ri31-suite-20261011.
+
+## Approved integration and closeout
+
+The human said: “Yes, integrate 82736585 into traderX-risk-integration, preserving my existing edits and staging.” Exact source `82736585ff712432e5f4c7447e1468c1871d5620` merged at `17e95ea07f85df10a11f22ce35a56015dece7cc5`; all 31 approved paths matched the reviewed candidate. All 20 original dirty/private paths, statuses, bytes, modes and the original empty staging remained intact. No stash, reset or broad staging was used.
+
+Fourteen controls run from the integrated source and global/component gates passed. A private copy included current canonical source and existing user files, regenerated the full 30-state ancestry and matched all 12 tested service contexts. All four current UI fixtures composed from their YU18 owners, and seven installed guard cases passed. Canonical generated outputs were untouched. Prior complete candidate suite evidence stays attributable to the identical integrated code; no unnecessary full-suite repeat was performed.
+
+Live rig not required: this bounded scope changes tests, local build/generation guards and documentation, without production service Java/TypeScript bodies, matching/authentication contracts or a deployment. Historical HA cause, generated People coverage, disabled/live/PowerShell/financial and dedicated-hardware obligations stay open in [RI31](../31-test-suite-guard-and-fixture-profiles.md), separate from this completed task. No cloud/cluster, Git push, retained-data or broad-propagation effect. Original RI30 author retains its independently authorized work.
+
+Integration evidence: parent coordination `review-evidence/ri31-suite-20261011/integration-82736585/`; prior full profile: `review-evidence/ri31-suite-20261011/review.md`. The existing dirty issue/task/live index files were preserved; the maintained October11 queue supplement and resolved index record this closeout.
