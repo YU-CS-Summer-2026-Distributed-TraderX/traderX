@@ -1,0 +1,15 @@
+# RI31-SUITE-GUARDS — Reproducible test suite and executable guards
+
+Updated: 2026-10-11. Status: local candidate ready for review; canonical integration approval pending. Coordinator/author: Codex 01a12b5c-4c93-7e62-b90a-3e56223dee78, host local.
+
+Parent: [RI31](../31-test-suite-guard-and-fixture-profiles.md); [maintenance spec](../../../specs/YU18-risk-integration/maintenance/test-suite-profiles/README.md). Human requests fixing remaining RI31 failures and continuing full tests/scripts. Owned checkout `traderX-ri31-suite`, branch `codex/ri31-suite`, base `67a32d6b`; canonical target `traderX-risk-integration` retains 20 original dirty/private paths and staging. Integration approval pending after delivery; no deployment/push/TAQ conversion/shared-rig mutation.
+
+Claim scripts/ci and test-state guards, local fresh-JAR wrapper, operative test-only Gradle/JUnit overlays and scoped documentation. Preserve deterministic-core/runtime/auth behavior; investigate before widening implementation. Raw evidence parent coordination/review-evidence/ri31-suite-20261011. Required local/generated/container proofs execute in owned paths. GKE live proof not required for test-only changes; broader campaign/production qualification stays separate.
+
+Confirmed diagnosis: the canonical local start wrapper has no build-jvm-jar call while the Dockerfile copies build/libs. This is a missing build step, rather than the issue's earlier claim of regex drift. The actual launcher now rebuilds before Docker; adverse controls prove missing or failed Gradle cannot reach the image build. The member-readout and FIX authentication fixtures also reproduced their incompatible key assumptions. One synthetic test-worker key now serves both fixture paths.
+
+Further wrapper finding: after fixing the launcher guard, YU10 fails on a nonexistent state-local DR document. Its spec explicitly inherits YU09's unchanged recovery machinery; the guard now checks that actual inherited document rather than inventing a YU10 file. The failed attempt is retained in states-first. A targeted full YU10 rerun follows the serial state loop; no generation runs concurrently.
+
+Local delivery: the original wrapper/authentication/reflection failures are repaired, and the full available local sweep passes after scoped preparation and legacy fixture corrections. Source includes baseline UI test fixtures and explicit YU18 current-layer test overlays plus their leaf renderer wiring. All production Java/TypeScript service bodies remain unchanged. Historical HA cause is unproven despite two full current-profile passes; retain that limitation. Fourteen report/guard/identity controls, installed guard controls, source-input parity and all required global/component gates accompany delivery.
+
+Completion remains pending direct approval for this exact new candidate into traderX-risk-integration. No deployment or broader live campaign is inferred. Generated People coverage, existing disabled cases and separate live-rig/financial qualification remain outside a green local verdict. Review/evidence is under parent coordination/review-evidence/ri31-suite-20261011.

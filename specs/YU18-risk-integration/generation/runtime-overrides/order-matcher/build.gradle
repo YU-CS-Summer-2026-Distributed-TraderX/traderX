@@ -115,6 +115,9 @@ tasks.named('compileJava').configure { dependsOn tasks.named('generateSbe') }
 
 tasks.withType(Test).configureEach {
   useJUnitPlatform()
+  // Production member handlers read this environment variable. Keep every test worker on
+  // one explicit synthetic key, independent of credentials exported by the caller's shell.
+  environment 'AUTH_JWT_SECRET', 'ri31-synthetic-suite-secret'
   // Aeron/Agrona uses jdk.internal.misc.Unsafe for direct-buffer access on Java 21+.
   jvmArgs '--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED',
           '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
