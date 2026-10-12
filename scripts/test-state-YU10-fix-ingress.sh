@@ -60,11 +60,10 @@ echo "[check] pipeline stale-jar fix present (FR-OH30)"
 rg -q 'gradlew --no-daemon clean bootJar' "${REPO_ROOT}/pipeline/publish-generated-state-branch.sh" \
   || { echo "[error] publish-generated-state-branch.sh missing gradlew bootJar step before docker build"; exit 1; }
 bash "${REPO_ROOT}/scripts/test-local-jvm-jar-build.sh"
-rg -q 'build-jvm-jar\.sh.*context_abs.*name' "${REPO_ROOT}/scripts/start-state-010-kubernetes-runtime-generated.sh" \
-  || { echo "[error] local start wrapper missing JVM jar-build guard"; exit 1; }
+python3 "${REPO_ROOT}/scripts/tests/test-suite-profiles/test_guards.py"
 
-echo "[check] DR runbook exists"
-[[ -f "${REPO_ROOT}/specs/YU10-fix-ingress/system/dr-runbook.md" ]] || { echo "[error] missing system/dr-runbook.md"; exit 1; }
+echo "[check] inherited YU09 DR runbook exists"
+[[ -f "${REPO_ROOT}/specs/YU09-ops-hardening/system/dr-runbook.md" ]] || { echo "[error] missing inherited YU09 system/dr-runbook.md"; exit 1; }
 
 echo "[check] order-matcher unit tests pass"
 if command -v java >/dev/null 2>&1; then

@@ -18,6 +18,7 @@ const DEFAULT_METADATA: StateUiMetadata = {
   lineageLinkUrl: '',
   apiExplorerUrl: '/api/docs',
   pubSubInspectorUrl: '/api/docs/pubsub-inspector.html',
+  runtimeMetadataUrl: 'assets/runtime-ui.json',
   features: {
     statusPage: false,
     apiExplorer: false,

@@ -136,7 +136,7 @@ class FixSessionIntegrationTest {
     }
 
     private static String jwt() {
-        return new JwtTokenMinter("dev-jwt-shared-secret")
+        return new JwtTokenMinter(System.getenv().getOrDefault("AUTH_JWT_SECRET", "dev-jwt-shared-secret"))
             .mint("fix-it", Set.of(22214), false, 3600);
     }
 

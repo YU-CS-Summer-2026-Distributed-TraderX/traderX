@@ -1,88 +1,75 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-
-import { TradeComponent } from './trade.component';
+import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { AlertModule } from 'ngx-bootstrap/alert';
-import { ModalModule } from 'ngx-bootstrap/modal';
-import { AccountService } from '../service/account.service';
-import { MockAccountService, MockSymbolService, accounts } from '../test-utils/mocks.service';
-import { SymbolService } from '../service/symbols.service';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
-import { TradeTicket, Side } from '../model/trade.model';
+import { AlertModule } from 'ngx-bootstrap/alert';
+import { BsModalService } from 'ngx-bootstrap/modal';
+import { of } from 'rxjs';
+import { TradeComponent } from './trade.component';
+import { AccountService } from '../service/account.service';
+import { SymbolService } from '../service/symbols.service';
 import { DropdownModule } from '../dropdown/dropdown.module';
+import { Side } from '../model/trade.model';
 
-describe('TradeComponent', () => {
-    let component: TradeComponent;
-    let fixture: ComponentFixture<TradeComponent>;
+const ACCOUNTS = [{ id: 22214, displayName: 'Test Account 20' }, { id: 42422, displayName: 'Algo' }];
+const TICKET = { accountId: 22214, quantity: 10, security: 'IBM', side: Side.Buy };
 
-    beforeEach(async () => {
-        await TestBed.configureTestingModule({
-            declarations: [
-                TradeComponent
-            ],
-            imports: [
-                FormsModule,
-                DropdownModule,
-                ModalModule.forRoot(),
-                AlertModule.forRoot()
-            ],
-            providers: [
-                {
-                    provide: AccountService,
-                    useClass: MockAccountService
-                },
-                {
-                    provide: SymbolService,
-                    useClass: MockSymbolService
-                }
-            ],
-            schemas: [CUSTOM_ELEMENTS_SCHEMA]
-        }).compileComponents();
-    });
+describe('Trade account and ticket controls', () => {
+  let fixture: ComponentFixture<TradeComponent>;
+  let component: TradeComponent;
+  let accounts: any;
+  let symbols: any;
+  let modal: any;
+  let hide: jasmine.Spy;
 
-    beforeEach(() => {
-        fixture = TestBed.createComponent(TradeComponent);
-        component = fixture.componentInstance;
-        fixture.detectChanges();
-    });
+  beforeEach(async () => {
+    accounts = { getAccounts: jasmine.createSpy('getAccounts').and.returnValue(of(ACCOUNTS)) };
+    symbols = { getStocks: jasmine.createSpy('getStocks').and.returnValue(of([{ ticker: 'IBM', companyName: 'IBM' }])),
+      createTicket: jasmine.createSpy('createTicket').and.returnValue(of({ success: true })) };
+    hide = jasmine.createSpy('hide'); modal = { show: jasmine.createSpy('show').and.returnValue({ hide }) };
+    await TestBed.configureTestingModule({ declarations: [TradeComponent],
+      imports: [CommonModule, FormsModule, DropdownModule, AlertModule.forRoot()],
+      providers: [{ provide: AccountService, useValue: accounts }, { provide: SymbolService, useValue: symbols },
+        { provide: BsModalService, useValue: modal }], schemas: [CUSTOM_ELEMENTS_SCHEMA]
+    }).compileComponents();
+    fixture = TestBed.createComponent(TradeComponent); component = fixture.componentInstance;
+  });
 
-    it('should create', () => {
-        expect(component).toBeTruthy();
-    });
+  it('loads the directory with a distinct all-account choice and defaults to a real account', () => {
+    expect(accounts.getAccounts).not.toHaveBeenCalled(); fixture.detectChanges();
+    expect(accounts.getAccounts).toHaveBeenCalledTimes(1); expect(symbols.getStocks).toHaveBeenCalledTimes(1);
+    expect(component.accounts.map((account) => account.id)).toEqual([0, 22214, 42422]);
+    expect(component.accountModel).toEqual(ACCOUNTS[0]); expect(component.stocks[0].ticker).toBe('IBM');
+    expect(fixture.nativeElement.querySelector('#createTicketBtn')).not.toBeNull();
+  });
 
-    it('should call symbol service to create ticket on call', async () => {
-        const ticket: TradeTicket = {
-            accountId: 1,
-            quantity: 10,
-            security: 'abc',
-            side: Side.Buy
-        };
-        spyOn((component as any).symbolService, 'createTicket').and.callThrough();
-        spyOn(component, 'closeTicket');
-        component.createTradeTicket(ticket);
-        expect((component as any).symbolService.createTicket).toHaveBeenCalledWith(ticket);
-        expect(component.closeTicket).toHaveBeenCalled();
-    });
+  it('submits an individual ticket and closes its open modal', () => {
+    fixture.detectChanges(); component.openTicket({} as any); component.createTradeTicket(TICKET);
+    expect(symbols.createTicket).toHaveBeenCalledWith(TICKET); expect(component.createTicketResponse).toEqual({ success: true });
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
 
-    it('should get accounts and stocks on init', () => {
-        spyOn((component as any).accountService, 'getAccounts').and.callThrough();
-        spyOn((component as any).symbolService, 'getStocks').and.callThrough();
-        component.ngOnInit();
-        expect((component as any).accountService.getAccounts).toHaveBeenCalled();
-        expect(component.accounts.length).toEqual(5);
-        expect((component as any).symbolService.getStocks).toHaveBeenCalled();
-        expect(component.stocks.length).toEqual(5);
-    });
+  it('all-account selection refuses a ticket and does not open its modal', () => {
+    fixture.detectChanges(); component.onAccountChange(component.accounts[0]);
+    component.openTicket({} as any); component.createTradeTicket(TICKET);
+    expect(modal.show).not.toHaveBeenCalled(); expect(symbols.createTicket).not.toHaveBeenCalled();
+    expect(component.createTicketResponse.success).toBeFalse();
+  });
 
-    it('should open and close ticket on click', async () => {
-        component.accountModel = accounts[0];
-        spyOn(component, 'openTicket');
-        spyOn(component, 'closeTicket');
-        fixture.nativeElement.querySelector('#createTicketBtn').click();
-        expect(component.openTicket).toHaveBeenCalled();
-        // TODO: need to check how to test bootstrap modal in jasmine
-        // fixture.nativeElement.click();
-        // expect(component.closeTicket).toHaveBeenCalled();
-    });
+  it('individual selection opens a modal and close hides it', () => {
+    fixture.detectChanges(); component.onAccountChange(ACCOUNTS[1]); component.openTicket({} as any); component.closeTicket();
+    expect(component.accountModel?.id).toBe(42422); expect(modal.show).toHaveBeenCalledTimes(1); expect(hide).toHaveBeenCalledTimes(1);
+  });
 
+  it('an empty directory selects all accounts and refuses individual trading', () => {
+    accounts.getAccounts.and.returnValue(of([])); fixture.detectChanges(); component.createTradeTicket(TICKET);
+    expect(component.accounts.map((account) => account.id)).toEqual([0]); expect(component.accountModel?.id).toBe(0);
+    expect(symbols.createTicket).not.toHaveBeenCalled(); expect(component.createTicketResponse.success).toBeFalse();
+  });
+
+  it('clears an alert and retains the selected account when a selection is absent', () => {
+    fixture.detectChanges(); component.createTicketResponse = { success: true }; component.onCloseAlert();
+    expect(component.createTicketResponse).toBeUndefined(); component.onAccountChange(undefined as any);
+    expect(component.accountModel).toEqual(ACCOUNTS[0]); expect(component.getAccountName(ACCOUNTS[0])).toBe('Test Account 20');
+  });
 });

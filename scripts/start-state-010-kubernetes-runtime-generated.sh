@@ -187,6 +187,7 @@ if (( DRY_RUN == 1 )); then
       image="$(jq -r '.image' <<<"${item}")"
       context_rel="$(jq -r '.context' <<<"${item}")"
       dockerfile_rel="$(jq -r '.dockerfile' <<<"${item}")"
+      echo "[dry-run] bash ${REPO_ROOT}/scripts/lib/build-jvm-jar.sh ${GENERATED_ROOT}/code/target-generated/${context_rel} ${name}"
       echo "[dry-run] docker build -t ${image} -f ${GENERATED_ROOT}/code/target-generated/${context_rel}/${dockerfile_rel} ${GENERATED_ROOT}/code/target-generated/${context_rel}  # ${name}"
       if [[ "${K8S_PROVIDER}" == "kind" ]]; then
         echo "[dry-run] kind load docker-image ${image} --name ${cluster_name}"
@@ -322,6 +323,7 @@ while IFS= read -r item; do
       exit 1
     }
 
+    bash "${REPO_ROOT}/scripts/lib/build-jvm-jar.sh" "${context_abs}" "${name}"
     echo "[build] ${name} -> ${image}"
     docker build -t "${image}" -f "${dockerfile_abs}" "${context_abs}"
   else

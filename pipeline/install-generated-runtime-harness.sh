@@ -47,6 +47,9 @@ fi
 cp "${SCRIPTS_SRC}/lib/resolve-socketio-client-path.sh" "${SCRIPTS_DST}/lib/"
 cp "${SCRIPTS_SRC}/lib/generated-state-detection.sh" "${SCRIPTS_DST}/lib/"
 cp "${SCRIPTS_SRC}/lib/build-jvm-jar.sh" "${SCRIPTS_DST}/lib/"
+cp "${SCRIPTS_SRC}/lib/check-post-trade-auth.py" "${SCRIPTS_DST}/lib/"
+mkdir -p "${SCRIPTS_DST}/tests/test-suite-profiles"
+cp "${SCRIPTS_SRC}/tests/test-suite-profiles/test_guards.py" "${SCRIPTS_DST}/tests/test-suite-profiles/"
 cp "${SCRIPTS_SRC}/lib/observability-runtime.sh" "${SCRIPTS_DST}/lib/"
 cp "${SCRIPTS_SRC}/lib/kubernetes-smoke-readiness.sh" "${SCRIPTS_DST}/lib/"
 if [[ -f "${SCRIPTS_SRC}/lib/runtime-common.ps1" ]]; then
@@ -76,6 +79,7 @@ copy_script_if_exists() {
 # be available inside generated runtime roots.
 copy_script_if_exists "start-grafana-traderx-dashboards.sh"
 copy_script_if_exists "star-grafana-traderx-dashboards.sh"
+copy_script_if_exists "test-local-jvm-jar-build.sh"
 
 inject_containerized_web_ui_vite_guard() {
   local overlay_test_script="${SCRIPTS_DST}/test-web-angular-overlay.sh"

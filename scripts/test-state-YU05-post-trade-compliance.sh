@@ -60,12 +60,7 @@ echo "[check] trade-processor settlement/recon configuration"
   echo "[error] missing generated trade-processor properties: ${TP_PROPS}"
   exit 1
 }
-for key in 'settlement.t-plus-days=' 'recon.control.token=' 'order-matcher.base-url='; do
-  rg -q "${key}" "${TP_PROPS}" || {
-    echo "[error] trade-processor post-trade-compliance config missing: ${key}"
-    exit 1
-  }
-done
+python3 "${REPO_ROOT}/scripts/lib/check-post-trade-auth.py" "${TP_PROPS}"
 
 echo "[check] settlementdate column present in the real runtime database-init ConfigMap"
 [[ -f "${DB_CONFIGMAP}" ]] || {
