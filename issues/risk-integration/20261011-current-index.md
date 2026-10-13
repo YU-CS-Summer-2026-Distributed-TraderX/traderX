@@ -9,3 +9,7 @@ Current supplement to the preserved issue/task/live indexes; those existing user
 - [RI31 suite guards/fixture profiles](31-test-suite-guard-and-fixture-profiles.md): [bounded repair task](resolved/ri31-suite-guards.md) done; approved `82736585` integrated at `17e95ea0`, with verified generation/controls and existing edits/staging preserved. The available local profile passes; broader HA, generated People and live/financial coverage remain open.
 
 Claude and further Alex risk-engine upgrades remain paused; no new monitoring, skill authoring, Git push, broad propagation or retained-data cleanup.
+
+## October13 settlement integration
+
+[Bounded settlement correction](resolved/c4d-settlement-fix-20261013.md) done: approved fc35875a13-file delta integrated at376cb49d, independently tested canonical generation/11unit-schema/9MariaDB controls. Preserve broader LR06 memory, retained restoration/full delivery and matcher diagnosis gates. The running-rig OOM remains historical pre-fix evidence until corrected deployment acceptance. GKE remains stopped; RI30 compaction/catalog is separately assigned.

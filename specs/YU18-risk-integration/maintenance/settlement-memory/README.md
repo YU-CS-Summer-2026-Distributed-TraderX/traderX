@@ -1,6 +1,6 @@
 # Bounded settlement
 
-Status: ready for review in the isolated branch; retained-data proof passed, zero-node cleanup verified. User authorized implementation and same retained-data test on 2026-10-13; no integration or push. Owner: 01a135b5-8b9e-7d00-b589-63cf004884a9.
+Status: bounded source correction done; human-approved13-file delta integrated at376cb49d on2026-10-13. Retained-data proof passed and canonical generation/11unit-schema/9MariaDB controls verified. No push/deployment; original retained-stack acceptance remains separate. Owner: 01a135b5-8b9e-7d00-b589-63cf004884a9.
 
 The delivered unbounded due-trade query exhausted 768 MiB heap while MariaDB buffered millions of rows. This YU18 override uses bounded JDBC batches and independent transactions. See spec.md, plan.md and tasks.md. Earlier YU05 behavior is unchanged. Private retained-data evidence lives outside Git under coordination/eod-integration/review-evidence/c4d-settlement-fix-20261013.
 

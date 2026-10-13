@@ -31,3 +31,5 @@ The October7 evening integration `bf1d13e9` adds completed milestones inside RI0
 Use the [task lifecycle skill](/Users/yaakov/dev/lmax/.claude/skills/traderx-task-lifecycle/SKILL.md): review/corrections, live-rig disposition, report to the user, user integration approval, verified integration, then done/archive and index updates. Archive a bounded task record rather than closing its whole RI parent when unrelated work remains. Required acceptance inside a task stays open until passed or explicitly deferred by the user. Additional live/deployment work remains linked and honestly qualified.
 
 See the [active queue](../README.md), [task records](../tasks/README.md), [live-rig queue](../live-rig/README.md) and [YU18 components](../../../specs/YU18-risk-integration/components/README.md). Preserve failed attempts and historical evidence; do not infer current live proof from an older revision.
+
+- [Bounded settlement memory correction](c4d-settlement-fix-20261013.md): approved fc35875a incorporated at376cb49d; bounded correction done. Retained deployment/index migration and full delivery acceptance remain separate.
