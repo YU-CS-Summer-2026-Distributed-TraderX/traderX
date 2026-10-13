@@ -23,7 +23,9 @@ class GeneratedDatabaseManifestTest {
   var data=scripts();assertEquals(Set.of("001-initialSchema.sql","900-migrations.sql"),data.keySet());
   String canonical=Files.readString(Path.of("../postgres-database-replacement/mariadb-migrations/ri06.sql")).strip();
   for(String name:data.keySet()) {
-   String sql=data.get(name).strip();assertTrue(sql.endsWith(canonical),name+" must end with the complete canonical migration");
+   String sql=data.get(name).strip();
+   assertTrue(sql.contains("CREATE INDEX IF NOT EXISTS idx_trades_settlement_due ON trades(state,settlementdate,id);"));
+   assertTrue(sql.endsWith(canonical),name+" must end with the complete canonical migration");
    assertEquals(sql.indexOf(canonical),sql.lastIndexOf(canonical),name+" must include it exactly once");
   }
   assertTrue(data.get("001-initialSchema.sql").contains("DROP TABLE IF EXISTS trades"));

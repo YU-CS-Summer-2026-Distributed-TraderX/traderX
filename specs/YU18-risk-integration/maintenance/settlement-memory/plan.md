@@ -1,0 +1,7 @@
+# Implementation and proof
+
+Override SettlementService and its inherited test in YU18. Use JDBC ID selection with LIMIT and row locks, a conditional bounded update, REQUIRES_NEW automatic batch transactions, REQUIRED force transactions with after-commit counting, and ProjectionWriteLock shared with booking/repair. Repeated earliest-due batches avoid cursor skips on the shrinking predicate. Add the index in both database init and 900-migrations.
+
+Run generated transaction tests for mixed states/dates, bounded continuation, rollback after writes, restart, force idempotency and concurrent projection writers. Build the generated boot JAR, verify hashes and execute it using the delivered Java21 container in an isolated namespace. Upload the JAR to an ephemeral volume instead of publishing an image. Restore the already approved dump to retained_copy, add only the index migration, and verify all due rows settle with stable fields, bounded heap and no restarts. Measure page sizes around the candidate default and preserve failed attempts. Stop/restart mid-backlog and verify continuation. Save evidence, remove isolated resources and return borrowed default-pool to zero.
+
+Validated candidate defaults: 500 rows, 100 batches, 1000 ms between-batch budget, existing 5000 ms fixed delay. Memory, lock duration and backlog completion measurements determine whether these remain suitable. Limits cap configuration at 2000 rows, 1000 batches and 30000 ms. No sustained-capacity claim follows from this repair proof.

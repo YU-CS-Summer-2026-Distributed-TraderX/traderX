@@ -130,6 +130,9 @@ INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis)
 CREATE TABLE IF NOT EXISTS projection_write_lock (lock_id INTEGER PRIMARY KEY);
 INSERT IGNORE INTO projection_write_lock (lock_id) VALUES (1);
 
+-- Bounded settlement range and deterministic order, including retained schemas.
+CREATE INDEX IF NOT EXISTS idx_trades_settlement_due ON trades(state,settlementdate,id);
+
 -- RI-06 additive retained-projection migration. Run only under an explicit maintenance barrier.
 -- No ID rewrite or row deletion. Each statement is repeatable after interruption.
 CREATE TABLE IF NOT EXISTS projection_runs (
