@@ -9,7 +9,7 @@ Numerical pin: Alex `c3d7c6ae485213dbb24abd2724f9ae8cb85acbb8`. Approved separat
 profile: `270a907a313bc0184ddcc7cda2e50904d103fce3`, branch
 `codex/risk-local-cpu-engine` in the isolated `jax-risk-local-cpu` checkout. This
 profile adds durable portfolio submission identities and v2 content-bound GET recovery; it does
-not replace the accepted older C8 container/EOD profile. TraderX source is the
+preserves the historical C8 container/EOD proof while targeting Alex’s latest verified numerical revision. TraderX source is the
 YU18 `risk-portfolio-tools` runtime override. No pricing implementation is copied.
 
 ## Reproduce
@@ -88,4 +88,4 @@ offline inspection are provided by `scripts/risk-portfolio.py`.
 
 C8 names the earlier Alex upstream revision `c8e21ea`; it is not a hardware type. The reconciled service/container version `e770f912` was approved on October 9 in the owned `jax-risk-container-upgrade` checkout, with measured image `sha256:80c885f8305067421a4c34af3eeef95ab1eca5a38376e9dcc689f8fe8bd5483d`. Its scoped container acceptance covers durable submission/recovery behavior and selected synthetic CPU pricing; it does not establish general financial correctness or production deployment. See [the acceptance record](../../issues/risk-integration/resolved/ri16-upstream-c8-upgrade.md) and [LR03](../../issues/risk-integration/live-rig/lr-03-risk-container-pipeline.md).
 
-The older `/eod/price` TraderX adapter and its explicit pins remain unchanged. The newer `270a907a` profile uses numerical revision `c3d7c6a` and has a real local installed CPU proof, without new container qualification or sequenced TraderX exporter/account/run lineage. Keeping both profiles preserves the earlier measured contract while this newer portfolio path is developed. The current local integration is [complete](../../issues/risk-integration/resolved/local-cpu-portfolio-integration-20261014.md); broad connected Stage B remains open.
+The older `/eod/price` TraderX adapter and its explicit pins remain unchanged. The newer `270a907a` profile uses numerical revision `c3d7c6a` and has a real local installed CPU proof, without new container qualification or sequenced TraderX exporter/account/run lineage. Alex is the engine source of truth: follow his latest upstream and reconcile our integration changes, as specified in the [upstream policy](risk-engine-upstream-policy.md). The preserved C8 checkout records earlier acceptance; it is not a competing current engine. Existing EOD adapter pins require migration proof before their contract changes. The current local integration is [complete](../../issues/risk-integration/resolved/local-cpu-portfolio-integration-20261014.md); broad connected Stage B remains open.

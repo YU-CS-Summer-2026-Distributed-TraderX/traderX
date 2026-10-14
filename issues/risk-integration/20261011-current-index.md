@@ -21,3 +21,7 @@ Claude and further Alex risk-engine upgrades remain paused; no new monitoring, s
 ## October14 local CPU portfolio integration
 
 [Local CPU portfolio loop](resolved/local-cpu-portfolio-integration-20261014.md) done for approved `b9fb0843`, integrated at `c249adc5`; separate owned engine `270a907a` retained. Canonical source/generated27 tests each, full YU18 generation,16-file parity and required gates pass; all22 unrelated dirty/private paths and staging preserved. Real local CPU proof covers eight jobs/1,416 synthetic positions plus content-bound GET recovery/refusals. Accepted C8/EOD `e770f912` remains unchanged. RI03/14/15/16 broader financial/scale/connected-export and LR03 Stage B remain open. The specific local CPU assignment supersedes the earlier generic Alex-upgrade hold only within this approved scope. No cloud, push or deployment.
+
+## October14 engine source-of-truth clarification
+
+Alex is the risk-engine source of truth; follow his latest upstream rather than maintaining C8 as an alternate engine. Direct GitHub main/HEAD check confirms `c3d7c6a`, already the numerical base of owned local CPU `270a907a`. Reconcile and revalidate the owned integration on upstream updates. Historical C8/EOD acceptance remains revision-specific evidence; connected adapter migration must be proved. See [the maintained policy](../../docs/risk-integration/risk-engine-upstream-policy.md). No monitoring or deployment started.

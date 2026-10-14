@@ -1,0 +1,11 @@
+# Risk engine upstream policy
+
+Human direction, October 14, 2026: Alex is the source of truth for the risk engine. TraderX follows his latest upstream engine commit. Historical accepted revisions are evidence references, not competing long-term engine versions.
+
+Upstream: `https://github.com/AlexNeugroschl/JAX_Risk_Engine`, default branch `main`. On October 14, a direct `git ls-remote --symref` check returned `c3d7c6ae485213dbb24abd2724f9ae8cb85acbb8` for both HEAD and main. The approved owned local CPU profile `270a907a313bc0184ddcc7cda2e50904d103fce3` already uses that numerical base. Its additional service submission/recovery controls are owned integration changes, not an independent numerical source of truth.
+
+When Alex updates upstream, reconcile the owned integration onto the new revision, review upstream API/schema/numerical/runtime changes, and rerun the affected proofs. Preserve useful adapter, submission identity and recovery controls; return incompatibilities to the integration task rather than silently retaining an older numerical engine. Record both the upstream SHA and the owned integration SHA. A new commit does not inherit numerical or container acceptance from an older image.
+
+Use the established task delivery/review/integration lifecycle and existing human authorizations. New contracts or policy decisions must be explicit. This standing source-of-truth direction does not start a monitor, authorize Git pushes, deploy applications, create cloud resources or alter retained data. Do not edit Alex's original checkout as part of reconciling our owned integration.
+
+The earlier C8 reconciliation `e770f912` and image `80c885f8` remain historical proof/recovery references. Their preserved checkout is not an alternate recommended engine. Existing `/eod/price` adapter pins identify the contract actually proved; migrating that path to the current upstream requires a reconciled adapter and its own connected proof rather than changing a SHA label. The current local CPU proof does not establish connected exporter/account/run provenance, general financial validation or a new container deployment. See [local CPU integration](local-cpu-loop.md) and [LR03](../../issues/risk-integration/live-rig/lr-03-risk-container-pipeline.md).
