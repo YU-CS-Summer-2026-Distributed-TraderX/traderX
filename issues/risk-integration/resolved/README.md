@@ -35,3 +35,5 @@ See the [active queue](../README.md), [task records](../tasks/README.md), [live-
 - [Bounded settlement memory correction](c4d-settlement-fix-20261013.md): approved fc35875a incorporated at376cb49d; bounded correction done. Retained deployment/index migration and full delivery acceptance remain separate.
 
 - [RI30 full-column preservation](ri30-taq-preservation.md) and [private compaction/catalog](ri30-taq-catalog.md): approvedbec674a9/dependencies incorporated at898f5150; boundedmilestones complete, replay/financial/applicationacceptance separate.
+
+- [Current local CPU portfolio integration](local-cpu-portfolio-integration-20261014.md): approved `b9fb0843` integrated at `c249adc5`; separate engine `270a907a` retained, accepted C8/EOD unchanged. Direct synthetic local CPU correctness/recovery complete; connected exporter provenance, container/cloud and general financial/load acceptance remain separate.

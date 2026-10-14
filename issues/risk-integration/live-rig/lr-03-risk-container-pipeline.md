@@ -1,6 +1,6 @@
 # LR-03 — Risk container lifecycle and TraderX connection
 
-Updated: 2026-10-09. Status: Stage A passed for corrected C8 image/profile, owned integration complete; Stage B blocked/unexecuted. Coordinator maintains acceptance; history retained.
+Updated: 2026-10-14. Status: Stage A passed for corrected C8 image/profile, owned integration complete; Stage B blocked/unexecuted. Coordinator maintains acceptance; history retained.
 
 Parent work: [RI-15/16](../15-portfolio-service-and-risk-results.md). This entry tracks acceptance evidence; it is not a separate implementation contract.
 
@@ -48,3 +48,9 @@ Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/r
 Current image80c885f8 (full identity above) supersedes the first C8 candidate26/imageeecd only for the reviewed correction. Candidate26 failed a synthetic same-current-key/unknown-bound-contract invariant; the earlier15-group observations and that failure remain preserved separately. R1 returned409 without mutating historical rows; fresh current key priced. Coordinator independently reran139 focused checks and the HTTP control, verified73 evidence/97 runtime hashes and inspected image metadata. Author880 installed-image tests and16 actual-container groups were reviewed, not independently repeated by coordinator.
 
 Approved owned target fast-forward077->e770f912 preserves history and exact measured runtime bytes. No original Alex incorporation, TraderX connected portfolio pipeline, deployment or financial blanket approval. Queue/EOD/cache/input mounts, CPU2/2GiB/PIDs256/nonroot/read-only and Linuxamd64-emulated scope remain exact. Lifecycle placeholders are separate from real synthetic pricing/calibration. Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/ri16-upstream-c8-r1-20261009/review.md`; integration evidence in parent coordination/ri16-c8-integration-20261009. Stage B remains blocked on accepted account/run/provenance-bound portfolio adapter/contract.
+
+## October 14 separate local CPU profile
+
+[Local CPU portfolio task](../resolved/local-cpu-portfolio-integration-20261014.md) is integrated at `c249adc5` from approved `b9fb0843`; human approved retaining engine `270a907a` as a separate owned local CPU profile. Actual installed macOS arm64 CPU HTTP/subprocess-worker proof completed eight direct synthetic Treasury jobs/1,416 positions, with restart/lost-reply GET recovery, persisted content binding and mismatch refusal. Coordinator independently checked the client/refusal paths and saved CPU intakes; final engine and actual-loop evidence is linked from the resolved task. Owned processes stopped.
+
+This is additional local-process acceptance only. It neither replaces nor expands the C8 image Stage A record above. Stage B still requires sequenced TraderX export plus accepted account/run/provenance-bound adapter and result intake. Container qualification of `270a907a`, general financial correctness and future exposure numerical oracles remain unproved; no GKE/deployment or broad LR closure occurred.

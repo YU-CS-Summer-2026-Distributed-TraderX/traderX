@@ -1,6 +1,6 @@
 # RI-14 — Synthetic portfolio generation and risk-engine scale testing
 
-Updated: 2026-10-07. Status: in progress: seeded generator/local driver integrated at a0d6da0b; massive load, broader coverage and tool comparison remain. Maintainer: coordinator; original delivery notes below retain their dates.
+Updated: 2026-10-14. Status: legacy and current local CPU generator/driver integrated; massive load, connected exporter provenance, broader financial coverage and tool comparison remain. Maintainer: coordinator; original delivery notes below retain their dates.
 
 ## Two different scales
 
@@ -49,3 +49,7 @@ Staging preservation: during integration validation the canonical index acquired
 Canonical integration commit: `a0d6da0bfbef481f301bb1172b6810cb8a4c9e3e` (19 reviewed delivery paths; RI-14 backlog staging intentionally excluded). No user staged blob was consumed or replaced.
 
 October 7 status reconciliation: the top status and next action supersede earlier queued/implementation-held headers. Historical unchecked planning lists are not a claim that implemented milestones are absent. Remaining acceptance is not marked complete.
+
+## October 14 current local CPU milestone
+
+[Bounded local CPU integration](resolved/local-cpu-portfolio-integration-20261014.md) is done: human-approved `b9fb0843` integrated at `c249adc5`, with separate owned engine `270a907a` on numerical base `c3d7c6a`. Canonical source/generated suites each pass 27 tests; full private YU18 composition, 16-file runtime parity and required gates pass. Reviewed actual local CPU proof completed eight synthetic jobs/1,416 positions, content-bound GET-only recovery and mismatch refusals. The accepted C8/EOD engine `e770f912` and original Alex checkout remain unchanged. These are local correctness/recovery observations, not a throughput benchmark or general financial acceptance. Broader RI14 scale/driver comparisons and LR03 connected account/run/provenance acceptance stay open.

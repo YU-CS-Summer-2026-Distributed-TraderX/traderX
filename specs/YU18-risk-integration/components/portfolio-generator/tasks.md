@@ -2,8 +2,7 @@
 
 ## October 14 current CPU continuation
 
-Local task: `local-cpu-portfolio-integration-20261014`. Candidate review pending;
-canonical integration not yet performed. Numerical pin `c3d7c6a`, separate engine
+Local task: [local-cpu-portfolio-integration-20261014](../../../../issues/risk-integration/resolved/local-cpu-portfolio-integration-20261014.md). Approved canonical integration completed at `c249adc5`; the latest v2 evidence below supersedes initial delivery counts. Numerical pin `c3d7c6a`, separate engine
 identity candidate `270a907a`. Current contract and run guide are linked in README.
 
 - [x] Add explicit current request/manifest identity and preserve the legacy profile.
@@ -13,8 +12,8 @@ identity candidate `270a907a`. Current contract and run guide are linked in READ
 - [x] Run real installed HTTP/CPU worker with 7 portfolios/1,412 positions, including 1,000-position base NPV and a small 8-path exposure case; restart/GET recovery and refusals pass.
 - [x] Expanded real abrupt-consumer-exit proof: one additional four-position job recovered by GET only; eight actual jobs/1,416 positions total. Final report and independent cleanup verification retained.
 - [x] Source/generated client suites each pass 24 tests; all 15 module files match; full YU18 composition and four repository gates pass.
-- [ ] Coordinator review and any requested corrections.
-- [ ] Obtain scope-specific canonical integration approval and close only this bounded task.
+- [x] Coordinator review and requested recovery/content-binding corrections.
+- [x] Direct human approval received; scoped canonical integration and bounded task closeout completed.
 
 Private evidence: `/private/tmp/traderx-local-cpu-20261014/`. First exposure
 validation failed because the consumer assumed a t=0 cube column; source/response
@@ -49,7 +48,7 @@ Private evidence: `/private/tmp/ri14-evidence/` (ephemeral local artifacts; no r
 - [x] Revised engine148 source/45 installed tests and27 source/generated client
   tests each pass;16 module files match after composition.
 - [x] Coordinator independently re-reviewed current runtime and confirmed the request-binding blocker resolved.
-- [ ] Direct user integration/adoption scope and target approval.
+- [x] Direct human approval: integrate b9fb0843 into canonical and keep engine270a907a as the separate owned local CPU profile.
 
 The earlier transport candidate was rejected for missing recovery/content binding.
 Its raw proof artifacts remain historical. Current engine candidate270a907a and

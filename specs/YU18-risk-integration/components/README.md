@@ -14,7 +14,7 @@
 
 | [Combined trader workspace](trader-workspace-combined/README.md) | Connected local UI; production auth and remaining migration open | Standalone combined desk and existing console API/server |
 
-| [Synthetic portfolio generator](portfolio-generator/README.md) | Integrated locally; large load campaign open | State-parent risk-portfolio-tools; external engine schema and optional proof |
+| [Synthetic portfolio generator](portfolio-generator/README.md) | Legacy and current CPU profiles integrated locally; connected pipeline and large load remain open | State-parent risk-portfolio-tools; external engine schema and optional proof |
 
 | [TAQ preservation](taq-preservation/README.md) | Bounded full-column corpus and source integration complete | Private immutable source/member provenance |
 | [TAQ catalog](taq-catalog/README.md) | Private compaction/catalog/query acceptance and source integration complete | Root scripts/ri30; no automatic application tape rollout |

@@ -1,6 +1,6 @@
 # RI-14 implementation plan
 
-Owner: codex-portfolio-generator. Local delivery complete pending review; large campaigns deferred.
+Owner: codex-portfolio-generator. Local CPU delivery reviewed and integrated at c249adc5; broader campaigns remain open.
 
 October 14 continuation: preserve this original legacy plan and implement an additive
 `current-cpu-v1` profile against `c3d7c6a`. Reuse the generator/client and YU18 owner.

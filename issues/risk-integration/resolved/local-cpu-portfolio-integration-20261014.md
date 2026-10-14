@@ -1,12 +1,12 @@
 # LOCAL-CPU-PORTFOLIO-INTEGRATION-20261014
 
-Updated: 2026-10-14. Status: reviewed; awaiting integration approval. Author: chat
+Updated: 2026-10-14. Status: done — approved canonical integration and separate owned local CPU profile. Author: chat
 `01a138ba-f509-7f50-8884-3d0b8fd3a5b4`; coordinator:
 `01a12b5c-4c93-7e62-b90a-3e56223dee78`.
 
 Parents: RI03/14/15/16; portfolio-generator component; LR03. Human assignment:
 update integration for Alex's latest engine, generate portfolios and get the
-local CPU loop working end to end. No cloud, Git push or canonical integration.
+local CPU loop working end to end. Initial implementation excluded canonical integration; direct human integration approval and closeout are recorded below. No cloud or Git push.
 
 ## Ownership and candidates
 
@@ -28,8 +28,7 @@ original Alex checkout or replacement of accepted C8 container/EOD `e770f912`.
 
 Review target: scoped TraderX integration into `traderX-risk-integration`, with
 the explicit external candidate dependency above. Separate engine adoption
-target remains a coordinator/human decision. No canonical source incorporation
-or original/accepted-engine write was performed. Integration approval pending.
+target is the separate owned local CPU checkout, approved by the human on October 14. Canonical source incorporation is complete as recorded below; original Alex and the accepted C8/EOD engine remain unchanged.
 
 ## Implementation and observed proof
 
@@ -145,3 +144,13 @@ local CPU profile using the isolated engine branch, preserving the older accepte
 C8/EOD target. Adopting into that older target requires separate full reconciliation;
 original Alex adoption is not authorized by this local delivery. Task is reviewed,
 not marked done or archived. This final metadata update changes no runtime.
+
+## October 14 approved integration and closeout
+
+Human directly approved `b9fb0843` into `traderX-risk-integration`, preserving existing edits/staging, and keeping engine `270a907a` as the separate owned local CPU profile. Canonical source integration is `c249adc5e5c0ab5fe2fab62ed08a80656a6e6aa0`: all 19 approved paths matched the candidate. The separate engine checkout remains clean at `270a907a313bc0184ddcc7cda2e50904d103fce3`; accepted C8/EOD checkout remains clean at `e770f912baed47214220ce92e3de99a876781c68`. No engine merge, rebuild or deployment was needed.
+
+Coordinator canonical checks: 27 source and 27 fully generated client tests, complete private YU18 generation, 16-file runtime module parity, four repository gates and the component check (14 feature/24 maintenance packs) pass. All 22 unrelated dirty/private paths and existing staging are preserved. Original coordinator routing/history is retained in the private integration evidence `coordinator-task-before.md`.
+
+Required local proof is complete for the direct synthetic CPU profile: eight executed jobs/1,416 positions, restricted independent base cashflows, GET-only lost-reply/restart recovery, exact request binding and refusal/cleanup controls. Earlier failed attempts remain evidence, not current acceptance. No additional GKE live proof is required for this local-only task. Container qualification for the new engine, sequenced account/run/provenance-bound TraderX exports, Risk UI, future exposure numerical validation, broader financial acceptance and load/fleet work remain open in RI03/14/15/16 and LR03 Stage B. No cloud, push, automation, retained-data deletion or original Alex changes.
+
+Integration evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/local-cpu-portfolio-20261014/integration-b9fb0843/`. This bounded task is done; its broader RI/LR parents remain open.
