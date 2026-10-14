@@ -1,0 +1,11 @@
+*
+!Dockerfile
+!requirements.txt
+!preserve.py
+!worker.py
+!compare.py
+!campaign.py
+!Dockerfile.catalog
+!*.py
+!tests/
+!tests/*.py
