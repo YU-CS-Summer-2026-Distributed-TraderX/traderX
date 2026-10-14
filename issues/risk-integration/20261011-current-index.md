@@ -13,3 +13,7 @@ Claude and further Alex risk-engine upgrades remain paused; no new monitoring, s
 ## October13 settlement integration
 
 [Bounded settlement correction](resolved/c4d-settlement-fix-20261013.md) done: approved fc35875a13-file delta integrated at376cb49d, independently tested canonical generation/11unit-schema/9MariaDB controls. Preserve broader LR06 memory, retained restoration/full delivery and matcher diagnosis gates. The running-rig OOM remains historical pre-fix evidence until corrected deployment acceptance. GKE remains stopped; RI30 compaction/catalog is separately assigned.
+
+## October14 RI30 closeout
+
+[Preservation](resolved/ri30-taq-preservation.md) and [catalog](resolved/ri30-taq-catalog.md) boundedmilestonesdone:132sources/240506339565rows,16498compactedfiles, privatequery/custody/cleanupaccepted; candidatebec674a9/dependencies integratedat898f5150. Earlierin-progress/holdheaders abovehistorical. BroaderRI30applicationtape/replay/financial/connectedrisk remainsopen; originaldata/attemptsretained andheartbeatpaused. NoGKE/push/newcloudjob/data deletion.

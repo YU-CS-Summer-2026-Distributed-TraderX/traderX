@@ -1,3 +1,13 @@
+# RI30 — Lossless TAQ preservation and private catalog
+
+Updated2026-10-14. Status: preservation and compacted catalog milestones done and approved source integrated at898f5150; broader replay/financial/application use remains open.
+
+[Preservation milestone](resolved/ri30-taq-preservation.md) retains all132sourcearchives and originalstrings/emptyvalues/duplicates/provenance,240506339565rows in508831parts. [Catalog milestone](resolved/ri30-taq-catalog.md) publishes the same population in16498files with readable date/archive/member paths, privateJSON/Parquet/HTMLcatalogs and exercised date/root/suffix/explicitarchive rowqueries. Daily/monthly overlaps remain separate. Filecount is30.8timeslower; compressedbytesincreased20.7percent to3348141897106. No storage saving, generalfinancialvalidation or liveapplication tape claim.
+
+Human-approvedcandidatebec674a9 andscopedpreservationdependencies integrated into canonical. Independent58source tests/root/component/privategenerationpass; metadata/query/custody evidence reviewed. Source/preservation/pilot/attemptGCSobjects remainimmutable; all completedjobresources removed peracceptedreceipts, heartbeatremainspaused. No newcloudwork/push/data deletion atintegration. Remaining: explicitapplication replay/normalization/share-class/correction/timestamp semantics andconnected engine use. Raw/vendor/private data neverpublic.
+
+--- Original October11 planning record, superseded for authorization/completion status ---
+
 # RI30 — Lossless February–March TAQ reingestion
 
 Status: deferred by user, 2026-10-11. Coordinator owns planning; no conversion run authorized now.

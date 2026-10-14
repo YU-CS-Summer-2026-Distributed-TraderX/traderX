@@ -60,3 +60,5 @@ Evidence: parent review-evidence/ri30-pilot-20261012/preservation-final-verifica
 preservation-final-cleanup.json,full32-final-check.json,march-daily-containment.json.
 Compaction/catalog is a separate proposed component/task, not implemented; user approval hold
 and paused automation remain. BroadRI30 and canonical source integration are not marked done.
+
+Canonical source/corpus milestone done2026-10-14 at898f5150; broaderRI30replay/financial/connected-use remains separate. Historical pending statuses above retain their original dates.

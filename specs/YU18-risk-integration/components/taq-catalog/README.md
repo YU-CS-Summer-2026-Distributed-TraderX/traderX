@@ -1,11 +1,13 @@
 # TAQ catalog and compacted publication
 
+Current2026-10-14: bounded preservation/catalog implementation and private corpus acceptance complete; human-approved source integrated at898f5150. Historical review/approval notes below are superseded. No automatic application replay, financial qualification or public publication.
+
 Status: full private publication, catalog queries and exact resource cleanup accepted 2026-10-14; ready for coordinator review.
 Owner: RI30 task author, isolated branch `codex/ri30-catalog`; integration approval pending.
 Dependency: [TAQ preservation](../taq-preservation/README.md), all 132 verified source commits.
 Source ownership: `scripts/ri30/` compaction, catalog and private query tools.
 
-[Specification](spec.md), [plan](plan.md), [tasks](tasks.md), [bounded task record](../../../../issues/risk-integration/tasks/ri30-taq-catalog.md).
+[Specification](spec.md), [plan](plan.md), [tasks](tasks.md), [bounded task record](../../../../issues/risk-integration/resolved/ri30-taq-catalog.md).
 Shared architecture and generation remain [state-parent-owned](../../README.md).
 
 The tools produce larger all-column Parquet with readable date/archive paths, searchable metadata

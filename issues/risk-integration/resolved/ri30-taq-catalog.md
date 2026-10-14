@@ -1,5 +1,7 @@
 # RI30 — TAQ compaction and searchable catalog
 
+Current closeout2026-10-14: bounded implementation/corpus milestone done; human-approved bec674a9 with preservation-tool dependencies integrated at898f5150. Dated approval holds and pending statuses below are historical, superseded by this closeout. Broader replay/financial/connected-use scope remains open.
+
 Updated: 2026-10-14. Status: review needed; full private publication and acceptance complete.
 Owner: RI30 task author; checkout traderX-ri30-catalog, branch codex/ri30-catalog.
 Parent: [RI30](../30-lossless-taq-reingestion.md).
@@ -88,3 +90,7 @@ Broader RI30, replay and financial validation remain open. Heartbeat remains pau
 Private evidence: parent coordination/eod-integration/review-evidence/ri30-catalog-20261013/.
 RESUME.md identifies the current stage, pinned refs, exact job, and remaining steps. It also links
 historical approval and superseded-trial evidence. Source data and attempt history remain immutable.
+
+## Canonical integration and completion
+
+Direct human approved bec674a9 and explicit preservation-tool dependencies into traderX-risk-integration. All35paths match exact candidate at898f5150. Canonical58tests, root/component gates and full private YU18generation pass. Coordinator independently verified132source/16498unique-file/240506339565rowmetadata, catalog hashes/Parquet records, three actual saved query outputs and liveprivateCOMPLETErecord. Fullworkerall-field equivalence/pilotrowaudits/jobcleanup reviewed from supplied evidence; coordinator didnot redownload3.35TB. Existing23unrelateddirty/privatefiles and staging preserved. No newcloudjob/push/data deletion/automation. Privatepublication3348141897106bytes(+20.7%) and immutableoriginals/pilots/attempts retained. Applicationtape/replay/financialuse notproven. Evidence: parent coordination/eod-integration/review-evidence/ri30-catalog-20261013/integration-bec674a9.

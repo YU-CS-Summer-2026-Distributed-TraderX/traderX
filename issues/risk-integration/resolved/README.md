@@ -33,3 +33,5 @@ Use the [task lifecycle skill](/Users/yaakov/dev/lmax/.claude/skills/traderx-tas
 See the [active queue](../README.md), [task records](../tasks/README.md), [live-rig queue](../live-rig/README.md) and [YU18 components](../../../specs/YU18-risk-integration/components/README.md). Preserve failed attempts and historical evidence; do not infer current live proof from an older revision.
 
 - [Bounded settlement memory correction](c4d-settlement-fix-20261013.md): approved fc35875a incorporated at376cb49d; bounded correction done. Retained deployment/index migration and full delivery acceptance remain separate.
+
+- [RI30 full-column preservation](ri30-taq-preservation.md) and [private compaction/catalog](ri30-taq-catalog.md): approvedbec674a9/dependencies incorporated at898f5150; boundedmilestones complete, replay/financial/applicationacceptance separate.

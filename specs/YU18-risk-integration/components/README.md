@@ -16,6 +16,9 @@
 
 | [Synthetic portfolio generator](portfolio-generator/README.md) | Integrated locally; large load campaign open | State-parent risk-portfolio-tools; external engine schema and optional proof |
 
+| [TAQ preservation](taq-preservation/README.md) | Bounded full-column corpus and source integration complete | Private immutable source/member provenance |
+| [TAQ catalog](taq-catalog/README.md) | Private compaction/catalog/query acceptance and source integration complete | Root scripts/ri30; no automatic application tape rollout |
+
 Adding a directory does not activate generation. Shared files stay at the state parent. Follow [component rules](../../../docs/spec-kit/state-components.md).
 
 ## Reference mapping

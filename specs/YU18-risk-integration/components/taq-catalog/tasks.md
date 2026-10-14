@@ -11,7 +11,7 @@ Status: implementation and private execution accepted 2026-10-14; coordinator re
 - [x] Admit pinned image; run quote/monthly pilot and measure sizing/cost. (NFR-TC01–02, SC-TC02)
 - [x] Publish 132 verified compacted sources and reconcile catalog/query results. (SC-TC03)
 - [x] Verify terminal-job resource cleanup and record completion evidence. (NFR-TC03, SC-TC04)
-- [ ] Review candidate and obtain separate integration approval for target checkout.
+- [x] Coordinator review, direct human integration approval and scoped canonical integration at898f5150;58tests/root/component/privategeneration verified.
 
 ## Accepted execution and proof — 2026-10-14
 
@@ -35,3 +35,5 @@ passed. Median file size is 194.90 MiB; no non-tail size violations or files abo
 Local finalizer recovery 4534cc74 passed 58 source tests; the executed image remains unchanged.
 Actual billed costs are unverified; measured usage and dated rate estimates remain private.
 Broader RI30, replay/financial validation and canonical integration remain open.
+
+Canonical source/corpus milestone done2026-10-14 at898f5150; broaderRI30replay/financial/connected-use remains separate. Historical pending statuses above retain their original dates.

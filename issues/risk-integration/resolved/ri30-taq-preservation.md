@@ -1,6 +1,8 @@
 # RI30 — TAQ preservation and pilot preparation
 
-Updated: 2026-10-11. Status: in progress. Author: current user-assigned RI30 chat.
+Current closeout2026-10-14: bounded implementation/corpus milestone done; human-approved bec674a9 with preservation-tool dependencies integrated at898f5150. Dated approval holds and pending statuses below are historical, superseded by this closeout. Broader replay/financial/connected-use scope remains open.
+
+Updated: 2026-10-11. Status: done for the bounded preservation and catalog source/corpus milestones. Author: current user-assigned RI30 chat.
 Parent: [RI30](../30-lossless-taq-reingestion.md).
 Spec: [TAQ preservation](../../../specs/YU18-risk-integration/components/taq-preservation/README.md).
 
@@ -143,3 +145,7 @@ Evidence: parent review-evidence/ri30-pilot-20261012/preservation-final-verifica
 preservation-final-cleanup.json,full32-final-check.json,march-daily-containment.json.
 Compaction/catalog is a separate proposed component/task, not implemented; user approval hold
 and paused automation remain. BroadRI30 and canonical source integration are not marked done.
+
+## Canonical integration and completion
+
+Direct human approved bec674a9 and explicit preservation-tool dependencies into traderX-risk-integration. All35paths match exact candidate at898f5150. Canonical58tests, root/component gates and full private YU18generation pass. Coordinator independently verified132source/16498unique-file/240506339565rowmetadata, catalog hashes/Parquet records, three actual saved query outputs and liveprivateCOMPLETErecord. Fullworkerall-field equivalence/pilotrowaudits/jobcleanup reviewed from supplied evidence; coordinator didnot redownload3.35TB. Existing23unrelateddirty/privatefiles and staging preserved. No newcloudjob/push/data deletion/automation. Privatepublication3348141897106bytes(+20.7%) and immutableoriginals/pilots/attempts retained. Applicationtape/replay/financialuse notproven. Evidence: parent coordination/eod-integration/review-evidence/ri30-catalog-20261013/integration-bec674a9.
