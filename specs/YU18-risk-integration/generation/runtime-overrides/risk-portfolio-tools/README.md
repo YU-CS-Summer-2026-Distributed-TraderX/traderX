@@ -1,5 +1,17 @@
 # Local synthetic USD Treasury tools
 
+Current local CPU profile (October 14): the CLI now generates `current-cpu-v1`
+for numerical engine `c3d7c6a` by default. Use `--profile legacy-2df78cb` to
+reproduce the legacy delivery described below. The Python function keeps its
+legacy default for old callers. See the [current CPU guide](../../../../../docs/risk-integration/local-cpu-loop.md)
+and [current contract](../../../contracts/portfolio-current-cpu-v1.md) for actual
+installed service/worker execution, row-based results, offline `inspect`, and
+durable submission/GET recovery. Current per-position NPVs use a restricted
+independent flat-curve cashflow oracle; future exposure has no independent model
+oracle. Runtime evidence remains private and `financial_validation=false`.
+
+The following sections preserve the original legacy profile and its evidence.
+
 Python standard library for generation, validation and client. Engine verification additionally needs the pinned engine's dependency environment. Source owner is YU18; the renderer copies this directory to `generated/code/target-generated/risk-portfolio-tools`. The root wrapper runs authoritative source directly.
 
 All inputs and outputs here are synthetic. Requests represent direct engine portfolios, not TraderX exporter lineage. Default output is base dirty NPV only, with no scenarios or Greeks. This is separate from `/eod/price` and does not change the accepted EOD container.

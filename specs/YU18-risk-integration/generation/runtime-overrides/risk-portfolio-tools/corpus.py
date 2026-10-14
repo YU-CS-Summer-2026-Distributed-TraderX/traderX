@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
+from profiles import CURRENT, LEGACY, PROFILES, request_profile
 
 ENGINE = "2df78cb08f782010f61acffc07d78030580e7639"
 MAX_TRADES = 100_000
@@ -32,7 +33,7 @@ def add_months(d, months):
     return date(year, month + 1, min(d.day, calendar.monthrange(year, month + 1)[1]))
 
 
-def header(asof, rate, samples, seed):
+def header(asof, rate, samples, seed, profile=LEGACY):
     body = {"schema_version": "2", "market": {"asof": asof.isoformat(), "currencies": {
         "USD": {"discount_curve": {"times": [0.0, 1.0, 5.0, 10.0], "rates": [rate] * 4}}}},
         "base_currency": "USD", "scenario_risk": bool(samples), "compute_greeks": False}
@@ -40,6 +41,8 @@ def header(asof, rate, samples, seed):
         body["simulation"] = {"dates": [(asof + timedelta(days=n)).isoformat() for n in (30, 90, 180)],
                               "base_currency": "USD", "samples": samples, "seed": seed,
                               "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}}
+    if profile == CURRENT:
+        del body["schema_version"]
     return body
 
 
@@ -67,9 +70,11 @@ def trade(asof, rng, mode, identity, index):
 
 
 def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", rate=0.03,
-             mode="repeated", samples=0, max_bytes=MAX_BYTES):
+             mode="repeated", samples=0, max_bytes=MAX_BYTES, profile=LEGACY):
     """Stream one trade at a time. Publish a fresh directory only after all files succeed."""
     asof = date.fromisoformat(asof)
+    if profile not in PROFILES:
+        raise ValueError("unknown engine profile")
     if not (0 <= seed <= 2**32 - 1 and 1 <= trades <= MAX_TRADES and 1 <= portfolios <= 1000
             and trades * portfolios <= MAX_TRADES and 0 <= samples <= 128):
         raise ValueError("seed/count/sample limits exceeded")
@@ -77,7 +82,7 @@ def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", ra
         raise ValueError("unsupported rate or mode")
     if not 1 <= max_bytes <= MAX_BYTES:
         raise ValueError("byte limit must be 1..128 MiB")
-    cube = samples * 4 * trades * 8  # includes t=0; lower bound, excludes intermediates/JSON
+    cube = samples * (3 if profile == CURRENT else 4) * trades * 8
     if cube > MAX_CUBE:
         raise ValueError("raw cube lower bound exceeds 64 MiB; use file-only/base NPV or fewer trades")
     output = Path(output).resolve()
@@ -88,6 +93,8 @@ def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", ra
         raise ValueError("corpora/results must be outside Git checkouts")
     settings = dict(seed=seed, trades=trades, portfolios=portfolios, asof=asof.isoformat(),
                     rate=rate, mode=mode, samples=samples)
+    if profile == CURRENT:
+        settings["profile"] = profile
     corpus_id = "synthetic-" + hashlib.sha256(encoded(settings)).hexdigest()[:24]
     staging = Path(tempfile.mkdtemp(prefix=".ri14-", dir=output.parent))
     manifest = {"version": 1, "synthetic": True, "provenance": "seeded-local-fiction; not market observations",
@@ -96,6 +103,9 @@ def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", ra
                 "cube_bytes_per_portfolio_lower_bound": cube,
                 "financial_validation": False, "expected_refused": 0, "files": []}
     total = 0
+    if profile == CURRENT:
+        manifest.update(version=2, engine_revision=PROFILES[profile], generator_version=2,
+                        request_schema="engine.api.requests.MarketPortfolioRequestSchema@c3d7c6a")
     rng = random.Random(seed)
     try:
         for p in range(portfolios):
@@ -111,7 +121,7 @@ def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", ra
                     if total > max_bytes:
                         raise ValueError("corpus request bytes exceed limit")
                     f.write(data)
-                emit(encoded(header(asof, rate, samples, seed))[:-1] + b',"trades":[')
+                emit(encoded(header(asof, rate, samples, seed, profile))[:-1] + b',"trades":[')
                 for i in range(trades):
                     t = trade(asof, rng, mode, f"{pid}-t{i:06d}", i)
                     stats["note" if t["coupon_schedule"] else "bill"] += 1
@@ -151,7 +161,7 @@ def load_request(path, limit=8 * 1024 * 1024):
 def validate(body):
     """The intentionally narrow generated profile, not a replacement for engine validation."""
     allowed = {"schema_version", "market", "base_currency", "scenario_risk", "compute_greeks", "trades", "simulation"}
-    if set(body) - allowed or body.get("schema_version") != "2" or body.get("base_currency") != "USD":
+    if set(body) - allowed or ("schema_version" in body and body["schema_version"] != "2") or body.get("base_currency") != "USD":
         raise ValueError("unsupported request profile")
     asof = date.fromisoformat(body["market"]["asof"])
     if set(body["market"]) != {"asof", "currencies"} or set(body["market"]["currencies"]) != {"USD"}:
@@ -210,7 +220,7 @@ def validate(body):
         expected = header(asof, c["rates"][0], simulation["samples"], seed)["simulation"]
         if simulation != expected:
             raise ValueError("unsupported simulation profile")
-        if simulation["samples"] * 4 * len(trades) * 8 > MAX_CUBE:
+        if simulation["samples"] * (3 if request_profile(body) == CURRENT else 4) * len(trades) * 8 > MAX_CUBE:
             raise ValueError("cube lower bound exceeds budget")
     elif simulation is not None:
         raise ValueError("base-NPV profile has no simulation")
@@ -223,7 +233,9 @@ def verify_manifest(directory):
     if len(data) > 1024 * 1024:
         raise ValueError("manifest exceeds 1 MiB")
     m = json.loads(data)
-    if m["synthetic"] is not True or m["engine_revision"] != ENGINE or not m["files"]:
+    profile = m["settings"].get("profile", LEGACY)
+    if (m["synthetic"] is not True or profile not in PROFILES or m["engine_revision"] != PROFILES[profile]
+            or not m["files"] or m["version"] != (2 if profile == CURRENT else 1)):
         raise ValueError("invalid provenance/engine identity")
     settings = m["settings"]
     expected_id = "synthetic-" + hashlib.sha256(encoded(settings)).hexdigest()[:24]
@@ -242,6 +254,8 @@ def verify_manifest(directory):
         p = directory / name
         if p.is_symlink() or p.stat().st_size != item["bytes"] or digest(p) != item["sha256"]:
             raise ValueError("request checksum/size mismatch")
+        if request_profile(load_request(p)) != profile:
+            raise ValueError("request contradicts manifest engine profile")
         total += p.stat().st_size
     if total != m["request_bytes"] or total + len(data) > MAX_BYTES:
         raise ValueError("manifest total bytes mismatch/budget exceeded")

@@ -2,6 +2,14 @@
 
 Owner: codex-portfolio-generator. Local delivery complete pending review; large campaigns deferred.
 
+October 14 continuation: preserve this original legacy plan and implement an additive
+`current-cpu-v1` profile against `c3d7c6a`. Reuse the generator/client and YU18 owner.
+Carry durable portfolio submission identity into a separate external engine candidate;
+keep numerical implementations and the accepted EOD path unchanged. Prove an installed
+CPU HTTP/subprocess worker, verified offline custody, independent synthetic cashflows,
+restart and lost-reply GET recovery before review. No exporter lineage, UI, cloud or
+general financial acceptance is implied. See the current local CPU run guide.
+
 Keep source in state-parent `generation/runtime-overrides/risk-portfolio-tools`, with a root convenience CLI. Add only that module to YU18 renderer; no runtime deployment or startup wiring. No ancestor provides this new module.
 
 Use Python standard-library streaming serialization, deterministic seed/settings identity and immutable output directory publication. Schema imports and engine pricing are opt-in verification in the engine dependency environment. Reuse engine schema and validation rather than copying general pricing. The independent reference is restricted to four explicit regular synthetic cashflows and accrual elapsed-day math.

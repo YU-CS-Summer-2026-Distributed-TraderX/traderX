@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from corpus import ENGINE, MAX_BYTES, digest, generate, load_request, verify_entry, verify_manifest
+from profiles import CURRENT, CURRENT_ENGINE, PROFILES
 
 
 def main():
@@ -18,9 +19,12 @@ def main():
     g.add_argument("--asof", default="2026-10-07")
     g.add_argument("--rate", type=float, default=0.03)
     g.add_argument("--mode", choices=("repeated", "heterogeneous"), default="repeated")
+    g.add_argument("--profile", choices=tuple(PROFILES), default=CURRENT)
     v = sub.add_parser("validate")
     v.add_argument("directory", type=Path)
     v.add_argument("--engine-root", type=Path)
+    inspect = sub.add_parser("inspect", help="revalidate accepted synthetic portfolio custody offline")
+    inspect.add_argument("evidence", type=Path)
     for command in ("submit", "poll", "recover"):
         c = sub.add_parser(command)
         c.add_argument("request", type=Path)
@@ -37,7 +41,8 @@ def main():
     try:
         if args.command == "generate":
             m = generate(args.output, seed=args.seed, trades=args.trades, portfolios=args.portfolios,
-                         asof=args.asof, rate=args.rate, mode=args.mode, samples=args.samples, max_bytes=args.max_bytes)
+                         asof=args.asof, rate=args.rate, mode=args.mode, samples=args.samples, max_bytes=args.max_bytes,
+                         profile=args.profile)
             print(json.dumps({"synthetic": True, "output": str(args.output.resolve()),
                               "corpus_id": m["corpus_id"], "request_bytes": m["request_bytes"]}))
         elif args.command == "validate":
@@ -46,13 +51,17 @@ def main():
             if args.engine_root:
                 root = args.engine_root.resolve()
                 revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-                if revision != ENGINE or subprocess.call(["git", "-C", str(root), "diff", "--quiet", "HEAD", "--", "engine"]):
-                    raise ValueError("engine schema proof requires pinned revision " + ENGINE)
+                if revision != m["engine_revision"] or subprocess.call(["git", "-C", str(root), "diff", "--quiet", "HEAD", "--", "engine"]):
+                    raise ValueError("engine schema proof requires manifest's clean pinned numerical revision")
                 # Avoid writes to the read-only engine checkout.
                 sys.dont_write_bytecode = True
                 sys.path.insert(0, str(root))
-                from engine.api.market_schemas import MarketPortfolioRequestSchema
-                from engine.portfolio.market_path import validate_request
+                if revision == CURRENT_ENGINE:
+                    from engine.api.requests import MarketPortfolioRequestSchema
+                    from engine.run.pipeline import validate_request
+                else:
+                    from engine.api.market_schemas import MarketPortfolioRequestSchema
+                    from engine.portfolio.market_path import validate_request
                 engine = (MarketPortfolioRequestSchema, validate_request)
             for item in m["files"]:
                 body = load_request(args.directory / item["path"])
@@ -61,6 +70,9 @@ def main():
                     engine[1](engine[0].model_validate(body).to_dataclass())
             print(json.dumps({"files_validated": len(m["files"]), "engine_schema_validated": bool(engine),
                               "financial_validation": False}))
+        elif args.command == "inspect":
+            from intake import snapshot
+            print(json.dumps(snapshot(args.evidence), sort_keys=True))
         else:
             if args.command == "submit" and args.job_id or args.command == "poll" and not args.job_id:
                 raise ValueError("submit takes no job_id; poll requires job_id")

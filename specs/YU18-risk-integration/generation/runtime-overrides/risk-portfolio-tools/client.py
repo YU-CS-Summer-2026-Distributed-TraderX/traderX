@@ -10,6 +10,8 @@ from urllib.parse import quote, urlsplit
 
 from corpus import digest, encoded, load_request
 from reference import check_result
+from profiles import CONTRACT, CURRENT, CURRENT_ENGINE, CONTENT_DIGEST_ALGORITHM, request_profile
+from request_identity import content_sha256
 
 MAX_REPLY = 16 * 1024 * 1024
 MAX_EVIDENCE = 128 * 1024 * 1024
@@ -111,15 +113,32 @@ class Driver:
         snapshot = self.evidence / "request.json"
         shutil.copyfile(request, snapshot)
         body = load_request(snapshot)
+        current = request_profile(body) == CURRENT
+        if current and not submission_id:
+            raise ValueError("current profile requires a manifest or explicit submission identity")
         self.state.update(request_sha256=digest(snapshot), request_bytes=snapshot.stat().st_size,
                           submission_id=submission_id)
+        expected_content = content_sha256(snapshot.read_bytes()) if current else None
+        if current:
+            self.state["request_content_sha256"] = expected_content
         self.save()
         try:
+            if current:
+                code, caps = self.exchange("GET", "/portfolio/capabilities")
+                if (code != 200 or caps.get("execution_contract") != CONTRACT or caps.get("numerical_engine_revision") != CURRENT_ENGINE
+                        or caps.get("request_content_digest") != CONTENT_DIGEST_ALGORITHM):
+                    return self.finish("INCOMPATIBLE_ENGINE", "current pinned CPU submission contract required; no POST")
+                self.state["execution_contract"] = CONTRACT
             if recover:
                 code, reply = self.exchange("GET", "/portfolio/submissions/" + quote(submission_id, safe=""))
                 if code != 200 or not isinstance(reply.get("job_id"), str):
                     return self.finish("UNKNOWN", f"submission recovery HTTP {code}; no POST")
                 job_id = reply["job_id"]
+                self.state["job_id"] = job_id
+                if current and reply.get("execution_contract") != CONTRACT:
+                    return self.finish("UNKNOWN", "recovered job has another/unknown execution contract")
+                if current and reply.get("request_content_sha256") != expected_content:
+                    return self.finish("REQUEST_MISMATCH", "recovered job belongs to different request content; no POST")
             if job_id is None:
                 # Persist uncertainty before any byte is sent. Never retry POST, even on 500.
                 self.state.update(outcome="SUBMISSION_UNKNOWN", post_attempts=1)
@@ -132,16 +151,32 @@ class Driver:
                 job_id = reply.get("job_id")
                 if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
                     return self.finish("SUBMISSION_UNKNOWN", "accepted response lacks valid job_id")
+                self.state["job_id"] = job_id
+                if current and reply.get("execution_contract") != CONTRACT:
+                    return self.finish("UNKNOWN", "accepted job has another/unknown execution contract")
+                if current and reply.get("request_content_sha256") != expected_content:
+                    return self.finish("REQUEST_MISMATCH", "accepted job belongs to different request content; no retry")
             if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
                 raise ValueError("invalid resume job_id")
             self.state.update(job_id=job_id, outcome="ACCEPTED")
             self.save()
+            if current and submission_id:
+                code, bound = self.exchange("GET", "/portfolio/submissions/" + quote(submission_id, safe=""))
+                if code != 200 or bound.get("job_id") != job_id or bound.get("execution_contract") != CONTRACT:
+                    return self.finish("UNKNOWN", "submission binding could not be reconciled; no POST retry")
+                if bound.get("request_content_sha256") != expected_content:
+                    return self.finish("REQUEST_MISMATCH", "submission belongs to different request content; no POST")
             for _ in range(self.max_polls):
-                code, reply = self.exchange("GET", "/portfolio/price/" + quote(job_id, safe=""))
+                path = "/jobs/" if current else "/portfolio/price/"
+                code, reply = self.exchange("GET", path + quote(job_id, safe=""))
                 if code == 404:
                     return self.finish("UNKNOWN", "job not found; no resubmission")
                 if code != 200:
                     return self.finish("UNKNOWN", f"poll HTTP {code}; retained job identity")
+                if current and (reply.get("execution_contract") != CONTRACT or reply.get("kind") != "portfolio"):
+                    return self.finish("UNKNOWN", "polled job contract/kind mismatch")
+                if current and reply.get("request_content_sha256") != expected_content:
+                    return self.finish("REQUEST_MISMATCH", "job belongs to different request content; no POST")
                 status = reply.get("status")
                 if status == "done":
                     try:
@@ -149,6 +184,9 @@ class Driver:
                     except (ValueError, KeyError, TypeError) as exc:
                         return self.finish("INVALID_RESULT", str(exc))
                     self.state["result_checks"] = verdict
+                    if current:
+                        from intake import publish
+                        self.state["accepted"] = publish(self.evidence, self.state, reply["result"])
                     return self.finish("DONE")
                 if status in ("failed", "interrupted"):
                     return self.finish(status.upper(), "terminal; no automatic resubmission")
