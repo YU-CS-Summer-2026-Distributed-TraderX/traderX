@@ -58,3 +58,7 @@ This is additional local-process acceptance only. It neither replaces nor expand
 ## October 15 local export milestone
 
 Approved TraderX candidate `1a037a47` is integrated. The [bounded local export proof](../resolved/risk-cpu-local-export-20261015.md) verifies a sequenced synthetic bill export through installed owned CPU engine `270a907a` and offline account/run/cut-bound intake. This advances local evidence only; connected status/UI, cloud admission and wider Stage B acceptance remain open. Historical C8 evidence remains profile-specific.
+
+## October 15 mapped Batch and local UI milestone
+
+Approved `860ad0d0` plus four dependencies integrated: source/build receipt and actual Batch UID handoff, one synthetic USD bill result, immutable local import and built Risk-tab display. See [bounded closeout](../resolved/risk-batch-result-ingestion-20261015.md). This is retained cloud evidence plus local UI, not hosted TraderX scheduling or live position comparison; wider Stage B remains open.

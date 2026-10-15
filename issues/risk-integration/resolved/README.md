@@ -39,3 +39,5 @@ See the [active queue](../README.md), [task records](../tasks/README.md), [live-
 - [Current local CPU portfolio integration](local-cpu-portfolio-integration-20261014.md): approved `b9fb0843` integrated at `c249adc5`; separate engine `270a907a` retained, accepted C8/EOD unchanged. Direct synthetic local CPU correctness/recovery complete; connected exporter provenance, container/cloud and general financial/load acceptance remain separate.
 
 - [Local CPU export packaging](risk-cpu-local-export-20261015.md): approved `1a037a47` integrated; bounded local synthetic installed proof accepted. Cloud admission and connected status/UI remain open.
+
+- [Batch result ingestion and Risk UI](risk-batch-result-ingestion-20261015.md): approved five-commit range through `860ad0d0` integrated; bounded cloud result/local UI accepted. Deployed UI and broader financial/current-position qualifications remain open.

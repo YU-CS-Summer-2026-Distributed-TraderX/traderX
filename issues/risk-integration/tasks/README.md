@@ -32,4 +32,4 @@ Completed bounded slice: [console runtime packaging](../resolved/lr05-console-pa
 
 ## October 15 local Batch result ingestion
 
-[Local Batch result ingestion](risk-batch-result-ingestion-20261015.md): isolated implementation and local UI proof; review pending, not integrated.
+[Local Batch result ingestion](../resolved/risk-batch-result-ingestion-20261015.md): done for approved cloud handoff and local ingestion/UI scope; `860ad0d0` plus four dependencies integrated. Deployment and broader risk qualification remain open.

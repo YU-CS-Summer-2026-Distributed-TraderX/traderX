@@ -26,7 +26,7 @@ Coordinator corrections (2026-09-24):
 - [x] Verify real installed CPU execution and retained connected intake; reject identity/custody mutations.
 - [x] Verify source/generated contracts, fresh exporter and frozen golden; record exact bounded evidence.
 - [x] Coordinator final review and explicit canonical integration approval; candidate `1a037a47` integrated October 15. See [bounded closeout](../../../../issues/risk-integration/resolved/risk-cpu-local-export-20261015.md).
-- [ ] Qualify cloud build source/receipt admission and actual Batch UID handoff.
+- [x] Qualify bounded mapped CPU cloud build receipt and actual Batch UID handoff; retained artifacts verified.
 - [ ] Integrate connected status/UI and durable authorized run selection/replay policy.
 
 Evidence: [CPU export platform](../../../../docs/risk-integration/cpu-export-platform.md). Historical cloud pilot and EOD/UI evidence remain separate.
@@ -36,4 +36,4 @@ Evidence: [CPU export platform](../../../../docs/risk-integration/cpu-export-pla
 - [x] Implement explicit local Batch import, copied custody, replay/conflict handling and offline status.
 - [x] Display verified account/run/cut/NPV in the existing Risk tab, with honest unavailable measures.
 - [x] Exercise real saved artifacts and built UI with missing/tampered evidence refusals.
-- [ ] Complete coordinator review and obtain scoped integration approval.
+- [x] Coordinator review and human approval complete; `860ad0d0` and four dependencies integrated. See [closeout](../../../../issues/risk-integration/resolved/risk-batch-result-ingestion-20261015.md).
