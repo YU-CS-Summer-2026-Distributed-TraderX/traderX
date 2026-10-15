@@ -4,7 +4,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 
 | Pack | Status |
 |---|---|
-| [GitHub push CI repairs](github-push-ci/README.md) | Locally verified candidate ready for review; integration and hosted proof pending |
+| [GitHub push CI repairs](github-push-ci/README.md) | Integrated at `4f823668`; user push and hosted proof pending |
 | [Test-suite profiles](test-suite-profiles/README.md) | RI31 in progress: executable guard checks and compatible synthetic fixtures; full-suite delivery pending |
 | [CompSci cold-demo admission](compsci-gke-admission/README.md) | Done for the approved initial pack and hosted repairs through1132510f; broader performance/retained-state qualification remains separate |
 | [Generation performance](generation-performance/README.md) | Done: approved local batching/current-input parity; warmed offline profile only |

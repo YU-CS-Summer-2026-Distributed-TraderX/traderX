@@ -1,6 +1,6 @@
 # GitHub push CI repairs
 
-Updated: 2026-10-15. Status: locally verified candidate ready for review; canonical integration and a new hosted run remain pending. Owner: CI task chat 01a13dbd-187a-77c0-8c51-4c612e5f3916. Task: GITHUB-PUSH-CI-20261015; parent: [RI-08](../../../../issues/risk-integration/08-build-and-deployment.md).
+Updated: 2026-10-15. Status: reviewed and integrated into canonical at `4f823668`; user push and a new hosted run remain pending. Owner: CI task chat 01a13dbd-187a-77c0-8c51-4c612e5f3916. Task: GITHUB-PUSH-CI-20261015; parent: [RI-08](../../../../issues/risk-integration/08-build-and-deployment.md).
 
 The push of `97ac0c23e457256b103d8db9ea6850982276c06f` to `traderX-risk-integration` failed two jobs:
 
