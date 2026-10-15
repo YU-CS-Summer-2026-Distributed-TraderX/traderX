@@ -126,7 +126,7 @@ def main():
     if args.local_input:
         require(args.local_input.stat().st_size <= 1024 * 1024, 'oversized local input')
         accepted = run_local(args.local_input.read_bytes(), args.evidence.resolve(), manifest, runtime)
-        print(json.dumps({'event': 'local_cpu_golden_verified', 'verification': accepted,
+        print(json.dumps({'event': 'local_cpu_portfolio_verified', 'verification': accepted,
                           'engine_revision': manifest['engine_revision']}), flush=True)
         return 0
     require(bool(runtime['batch_uid']) and os.environ.get('BATCH_TASK_INDEX') == '0', 'one Batch task required')
