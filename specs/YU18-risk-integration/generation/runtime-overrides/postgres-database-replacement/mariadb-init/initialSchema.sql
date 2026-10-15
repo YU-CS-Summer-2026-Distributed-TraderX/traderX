@@ -46,6 +46,7 @@ CREATE TABLE trades (
   side VARCHAR(10) CHECK (side in ('Buy', 'Sell')),
   quantity INTEGER CHECK (quantity > 0),
   price DECIMAL(18,3),
+  settlementdate DATETIME,
   state VARCHAR(20) CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled'))
 );
 

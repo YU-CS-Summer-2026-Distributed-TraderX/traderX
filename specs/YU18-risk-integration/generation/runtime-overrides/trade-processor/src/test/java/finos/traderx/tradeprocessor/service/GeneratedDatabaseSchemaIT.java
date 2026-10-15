@@ -13,7 +13,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Execute the SQL parsed from the GENERATED ConfigMap, not standalone ri06.sql. */
+/** Execute both shipped schema entrypoints and the generated ConfigMap migrations. */
 @Tag("integration") @Testcontainers
 class GeneratedDatabaseSchemaIT {
  @Container static final MariaDBContainer<?> DB=new MariaDBContainer<>("mariadb:11.4")
@@ -23,6 +23,21 @@ class GeneratedDatabaseSchemaIT {
  static final String ORDERS="SELECT * FROM orderbook ORDER BY orderid";
  @Test void freshVolumeRuns001Then900AndPreservesSeededEconomics() throws Exception {exercise(false);}
  @Test void populatedPreRi06VolumeRunsOnly900AndRepeatedMigrationPreservesHistory() throws Exception {exercise(true);}
+ @Test void standaloneInitialSchemaCreatesSettlementIndexAndSeededHistory() throws Exception {
+  String sql=java.nio.file.Files.readString(java.nio.file.Path.of("../postgres-database-replacement/mariadb-init/initialSchema.sql"));
+  try(var connection=DriverManager.getConnection(DB.getJdbcUrl(),"root",DB.getPassword())) {
+   try(var statement=connection.createStatement()){statement.execute("CREATE DATABASE standalone_fresh");}
+   connection.setCatalog("standalone_fresh");
+   var jdbc=new JdbcTemplate(new SingleConnectionDataSource(connection,true));
+   try {
+    execute(connection,sql);
+    assertEquals(List.of("state","settlementdate","id"),jdbc.queryForList("SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='trades' AND INDEX_NAME='idx_trades_settlement_due' ORDER BY SEQ_IN_INDEX",String.class));
+    assertEquals(4,jdbc.queryForObject("SELECT count(*) FROM trades WHERE projectionscope='legacy-unknown'",Integer.class));
+    assertEquals(4,jdbc.queryForObject("SELECT count(*) FROM positions WHERE projectionscope='legacy-unknown'",Integer.class));
+    assertEquals(2,jdbc.queryForObject("SELECT version FROM projection_schema WHERE singleton_id=1",Integer.class));
+   } finally {try(var statement=connection.createStatement()){statement.execute("DROP DATABASE standalone_fresh");}}
+  }
+ }
  void exercise(boolean retained) throws Exception {
   var scripts=GeneratedDatabaseManifestTest.scripts();String initial=scripts.get("001-initialSchema.sql"),migration=scripts.get("900-migrations.sql");
   String database=retained?"c1_retained":"c1_fresh";

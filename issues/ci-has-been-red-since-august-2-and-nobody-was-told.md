@@ -1,6 +1,6 @@
 # CI has been red since 2026-08-02, and nothing said so
 
-**Status:** green on GitHub since 2026-09-16 (see the last section); the notification gap below is still open
+**Status:** the latest inspected push at `97ac0c23` fails the trade-processor schema integration and console status-runtime jobs. [Current diagnosis and repair candidate](../specs/YU18-risk-integration/maintenance/github-push-ci/README.md). Earlier green observations below are historical; the original notification gap remains open.
 **Found:** 2026-08-27, by the coordinator, while adding YU16 and YU17 to the engine-tests matrix
 **Class:** silent red — a pipeline reporting failure to nobody, while the docs it feeds claim zero failures
 

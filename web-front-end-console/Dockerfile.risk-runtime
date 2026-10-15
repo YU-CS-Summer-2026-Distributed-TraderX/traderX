@@ -4,10 +4,10 @@
 ARG CONSOLE_IMAGE
 FROM ${CONSOLE_IMAGE}
 USER root
-RUN python3 -c 'import sqlite3; import sys; assert sys.version_info >= (3, 10)'
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3-venv \
+ && apt-get install -y --no-install-recommends python3 python3-venv \
  && rm -rf /var/lib/apt/lists/*
+RUN python3 -c 'import sqlite3; import sys; assert sys.version_info >= (3, 10)'
 COPY eod-risk-bundles /opt/traderx/eod-risk-bundles
 RUN python3 -m venv /opt/traderx/status-venv \
  && /opt/traderx/status-venv/bin/python -m pip install --no-cache-dir -r /opt/traderx/eod-risk-bundles/requirements-container.txt \
