@@ -98,3 +98,34 @@ class ReceiptTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):c.submit_build(self.work)
             with self.assertRaises(FileExistsError):c.submit_build(self.work)
             self.assertEqual(post.call_count,1)
+
+
+    def test_sync_before_post_and_required_project_parameter(self):
+        events=[]
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def read(self,*args):return encoded({'name':'operation','metadata':{'build':{'id':build_id}}})
+        build_id=self.id
+        def post(request, **kwargs):
+            self.assertEqual(events,['sync','sync'])
+            self.assertEqual(request.full_url,'https://cloudbuild.googleapis.com/v1/projects/'+c.PROJECT+
+                             '/locations/'+c.REGION+'/builds?projectId='+c.PROJECT)
+            events.append('post')
+            return Response()
+        with patch.object(c.subprocess,'check_output',return_value='token'), \
+             patch.object(c.os,'fsync',side_effect=lambda fd:events.append('sync')), \
+             patch.object(c.urllib.request,'urlopen',side_effect=post):
+            c.submit_build(self.work)
+        self.assertEqual(events,['sync','sync','post'])
+
+    def test_failed_file_or_directory_sync_never_posts(self):
+        for failures in ([OSError('file sync')], [None,OSError('directory sync')]):
+            with self.subTest(failures=failures):
+                fence=self.work/'build-submit-intent.json'
+                if fence.exists():fence.unlink()
+                with patch.object(c.subprocess,'check_output',return_value='token'), \
+                     patch.object(c.os,'fsync',side_effect=failures), \
+                     patch.object(c.urllib.request,'urlopen') as post:
+                    with self.assertRaises(OSError):c.submit_build(self.work)
+                    post.assert_not_called()

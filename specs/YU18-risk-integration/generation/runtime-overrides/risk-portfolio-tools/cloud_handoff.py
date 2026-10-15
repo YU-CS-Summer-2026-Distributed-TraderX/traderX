@@ -115,8 +115,13 @@ def submit_build(work):
     write(work / 'build-submit-intent.json', encoded({'request_sha256': digest(work / 'build-request.json')}) + b'\n')
     with (work / 'build-submit-intent.json').open('rb') as fence:
         os.fsync(fence.fileno())
+    directory_fd = os.open(work, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
     request = urllib.request.Request('https://cloudbuild.googleapis.com/v1/projects/' + PROJECT +
-          '/locations/' + REGION + '/builds', data=encoded(expected['config']),
+          '/locations/' + REGION + '/builds?projectId=' + PROJECT, data=encoded(expected['config']),
           headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=60) as response:
         raw = response.read(4 * 1024 * 1024 + 1)
