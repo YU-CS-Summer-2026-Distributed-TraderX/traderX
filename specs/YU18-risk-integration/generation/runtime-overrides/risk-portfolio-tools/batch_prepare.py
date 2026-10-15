@@ -1,7 +1,7 @@
-"""Prepare immutable CPU image inputs, a bounded Batch job, and verified downloads.
+"""Prepare immutable CPU image inputs and verify a local installed result.
 
-Only `fetch` invokes gcloud, for read-only downloads. Build, input upload and job
-submission remain explicit user-run commands. No Git working files are uploaded.
+No cloud commands run here. Cloud job generation and build-receipt admission
+require a separate qualified handoff; historical pilot scripts are not exposed.
 """
 import argparse
 import hashlib
@@ -10,7 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from batch_artifacts import require, safe_run, validate_completion, verify_download, verify_local
+from batch_artifacts import require, safe_run, verify_local
 from corpus import digest, encoded
 from profiles import CURRENT_ENGINE
 
@@ -145,77 +145,6 @@ def verify_package(directory):
     return package
 
 
-def job(directory, image, input_metadata):
-    package = verify_package(directory)
-    require(bool(re.fullmatch(re.escape(IMAGE_ROOT) + r'@sha256:[a-f0-9]{64}', image)), 'digest-pinned pilot image required')
-    metadata = read(input_metadata)
-    generation = str(metadata.get('generation', ''))
-    obj = 'inputs/' + package['run_id'] + '/request.json'
-    # gcloud storage uses storage_url (new SDK); JSON API metadata uses bucket/name.
-    correct_object = (metadata.get('bucket') == BUCKET and metadata.get('name') == obj or
-                      metadata.get('storage_url') == 'gs://' + BUCKET + '/' + obj)
-    require(correct_object and generation.isdigit() and int(generation) > 0 and
-            int(metadata['size']) == (directory / 'request.json').stat().st_size, 'input object metadata mismatch')
-    pin = {'bucket': BUCKET, 'object': obj, 'generation': generation, 'sha256': package['input_sha256']}
-    expected = {k: package[k] for k in ('run_id', 'build_sha256', 'engine_revision', 'numerical_revision')}
-    expected.update(image=image, input=pin)
-    config = {'taskGroups': [{'taskCount': 1, 'parallelism': 1, 'taskCountPerNode': 1,
-        'taskSpec': {'runnables': [{'container': {'imageUri': image, 'options': '--cpus=2 --memory=6g --pids-limit=256'}}],
-        'computeResource': {'cpuMilli': 2000, 'memoryMib': 6144}, 'maxRetryCount': 0, 'maxRunDuration': '1200s',
-        'environment': {'variables': {'PILOT_RUN_ID': package['run_id'], 'PILOT_BUCKET': BUCKET,
-             'PILOT_IMAGE': image, 'PILOT_INPUT_GENERATION': generation}}}}],
-        'allocationPolicy': {'instances': [{'policy': {'machineType': 'e2-standard-2',
-             'provisioningModel': 'STANDARD', 'bootDisk': {'type': 'pd-balanced', 'sizeGb': '30'}}}],
-             'location': {'allowedLocations': ['regions/' + REGION]},
-             'serviceAccount': {'email': 'risk-batch-worker@' + PROJECT + '.iam.gserviceaccount.com',
-                                'scopes': ['https://www.googleapis.com/auth/cloud-platform']},
-             'network': {'networkInterfaces': [{'network': 'projects/' + PROJECT + '/global/networks/default'}]}},
-        'logsPolicy': {'destination': 'CLOUD_LOGGING'}, 'labels': {'workload': 'risk-cpu-pilot'}}
-    write(directory / 'job.json', encoded(config) + b'\n')
-    write(directory / 'expected.json', encoded(expected) + b'\n')
-    return expected
-
-
-def resolve_image(directory, metadata):
-    package = verify_package(directory)
-    build = read(metadata)
-    config = read(directory / 'context/cloudbuild.json')
-    require(build.get('status') == 'SUCCESS', 'image build and Linux golden test must succeed first')
-    require(build.get('serviceAccount') == config['serviceAccount'], 'wrong build identity')
-    require([s['args'] for s in build['steps']] == [s['args'] for s in config['steps']], 'wrong build/test steps')
-    images = build.get('results', {}).get('images', [])
-    matches = [i for i in images if i.get('name') == package['image_tag']]
-    require(len(matches) == 1 and re.fullmatch(r'sha256:[a-f0-9]{64}', matches[0]['digest']), 'missing built image digest')
-    return IMAGE_ROOT + '@' + matches[0]['digest']
-
-
-def gcloud(*args):
-    return subprocess.check_output(['gcloud', '--account=' + ACCOUNT, '--project=' + PROJECT, *args])
-
-
-def fetch(directory, output):
-    package = verify_package(directory)
-    expected = read(directory / 'expected.json')
-    cloud = json.loads(gcloud('batch', 'jobs', 'describe', package['run_id'], '--location=' + REGION, '--format=json'))
-    require(cloud['status']['state'] == 'SUCCEEDED', 'Batch job has not succeeded; inspect logs first')
-    require(cloud['taskGroups'][0]['taskSpec']['runnables'][0]['container']['imageUri'] == expected['image'],
-            'actual Batch image mismatch')
-    output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    write(output / 'batch-job.json', encoded(cloud) + b'\n')
-    uri = 'gs://' + BUCKET + '/runs/' + safe_run(package['run_id']) + '/completion.json'
-    meta = json.loads(gcloud('storage', 'objects', 'describe', uri, '--format=json'))
-    gcloud('storage', 'cp', uri + '#' + str(meta['generation']), str(output / 'completion.json'))
-    receipt = read(output / 'completion.json')
-    require(receipt['batch_uid'] == cloud['uid'], 'actual Batch UID mismatch')
-    for item in validate_completion(receipt, expected):
-        path = output / 'artifacts' / item['path']
-        path.parent.mkdir(parents=True, exist_ok=True)
-        gcloud('storage', 'cp', 'gs://' + BUCKET + '/' + item['object'] + '#' + item['generation'], str(path))
-    result = verify_download(output / 'artifacts', receipt, expected)
-    write(output / 'verified.json', encoded(result) + b'\n')
-    return result
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest='command', required=True)
@@ -230,19 +159,6 @@ def main():
     p = subs.add_parser('local-verify')
     p.add_argument('--package', type=Path, required=True)
     p.add_argument('--evidence', type=Path, required=True)
-    p = subs.add_parser('job')
-    p.add_argument('--package', type=Path, required=True)
-    p.add_argument('--image', required=True)
-    p.add_argument('--input-metadata', type=Path, required=True)
-    p = subs.add_parser('image')
-    p.add_argument('--package', type=Path, required=True)
-    p.add_argument('--build-metadata', type=Path, required=True)
-    p = subs.add_parser('fetch')
-    p.add_argument('--package', type=Path, required=True)
-    p.add_argument('--output', type=Path, required=True)
-    p = subs.add_parser('verify')
-    p.add_argument('--package', type=Path, required=True)
-    p.add_argument('--download', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'prepare':
         result = prepare(args.engine_root.resolve(), args.output, args.run_id, args.upstream_sha, args.mapped_input)
@@ -251,16 +167,6 @@ def main():
     elif args.command == 'local-verify':
         package = verify_package(args.package)
         result = verify_local(args.evidence, package['build_sha256'])
-    elif args.command == 'job':
-        result = job(args.package, args.image, args.input_metadata)
-    elif args.command == 'image':
-        print(resolve_image(args.package, args.build_metadata))
-        return 0
-    elif args.command == 'fetch':
-        result = fetch(args.package, args.output)
-    else:
-        result = verify_download(args.download / 'artifacts', read(args.download / 'completion.json'),
-                                 read(args.package / 'expected.json'))
     print(json.dumps(result, sort_keys=True))
     return 0
 

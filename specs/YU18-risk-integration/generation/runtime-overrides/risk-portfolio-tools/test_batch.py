@@ -112,38 +112,5 @@ class BatchPayloadTests(unittest.TestCase):
                 (root / 'jobs.sqlite').write_bytes(original)
 
 
-class JobTests(unittest.TestCase):
-    def test_job_has_one_task_pinned_input_and_image_and_finite_limits(self):
-        package = {'run_id': 'risk-cpu-test-01', 'input_sha256': digest(FIXTURE), 'build_sha256': 'b' * 64,
-                   'engine_revision': 'engine', 'numerical_revision': CURRENT_ENGINE}
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / 'request.json').write_bytes(FIXTURE.read_bytes())
-            meta = {'bucket': p.BUCKET, 'name': 'inputs/risk-cpu-test-01/request.json', 'generation': '3',
-                    'size': FIXTURE.stat().st_size}
-            (root / 'meta.json').write_bytes(encoded(meta))
-            with patch.object(p, 'verify_package', return_value=package):
-                with self.assertRaises(ValueError):
-                    p.job(root, p.IMAGE_ROOT + ':latest', root / 'meta.json')
-                p.job(root, p.IMAGE_ROOT + '@sha256:' + 'a' * 64, root / 'meta.json')
-            config = json.loads((root / 'job.json').read_bytes())
-            group = config['taskGroups'][0]
-            self.assertEqual((len(config['taskGroups']), group['taskCount'], group['parallelism']), (1, 1, 1))
-            self.assertEqual(group['taskSpec']['maxRetryCount'], 0)
-            self.assertEqual(group['taskSpec']['maxRunDuration'], '1200s')
-            self.assertEqual(group['taskSpec']['environment']['variables']['PILOT_INPUT_GENERATION'], '3')
-            self.assertEqual(config['allocationPolicy']['instances'][0]['policy']['machineType'], 'e2-standard-2')
-
-    def test_wrong_input_object_metadata_is_refused(self):
-        package = {'run_id': 'risk-cpu-test-01'}
-        with tempfile.TemporaryDirectory() as tmp, patch.object(p, 'verify_package', return_value=package):
-            root = Path(tmp)
-            (root / 'request.json').write_bytes(FIXTURE.read_bytes())
-            (root / 'meta.json').write_bytes(encoded({'bucket': 'other', 'name': 'request',
-                                                    'generation': '3', 'size': FIXTURE.stat().st_size}))
-            with self.assertRaises(ValueError):
-                p.job(root, p.IMAGE_ROOT + '@sha256:' + 'a' * 64, root / 'meta.json')
-
-
 if __name__ == '__main__':
     unittest.main()
