@@ -100,3 +100,46 @@ class HandoffTests(unittest.TestCase):
             bad=copy.deepcopy(self.actual);bad['uid']='different-actual-uid';bad['status']['state']='SUCCEEDED'
             with patch.object(h,'check',return_value=(self.expected,self.config)),self.assertRaisesRegex(ValueError,'UID differs'):
                 h.verify_result(work,work,{},bad)
+
+    def test_submit_publishes_actual_uid_create_only_then_reads_generation(self):
+        with tempfile.TemporaryDirectory() as d:
+            work=Path(d);(work/'job.json').write_bytes(encoded(self.config))
+            calls=[]
+            def cloud(*args):
+                calls.append(args)
+                self.assertTrue((work/'batch-submit-intent.json').exists())
+                if args[:3]==('batch','jobs','submit'):return encoded(self.actual)
+                if args[:3]==('storage','objects','describe'):return encoded({'generation':'77'})
+                if args[:2]==('storage','cp') and args[2].startswith('gs://'):
+                    self.assertTrue(args[2].endswith('#77'))
+                    Path(args[3]).write_bytes((work/'job-identity.json').read_bytes())
+                return b''
+            with patch.object(h,'check',return_value=(self.expected,self.config)),patch.object(h,'gcloud',side_effect=cloud):
+                result=h.submit(work)
+            self.assertEqual(result['batch_uid'],self.identity['batch_uid'])
+            self.assertIn('--if-generation-match=0',calls[1])
+            self.assertEqual(len(calls),4)
+
+    def test_unexpected_submitted_config_never_publishes_control(self):
+        with tempfile.TemporaryDirectory() as d:
+            work=Path(d);(work/'job.json').write_bytes(encoded(self.config))
+            bad=copy.deepcopy(self.actual);bad['taskGroups'][0]['parallelism']='2'
+            with patch.object(h,'check',return_value=(self.expected,self.config)),patch.object(h,'gcloud',return_value=encoded(bad)) as cloud:
+                with self.assertRaises(ValueError):h.submit(work)
+                self.assertEqual(cloud.call_count,1)
+                self.assertTrue((work/'batch-submit.json').exists())
+
+    def test_missing_or_replayed_checksummed_control_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            work=Path(d);(work/'job-identity.json').write_bytes(encoded(self.identity))
+            (work/'job-identity-object.json').write_bytes(encoded({'generation':'77'}))
+            actual=copy.deepcopy(self.actual);actual['status']['state']='SUCCEEDED'
+            record={'identity':self.identity,'object':'control/risk-cpu-test-01/job-identity.json','generation':'77'}
+            (work/'operator-job-identity.json').write_bytes(encoded(record))
+            completion={'batch_uid':self.identity['batch_uid'],'files':[{'path':'operator-job-identity.json'}]}
+            with patch.object(h,'check',return_value=(self.expected,self.config)),patch.object(h,'verify_download',return_value={'fixture':'accepted'}):
+                self.assertEqual(h.verify_result(work,work,completion,actual),{'fixture':'accepted'})
+                record['generation']='78';(work/'operator-job-identity.json').write_bytes(encoded(record))
+                with self.assertRaises(ValueError):h.verify_result(work,work,completion,actual)
+                completion['files']=[]
+                with self.assertRaises(ValueError):h.verify_result(work,work,completion,actual)
