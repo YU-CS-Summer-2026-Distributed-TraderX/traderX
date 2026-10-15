@@ -37,3 +37,5 @@ See the [active queue](../README.md), [task records](../tasks/README.md), [live-
 - [RI30 full-column preservation](ri30-taq-preservation.md) and [private compaction/catalog](ri30-taq-catalog.md): approvedbec674a9/dependencies incorporated at898f5150; boundedmilestones complete, replay/financial/applicationacceptance separate.
 
 - [Current local CPU portfolio integration](local-cpu-portfolio-integration-20261014.md): approved `b9fb0843` integrated at `c249adc5`; separate engine `270a907a` retained, accepted C8/EOD unchanged. Direct synthetic local CPU correctness/recovery complete; connected exporter provenance, container/cloud and general financial/load acceptance remain separate.
+
+- [Local CPU export packaging](risk-cpu-local-export-20261015.md): approved `1a037a47` integrated; bounded local synthetic installed proof accepted. Cloud admission and connected status/UI remain open.

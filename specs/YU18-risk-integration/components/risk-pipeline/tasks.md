@@ -25,7 +25,7 @@ Coordinator corrections (2026-09-24):
 - [x] Map nonempty synthetic USD bill account with explicit terms, units, curve and account/run/cut identity.
 - [x] Verify real installed CPU execution and retained connected intake; reject identity/custody mutations.
 - [x] Verify source/generated contracts, fresh exporter and frozen golden; record exact bounded evidence.
-- [ ] Coordinator final review and explicit canonical integration approval.
+- [x] Coordinator final review and explicit canonical integration approval; candidate `1a037a47` integrated October 15. See [bounded closeout](../../../../issues/risk-integration/resolved/risk-cpu-local-export-20261015.md).
 - [ ] Qualify cloud build source/receipt admission and actual Batch UID handoff.
 - [ ] Integrate connected status/UI and durable authorized run selection/replay policy.
 

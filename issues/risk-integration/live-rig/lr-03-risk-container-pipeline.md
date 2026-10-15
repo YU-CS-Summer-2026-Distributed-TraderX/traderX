@@ -54,3 +54,7 @@ Approved owned target fast-forward077->e770f912 preserves history and exact meas
 [Local CPU portfolio task](../resolved/local-cpu-portfolio-integration-20261014.md) is integrated at `c249adc5` from approved `b9fb0843`; human approved retaining engine `270a907a` as a separate owned local CPU profile. Actual installed macOS arm64 CPU HTTP/subprocess-worker proof completed eight direct synthetic Treasury jobs/1,416 positions, with restart/lost-reply GET recovery, persisted content binding and mismatch refusal. Coordinator independently checked the client/refusal paths and saved CPU intakes; final engine and actual-loop evidence is linked from the resolved task. Owned processes stopped.
 
 This is additional local-process acceptance only. It neither replaces nor expands the C8 image Stage A record above. Stage B still requires sequenced TraderX export plus accepted account/run/provenance-bound adapter and result intake. Container qualification of `270a907a`, general financial correctness and future exposure numerical oracles remain unproved; no GKE/deployment or broad LR closure occurred.
+
+## October 15 local export milestone
+
+Approved TraderX candidate `1a037a47` is integrated. The [bounded local export proof](../resolved/risk-cpu-local-export-20261015.md) verifies a sequenced synthetic bill export through installed owned CPU engine `270a907a` and offline account/run/cut-bound intake. This advances local evidence only; connected status/UI, cloud admission and wider Stage B acceptance remain open. Historical C8 evidence remains profile-specific.
