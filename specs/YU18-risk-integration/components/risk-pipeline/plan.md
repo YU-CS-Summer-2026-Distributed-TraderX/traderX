@@ -12,3 +12,7 @@ Owner: Codex RI-03. Status: review needed; local milestone implemented and teste
 Runtime ownership: YU18 is last-wins owner of eod-risk-bundles; no earlier layer of those Python paths. Console Risk page is root source. Current renderer already copies complete EOD component; no renderer change required. Matcher/gateway/read-model/api.ts remain Claude-owned.
 
 Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-integration/ri03-local-container.md). Broader distributed readiness remains open.
+
+## Current CPU follow-on
+
+Maintain wrappers and container inputs under the existing YU18 portfolio runtime owner. Include the existing bundle validators from the same commit. Use a closed bill mapper and immutable per-input package, then reuse Driver, reference checks and intake with an outer export identity receipt. Validate locally before qualifying the cloud receipt/Batch handoff and later connecting status/UI. The numerical implementation remains external.

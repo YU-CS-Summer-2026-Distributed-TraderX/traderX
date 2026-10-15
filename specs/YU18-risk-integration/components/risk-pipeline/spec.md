@@ -40,3 +40,13 @@ The existing sequenced TraderX service and RiskExtract exporters own positions, 
 Source tests, generated parity, actual container HTTP, exporter execution and browser-rendered existing UI are separate evidence levels. Full live consensus/trading stack and real-market valuation are outside this synthetic in-process export milestone.
 
 Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-integration/ri03-local-container.md). Broader distributed readiness remains open.
+
+## Current regular-portfolio CPU profile
+
+- FR-CPU01: Platform packaging exports committed clean sources, records numerical and owned-service identities separately, pins the base/wheels, verifies installed engine/consumer bytes, and reproduces its source package without temporary pilot files.
+- FR-CPU02: Reuse v2 bundle/terms validation; require explicit account/run/bundle and matching synthetic curve. Preserve epoch/cut, signed face units and all selected positions. Refuse unsupported or incomplete selected coverage before submission.
+- FR-CPU03: Keep regular portfolio submission/recovery semantics. A separate connected receipt binds checked export lineage to the retained request, job and result. Offline admission requires the caller's retained package fingerprint.
+- FR-CPU04: Prove a nonzero single-account value using fresh generated exporter evidence and a real installed CPU container, plus negative identity/custody controls and the frozen golden regression. Empty initialized EOD directories are allowed; actual EOD work is refused.
+- FR-CPU05: This candidate provides local mapping/packaging/intake only. Existing EOD orchestration/UI are unchanged. Cloud Build configuration preparation is not qualified cloud image admission; Batch UID/receipt handoff remains pending. No production account authorization or distributed replay guarantee is claimed.
+
+[Profile, evidence and reproduction](../../../../docs/risk-integration/cpu-export-platform.md).
