@@ -30,3 +30,10 @@ Coordinator corrections (2026-09-24):
 - [ ] Integrate connected status/UI and durable authorized run selection/replay policy.
 
 Evidence: [CPU export platform](../../../../docs/risk-integration/cpu-export-platform.md). Historical cloud pilot and EOD/UI evidence remain separate.
+
+## Local Batch result ingestion, October 15
+
+- [x] Implement explicit local Batch import, copied custody, replay/conflict handling and offline status.
+- [x] Display verified account/run/cut/NPV in the existing Risk tab, with honest unavailable measures.
+- [x] Exercise real saved artifacts and built UI with missing/tampered evidence refusals.
+- [ ] Complete coordinator review and obtain scoped integration approval.

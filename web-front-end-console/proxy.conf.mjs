@@ -396,6 +396,7 @@ export default [
   plain('/eod/chain'),
   plain('/eod/jobs'),
   plain('/risk/demo'),
+  plain('/risk/batch-result'),
   plain('/risk/treasury-demo'),
   // Grafana serves from this sub-path (GF_SERVER_SERVE_FROM_SUB_PATH), so proxying the prefix is
   // enough for the whole app — and without the route the dev server answers its SPA fallback with

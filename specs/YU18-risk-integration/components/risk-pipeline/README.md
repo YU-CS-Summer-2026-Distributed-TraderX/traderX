@@ -11,3 +11,7 @@ Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-i
 ## Current portfolio CPU mapping
 
 A separate local candidate packages the current owned CPU service and maps sequenced synthetic Treasury bills through `/portfolio/price`. It reuses bundle validation and portfolio intake; the earlier EOD coordinator and UI are unchanged. See [CPU export platform](../../../../docs/risk-integration/cpu-export-platform.md) for dependencies, reproduction, measured evidence and pending cloud/status gates.
+
+## Local Batch result view
+
+The owned candidate imports verified external CPU Batch artifacts and exposes an explicitly selected retained portfolio in the existing Risk tab. It revalidates custody offline on each read. See [local import contract](../../../../docs/risk-integration/batch-result-ingestion.md). Local proof is separate from shared-branch integration and cloud deployment.

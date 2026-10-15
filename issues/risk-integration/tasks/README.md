@@ -29,3 +29,7 @@ Completed bounded slice: [console runtime packaging](../resolved/lr05-console-pa
 ## October 9 completed generation performance
 
 [RI29-GENERATION-PERFORMANCE](../resolved/ri29-generation-performance.md) is done after direct human approval and canonical integration of `c0140ef9`. Full generation/current-input derivation and scoped controls pass; reviewed warmed/offline/skip-lock-refresh timing evidence remains applicable to unchanged installer bytes. State 009/cache-dependent profiles remain inconclusive. This supersedes earlier pending RI29 dispatch/review notes for this bounded scope only.
+
+## October 15 local Batch result ingestion
+
+[Local Batch result ingestion](risk-batch-result-ingestion-20261015.md): isolated implementation and local UI proof; review pending, not integrated.

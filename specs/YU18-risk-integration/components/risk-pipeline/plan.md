@@ -16,3 +16,7 @@ Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-i
 ## Current CPU follow-on
 
 Maintain wrappers and container inputs under the existing YU18 portfolio runtime owner. Include the existing bundle validators from the same commit. Use a closed bill mapper and immutable per-input package, then reuse Driver, reference checks and intake with an outer export identity receipt. Validate locally before qualifying the cloud receipt/Batch handoff and later connecting status/UI. The numerical implementation remains external.
+
+## Local Batch result ingestion, October 15
+
+Batch result ingestion uses an outside-Git per-run store and atomic directory publication. Preserve legacy EOD contracts and add /risk/batch-result to the existing console server/proxy and Risk tab. Validate real downloaded artifacts, negative controls, generated Python parity and actual built UI.

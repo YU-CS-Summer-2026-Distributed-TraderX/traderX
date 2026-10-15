@@ -21,7 +21,7 @@ describe('Risk tab (read-only)', () => {
   const demo = (): Reply => ({ status: 200, body: { schema: 'traderx.risk-demo.v1', availability: 'AVAILABLE', artifact: structuredClone(fixture) } });
 
   beforeEach(() => {
-    replies = {}; pending = {};
+    replies = { '/risk/batch-result': { status: 503, body: { code: 'NOT_CONFIGURED' } } }; pending = {};
     const load = (url: string) => url in replies ? Promise.resolve(replies[url]) : new Promise<Reply>((r) => (pending[url] = r));
     TestBed.configureTestingModule({ imports: [RiskPage], providers: [{ provide: Api, useValue: { load } }] });
   });
@@ -134,7 +134,7 @@ describe('Risk tab (read-only)', () => {
     expect(text()).toContain('Portfolio VaR / ES');
     expect(text()).not.toContain('bb9cf0e');
     expect(el.querySelectorAll('input, select, textarea, form').length).toBe(0);
-    expect([...el.querySelectorAll('button')].map((b) => b.textContent!.trim())).toEqual(['Check status', 'Refresh', 'Refresh']);
+    expect([...el.querySelectorAll('button')].map((b) => b.textContent!.trim())).toEqual(['Refresh', 'Check status', 'Refresh', 'Refresh']);
   });
 
   it('keeps internal provenance and raw errors out of rendered content', async () => {

@@ -50,3 +50,7 @@ Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-i
 - FR-CPU05: This candidate provides local mapping/packaging/intake only. Existing EOD orchestration/UI are unchanged. Cloud Build configuration preparation is not qualified cloud image admission; Batch UID/receipt handoff remains pending. No production account authorization or distributed replay guarantee is claimed.
 
 [Profile, evidence and reproduction](../../../../docs/risk-integration/cpu-export-platform.md).
+
+## Local Batch result ingestion, October 15
+
+FR-RP-BATCH-IMPORT: admit only a fully verified copied Batch result, bound to trusted package/build/job/control/account/run/cut. Explicit operator selection and an independently retained inventory digest are required; exact replay is idempotent and conflicting replay is refused. Reads revalidate offline and never submit work. UI displays synthetic NPV with unavailable scenario/general financial measures and clears failed refreshes.

@@ -1,3 +1,4 @@
+import { readBatchResult } from './batch-result.mjs';
 import {createCliRunner} from './cli-runner.mjs';
 import {canonicalRequestTarget, edgePath} from './request-path.mjs';
 import {createInternalToken} from './internal-token.mjs';
@@ -1223,6 +1224,12 @@ const server = http.createServer(async (req, res) => {
       const r=await treasuryDemo.handle({method:req.method,pathname:p,headers:req.headers,authenticated:!!readToken(req),body});
       return json(res,r.status,r.body);
     } catch { return json(res,503,{code:'unavailable',message:'The demo is temporarily unavailable. No automatic trade retry will occur.'}); }
+  }
+  if (p === '/risk/batch-result') {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
+    const result = await readBatchResult();
+    return json(res, result.status, result.body);
   }
   if (p === '/risk/demo') {
     res.setHeader('Cache-Control', 'no-store');

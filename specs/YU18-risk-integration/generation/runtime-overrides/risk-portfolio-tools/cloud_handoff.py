@@ -53,6 +53,9 @@ def archive(package, work):
 def checked(work):
     expected = read(work / 'archive.json')
     package = Path(expected['package_directory'])
+    if not package.is_absolute():
+        require(expected['package_directory'] == '../package', 'invalid relative package locator')
+        package = work.parent / 'package'
     require(digest(package / 'package.json') == expected['package_sha256'], 'trusted package changed')
     manifest = verify_package(package)
     require(expected['source_bucket'] == SOURCE_BUCKET and

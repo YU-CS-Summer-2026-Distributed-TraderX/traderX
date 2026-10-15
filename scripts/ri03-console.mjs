@@ -1,3 +1,4 @@
+import { readBatchResult } from '../web-front-end-console/batch-result.mjs';
 // Isolated read-only loopback host for the existing built Risk UI and existing EOD route.
 // No cluster/kubectl/cloud proxy. No synthetic HTTP response replacing coordinator evidence.
 import http from 'node:http';
@@ -12,6 +13,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'GET') return json(res, 405, { code: 'READ_ONLY' });
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.pathname === '/eod/jobs') { const r = await readEodJobs(); return json(res, r.status, r.body); }
+  if (url.pathname === '/risk/batch-result') { const r = await readBatchResult(); return json(res, r.status, r.body); }
   if (url.pathname === '/risk/demo') { const r = await readRiskDemo(); return json(res, r.status, r.body); }
   // These unrelated existing panels are explicitly unconfigured in this local rig.
   if (url.pathname.startsWith('/risk/treasury-demo')) return json(res, 503, { code: 'NOT_CONFIGURED' });

@@ -1,3 +1,4 @@
+import { BatchResultPanel } from './batch-result';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { Api } from './api';
@@ -47,6 +48,7 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
   selector: 'risk-page',
   template: `
 <div class="stack">
+  <section class="card"><batch-result /></section>
   <p class="banner warn scope"><strong>Synthetic pricing demo</strong> · assumed flat 3% curve · <strong>not usable for production risk</strong>.</p>
 
   <section class="card"><treasury-demo /></section>
@@ -193,7 +195,7 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
     @media (max-width: 760px) { .flow { grid-template-columns: 1fr; } .flow li { margin: 0 0 14px; } .flow li:not(:last-child)::after { content: '↓'; right: 50%; top: auto; bottom: -15px; transform: none; }
       table { display: block; overflow-x: auto; } dl { grid-template-columns: 1fr; } }
   `,
-  imports: [NgTemplateOutlet, TreasuryDemo],
+  imports: [NgTemplateOutlet, TreasuryDemo, BatchResultPanel],
 })
 export class RiskPage implements OnInit {
   private api = inject(Api);
