@@ -188,6 +188,40 @@ class InflightCorrelationTest {
             "the sweep queue was cleared with the map — a drained order cannot be reaped again");
     }
 
+    /** A leader change pulls every strand's reap forward to the grace — even behind a completed
+     *  head — flags it, and leaves orders offered after the election on their own deadline. */
+    @Test
+    void electionReapsStrandsAfterTheGraceAndLeavesLaterOrdersAlone() throws Exception {
+        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
+        final ClusterGatewayMain.PendingOrder answered = order(1);
+        final ClusterGatewayMain.PendingOrder s1 = order(2);
+        final ClusterGatewayMain.PendingOrder s2 = order(3);
+        for (final ClusterGatewayMain.PendingOrder p : new ClusterGatewayMain.PendingOrder[] {answered, s1, s2}) {
+            p.reapAtMillis = 12_000 + p.requestId;
+            assertTrue(inflight.acquire(1_000));
+            inflight.register(p);
+        }
+        assertSame(answered, inflight.onDirectAck(1));
+        inflight.release(); // answered stays at the byOffer head, completed
+
+        assertEquals(2, inflight.expireBy(1_250), "the two still pending are expedited, not the answered one");
+        assertFalse(answered.failoverReaped);
+        assertEquals(0, inflight.sweepOverdue(1_249), "the grace is honoured");
+
+        final ClusterGatewayMain.PendingOrder later = order(4); // offered after the election
+        later.reapAtMillis = 13_000;
+        assertTrue(inflight.acquire(1_000));
+        inflight.register(later);
+
+        assertEquals(2, inflight.sweepOverdue(1_250), "strands reaped at the grace, behind a completed head");
+        assertNull(s1.future.get(), "ambiguous, never a false reject");
+        assertNull(s2.future.get(), "ambiguous, never a false reject");
+        assertTrue(s1.failoverReaped && s2.failoverReaped, "flagged so the streak ignores them");
+        assertFalse(later.failoverReaped);
+        assertFalse(later.future.isDone(), "a post-election order keeps its own deadline");
+        assertEquals(1, inflight.depth(), "only the post-election order holds a slot");
+    }
+
     /** The permit semaphore is the in-flight bound and the client backpressure: a full window blocks
      *  a new submitter until a slot is released; drain and release both return slots. */
     @Test

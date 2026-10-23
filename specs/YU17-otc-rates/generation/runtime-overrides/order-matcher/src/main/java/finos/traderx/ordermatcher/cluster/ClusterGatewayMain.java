@@ -84,6 +84,13 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSource {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long ACK_TIMEOUT_MS = 10_000;
+    // An election strands every order offered to the dying leader: the promotion destroys its
+    // un-egressed acks, so those pendings would otherwise wait out ACK_TIMEOUT_MS + 2s — and with one
+    // order in flight per client connection, every client waits with them. onNewLeader pulls their
+    // reap forward to now + this grace; anything the new leader does answer inside it still completes
+    // by key. Measured on GKE (100K orders/s, leader SIGKILL): client-visible gap 12.0s -> ~0.65s.
+    // Negative = the pre-fix behaviour (strands reap at their own deadline).
+    private static final long FAILOVER_REAP_MS = Long.parseLong(env("GATEWAY_FAILOVER_REAP_MS", "200"));
     private static final long BATCH_FENCE_RETRY_MS = 5;
     // Max order-lifecycle commands in flight per gateway before a submitter is backpressured. Set
     // well above any tested session count so the binding constraint is the consensus commit rate,
@@ -565,16 +572,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
 
         /**
-         * Under KEYED correlation (option B) an election needs NO repair here, and deliberately
-         * gets none — this is what buys transparent failover. The dying leader's un-egressed acks
-         * are destroyed by the promotion (measured: K never decreased across three kills), so the
-         * pendings they would have answered simply never complete and the owner-thread deadline
-         * sweep reaps them at their own timeout; every other in-flight order — anything the NEW
-         * leader sequences — is completed correctly by its own key when its ack arrives. The
-         * positional design had to answer the ENTIRE in-flight set ambiguous at this instant
-         * (`onNewLeaderResync`, the A mitigation), destroying the survivors along with the dead;
-         * a keyed map has no offset to repair, so draining here would only throw away answers
-         * that are still coming.
+         * Under KEYED correlation (option B) an election needs no offset repair: anything the NEW
+         * leader sequences is completed correctly by its own key when its ack arrives. But the dying
+         * leader's un-egressed acks are destroyed by the promotion (measured: K never decreased
+         * across three kills), so the pendings they would have answered never complete. Left to
+         * their own deadline they hold every client connection for ACK_TIMEOUT_MS + 2s — measured
+         * as a 12 s venue-wide stall after a 0.63 s election. So every pending offered before this
+         * instant has its reap pulled forward to now + FAILOVER_REAP_MS (ambiguous, never a false
+         * reject); survivors answered inside that grace still complete by key. The positional
+         * design (`onNewLeaderResync`, the A mitigation) answered the whole set ambiguous at this
+         * instant, destroying survivors along with the dead; the grace keeps B's correctness and
+         * restores A's latency.
          */
         @Override
         public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
@@ -584,10 +592,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // makes the self-heal fire LESS often, never more — the safe direction for a trigger
             // whose hazard is firing when a reconnect cannot help.
             offeredUnackedStreak.set(0);
+            final int expedited = FAILOVER_REAP_MS < 0 ? -1
+                : inflight.expireBy(System.currentTimeMillis() + FAILOVER_REAP_MS);
             System.out.println("CLUSTER-NEW-LEADER leader=" + leaderMemberId
                 + " term=" + leadershipTermId + " session=" + clusterSessionId
                 + " inflight=" + inflight.depth()
-                + " (keyed correlation: survivors complete by id, strands reap at deadline)");
+                + " (keyed correlation: survivors complete by id, strands reap after "
+                + (expedited < 0 ? "deadline" : FAILOVER_REAP_MS + "ms, expedited=" + expedited) + ")");
         }
     };
 
@@ -1029,14 +1040,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // The wedge detector, in the ONE place every ingress path funnels through — REST new,
         // cancel, replace, the binary fast path and the FIX acceptor all reach consensus here, so
         // one update covers them and none can be added later that bypasses it. A null is exactly
-        // "no committed decision", which is what /ready now has to know about. (The A-era
-        // resync-mark exemption is gone WITH the resync: under keyed correlation nothing bulk-
-        // answers orders as a deliberate repair any more — every null here is an order whose
-        // committed decision genuinely never reached this gateway, which is honest streak
-        // evidence. Elections stop mass-nulling the window entirely, so the exemption's
-        // 20-99-strand eviction scenario now needs a real mass ack loss to arise — and then the
-        // 503 is telling the truth.)
-        if (r == null) {
+        // "no committed decision", which is what /ready now has to know about. The one deliberate
+        // bulk answer is onNewLeader's early reap of the dying leader's strands: those nulls say an
+        // election happened, not that this session is bad, so they must not feed the streak (the
+        // A-era exemption: an election stranding 20-99 orders would otherwise evict the only
+        // gateway). Every other null is an order whose committed decision genuinely never reached
+        // this gateway, which is honest streak evidence.
+        if (r == null && p.failoverReaped) {
+            // reaped early by an election on purpose: neither /ready nor the self-heal evidence
+        } else if (r == null) {
             noAckStreak.incrementAndGet();
             // THE SELF-HEAL. Only orders that actually cleared the ingress count: those are the ones
             // whose ack the cluster owes us, so their silence is OUR session's problem and a fresh
@@ -2596,6 +2608,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // requestId 0 = never offered — id 0 is the wire's "no request" and is never registered.
         long requestId;
         long reapAtMillis; // when the sweep may give up on this pending and return its permit
+        volatile boolean failoverReaped; // reap pulled forward by a leader change (read by the submitter)
         // LATENCY-01 Phase A single-clock timestamps (gateway nanoTime), 0 = order not sampled. Written
         // by the submit thread (tSubmit) then the owner thread (tOffer); the concurrent task queue and
         // the owner's single-threaded run give the happens-before, so no volatile needed.
@@ -2733,6 +2746,25 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
             }
             return reaped;
+        }
+
+        /** Owner thread (onNewLeader): pull every reap deadline forward to at most {@code deadline},
+         *  flagging the ones still pending. Everything in byOffer was offered before this instant, so
+         *  a uniform cap keeps it deadline-ordered (later offers still carry now + ACK_TIMEOUT + 2s).
+         *  Completed entries are capped too, or one would block the sweep behind it.
+         *  @return how many still-pending orders were expedited */
+        int expireBy(final long deadline) {
+            int n = 0;
+            for (final PendingOrder p : byOffer) {
+                if (p.reapAtMillis > deadline) {
+                    p.reapAtMillis = deadline;
+                    if (pending.containsKey(p.requestId)) {
+                        p.failoverReaped = true;
+                        n++;
+                    }
+                }
+            }
+            return n;
         }
 
         /** Owner thread: a NEW SESSION (reconnect or batch takeover). The old session's undelivered
