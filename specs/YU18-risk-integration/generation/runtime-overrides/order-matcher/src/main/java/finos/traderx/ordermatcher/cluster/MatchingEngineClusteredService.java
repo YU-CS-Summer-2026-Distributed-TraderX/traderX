@@ -1443,6 +1443,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 emitQueuedAck(queuedOrders.get(existing));
                 return;
             }
+            // ENGINE-REVIEW F9: a key the ENGINE already decided (accepted while OPEN, retried
+            // during PRE_OPEN) must not be queued again — the open would re-emit the original and
+            // the queued copy would never receive a terminal update. The engine answers it.
+            if (engine.answeredAsDuplicate(event)) {
+                return;
+            }
         }
         if (queuedOrders.size() >= MAX_QUEUED_ORDERS) {
             refuseNewOrder(RiskReason.CAPACITY);

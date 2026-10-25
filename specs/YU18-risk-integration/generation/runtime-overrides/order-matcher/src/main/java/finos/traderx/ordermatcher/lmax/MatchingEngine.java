@@ -785,7 +785,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * (1,024 terminals) is far shorter than the idempotency window (256Ki), so a client retrying
      * after a failover reap met this routinely. Returns true when the retry was answered.
      */
-    private boolean answeredAsDuplicate(InputEvent e) {
+    public boolean answeredAsDuplicate(InputEvent e) {   // public: MECS's PRE_OPEN queue asks too (F9)
         if (risk == null || e.clientOrderKey() == 0L) {
             return false;
         }
