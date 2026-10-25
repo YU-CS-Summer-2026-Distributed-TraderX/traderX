@@ -39,7 +39,15 @@ import java.util.regex.Pattern;
  * <p>Args: clusterDir aeronDir. Env (shared with ClusterNodeMain): CLUSTER_MEMBER_ID, CLUSTER_HOSTNAMES, HEALTH_PORT,
  * CLUSTER_READY_MAX_LAG; own: ARCHIVE_PURGE_POLL_MS (2000), ARCHIVE_PURGE_DATA_LIMIT_BYTES (0 = no force),
  * ARCHIVE_PURGE_FORCE_PCT (70), ARCHIVE_PURGE_HOLD_FILE (while that file exists, no pass runs: hold it while a checker
- * reads the archive). Start: {@code java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ArchivePurgeMain
+ * reads the archive), ARCHIVE_PURGE_DELETE_PER_POLL (1).
+ *
+ * <p>Detach, then delete off the archive thread: purgeSegments made the archive unlink ~14 x 128 MiB segment files per
+ * pass on its conductor, which in the member's SHARED archive mode is the recorder's thread, and each pass stalled commit
+ * 80-100 ms at 250K/s. A pass now only detachSegments (a catalog change: the start position moves, the files stay), and
+ * this process unlinks the detached files itself, ARCHIVE_PURGE_DELETE_PER_POLL per poll; at 250K/s the log writes one
+ * segment per ~4.3 s and a poll is 2 s, so one per poll keeps up. Above the force threshold the whole backlog goes at
+ * once. Old snapshot recordings (a few MB each) are still purgeRecording'd on the archive. Proven at 250K/s for 45 min:
+ * passes 9-84 ms, /data flat at 3.7-3.8 GB, snapshot+tail replay valid. Start: {@code java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ArchivePurgeMain
  * /data/cluster /dev/shm/aeron-...} next to the member, with the member's env; it needs
  * {@code --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED} like the member JVM.
  */
@@ -50,6 +58,8 @@ public final class ArchivePurgeMain implements AutoCloseable {
 
     private final File clusterDir;
     private final File dataDir;
+    private final File archiveDir;
+    private final int deletePerPoll;
     private final List<String> peerHealthUrls;      // every member's /health, including this one's
     private final long maxLag;
     private final long dataLimitBytes;
@@ -64,6 +74,8 @@ public final class ArchivePurgeMain implements AutoCloseable {
                           final long maxLag, final long dataLimitBytes, final int forcePct) {
         this.clusterDir = clusterDir;
         this.dataDir = clusterDir.getAbsoluteFile().getParentFile();
+        this.archiveDir = new File(dataDir, "archive");                     // ClusterNodeConfig: baseDir/archive
+        this.deletePerPoll = Integer.parseInt(env("ARCHIVE_PURGE_DELETE_PER_POLL", "1"));
         this.peerHealthUrls = peerHealthUrls;
         this.maxLag = maxLag;
         this.dataLimitBytes = dataLimitBytes;
@@ -105,14 +117,49 @@ public final class ArchivePurgeMain implements AutoCloseable {
         }
     }
 
-    /** One poll: a pass when a new snapshot set has completed, or when the previous pass held. */
+    /** One poll: a pass when a new snapshot set has completed (or the previous pass held), then up to deletePerPoll
+     *  detached segment files deleted. Returns the pass line, or null when no pass ran. */
     public String poll() {
         final Snapshots s = snapshots();
-        if (s == null || (s.s1 == lastS1 && !lastHeld)) {
+        if (s == null) {
             return null;
         }
-        lastS1 = s.s1;
-        return pass(s);
+        String line = null;
+        if (s.s1 != lastS1 || lastHeld) {
+            lastS1 = s.s1;
+            line = pass(s);
+        }
+        final boolean over = dataLimitBytes > 0 && archiveBytes() * 100 >= dataLimitBytes * forcePct;
+        deleteDetached(s.logRecordingIds, over ? Integer.MAX_VALUE : deletePerPoll);
+        return line;
+    }
+
+    /** Unlink up to `limit` segment files the archive has already detached (base position below the recording's start),
+     *  oldest first, in THIS process: the archive's recorder thread never pays for the unlink. Returns files deleted. */
+    int deleteDetached(final Set<Long> logRecordingIds, final int limit) {
+        final List<long[]> detached = new ArrayList<>();                    // {recordingId, basePosition}
+        for (final long id : logRecordingIds) {
+            final long start = archive.getStartPosition(id);
+            final String[] names = archiveDir.list((d, n) -> n.startsWith(id + "-") && n.endsWith(".rec"));
+            if (names == null) continue;
+            for (final String n : names) {
+                final long base = Long.parseLong(n.substring(n.indexOf('-') + 1, n.length() - 4));
+                if (base < start) detached.add(new long[] {id, base});      // floor is segment-aligned: wholly below start
+            }
+        }
+        detached.sort((a, b) -> Long.compare(a[1], b[1]));
+        int n = 0;
+        for (final long[] f : detached) {
+            if (n >= limit) break;
+            final File file = new File(archiveDir, f[0] + "-" + f[1] + ".rec");
+            final long bytes = file.length(), t0 = System.nanoTime();
+            if (file.delete()) {
+                n++;
+                log("PURGE_DELETE file=" + file.getName() + " bytes=" + bytes + " us=" + (System.nanoTime() - t0) / 1000
+                    + " backlog=" + (detached.size() - n));
+            }
+        }
+        return n;
     }
 
     record Snapshots(long s0, long s1, List<Long> olderRecordingIds, Set<Long> logRecordingIds) { }
@@ -164,7 +211,7 @@ public final class ArchivePurgeMain implements AutoCloseable {
             final long bound = d[1] == AeronArchive.NULL_POSITION ? s.s0 : Math.min(s.s0, d[1]);
             final long floor = AeronArchive.segmentFileBasePosition(d[0], bound, (int) d[2], (int) d[3]);
             if (floor > d[0]) {
-                archive.purgeSegments(id, floor);
+                archive.detachSegments(id, floor);                          // catalog only; files go in deleteDetached
                 done.append(" log").append(id).append('=').append(d[0]).append("->").append(floor);
             }
             // ponytail: a stopped earlier-term recording keeps its last segment (≤ segLen per election); purgeRecording

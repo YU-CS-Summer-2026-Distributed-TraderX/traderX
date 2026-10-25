@@ -39,6 +39,11 @@ public final class BlpRiskState {
     private final int[] idempotencyOrderRefs;
     private final byte[] idempotencyDecisions;
     private final long[] idempotencyRetentionKeys;
+    // {orderRef, decision} in retention order beside idempotencyRetentionKeys, and each table slot's
+    // ring index (moved with the slot), so a snapshot walks three arrays in order instead of one hash probe per entry
+    private final int[] idempotencyRetentionOrderRefs;
+    private final byte[] idempotencyRetentionDecisions;
+    private final int[] idempotencySlotRing;
     // entitlements (unused until the auth roadmap item feeds principals; principalKey 0 skips)
     private final long[] entitlementKeys;
     private final byte[] entitlementEnabled;
@@ -86,6 +91,9 @@ public final class BlpRiskState {
         java.util.Arrays.fill(this.idempotencyDecisions, (byte) -1);
         this.idempotencyRetentionKeys = new long[Math.max(1, idempotencyCapacity)];
         java.util.Arrays.fill(this.idempotencyRetentionKeys, EMPTY_KEY);
+        this.idempotencyRetentionOrderRefs = new int[this.idempotencyRetentionKeys.length];
+        this.idempotencyRetentionDecisions = new byte[this.idempotencyRetentionKeys.length];
+        this.idempotencySlotRing = new int[keysCapacity];
         this.entitlementKeys = new long[tableSize(maxAccounts * 16)];
         java.util.Arrays.fill(this.entitlementKeys, EMPTY_KEY);
         this.entitlementEnabled = new byte[this.entitlementKeys.length];
@@ -499,6 +507,33 @@ public final class BlpRiskState {
         return out;
     }
 
+    /** Snapshot writer: idempotencyTuples() one entry at a time into {@code out}, with no per-entry array or
+     *  list. Index i in [0, idempotencyRetentionSize()); false where idempotencyTuples() would skip the entry. */
+    public int idempotencyRetentionSize() {
+        return idempotencyRetentionSize;
+    }
+
+    public boolean copyIdempotencyEntry(int i, long[] out) {
+        int index = idempotencyRetentionCursor - idempotencyRetentionSize + i;
+        if (index < 0) index += idempotencyRetentionKeys.length;
+        long key = idempotencyRetentionKeys[index];
+        if (key == EMPTY_KEY) return false;
+        int slot = idempotencySlot(key, false);
+        if (slot < 0) return false;
+        out[0] = key; out[1] = idempotencyOrderRefs[slot]; out[2] = idempotencyDecisions[slot];
+        return true;
+    }
+
+    /** Snapshot writer: copyIdempotencyEntry from the retention-ordered value ring, no hash probe. */
+    public boolean copyIdempotencyEntryRing(int i, long[] out) {
+        int index = idempotencyRetentionCursor - idempotencyRetentionSize + i;
+        if (index < 0) index += idempotencyRetentionKeys.length;
+        long key = idempotencyRetentionKeys[index];
+        if (key == EMPTY_KEY) return false;
+        out[0] = key; out[1] = idempotencyRetentionOrderRefs[index]; out[2] = idempotencyRetentionDecisions[index];
+        return true;
+    }
+
     /** Live idempotency entries in retention (insertion) order as {key, orderRef, decision}. */
     public List<long[]> idempotencyTuples() {
         List<long[]> out = new ArrayList<>(idempotencyRetentionSize);
@@ -547,6 +582,9 @@ public final class BlpRiskState {
         idempotencyKeys[slot] = key;
         idempotencyOrderRefs[slot] = orderRef;
         idempotencyDecisions[slot] = decisionOrdinal;
+        if (fresh) idempotencySlotRing[slot] = idempotencyRetentionCursor;
+        idempotencyRetentionOrderRefs[idempotencySlotRing[slot]] = orderRef;
+        idempotencyRetentionDecisions[idempotencySlotRing[slot]] = decisionOrdinal;
         if (fresh) {
             idempotencyRetentionKeys[idempotencyRetentionCursor] = key;
             idempotencyRetentionCursor = (idempotencyRetentionCursor + 1) % idempotencyRetentionKeys.length;
@@ -611,6 +649,9 @@ public final class BlpRiskState {
         idempotencyKeys[slot] = key;
         idempotencyOrderRefs[slot] = orderRef;
         idempotencyDecisions[slot] = (byte) reason.ordinal();
+        if (fresh) idempotencySlotRing[slot] = idempotencyRetentionCursor;
+        idempotencyRetentionOrderRefs[idempotencySlotRing[slot]] = orderRef;
+        idempotencyRetentionDecisions[idempotencySlotRing[slot]] = (byte) reason.ordinal();
         if (fresh) {
             idempotencyRetentionKeys[idempotencyRetentionCursor] = key;
             idempotencyRetentionCursor = (idempotencyRetentionCursor + 1) % idempotencyRetentionKeys.length;
@@ -657,6 +698,7 @@ public final class BlpRiskState {
             idempotencyKeys[hole] = candidate;                 // pull the candidate back
             idempotencyOrderRefs[hole] = idempotencyOrderRefs[j];
             idempotencyDecisions[hole] = idempotencyDecisions[j];
+            idempotencySlotRing[hole] = idempotencySlotRing[j];
             hole = j;                                          // j is the new hole
         }
         idempotencyKeys[hole] = EMPTY_KEY;
