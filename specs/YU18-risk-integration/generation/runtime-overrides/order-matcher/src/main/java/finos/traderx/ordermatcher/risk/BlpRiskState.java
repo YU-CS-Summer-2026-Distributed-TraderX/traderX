@@ -215,6 +215,12 @@ public final class BlpRiskState {
         return securityId >= 0 && securityId < lastPrice.length ? lastPrice[securityId] : 0L;
     }
 
+    /** ENGINE-REVIEW F4: the engine asks this BEFORE creating a book, so an order for a security
+     *  this venue has not enabled never allocates one. Same predicate decideAndReserve refuses on. */
+    public boolean securityKnown(int securityId) {
+        return securityId >= 0 && securityId < securityEnabled.length && securityEnabled[securityId] != 0;
+    }
+
     public void onPrice(int securityId, long priceTicks, long sourceTimeMillis) {
         if (securityId >= 0 && securityId < lastPrice.length) {
             lastPrice[securityId] = priceTicks;

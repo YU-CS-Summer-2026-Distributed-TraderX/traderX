@@ -850,6 +850,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // taken, so a price rejection never has exposure to unwind. Market orders (no limit)
         // skip both checks — they never rest.
         final boolean market = e.limitPx <= Px.NONE;
+        // ENGINE-REVIEW F4: refuse an unknown security BEFORE bookFor allocates a ~5 MB band for it
+        // (on every member, and into every snapshot). Same reason the risk gate would have given.
+        if (risk != null && !risk.securityKnown(e.securityId)) {
+            reject(o, e, RiskReason.UNKNOWN_SECURITY);
+            return;
+        }
         final LimitBook book = bookFor(e.securityId);
         // YU17 (format-8 design section 2.3): a book holding nothing re-derives its grid HERE, before the
         // on-grid check below judges this limit against it. See rederiveIfEmpty for the four jobs
@@ -1569,6 +1575,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 return;
             }
             o.sessionDate = businessDate;
+        }
+        if (risk != null && !risk.securityKnown(s)) {
+            rejectTyped(o, e, RiskReason.UNKNOWN_SECURITY);   // F4: before bookFor allocates
+            return;
         }
         final LimitBook book = bookFor(s);
         rederiveIfEmpty(book, s);
