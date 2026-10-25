@@ -39,6 +39,9 @@ public final class ClusterNodeMain {
         final File baseDir = new File(env("CLUSTER_BASE_DIR", "/data"));
         final String aeronDir = env("CLUSTER_AERON_DIR", "/dev/shm/aeron-cluster");
         final int healthPort = Integer.parseInt(env("HEALTH_PORT", "8080"));
+        // ENGINE-REVIEW S5: the admin routes must not be guarded by a secret the repository publishes.
+        finos.traderx.ordermatcher.auth.DevSecrets.refuse("AUTH_JWT_SECRET", env("AUTH_JWT_SECRET", ""),
+            finos.traderx.ordermatcher.auth.DevSecrets.allowDevFromEnv());
 
         // The consensus module resolves every member endpoint when it parses the member list;
         // an unresolvable peer at that instant is a terminal error (observed live on kind:

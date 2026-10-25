@@ -337,6 +337,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         endpointEntries = ingressEndpoints.split(",");
         aeronDir = env("GATEWAY_AERON_DIR", "/dev/shm/aeron-gateway");
         final int httpPort = Integer.parseInt(env("GATEWAY_HTTP_PORT", "18110"));
+        // ENGINE-REVIEW S5: never serve operator or order routes behind a secret the repository
+        // publishes. ALLOW_DEV_SECRETS=true is the kind rig's explicit opt-in.
+        final boolean allowDev = finos.traderx.ordermatcher.auth.DevSecrets.allowDevFromEnv();
+        finos.traderx.ordermatcher.auth.DevSecrets.refuse("RISK_CONTROL_TOKEN", riskControlToken, allowDev);
+        finos.traderx.ordermatcher.auth.DevSecrets.refuse("AUTH_JWT_SECRET", env("AUTH_JWT_SECRET", ""), allowDev);
 
         final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
             .aeronDirectoryName(aeronDir)

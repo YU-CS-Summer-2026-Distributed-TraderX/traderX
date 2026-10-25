@@ -15,14 +15,8 @@ stringData:
   username: traderx
   password: traderx
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: auth-secrets
-type: Opaque
-stringData:
-  jwt-secret: kind-local-jwt-secret-not-a-real-credential
-  dev-token-master-secret: kind-local-dev-token-secret-not-a-real-credential
+# ENGINE-REVIEW S5: auth-secrets is no longer a committed literal on GKE. The kustomization
+# generates it from secrets/auth-secrets.env (git-ignored; see secrets/auth-secrets.env.example).
 ---
 apiVersion: v1
 kind: Service

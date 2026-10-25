@@ -129,6 +129,9 @@ spec:
                 secretKeyRef:
                   name: auth-secrets
                   key: jwt-secret
+            # ENGINE-REVIEW S5: the kind rig's auth-secrets is a committed literal; opt in explicitly.
+            - name: ALLOW_DEV_SECRETS
+              value: "true"
             # -Daeron.driver.timeout IS THE OTHER HALF OF THE REPLAY PROBLEM, and no probe can reach
             # it. During the same 4.08M-sequence replay the startupProbe below is sized for, the
             # Aeron client conductor was starved for 29s and the member exited ITSELF:

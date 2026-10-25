@@ -70,6 +70,16 @@ spec:
               value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
             - name: GATEWAY_HTTP_PORT
               value: "18110"
+            # ENGINE-REVIEW S1/S5: the order routes validate the members' JWT (same Secret the
+            # members read), and the kind rig opts into its development secrets explicitly —
+            # DevSecrets refuses to start on them otherwise.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: ALLOW_DEV_SECRETS
+              value: "true"
             - name: GATEWAY_EGRESS_PORT
               value: "40470"
             # Probe port. /ready, /health and /live are served here by their OWN single-thread

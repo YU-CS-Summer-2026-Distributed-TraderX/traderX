@@ -120,6 +120,19 @@ spec:
               value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
             - name: GATEWAY_HTTP_PORT
               value: "18110"
+            # ENGINE-REVIEW S1/S5: both secrets come from Secrets the kustomization GENERATES from
+            # operator-supplied env files (secrets/*.env, git-ignored); nothing committed is a
+            # credential, and the gateway refuses to start on a development value.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: RISK_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: risk-control-token
             - name: GATEWAY_EGRESS_PORT
               value: "40470"
             # PINNED, not left to the code default, even though the two agree today. Every probe on
