@@ -247,6 +247,21 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_POSITION = 3;
     static final int T_PRICE = 4;
     static final int T_END = 5;
+    /**
+     * Packed snapshot framing (opt-in by {@code CLUSTER_SNAPSHOT_PACKED=true}, default off): the SAME records in the
+     * SAME order, packed as [int T_PACKED]{[int length][record]}* into messages of at most the publication's
+     * maxPayloadLength (one fragment each, so the reader needs no assembler), instead of one offer per record (~263K
+     * at a full 256Ki idempotency table). It also writes T_IDEMPOTENCY with no per-entry garbage and, unless
+     * {@code CLUSTER_SNAPSHOT_RING=false}, from BlpRiskState's retention-ordered value ring instead of one hash probe
+     * per entry. The reader accepts both framings whatever the flag, so members restore either and the knob rolls
+     * node by node; record content (format 13) is unchanged, so no fresh epoch. Measured: the service snapshot write
+     * 21.9 -> 9.5 ms locally, and the hash-probe walk was ~12 ms of the leader's 20-31 ms snapshot halt at 400K/s.
+     * Non-final only so SnapshotPackedRoundTripTest can compare the write paths in one JVM.
+     */
+    static final int T_PACKED = 127;
+    static boolean SNAPSHOT_PACKED = Boolean.parseBoolean(System.getenv("CLUSTER_SNAPSHOT_PACKED"));
+    static boolean SNAPSHOT_RING = !"false".equalsIgnoreCase(System.getenv("CLUSTER_SNAPSHOT_RING"));
+    private final long[] idempotencyScratch = new long[3];
     static final int T_POLICY = 6;
     static final int T_ACCOUNT = 7;
     static final int T_SECURITY = 8;
@@ -1827,13 +1842,78 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
-        writeSnapshot((buffer, offset, length) -> {
+        final SnapshotWriter offer = (buffer, offset, length) -> {
             idle.reset();
             while (snapshotPublication.offer(buffer, offset, length) < 0) {
                 idle.idle();
             }
-        });
+        };
+        if (SNAPSHOT_PACKED) {
+            final SnapshotPacker packer = new SnapshotPacker(snapshotPublication.maxPayloadLength(), offer);
+            writeSnapshot(packer);
+            packer.flush();
+        } else {
+            writeSnapshot(offer);
+        }
         snapshotsTaken++;
+    }
+
+    /** Packs records into maxPayload-sized T_PACKED messages for {@code out}. */
+    static final class SnapshotPacker implements SnapshotWriter {
+        private final UnsafeBuffer chunk;
+        private final SnapshotWriter out;
+        private int used = 4;
+
+        SnapshotPacker(final int maxPayload, final SnapshotWriter out) {
+            this.chunk = new UnsafeBuffer(new byte[maxPayload]);
+            this.out = out;
+            chunk.putInt(0, T_PACKED);
+        }
+
+        @Override
+        public void write(final DirectBuffer buffer, final int offset, final int length) {
+            if (used + 4 + length > chunk.capacity()) {
+                flush();
+                if (4 + 4 + length > chunk.capacity()) {   // no record comes near one MTU; refuse, never split
+                    throw new IllegalStateException("snapshot record of " + length + " bytes exceeds a packed message");
+                }
+            }
+            chunk.putInt(used, length);
+            chunk.putBytes(used + 4, buffer, offset, length);
+            used += 4 + length;
+        }
+
+        void flush() {
+            if (used > 4) {
+                out.write(chunk, 0, used);
+                used = 4;
+            }
+        }
+    }
+
+    /** One snapshot message: a T_PACKED container or a single record. True on the END record. Fails closed on a
+     *  record overrunning its message and on records after END. */
+    boolean onSnapshotMessage(final DirectBuffer buffer, final int offset, final int length) {
+        if (length < 4 || buffer.getInt(offset) != T_PACKED) {
+            return onSnapshotRecord(buffer, offset, length);
+        }
+        int at = offset + 4;
+        final int end = offset + length;
+        while (at < end) {
+            final int n = buffer.getInt(at);
+            if (n < 4 || at + 4 + n > end) {
+                throw new IllegalStateException("snapshot corrupt: packed record of " + n + " bytes at " + (at - offset)
+                    + " overruns a " + length + "-byte message");
+            }
+            if (onSnapshotRecord(buffer, at + 4, n)) {
+                if (at + 4 + n != end) {
+                    throw new IllegalStateException("snapshot corrupt: records after END in a packed message");
+                }
+                return true;
+            }
+            at += 4 + n;
+        }
+        return false;
     }
 
     @Override
@@ -1905,8 +1985,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             writer.write(snapshotBuffer, 0, 12 + ascii.length);
         }
         // Retention (insertion) order: restore preserves the eviction frontier (FR-IMRG14).
-        for (final long[] entry : risk.idempotencyTuples()) {
-            writeTuple(writer, T_IDEMPOTENCY, entry);
+        if (SNAPSHOT_PACKED) {
+            for (int i = 0, n = risk.idempotencyRetentionSize(); i < n; i++) {
+                if (SNAPSHOT_RING ? risk.copyIdempotencyEntryRing(i, idempotencyScratch)
+                                  : risk.copyIdempotencyEntry(i, idempotencyScratch)) {
+                    writeTuple(writer, T_IDEMPOTENCY, idempotencyScratch);
+                }
+            }
+        } else {
+            for (final long[] entry : risk.idempotencyTuples()) {
+                writeTuple(writer, T_IDEMPOTENCY, entry);
+            }
         }
         // YU17 contracts in booking order. That order is load-bearing twice over: it is what the
         // rendered cut iterates (so restore must reproduce it exactly, byte for byte), and the
@@ -2370,7 +2459,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private void loadSnapshot(final Image snapshotImage) {
         final boolean[] done = { false };
         final FragmentHandler handler = (buffer, offset, length, header) ->
-            done[0] = onSnapshotRecord(buffer, offset, length);
+            done[0] = onSnapshotMessage(buffer, offset, length);
         while (!done[0]) {
             final int fragments = snapshotImage.poll(handler, 16);
             if (fragments == 0) {
