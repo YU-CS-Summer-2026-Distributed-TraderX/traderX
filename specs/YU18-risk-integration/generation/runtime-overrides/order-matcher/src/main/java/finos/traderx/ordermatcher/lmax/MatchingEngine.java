@@ -1382,6 +1382,14 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         final boolean limitShaped = o.orderType == OrderTypes.LEGACY || o.orderType == OrderTypes.LIMIT
             || (o.orderType == OrderTypes.STOP_LIMIT && o.triggered);
         if (!limitShaped) {
+            if (e.orderType == OrderTypes.LEGACY) {
+                // ENGINE-REVIEW F6: an UNTYPED replace of a stop, iceberg, peg or trailing order
+                // carries none of their fields, so it would "replace" them with zeros — a peg's
+                // offset silently went to 0. The comment above says untyped applies only to
+                // limit-shaped orders; now the code does too.
+                out.emitRequestRejected(o, e.seq, (byte) RiskReason.INVALID.ordinal(), px, e.ingressNanos);
+                return;
+            }
             onTypedReplace(e, o, px);
             return;
         }
