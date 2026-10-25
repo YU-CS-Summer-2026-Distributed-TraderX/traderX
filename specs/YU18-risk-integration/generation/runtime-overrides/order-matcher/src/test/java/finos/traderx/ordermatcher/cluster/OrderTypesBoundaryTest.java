@@ -217,6 +217,7 @@ class OrderTypesBoundaryTest {
                         + (json(c[0]).has("quantity") ? "" : ",\"quantity\":10") + "}";
                     final java.net.http.HttpResponse<String> r = http.send(
                         java.net.http.HttpRequest.newBuilder(java.net.URI.create(base + route))
+                            .header("Authorization", DevJwt.bearer(11))   // S1: validation runs behind auth
                             .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body)).build(),
                         java.net.http.HttpResponse.BodyHandlers.ofString());
                     final String what = route + " " + c[0];
@@ -227,6 +228,7 @@ class OrderTypesBoundaryTest {
             }
             // Positive control: a valid typed order through the same route is queued for offer.
             http.sendAsync(java.net.http.HttpRequest.newBuilder(java.net.URI.create(base + "/orders"))
+                .header("Authorization", DevJwt.bearer(11))   // S1
                 .POST(java.net.http.HttpRequest.BodyPublishers.ofString(
                     "{\"orderType\":\"LIMIT\",\"limitPrice\":1,\"quantity\":10,\"ticker\":\"IBM\",\"side\":\"Buy\",\"accountId\":11}"))
                 .build(), java.net.http.HttpResponse.BodyHandlers.discarding());
