@@ -117,13 +117,24 @@ public final class FixGatewayAcceptor {
     public FixGatewayAcceptor(final OrderSubmitter submitter, final OrderStatusSource statusSource,
                               final int port, final String serverCompId,
                               final int defaultAccountId, final List<String> compIds) {
+        this(submitter, statusSource, port, serverCompId, defaultAccountId, compIds, FixSessionAuth.fromEnv(null));
+    }
+
+    /** ENGINE-REVIEW S3: with session credentials and per-CompID account binding. */
+    public FixGatewayAcceptor(final OrderSubmitter submitter, final OrderStatusSource statusSource,
+                              final int port, final String serverCompId,
+                              final int defaultAccountId, final List<String> compIds,
+                              final FixSessionAuth auth) {
         this.submitter = submitter;
         this.statusSource = statusSource;
         this.port = port;
         this.serverCompId = serverCompId;
         this.defaultAccountId = defaultAccountId;
         this.compIds = compIds;
+        this.auth = auth;
     }
+
+    private final FixSessionAuth auth;
 
     public void start() throws Exception {
         final SessionSettings settings = new SessionSettings();
@@ -135,6 +146,16 @@ public final class FixGatewayAcceptor {
         defaults.setProperty("HeartBtInt", "30");
         defaults.setProperty("ResetOnLogon", "Y");
         defaults.setProperty("PersistMessages", "N"); // ephemeral (TD-AC01)
+        // ENGINE-REVIEW S3: TLS on the session when a keystore is configured (QuickFIX/J native SSL).
+        final String keystore = System.getenv("FIX_SSL_KEYSTORE");
+        if (keystore != null && !keystore.isBlank()) {
+            defaults.setProperty("SocketUseSSL", "Y");
+            defaults.setProperty("SocketKeyStore", keystore);
+            defaults.setProperty("SocketKeyStorePassword", System.getenv().getOrDefault("FIX_SSL_KEYSTORE_PASSWORD", ""));
+        }
+        if (!auth.configured()) {
+            log.warn("FIX acceptor INSECURE: FIX_SESSION_AUTH unset — logon is CompID-only and Account(1) is unbound");
+        }
         settings.set(defaults);
         for (final String compId : compIds) {
             final SessionID sid = new SessionID("FIX.4.4", serverCompId, compId);
@@ -171,11 +192,19 @@ public final class FixGatewayAcceptor {
 
         @Override
         public void fromAdmin(final Message message, final SessionID sessionId) throws RejectLogon {
-            // Accept the logon if the CompID is configured; entitlement is the cluster's job.
+            // Accept the logon if the CompID is configured AND (S3) its Password(554) matches when
+            // FIX_SESSION_AUTH is set; account entitlement beyond the session binding is the cluster's.
             try {
-                if ("A".equals(message.getHeader().getString(35))
-                    && !compIds.contains(sessionId.getTargetCompID())) {
-                    throw new RejectLogon("unknown CompID");
+                if ("A".equals(message.getHeader().getString(35))) {
+                    final String compId = sessionId.getTargetCompID();
+                    if (!compIds.contains(compId)) {
+                        throw new RejectLogon("unknown CompID");
+                    }
+                    final String password = message.isSetField(quickfix.field.Password.FIELD)
+                        ? message.getString(quickfix.field.Password.FIELD) : null;
+                    if (!auth.logonAllowed(compId, password)) {
+                        throw new RejectLogon("invalid credentials");
+                    }
                 }
             } catch (final FieldNotFound ignore) {
                 // non-logon admin message
@@ -211,8 +240,11 @@ public final class FixGatewayAcceptor {
             final String ticker = order.getString(Symbol.FIELD).trim().toUpperCase();
             final char side = order.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B';
             final int qty = (int) order.getDouble(OrderQty.FIELD);
-            final int accountId = order.isSetField(quickfix.field.Account.FIELD)
-                ? Integer.parseInt(order.getString(quickfix.field.Account.FIELD)) : defaultAccountId;
+            final int accountId = accountOf(sessionId, order);
+            if (accountId < 0) {   // S3: Account(1) outside this session's binding
+                sendOrderReject(sessionId, clOrdId, ticker, side, qty, "account not permitted for this session");
+                return;
+            }
 
             // YU18 (FR-OT04): every NewOrderSingle is answered. F1 was a Price-less market order
             // throwing FieldNotFound into the swallow in fromApp; the mapping reads each field only
@@ -259,7 +291,14 @@ public final class FixGatewayAcceptor {
             }
 
             // G3: the session's account is its ownership claim; the engine refuses a foreign ref.
-            final OrderSubmitter.ExecResult result = submitter.submitCancel(orderRef, accountOf(cancel));
+            // S3: and the claim must be one of the session's own accounts.
+            final int account = accountOf(sessionId, cancel);
+            if (account < 0) {
+                sendCancelReject(sessionId, "ord-" + orderRef, clOrdId, origClOrdId, OrdStatus.REJECTED,
+                    CxlRejReason.OTHER, "account not permitted for this session");
+                return;
+            }
+            final OrderSubmitter.ExecResult result = submitter.submitCancel(orderRef, account);
             if (result == null) {
                 // Post-publish ambiguity: the cancel may yet apply, so no reject may be sent.
                 log.warn("FIX cancel of ord-{} ambiguous (no committed ack)", orderRef);
@@ -338,9 +377,16 @@ public final class FixGatewayAcceptor {
                 return;
             }
 
+            final int account = accountOf(sessionId, replace);   // S3
+            if (account < 0) {
+                sendCancelReject(sessionId, "ord-" + orderRef, clOrdId, origClOrdId, OrdStatus.REJECTED,
+                    CxlRejReason.OTHER, "account not permitted for this session",
+                    CxlRejResponseTo.ORDER_CANCEL_REPLACE_REQUEST);
+                return;
+            }
             final OrderSubmitter.ExecResult result = typedReplace instanceof OrderSubmitter.TypedOrder typed
-                ? submitter.submitTypedReplace(orderRef, qualify(sessionId, clOrdId), qty, typed, accountOf(replace))
-                : submitter.submitReplace(orderRef, qualify(sessionId, clOrdId), qty, limitPxTicks, accountOf(replace));
+                ? submitter.submitTypedReplace(orderRef, qualify(sessionId, clOrdId), qty, typed, account)
+                : submitter.submitReplace(orderRef, qualify(sessionId, clOrdId), qty, limitPxTicks, account);
             if (result == null) {
                 // Post-publish ambiguity: the replace may yet apply, so no reject may be sent.
                 log.warn("FIX replace of ord-{} ambiguous (no committed ack)", orderRef);
@@ -391,7 +437,8 @@ public final class FixGatewayAcceptor {
             final int orderRef = resolveOrderRef(req, qualify(sessionId, clOrdId));
 
             final List<OrderStatusSource.OrderView> orders =
-                statusSource == null ? null : statusSource.orders(accountOf(req), true);
+                statusSource == null || accountOf(sessionId, req) < 0 ? null   // S3: own accounts only
+                    : statusSource.orders(accountOf(sessionId, req), true);
             if (orders == null) {
                 sendStatusReject(sessionId, clOrdId, null, side,
                     "order status unavailable (no read model configured)");
@@ -426,7 +473,8 @@ public final class FixGatewayAcceptor {
             throws FieldNotFound {
             final String reqId = req.getString(MassStatusReqID.FIELD);
             final List<OrderStatusSource.OrderView> orders =
-                statusSource == null ? null : statusSource.orders(accountOf(req), false);
+                statusSource == null || accountOf(sessionId, req) < 0 ? null   // S3: own accounts only
+                    : statusSource.orders(accountOf(sessionId, req), false);
             if (orders == null || orders.isEmpty()) {
                 final ExecutionReport report = statusReport(0, 'B', 0, 0, OrdStatus.REJECTED, "");
                 report.set(new MassStatusReqID(reqId));
@@ -447,6 +495,12 @@ public final class FixGatewayAcceptor {
         private int accountOf(final Message req) throws FieldNotFound {
             return req.isSetField(quickfix.field.Account.FIELD)
                 ? Integer.parseInt(req.getString(quickfix.field.Account.FIELD)) : defaultAccountId;
+        }
+
+        /** S3: the request's account, or -1 when it is not one this session is bound to. */
+        private int accountOf(final SessionID sessionId, final Message req) throws FieldNotFound {
+            final int account = accountOf(req);
+            return auth.accountAllowed(sessionId.getTargetCompID(), account, defaultAccountId) ? account : -1;
         }
 
         private void sendStatusReject(final SessionID sessionId, final String clOrdId,

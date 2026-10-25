@@ -445,7 +445,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             final List<String> compIds = Arrays.asList(env("FIX_SESSION_COMPIDS", "CLIENT1").split(","));
             final FixGatewayAcceptor fix = new FixGatewayAcceptor(this, this, Integer.parseInt(fixPortEnv),
                 env("FIX_TARGET_COMP_ID", "TRADERX"),
-                Integer.parseInt(env("FIX_DEFAULT_ACCOUNT", "11")), compIds);
+                Integer.parseInt(env("FIX_DEFAULT_ACCOUNT", "11")), compIds,
+                FixSessionAuth.fromEnv(env("FIX_SESSION_AUTH", "")));   // S3: COMPID:password:acct|acct,...
             fix.start();
             Runtime.getRuntime().addShutdownHook(new Thread(fix::stop));
         }
