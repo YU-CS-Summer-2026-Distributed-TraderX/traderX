@@ -345,6 +345,9 @@ Risk facts this design depends on (S):
   - a pending sell latches if P ≤ `stopPrice`;
   - a TRAILING_STOP latches per FR-OT19.
 
+  As built, a print finds the orders it crosses through a price index, not a walk of the store
+  (FR-OT42).
+
   Latching appends the order to the **trigger queue**. **Once latched, an order is triggered:**
   no later print, in this command or any later one, can un-latch it.
 - FR-OT11: **Total order.**
@@ -541,6 +544,9 @@ Risk facts this design depends on (S):
   - A changed price moves the order to the tail of its new level.
   - A repriced MIDPOINT peg that meets an opposite MIDPOINT peg executes against it as the
     aggressor, at its position in the walk.
+  - As built, the walk visits only the pegs whose price the move can change, plus every
+    suspended peg, in this same order (FR-OT42). Skipped pegs are exactly the ones whose price
+    is unchanged.
 - FR-OT26: **Cascade termination, with a proven bound.**
   - **Step.** A step is the processing of one admitted order, one cancel, replace or expiry
     pass, or one released PRE_OPEN order. Each command is one step, except the OPEN release,
@@ -1162,3 +1168,125 @@ The authenticated operator POST /risk/control/self-match-group accepts positive 
 Snapshot format13 appends group to each account tuple. Formats9–12 restore group zero; format13 requires the wider tuple and rejects negative groups. Full log replay carries group assignments; sandbox reset preserves them with account configuration. All members must be upgraded together before new group events; older binaries cannot safely interpret the new command. Downgrade after new events/snapshots is unsupported.
 
 The local username demo persists selfMatchGroup using the workspace's first allocated account ID. New accounts get this group before engine admission; login migrates existing owned accounts before opening a session and fails closed if assignment fails. This is a demo ownership mapping, not verified production identity or tenant authorization. Existing unrelated seeded accounts are not silently combined.
+
+
+## Indexed typed-order stores (2026-10-24)
+
+**Why.** On the independent GKE rig (2026-10-23), all seven order types over FIX ran correctly at
+80K orders/s. At 200K/s the apply thread saturated. A local engine bench traced the cost to two
+per-event walks over every resting typed order in the security: `recordPrint` over all pending
+stops on each print (FR-OT10), and `repricePegs` over all pegs on each reference change (FR-OT25).
+A third, smaller walk was `nonPegBest`, which stepped through every order on a peg-only level.
+
+On this machine, one crossing pair cost 0.41 µs per order with nothing resting. With 2,592 resting
+stops and 864 resting pegs it cost 18.16 µs (13.54 µs on the rig). The engine-wide caps of
+NFR-OT03 (4,096 pending, 1,024 pegs) existed partly to bound those walks.
+
+- FR-OT42: **Indexed stores.** The pending store and the peg store stay as specified (admission
+  order, FR-OT11). Each is also indexed, per security, so an event visits only the orders it can
+  change. The indexes are on the BLP thread only. They are never snapshotted: restore rebuilds
+  them while it re-links the stores.
+  - **Stops.** One min-heap per security for buy stops and one max-heap for sell stops, keyed by
+    the current stop level. A print `P` takes every buy stop with level ≤ `P` and every sell stop
+    with level ≥ `P`, the same predicate as admission and replace. Trailing stops are in these
+    heaps at their current level.
+  - **Trailing watermarks.** A second pair of heaps holds trailing stops only, keyed by
+    watermark. A print takes every sell trailer whose watermark is strictly below `P`, and every
+    buy trailer whose watermark is strictly above `P`. Those are the orders this print moves. A
+    sell trailer's stop is below its watermark and a buy trailer's is above, so no order is both
+    latched and moved by one print. FR-OT19's check-then-update order therefore holds with no
+    interleaving.
+  - **Peg groups.** Pegs are grouped by (side, reference, offset). A group shares one target
+    before the cap, `T = reference + offset × tick`. A resting member sits at `clip(T, cap)`.
+    When the reference moves from `T_old` to `T_new`:
+    - a group with `T_old = T_new` is skipped;
+    - a buy member with `cap ≤ min(T_old, T_new)`, or a sell member with
+      `cap ≥ max(T_old, T_new)`, is pinned at its cap and is skipped;
+    - if either `T` is absent, the whole group is visited.
+
+    Each group is a heap keyed by cap, so only the unpinned members are visited. Every
+    **suspended** peg (reference or risk, FR-OT24, FR-OT39) is visited on every move, from a
+    per-security heap of suspended pegs. The skip rule only covers resting members.
+  - **Order.** A heap's internal layout depends on its insertion history, and it never reaches
+    output. Every set the indexes return is sorted by admission sequence before the engine acts
+    on it:
+    - stops latched by one print enter the trigger queue in admission order (FR-OT11);
+    - moved trailers are updated, and their F3 levels published, in admission order;
+    - pegs are repriced in admission order (FR-OT25).
+
+    A peg's visit set is fixed before its first reprice. A peg that an earlier reprice fills or
+    cancels is skipped. This visits exactly the orders, in exactly the order, of the full walk,
+    minus the orders whose price is unchanged. The full walk leaves those alone anyway.
+  - **Reference.** Each book level counts its non-PEGGED orders, so finding the non-pegged best
+    skips a peg-only level in one read, not one per order.
+  - **Cost.** A print costs O((latched + moved) · log P). A reference change costs O(groups +
+    (visited + suspended) · log K). Latched, moved and repriced orders each produce egress
+    anyway. Admission, cancel and replace cost O(log) plus a scan of the security's peg groups
+    when a peg joins one.
+  - **Allocation.** Index arrays grow only at a new high-water mark. Emptied peg groups go to a
+    free list. The steady-state hot path stays allocation-free (NFR-OT02).
+  - **Determinism and rollout.** FR-OT42 changes no output: egress is byte-identical to the
+    walking engine for the same log. The snapshot format does not change. It still changes the
+    deterministic core's code, so NFR-OT04 applies: never mixed across members. Since the outputs
+    are identical, a rolling restart behind a snapshot barrier cannot diverge. A fresh epoch is
+    still the default.
+
+### Proposed: larger caps and a per-account limit (NOT adopted; needs a decision)
+
+With FR-OT42, the engine-wide caps no longer bound the per-event cost. They now bound memory and
+the FR-OT26 round bound. 4,096 pending and 1,024 pegs for the whole venue are small: one account
+can fill them and lock everyone else out (CAPACITY).
+
+- **Proposal P1, larger engine-wide caps.** `DEFAULT_PENDING_CAPACITY` 262,144 and
+  `DEFAULT_PEG_CAPACITY` 65,536. The trigger queue becomes 262,145 references, about 2 MB.
+  FR-OT26's bound `3P + N + 6` stays finite, and an int still holds it.
+- **Proposal P2, per-account limits.** New compile-time consensus constants:
+  - `MAX_PENDING_PER_ACCOUNT` 4,096 and `MAX_PEGS_PER_ACCOUNT` 1,024 (today's engine-wide
+    numbers);
+  - counted per account on link and unlink, rebuilt on restore by linking;
+  - admission over an account's limit is REJECTED, either with CAPACITY or with an appended
+    reason `ACCOUNT_CAPACITY`. Reason codes are append-only, and the console mirrors them. The
+    engine-wide cap is checked first, so its outcome is unchanged.
+- **Snapshot.** Both proposals change consensus constants. T_ORDER_TYPES gains the two
+  per-account limits, so snapshot **format 14**. Formats 11–13 are read with their recorded
+  engine-wide limits.
+  - A restore whose recorded limits differ from the compiled ones is refused, as today
+    (FR-OT26). Replaying the log suffix after a snapshot under different limits could turn a
+    recorded CAPACITY rejection into an acceptance, and would then diverge from the members that
+    applied it live.
+- **Rollout (NFR-OT04).** Raising a cap changes outcomes, unlike FR-OT42. Upgrade with a **fresh
+  epoch**, or with a snapshot barrier on all members, a stop of all members, and one restore
+  that accepts the recorded old limits **only when no log follows the snapshot**. Never roll it
+  member by member.
+
+### Success criteria
+
+- SC-OT52: **Equivalence.** Over seeded random streams of all seven types, the indexed engine and
+  the walking engine emit field-identical egress, event by event. The streams cover cancel and
+  replace, tight credit (risk suspension), a narrow band (collar suspension) and lowered caps
+  (CAPACITY). Measured: 40 seeds, 240,000 events, about 28,000 triggers, about 96,000 peg
+  reprices and about 13,000 suspended updates, all equal. Planted defects are each caught: an
+  unsorted latch set, an unsorted trailer set, the buy/sell skip threshold swapped, and
+  suspended pegs not re-tried.
+- SC-OT53: **Flat cost.** `TypedApplyBench` (one print and two reference changes per pair,
+  resting stops beyond the market, cap-pinned midpoint pegs), best of 5 × 200K pairs on the same
+  machine:
+
+  | pending | pegs | before µs/order | after µs/order |
+  |---:|---:|---:|---:|
+  | 0 | 0 | 0.41 | 0.31 |
+  | 512 | 0 | 0.94 | 0.29 |
+  | 2,592 | 0 | 5.29 | 0.31 |
+  | 4,096 | 0 | 7.30 | 0.28 |
+  | 0 | 128 | 1.56 | 0.28 |
+  | 0 | 864 | 8.23 | 0.31 |
+  | 0 | 1,024 | 9.89 | 0.31 |
+  | 2,592 | 864 | 18.16 | 0.30 |
+  | 16,384 | 0 | — | 0.30 |
+  | 0 | 8,192 | — | 0.28 |
+  | 16,384 | 8,192 | — | 0.28 |
+
+- SC-OT54: the existing order-types, snapshot and allocation-gate suites stay green. Measured on
+  the final prototype: 741 order-matcher tests (6 pre-existing skips), with the typed, cluster,
+  Aeron and no-GC allocation gates all passing.
+

@@ -97,7 +97,10 @@ public final class RestingOrder implements finos.traderx.ordermatcher.risk.Reser
     RestingOrder storePrev;
     byte store;                   // STORE_*
     long bookSeq;                 // append order into a level: snapshot FIFO, never emitted
-    int repriceMark;              // peg walk: round id this peg was last visited in
+    int heapIdx;                  // FR-OT42: slot in its stop heap or peg-group heap
+    int trailIdx;                 // FR-OT42: slot in its trailing-watermark heap
+    OrderHeap pegGroup;           // FR-OT42: the peg group (side, reference, offset) it sits in
+    boolean suspCounted;          // FR-OT42: in its security's suspended-peg heap (slot trailIdx)
     static final byte STORE_NONE = 0;
     static final byte STORE_PENDING = 1;
     static final byte STORE_PEG = 2;
@@ -185,7 +188,10 @@ public final class RestingOrder implements finos.traderx.ordermatcher.risk.Reser
             storeNext = null;
             storePrev = null;
             store = STORE_NONE;
-            repriceMark = 0;
+            heapIdx = 0;
+            trailIdx = 0;
+            pegGroup = null;
+            suspCounted = false;
         }
         bookNext = null;
         bookPrev = null;

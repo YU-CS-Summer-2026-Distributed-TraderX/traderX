@@ -1000,11 +1000,14 @@ class OrderTypesEngineTest {
         o.watermark = 9;
         o.sessionDate = 20260923;
         o.triggered = true;
-        o.repriceMark = 3;
+        o.heapIdx = 3;
+        o.trailIdx = 4;
+        o.suspCounted = true;
         o.reset();
         assertEquals(0, o.orderType);
         assertEquals(0, o.tif);
-        assertEquals(0L, o.stopPx + o.trailValue + o.watermark + o.sessionDate + o.repriceMark);
+        assertEquals(0L, o.stopPx + o.trailValue + o.watermark + o.sessionDate + o.heapIdx + o.trailIdx);
+        assertFalse(o.suspCounted);
         assertFalse(o.triggered);
         o.store = RestingOrder.STORE_PENDING;   // a linked order is cleared even if untyped
         o.storeNext = new RestingOrder();

@@ -182,6 +182,20 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     /** FR-OT25: the non-pegged best bid/ask a security's pegs were last priced against. */
     private final long[] pegRefBid;
     private final long[] pegRefAsk;
+    /**
+     * FR-OT42 indexes over the same stores (BLP thread only; rebuilt by linking on restore, never
+     * snapshotted). Per security: pending stops by level, trailing stops by watermark, and peg
+     * groups by cap. Created on a security's first typed order.
+     */
+    private final OrderHeap[] stopBuy;
+    private final OrderHeap[] stopSell;
+    private final OrderHeap[] trailSell;
+    private final OrderHeap[] trailBuy;
+    private final OrderHeap[] pegGroups;
+    private final OrderHeap[] pegSuspended;
+    private OrderHeap freeGroups;
+    private RestingOrder[] trailScratch = new RestingOrder[16];
+    private RestingOrder[] pegScratch = new RestingOrder[16];
     /** FR-OT12 trigger queue: latched, not yet drained. Empty between commands (FR-OT35). */
     private RestingOrder[] triggerQueue;
     private int qHead;
@@ -195,8 +209,6 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public static final byte DAY_APPLIED = 0;
     public static final byte DAY_STALE = 1;
     public static final byte DAY_OUT_OF_SEQUENCE = 2;
-    /** Peg walk round id (FR-OT25); per-process, only compared within one walk. */
-    private int roundId;
     /**
      * 0, or FLAG_RESTING_UPDATE while the engine acts on orders that are NOT the input being
      * applied (trigger drains, peg reprices, day expiry). Every egress those produce must carry the
@@ -272,6 +284,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         this.pegRefBid = new long[maxSecurities];
         this.pegRefAsk = new long[maxSecurities];
         this.triggerQueue = new RestingOrder[this.pendingCapacity + 1];
+        this.stopBuy = new OrderHeap[maxSecurities];
+        this.stopSell = new OrderHeap[maxSecurities];
+        this.trailSell = new OrderHeap[maxSecurities];
+        this.trailBuy = new OrderHeap[maxSecurities];
+        this.pegGroups = new OrderHeap[maxSecurities];
+        this.pegSuspended = new OrderHeap[maxSecurities];
         for (int i = 0; i < initialPoolSize; i++) {
             RestingOrder pooled = new RestingOrder();
             pooled.nextFree = freeList;
@@ -467,6 +485,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             }
             linkPeg(o);
             if (o.status == RestingOrder.STATUS_SUSPENDED) {
+                countSuspended(o, true);
                 return;
             }
         }
@@ -1734,15 +1753,99 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // ----- stores ------------------------------------------------------------------------------
 
     private void linkPending(RestingOrder o) {
+        final int s = o.securityId;
         linkSorted(o, pendHead, pendTail, RestingOrder.STORE_PENDING);
-        pendCount[o.securityId]++;
+        pendCount[s]++;
         pendingTotal++;
+        if (stopBuy[s] == null) {
+            stopBuy[s] = new OrderHeap(OrderHeap.STOP_BUY);
+            stopSell[s] = new OrderHeap(OrderHeap.STOP_SELL);
+            trailSell[s] = new OrderHeap(OrderHeap.TRAIL_SELL);
+            trailBuy[s] = new OrderHeap(OrderHeap.TRAIL_BUY);
+        }
+        final boolean buy = o.side == InputEvent.SIDE_BUY;
+        (buy ? stopBuy : stopSell)[s].add(o);
+        if (o.orderType == OrderTypes.TRAILING_STOP) {
+            (buy ? trailBuy : trailSell)[s].add(o);
+        }
+        if (pendCount[s] > trailScratch.length) {
+            trailScratch = new RestingOrder[Math.max(pendCount[s], trailScratch.length << 1)];
+        }
     }
 
     private void linkPeg(RestingOrder o) {
         linkSorted(o, pegHead, pegTail, RestingOrder.STORE_PEG);
         pegCount[o.securityId]++;
         pegTotal++;
+        joinGroup(o);
+        if (2 * pegCount[o.securityId] > pegScratch.length) {   // a suspended peg can be collected twice
+            pegScratch = new RestingOrder[Math.max(2 * pegCount[o.securityId], pegScratch.length << 1)];
+        }
+    }
+
+    /**
+     * FR-OT42: file a peg under (side, reference, offset). Groups are found by a scan of the
+     * security's groups, and an emptied group goes to a free list, so churn allocates nothing.
+     */
+    // ponytail: linear group lookup at admission/replace; a map keyed by (side, ref, offset) if a
+    // security ever holds thousands of distinct offsets.
+    private void joinGroup(RestingOrder o) {
+        final int s = o.securityId;
+        final byte kind = o.side == InputEvent.SIDE_BUY ? OrderHeap.PEG_BUY : OrderHeap.PEG_SELL;
+        OrderHeap g = pegGroups[s];
+        while (g != null && !(g.kind == kind && g.pegRef == o.pegRef && g.pegOffset == o.pegOffset)) {
+            g = g.nextGroup;
+        }
+        if (g == null) {
+            g = freeGroups;
+            if (g == null) {
+                g = new OrderHeap(kind);
+            } else {
+                freeGroups = g.nextGroup;
+            }
+            g.reinit(kind, o.pegRef, o.pegOffset);
+            g.nextGroup = pegGroups[s];
+            pegGroups[s] = g;
+        }
+        g.add(o);
+        o.pegGroup = g;
+    }
+
+    private void leaveGroup(RestingOrder o) {
+        final OrderHeap g = o.pegGroup;
+        g.remove(o);
+        o.pegGroup = null;
+        if (g.size() == 0) {
+            final int s = o.securityId;
+            if (pegGroups[s] == g) {
+                pegGroups[s] = g.nextGroup;
+            } else {
+                OrderHeap prev = pegGroups[s];
+                while (prev.nextGroup != g) {
+                    prev = prev.nextGroup;
+                }
+                prev.nextGroup = g.nextGroup;
+            }
+            g.nextGroup = freeGroups;
+            freeGroups = g;
+        }
+    }
+
+    /** FR-OT42: a suspended peg is re-tried on every reference move, whatever its group's T did. */
+    private void countSuspended(RestingOrder p, boolean suspended) {
+        if (p.suspCounted == suspended) {
+            return;
+        }
+        p.suspCounted = suspended;
+        final int s = p.securityId;
+        if (suspended) {
+            if (pegSuspended[s] == null) {
+                pegSuspended[s] = new OrderHeap(OrderHeap.SUSPENDED);
+            }
+            pegSuspended[s].add(p);
+        } else {
+            pegSuspended[s].remove(p);
+        }
     }
 
     /** Insert in ascending admission sequence (FR-OT11). Appends in the common case. */
@@ -1791,36 +1894,52 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         if (pending) {
             pendCount[s]--;
             pendingTotal--;
+            final boolean buy = o.side == InputEvent.SIDE_BUY;
+            (buy ? stopBuy : stopSell)[s].remove(o);
+            if (o.orderType == OrderTypes.TRAILING_STOP) {
+                (buy ? trailBuy : trailSell)[s].remove(o);
+            }
         } else {
             pegCount[s]--;
             pegTotal--;
+            leaveGroup(o);
+            countSuspended(o, false);
         }
     }
 
     // ----- prints, latching and the trigger queue (FR-OT09..12, 19) -----------------------------
 
     /**
-     * One qualifying print. Walks the security's pending store in admission order, so orders
-     * latched by the same print enter the queue in admission order regardless of side (FR-OT11).
-     * A trailing stop is tested against its CURRENT level first and its watermark updated only if
-     * it did not latch (FR-OT19). A ratchet that moves the stop LEVEL is published (F3, below).
-     * Allocation-free; O(pending in this security).
+     * One qualifying print (FR-OT42). The stop heaps yield exactly the orders the print crosses
+     * (buy: stop &lt;= px; sell: stop &gt;= px, the one predicate of {@link #stopThrough}); they
+     * are appended and then sorted, so orders latched by the same print enter the queue in
+     * admission order regardless of side (FR-OT11). A trailing stop latches on its CURRENT level;
+     * the watermark heaps yield the trailing stops this print moves (a strictly better print),
+     * which never include a latched one (a sell's stop is below its watermark, a buy's above), so
+     * check-then-update holds (FR-OT19). Those update in admission order and a moved LEVEL is
+     * published (F3, below). Allocation-free; O((latched + moved) log pending).
      */
-    // ponytail: linear scan of the security's pending list per print; a price-indexed trigger
-    // ladder if pending counts per security ever grow large.
     private void recordPrint(int s, long px, InputEvent e) {
         lastTradePx[s] = px;
         hasTraded[s] = true;
-        RestingOrder o = pendHead[s];
-        while (o != null) {
-            final RestingOrder next = o.storeNext;
-            if (stopThrough(o, px)) {
-                unlinkStore(o);
-                triggerQueue[qTail++] = o;   // capacity pendingCapacity + 1: cannot overflow
-            } else if (o.orderType == OrderTypes.TRAILING_STOP) {
-                updateWatermark(o, px, e);
-            }
-            o = next;
+        if (pendCount[s] == 0) {
+            return;
+        }
+        final int from = qTail;
+        // capacity pendingCapacity + 1: cannot overflow
+        qTail = stopBuy[s].collectAtMost(px, triggerQueue, qTail);
+        qTail = stopSell[s].collectAtMost(-px, triggerQueue, qTail);
+        int moved = trailSell[s].collectAtMost(px - 1L, trailScratch, 0);
+        moved = trailBuy[s].collectAtMost(-px - 1L, trailScratch, moved);
+        for (int i = from; i < qTail; i++) {
+            unlinkStore(triggerQueue[i]);
+        }
+        OrderHeap.sortByAdmission(triggerQueue, from, qTail);
+        OrderHeap.sortByAdmission(trailScratch, 0, moved);
+        for (int i = 0; i < moved; i++) {
+            final RestingOrder o = trailScratch[i];
+            trailScratch[i] = null;
+            updateWatermark(o, px, e);
         }
     }
 
@@ -1840,9 +1959,13 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         final long stop = OrderTypes.trailingStop(o.side, o.trailMode, o.trailValue, px,
             booksBySecurity[o.securityId].tickTicks());
         if (stop > 0L) {   // a sell stop only rises and a buy stop only falls; -1 is unreachable
+            final int s = o.securityId;
+            final boolean buy = o.side == InputEvent.SIDE_BUY;
             o.watermark = px;
+            (buy ? trailBuy : trailSell)[s].changed(o);
             if (stop != o.stopPx) {
                 o.stopPx = stop;
+                (buy ? stopBuy : stopSell)[s].changed(o);
                 o.updatedAtMillis = e.eventTimeMillis;
                 out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_RESTING_UPDATE, true,
                     lastPxBySecurity[o.securityId], e.ingressNanos);
@@ -1928,15 +2051,14 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private static final long PEG_INVALID_PRICE = 0L;
 
     /** Best price on {@code side} over NON-pegged orders only (FR-OT23), or Px.NONE. */
-    // ponytail: skips peg-only levels one by one; fine while pegs are a minority of a book.
+    // ponytail: skips peg-only LEVELS one by one (O(1) each, FR-OT42); a second occupancy bitmap
+    // of non-peg levels if pegs ever spread over many distinct prices ahead of the market.
     private static long nonPegBest(LimitBook book, byte side) {
         final boolean bid = side == InputEvent.SIDE_BUY;
         int slot = bid ? book.bestBidSlot() : book.bestAskSlot();
         while (slot != LimitBook.NO_LEVEL) {
-            for (RestingOrder o = book.headAt(side, slot); o != null; o = o.bookNext) {
-                if (o.orderType != OrderTypes.PEGGED) {
-                    return book.priceAt(slot);
-                }
+            if (book.nonPegAt(side, slot) > 0) {
+                return book.priceAt(slot);
             }
             slot = bid ? book.occupiedBelow(side, slot) : book.occupiedAbove(side, slot);
         }
@@ -1951,20 +2073,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private static long pegTarget(RestingOrder o, LimitBook book, long bid, long ask) {
         final long tick = book.tickTicks();
         final boolean buy = o.side == InputEvent.SIDE_BUY;
-        final long ref;
-        if (o.pegRef == OrderTypes.PEG_PRIMARY) {
-            ref = buy ? bid : ask;
-            if (ref == Px.NONE) {
-                return PEG_NO_REFERENCE;
-            }
-        } else {
-            if (bid == Px.NONE || ask == Px.NONE) {
-                return PEG_NO_REFERENCE;
-            }
-            final long sum = bid / tick + ask / tick;
-            ref = (buy ? Math.floorDiv(sum, 2L) : -Math.floorDiv(-sum, 2L)) * tick;
+        long px = pegUnclipped(buy, o.pegRef, o.pegOffset, bid, ask, tick);
+        if (px == NO_REF) {
+            return PEG_NO_REFERENCE;
         }
-        long px = ref + (long) o.pegOffset * tick;   // |offset| <= 10 000, tick <= 1 000: no overflow
         px = buy ? Math.min(px, o.capPx) : Math.max(px, o.capPx);
         if (!book.onGrid(px)) {   // a cap left off-grid by a later re-tick: round passively
             px = buy ? OrderTypes.floorToGrid(px, tick) : OrderTypes.ceilToGrid(px, tick);
@@ -1972,21 +2084,61 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return px > 0L && px <= OrderTypes.MAX_PRICE_TICKS ? px : PEG_INVALID_PRICE;
     }
 
-    /** FR-OT25: walk the security's pegs in admission order against the stored reference. */
-    private void repricePegs(int s, LimitBook book, InputEvent e) {
-        final int round = ++roundId;
-        RestingOrder p = pegHead[s];
-        while (p != null) {
-            if (p.repriceMark == round) {
-                p = p.storeNext;
+    private static final long NO_REF = Long.MIN_VALUE;
+
+    /** Reference plus offset, before the cap: one value for a whole peg group. NO_REF if absent. */
+    private static long pegUnclipped(boolean buy, byte pegRef, int pegOffset, long bid, long ask,
+                                     long tick) {
+        final long ref;
+        if (pegRef == OrderTypes.PEG_PRIMARY) {
+            ref = buy ? bid : ask;
+            if (ref == Px.NONE) {
+                return NO_REF;
+            }
+        } else {
+            if (bid == Px.NONE || ask == Px.NONE) {
+                return NO_REF;
+            }
+            final long sum = bid / tick + ask / tick;
+            ref = (buy ? Math.floorDiv(sum, 2L) : -Math.floorDiv(-sum, 2L)) * tick;
+        }
+        return ref + (long) pegOffset * tick;   // |offset| <= 10 000, tick <= 1 000: no overflow
+    }
+
+    /**
+     * FR-OT25 via FR-OT42: reprice, in ascending admission sequence, every peg whose price the
+     * reference move (oldBid/oldAsk to the stored reference) can change. Each group (side,
+     * reference, offset) shares one unclipped target T. A resting member is priced at
+     * clip(T_old, cap), so one whose cap is at or inside both T_old and T_new (buy cap &lt;= min,
+     * sell cap &gt;= max) is unchanged, and {@link #repriceOne} would leave it alone: it is not
+     * visited. A group whose T did not move is skipped whole. Every suspended peg is visited
+     * too (the invariant above is about RESTING members). The visited set is taken before the
+     * first reprice and acted on in admission order, skipping any peg an earlier reprice filled
+     * or cancelled — exactly the orders, and the order, of a full walk.
+     */
+    private void repricePegs(int s, LimitBook book, InputEvent e, long oldBid, long oldAsk) {
+        int n = pegSuspended[s] == null ? 0 : pegSuspended[s].collectAtMost(Long.MAX_VALUE, pegScratch, 0);
+        final long tick = book.tickTicks();
+        for (OrderHeap g = pegGroups[s]; g != null; g = g.nextGroup) {
+            final boolean buy = g.buySide();
+            final long was = pegUnclipped(buy, g.pegRef, g.pegOffset, oldBid, oldAsk, tick);
+            final long now = pegUnclipped(buy, g.pegRef, g.pegOffset, pegRefBid[s], pegRefAsk[s], tick);
+            if (was == now) {
                 continue;
             }
-            p.repriceMark = round;
-            final RestingOrder next = p.storeNext;
-            repriceOne(p, book, e);
-            // A reprice can fill or STP-cancel other pegs. If the one after us left the list,
-            // restart from the head; the marks skip everything already walked this round.
-            p = next != null && next.store == RestingOrder.STORE_PEG ? next : pegHead[s];
+            final long max = was == NO_REF || now == NO_REF ? Long.MAX_VALUE
+                : buy ? -Math.min(was, now) - 1L : Math.max(was, now) - 1L;
+            n = g.collectAtMost(max, pegScratch, n);
+        }
+        OrderHeap.sortByAdmission(pegScratch, 0, n);
+        RestingOrder prev = null;
+        for (int i = 0; i < n; i++) {
+            final RestingOrder p = pegScratch[i];
+            pegScratch[i] = null;
+            if (p != prev && p.store == RestingOrder.STORE_PEG) {   // a suspended peg can come twice
+                repriceOne(p, book, e);
+            }
+            prev = p;
         }
     }
 
@@ -2024,6 +2176,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             book.remove(p);
         }
         pegReprices++;
+        countSuspended(p, false);
         p.limitPx = t;
         p.suspendReason = RestingOrder.SUSPEND_NONE;
         p.riskReason = (byte) RiskReason.ACCEPTED.ordinal();
@@ -2047,6 +2200,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             book.remove(p);
         }
         p.status = RestingOrder.STATUS_SUSPENDED;
+        countSuspended(p, true);
         p.suspendReason = why;
         p.riskReason = reasonOrdinal;
         p.updatedAtMillis = e.eventTimeMillis;
@@ -2089,9 +2243,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             }
             rounds++;
             if (refMoved) {
+                final long oldBid = pegRefBid[s];
+                final long oldAsk = pegRefAsk[s];
                 pegRefBid[s] = bid;
                 pegRefAsk[s] = ask;
-                repricePegs(s, book, e);
+                repricePegs(s, book, e, oldBid, oldAsk);
             }
             drainTriggers(e);
         }
@@ -2253,6 +2409,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 o.quantity = e.qty;
                 o.remaining = newRemaining;
                 o.stopPx = newStop;
+                (o.side == InputEvent.SIDE_BUY ? stopBuy : stopSell)[s].changed(o);   // FR-OT42
                 if (type == OrderTypes.STOP_LIMIT) {
                     o.limitPx = e.limitPx;
                 }
@@ -2302,8 +2459,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private void replacePeg(InputEvent e, RestingOrder o, LimitBook book, int newRemaining,
                             long newTarget, long riskPx, long px) {
         final boolean keep = o.isResting() && newTarget == o.limitPx && newRemaining < o.remaining;
+        leaveGroup(o);   // FR-OT42: cap and offset are the group key and the heap key
         o.capPx = e.limitPx;
         o.pegOffset = e.pegOffset;
+        joinGroup(o);
         o.riskPx = riskPx;
         if (keep) {
             book.reduce(o, o.remaining - newRemaining);
@@ -2320,10 +2479,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         final int slot = newTarget > 0L ? book.slotFor(newTarget) : LimitBook.NO_LEVEL;
         if (slot == LimitBook.NO_LEVEL) {
             o.status = RestingOrder.STATUS_SUSPENDED;
+            countSuspended(o, true);
             o.suspendReason = RestingOrder.SUSPEND_REFERENCE;
             out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_REPLACE, true, px, e.ingressNanos);
             return;
         }
+        countSuspended(o, false);
         o.limitPx = newTarget;
         o.suspendReason = RestingOrder.SUSPEND_NONE;
         o.riskReason = (byte) RiskReason.ACCEPTED.ordinal();

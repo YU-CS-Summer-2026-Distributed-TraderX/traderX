@@ -43,6 +43,9 @@ public final class LimitBook {
     private final long[] askQty;
     private final long[] bidBits;
     private final long[] askBits;
+    /** YU18 FR-OT42: non-PEGGED orders per level, so the peg reference skips a peg-only level in O(1). */
+    private final int[] bidNonPeg;
+    private final int[] askNonPeg;
     private int bestBid = NO_LEVEL;   // slot index; bids match from highest slot downward
     private int bestAsk = NO_LEVEL;   // slot index; asks match from lowest slot upward
     private int openOrders;
@@ -66,6 +69,8 @@ public final class LimitBook {
         this.askQty = new long[levels];
         this.bidBits = new long[levels >> 6];
         this.askBits = new long[levels >> 6];
+        this.bidNonPeg = new int[levels];
+        this.askNonPeg = new int[levels];
     }
 
     public int levels() {
@@ -172,8 +177,8 @@ public final class LimitBook {
         if (delta < Integer.MIN_VALUE || delta > Integer.MAX_VALUE) {
             throw new IllegalStateException("rebase: band moved further than the slot index spans");
         }
-        shift(bidHead, bidTail, bidQty, bidBits, (int) delta);
-        shift(askHead, askTail, askQty, askBits, (int) delta);
+        shift(bidHead, bidTail, bidQty, bidBits, bidNonPeg, (int) delta);
+        shift(askHead, askTail, askQty, askBits, askNonPeg, (int) delta);
         if (bestBid != NO_LEVEL) {
             bestBid += (int) delta;
         }
@@ -183,7 +188,8 @@ public final class LimitBook {
         baseLevel = newBaseLevel;
     }
 
-    private void shift(RestingOrder[] head, RestingOrder[] tail, long[] qty, long[] bits, int delta) {
+    private void shift(RestingOrder[] head, RestingOrder[] tail, long[] qty, long[] bits, int[] nonPeg,
+                       int delta) {
         // Walk towards the move so a source is never overwritten before it is read: levels move
         // down (delta < 0) ascending, up (delta > 0) descending. Each moved level clears its own
         // bit and sets the target's, which the scan never revisits.
@@ -196,9 +202,11 @@ public final class LimitBook {
             head[target] = head[slot];
             tail[target] = tail[slot];
             qty[target] = qty[slot];
+            nonPeg[target] = nonPeg[slot];
             head[slot] = null;
             tail[slot] = null;
             qty[slot] = 0;
+            nonPeg[slot] = 0;
             bits[slot >> 6] &= ~(1L << (slot & 63));
             bits[target >> 6] |= 1L << (target & 63);
             for (RestingOrder o = head[target]; o != null; o = o.bookNext) {
@@ -238,6 +246,9 @@ public final class LimitBook {
         tail[slot] = o;
         // YU18 (FR-OT20): the level shows only an iceberg's tranche; hidden quantity is off-book.
         (bid ? bidQty : askQty)[slot] += o.visibleQty();
+        if (o.orderType != OrderTypes.PEGGED) {
+            (bid ? bidNonPeg : askNonPeg)[slot]++;
+        }
         openOrders++;
     }
 
@@ -267,6 +278,9 @@ public final class LimitBook {
             o.bookNext.bookPrev = o.bookPrev;
         }
         (bid ? bidQty : askQty)[slot] -= o.visibleQty();
+        if (o.orderType != OrderTypes.PEGGED) {
+            (bid ? bidNonPeg : askNonPeg)[slot]--;
+        }
         o.bookNext = null;
         o.bookPrev = null;
         o.bookLevel = NO_LEVEL;
@@ -294,6 +308,11 @@ public final class LimitBook {
     /** FIFO head of a level on the given side (time priority: oldest first). */
     public RestingOrder headAt(byte side, int slot) {
         return (side == InputEvent.SIDE_BUY ? bidHead : askHead)[slot];
+    }
+
+    /** Non-PEGGED orders resting at a level (FR-OT42). */
+    public int nonPegAt(byte side, int slot) {
+        return (side == InputEvent.SIDE_BUY ? bidNonPeg : askNonPeg)[slot];
     }
 
     public int openOrders() {

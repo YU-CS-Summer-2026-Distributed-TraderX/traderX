@@ -34,3 +34,13 @@ SC-OT35/NFR-OT06 deferred/unverified by user until GKE credits. Coordinator inco
 - [x] Bind local workspace accounts to a stable persisted group before admission; fail login closed on setup failure.
 - [x] Source/generated tests for all seven order types, replacement, FOK and snapshot-plus-tail recovery.
 - [x] Local cluster upgraded with PVCs retained; same-group prevention and other-group fill verified, including automatic Desk grouping and snapshot/leader-restart recovery. Evidence: coordination/eod-integration/review-evidence/ri12-self-match-groups/.
+
+## FR-OT42 indexed stores (2026-10-24)
+
+- [x] Price-indexed stops and trailing watermarks; peg groups by (side, reference, offset) with
+  cap heaps; suspended-peg heap; per-level non-peg counts (local prototype, not committed).
+- [x] SC-OT52 differential equivalence and SC-OT53 flat bench (scratch harnesses, results in spec).
+- [ ] SC-OT54 recorded on the final candidate; coordinator review and incorporation.
+- [ ] Decide P1/P2 (larger caps, per-account limits, format 14) before any implementation.
+- [ ] Any rig or cluster proof (separate authorization; NFR-OT04).
+
