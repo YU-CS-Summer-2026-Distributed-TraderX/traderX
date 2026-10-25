@@ -35,9 +35,16 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(OrderFeedHandler.class);
 
   private static final long MAX_LATENCY_MILLIS = 10;
+  /** YU18: updates per transaction (was 1). See OrderProjectionService.persistAll. */
+  private static final int BATCH_SIZE = 1000;
+  /** YU18: bounded, same reasoning as TradeFeedHandler.QUEUE_CAPACITY. */
+  static final int QUEUE_CAPACITY = Integer.getInteger("traderx.order-feed.queue-capacity", 20_000);
+  // 20K = 20 batches of slack. Sized against the DEFAULT heap (25% of the 1 GiB pod limit = 256 MB):
+  // two 200K queues of parsed events filled it and the process still died of OOM (measured).
 
-  private final BlockingQueue<OrderUpdate> pending = new LinkedBlockingQueue<>();
+  private final BlockingQueue<OrderUpdate> pending = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
   private final AtomicLong rejected = new AtomicLong();
+  private final AtomicLong dropped = new AtomicLong();
   private volatile Thread flushThread;
   private volatile boolean running = true;
 
@@ -68,24 +75,54 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
 
   @Override
   public void onMessage(Envelope<?> envelope, OrderUpdate update) {
-    pending.add(update);
+    if (!pending.offer(update)) {
+      long n = dropped.incrementAndGet();
+      if (n == 1 || n % 10_000 == 0) {
+        log.warn("order-feed queue full ({}): dropped={} - the orderbook read model is behind and these updates are lost", QUEUE_CAPACITY, n);
+      }
+    }
   }
+
+  public long dropped() { return dropped.get(); }
+  public int backlog() { return pending.size(); }
 
   public long rejected() {
     return rejected.get();
   }
 
   private void flushLoop() {
+    java.util.List<OrderUpdate> batch = new java.util.ArrayList<>(BATCH_SIZE);
     while (running) {
       try {
         OrderUpdate update = pending.poll(MAX_LATENCY_MILLIS, TimeUnit.MILLISECONDS);
-        if (update != null) {
-          persist(update);
+        if (update == null) {
+          continue;
         }
+        batch.add(update);
+        pending.drainTo(batch, BATCH_SIZE - 1);
+        persistBatch(batch);
+        batch.clear();
       } catch (InterruptedException x) {
         Thread.currentThread().interrupt();
       }
     }
+  }
+
+  /**
+   * One transaction for the batch; if any update in it is refused, the batch rolls back and every
+   * update is retried on its own, so a single conflict still costs only that update (and is still
+   * counted in {@link #rejected}).
+   */
+  void persistBatch(java.util.List<OrderUpdate> batch) {
+    if (projectionService != null && batch.size() > 1) {
+      try {
+        projectionService.persistAll(batch);
+        return;
+      } catch (Exception x) {
+        log.warn("orderbook batch of {} refused ({}); retrying individually", batch.size(), x.getMessage());
+      }
+    }
+    for (OrderUpdate u : batch) { persist(u); }
   }
 
   /** Package-private so the rejection signal is unit-testable with a throwing repository. */

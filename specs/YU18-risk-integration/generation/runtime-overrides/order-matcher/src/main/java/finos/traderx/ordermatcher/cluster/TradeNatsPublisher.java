@@ -119,7 +119,12 @@ final class TradeNatsPublisher {
         r.qty = qty;
         r.tradePx = tradePx;
         if (!queue.offer(r)) {
-            dropped.incrementAndGet();
+            final long n = dropped.incrementAndGet();
+            // YU18: was a bare counter nobody read - same throttled WARN as the order bridge.
+            if (n == 1 || n % 10_000 == 0) {
+                System.out.println("WARN trade-nats-bridge queue full: dropped=" + n
+                    + " (trade-processor will miss these trade sides; it counts them as tradeSeq gaps)");
+            }
         }
     }
 
@@ -158,8 +163,12 @@ final class TradeNatsPublisher {
                 nats.publish(subject, encode(sb, r));
                 published.incrementAndGet();
             } catch (final Exception e) {
-                // best-effort; the NATS client reconnects on its own. A hard loss here is bounded
-                // and idempotent-dedupable downstream by trade id.
+                // best-effort; the NATS client reconnects on its own. YU18: a failed publish is a
+                // lost trade side too - it used to count as neither published nor dropped.
+                final long n = dropped.incrementAndGet();
+                if (n == 1 || n % 10_000 == 0) {
+                    System.out.println("WARN trade-nats-bridge publish failed: dropped=" + n + " " + e);
+                }
             }
         }
     }

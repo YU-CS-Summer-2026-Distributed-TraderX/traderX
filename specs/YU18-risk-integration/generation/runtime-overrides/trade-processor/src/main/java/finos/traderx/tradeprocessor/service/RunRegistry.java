@@ -23,8 +23,9 @@ public final class RunRegistry {
     if (rows.size()!=1) { throw new IllegalArgumentException("RUN_SCOPE_UNREGISTERED: "+scope); }
     return rows.get(0);
   }
-  public void validate(ScopedEvent e) {
-    var run=scope(e.getProjectionScope());
+  public void validate(ScopedEvent e) { validate(e,scope(e.getProjectionScope())); }
+  /** Same checks against a run row the caller already read in this transaction (one read per batch). */
+  public void validate(ScopedEvent e,Map<String,Object> run) {
     if (UNKNOWN.equals(e.getProjectionScope()) && e.getClusterEpoch()==null
         && e.getEventIdScheme()==null && e.getRunDescriptorHash()==null && e.getConsensusSequence()==null) {
       return; // Existing bytes keep their unknown legacy scope; never attributed to active run.
@@ -69,10 +70,11 @@ public final class RunRegistry {
     }
     positive(id.substring(prefix.length()),Integer.MAX_VALUE);
   }
-  public void requireWritable(ScopedEvent event) {
-    Object phase=scope(event.getProjectionScope()).get("phase");
+  public void requireWritable(ScopedEvent event) { requireWritable(event,scope(event.getProjectionScope())); }
+  public void requireWritable(ScopedEvent event,Map<String,Object> run) {
+    Object phase=run.get("phase");
     if ("DRAINING".equals(phase)) {
-      Object frozen=scope(event.getProjectionScope()).get("frozen_seq");
+      Object frozen=run.get("frozen_seq");
       if (UNKNOWN.equals(event.getProjectionScope()) || (event.getConsensusSequence()!=null
           && frozen instanceof Number && event.getConsensusSequence()<=((Number)frozen).longValue())) return;
     }
@@ -85,6 +87,13 @@ public final class RunRegistry {
     String field=trade ? "trade_rows" : "order_updates";
     jdbc.update("UPDATE projection_runs SET "+field+"="+field+"+1, checkpoint_seq=GREATEST(checkpoint_seq,?) WHERE projection_scope=?",
                 e.getConsensusSequence(),e.getProjectionScope());
+  }
+  /** One counter UPDATE for a whole batch: {@code rows} applied events, highest sequence {@code maxSeq}. */
+  public void appliedBatch(String scope,boolean trade,long rows,long maxSeq) {
+    if (rows==0) { return; }
+    String field=trade ? "trade_rows" : "order_updates";
+    jdbc.update("UPDATE projection_runs SET "+field+"="+field+"+?, checkpoint_seq=GREATEST(checkpoint_seq,?) WHERE projection_scope=?",
+                rows,maxSeq,scope);
   }
   public long[] recon(String scope) {
     jdbc.update("INSERT IGNORE INTO projection_recon(projection_scope) VALUES (?)",scope);

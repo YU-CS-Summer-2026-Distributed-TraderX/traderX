@@ -87,6 +87,9 @@ public class TradeService {
   @Nullable private RunRegistry runRegistry;
   @Autowired void runRegistry(RunRegistry registry) { this.runRegistry=registry; }
   @Nullable private ProjectionWriteLock projectionWriteLock;
+  // Batch path only: persist() a row known to be new instead of save()'s merge(), which SELECTs it
+  // first. Null outside Spring (reflective unit test) -> the inherited saveAll() path.
+  @jakarta.persistence.PersistenceContext @Nullable private jakarta.persistence.EntityManager entityManager;
 
   @Autowired
   void projectionWriteLock(ProjectionWriteLock lock) { this.projectionWriteLock = lock; }
@@ -173,7 +176,9 @@ public class TradeService {
     return inTransaction(() -> {
       // Validate the whole batch BEFORE any write or position mutation, including duplicate
       // keys within the same delivery. Rejected trades obey the same identity rule.
-      for (TradeOrder order : orders) { validateScope(order); }
+      // One projection_runs read per scope per batch (was ~3 per row: validate + requireWritable).
+      Map<String, Map<String, Object>> runs = new HashMap<>();
+      for (TradeOrder order : orders) { validateScope(order, runs); }
       Map<String, Trade> existingById = new HashMap<>();
       for (Trade existing : tradeRepository.findAllById(orders.stream().map(TradeOrder::getId).toList())) {
         existingById.put(existing.getId(), existing);
@@ -183,12 +188,13 @@ public class TradeService {
         Trade prior = firstById.putIfAbsent(order.getId(), newTradeFrom(order));
         if (prior != null) { requireSameTrade(prior, order); }
         if (runRegistry != null && !existingById.containsKey(order.getId())) {
-          runRegistry.requireWritable(order);
+          runRegistry.requireWritable(order, run(runs, order.getProjectionScope()));
         }
       }
       Set<String> alreadyBooked = new HashSet<>(existingById.keySet());
 
-      Map<String, Position> positionsByKey = new HashMap<>();
+      Map<String, Position> positionsByKey = prefetchPositions(orders, alreadyBooked);
+      Map<String, long[]> appliedByScope = new HashMap<>();
       List<Trade> trades = new ArrayList<>(orders.size());
       List<TradeBookingResult> results = new ArrayList<>(orders.size());
       List<TradeBookingResult> rejectedResults = new ArrayList<>();
@@ -219,12 +225,26 @@ public class TradeService {
 
         Trade trade = bookTrade(order, position);
         trades.add(trade);
-        if (runRegistry != null) { runRegistry.applied(order,true); }
+        if (order.getConsensusSequence() != null) {
+          long[] a = appliedByScope.computeIfAbsent(order.getProjectionScope(), k -> new long[2]);
+          a[0]++; a[1] = Math.max(a[1], order.getConsensusSequence());
+        }
         results.add(new TradeBookingResult(trade, position));
       }
 
-      tradeRepository.saveAll(trades);
-      positionRepository.saveAll(positionsByKey.values());
+      if (entityManager != null) {
+        // Every trade here was absent from findAllById above, so persist() (no merge SELECT).
+        for (Trade trade : trades) { entityManager.persist(trade); }
+        upsertPositions(positionsByKey.values());
+      } else {
+        tradeRepository.saveAll(trades);
+        positionRepository.saveAll(positionsByKey.values());
+      }
+      if (runRegistry != null) {
+        for (Map.Entry<String, long[]> a : appliedByScope.entrySet()) {
+          runRegistry.appliedBatch(a.getKey(), true, a.getValue()[0], a.getValue()[1]);
+        }
+      }
 
       for (TradeBookingResult result : results) {
         if (recovery || rejectedResults.contains(result)) {
@@ -555,6 +575,79 @@ public class TradeService {
     return "legacy-unknown".equals(scope)
         ? positionRepository.findByAccountIdAndSecurity(account,security)
         : positionRepository.findByProjectionScopeAndAccountIdAndSecurity(scope,account,security);
+  }
+
+  private Map<String, Object> run(Map<String, Map<String, Object>> runs, String scope) {
+    return runs.computeIfAbsent(scope, runRegistry::scope);
+  }
+
+  private void validateScope(TradeOrder order, Map<String, Map<String, Object>> runs) {
+    if (runRegistry!=null) {runRegistry.validate(order, run(runs, order.getProjectionScope()));}
+    else if (!RunRegistry.UNKNOWN.equals(order.getProjectionScope())) {
+      throw new IllegalStateException("managed projection requires a persisted run registry");
+    }
+  }
+
+  /**
+   * All positions this batch touches in ONE round trip per scope (row-constructor IN on the
+   * (projectionscope, accountid, security) primary key), as managed entities keyed like the batch
+   * loop keys them. A key absent here falls through to the inherited findPosition() lookup, so a
+   * miss costs what it always cost and can never change which row is found.
+   * ponytail: one statement per scope per batch; chunk the IN list if batches grow past ~5k keys.
+   */
+  @SuppressWarnings("unchecked")
+  private Map<String, Position> prefetchPositions(List<TradeOrder> orders, Set<String> skipIds) {
+    Map<String, Position> found = new HashMap<>();
+    if (entityManager == null) { return found; }
+    Map<String, Set<List<Object>>> keysByScope = new HashMap<>();
+    for (TradeOrder o : orders) {
+      if (skipIds.contains(o.getId()) || o.getAccountId() == null || o.getSecurity() == null) { continue; }
+      keysByScope.computeIfAbsent(o.getProjectionScope(), k -> new java.util.LinkedHashSet<>())
+          .add(List.of(o.getAccountId(), o.getSecurity()));
+    }
+    for (Map.Entry<String, Set<List<Object>>> e : keysByScope.entrySet()) {
+      StringBuilder sql = new StringBuilder("SELECT * FROM positions WHERE projectionscope=?1 AND (accountid,security) IN (");
+      int i = 2;
+      for (int k = 0; k < e.getValue().size(); k++) {
+        sql.append(k == 0 ? "" : ",").append("(?").append(i++).append(",?").append(i++).append(')');
+      }
+      var q = entityManager.createNativeQuery(sql.append(')').toString(), Position.class).setParameter(1, e.getKey());
+      i = 2;
+      for (List<Object> key : e.getValue()) { q.setParameter(i++, key.get(0)); q.setParameter(i++, key.get(1)); }
+      for (Position p : (List<Position>) q.getResultList()) {
+        entityManager.detach(p); // written by upsertPositions, never by dirty checking
+        found.put(p.getProjectionScope() + "|" + p.getAccountId() + "|" + p.getSecurity(), p);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The batch's final position values in one multi-row statement (rewriteBatchedStatements folds
+   * the JDBC batch), instead of one dirty-checked UPDATE per touched position. Absolute values, not
+   * deltas: they were computed from rows read under the projection write lock this transaction
+   * holds, so no other writer can have moved them. A position found by the findPosition() fallback
+   * is detached first so dirty checking cannot write it a second time.
+   */
+  private void upsertPositions(java.util.Collection<Position> touched) {
+    if (touched.isEmpty()) { return; }
+    for (Position p : touched) { if (entityManager.contains(p)) { entityManager.detach(p); } }
+    entityManager.unwrap(org.hibernate.Session.class).doWork(c -> {
+      try (var ps = c.prepareStatement("INSERT INTO positions(projectionscope,accountid,security,updated,quantity,averagecostbasis)"
+          + " VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE updated=VALUES(updated),quantity=VALUES(quantity),"
+          + "averagecostbasis=VALUES(averagecostbasis)")) {
+        for (Position p : touched) {
+          ps.setString(1, p.getProjectionScope());
+          ps.setInt(2, p.getAccountId());
+          ps.setString(3, p.getSecurity());
+          ps.setTimestamp(4, p.getUpdated() == null ? null : new java.sql.Timestamp(p.getUpdated().getTime()));
+          ps.setInt(5, p.getQuantity());
+          ps.setBigDecimal(6, p.getAverageCostBasis());
+          ps.addBatch();
+        }
+        ps.executeBatch();
+      }
+    });
   }
 
   private void validateScope(TradeOrder order) {

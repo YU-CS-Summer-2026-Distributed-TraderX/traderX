@@ -222,8 +222,12 @@ final class OrderNatsPublisher {
                 nats.publish(subject, encode(sb, r));
                 published.incrementAndGet();
             } catch (final Exception e) {
-                // best-effort; the NATS client reconnects on its own. A hard loss here is bounded
-                // and idempotent-dedupable downstream by the epoch-qualified order id.
+                // best-effort; the NATS client reconnects on its own. YU18: count the loss - it
+                // used to be neither published nor dropped.
+                final long n = dropped.incrementAndGet();
+                if (n == 1 || n % 10_000 == 0) {
+                    System.out.println("WARN order-nats-bridge publish failed: dropped=" + n + " " + e);
+                }
             }
         }
     }

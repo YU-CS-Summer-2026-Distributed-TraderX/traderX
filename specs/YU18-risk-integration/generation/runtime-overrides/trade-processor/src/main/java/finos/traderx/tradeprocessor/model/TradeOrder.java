@@ -1,8 +1,13 @@
 package finos.traderx.tradeprocessor.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
+// YU18: tolerant like OrderUpdate. NatsJSONSubscriber's mapper keeps FAIL_ON_UNKNOWN_PROPERTIES, so
+// without this ONE additive field on the cluster's /trades wire dropped every trade with only an
+// ERROR line (reproduced 2026-10-25: venueTimestampNanos -> UnrecognizedPropertyException, no row).
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class TradeOrder implements ScopedEvent {
 
   private String id;
