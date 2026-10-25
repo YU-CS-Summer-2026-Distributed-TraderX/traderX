@@ -48,6 +48,28 @@ public interface OrderSubmitter {
     }
 
     /**
+     * ENGINE-REVIEW G3: cancel with the caller's OWNERSHIP CLAIM. {@code accountId} rides the
+     * command and the engine refuses NOT_ENTITLED when it names an account other than the
+     * order's; 0 = no claim, unchecked (the binary frames carry none). Defaults to the unclaimed
+     * form so a submitter that predates the claim keeps compiling.
+     */
+    default ExecResult submitCancel(int orderRef, int accountId) {
+        return submitCancel(orderRef);
+    }
+
+    /** G3: {@link #submitReplace(int, String, int, long)} with the caller's ownership claim. */
+    default ExecResult submitReplace(int orderRef, String clOrdId, int quantity, long limitPxTicks,
+                                     int accountId) {
+        return submitReplace(orderRef, clOrdId, quantity, limitPxTicks);
+    }
+
+    /** G3: {@link #submitTypedReplace(int, String, int, TypedOrder)} with the caller's ownership claim. */
+    default ExecResult submitTypedReplace(int orderRef, String clOrdId, int qty, TypedOrder typed,
+                                          int accountId) {
+        return submitTypedReplace(orderRef, clOrdId, qty, typed);
+    }
+
+    /**
      * Sequence an ATOMIC replace of {@code orderRef} — one command, cancel-and-add inside a single
      * apply (ADR-058). {@code quantity} is the new TOTAL quantity; account, security and side are
      * not passed because FIX forbids changing them and the engine reads them off the original.

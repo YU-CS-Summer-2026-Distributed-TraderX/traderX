@@ -1067,10 +1067,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      */
     @Override
     public ExecResult submitCancel(final int orderRef) {
+        return submitCancel(orderRef, 0);
+    }
+
+    /** G3: {@code accountId} is the caller's ownership claim; the engine rejects NOT_ENTITLED when
+     *  it names an account other than the order's. 0 = no claim (unchecked). */
+    @Override
+    public ExecResult submitCancel(final int orderRef, final int accountId) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // 0 is the reserved fence ref
         }
-        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_CANCEL, 0, null, (char) 0,
+        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_CANCEL, accountId, null, (char) 0,
             0, 0L, 0L, orderRef));
     }
 
@@ -1087,10 +1094,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     @Override
     public ExecResult submitReplace(final int orderRef, final String clOrdId, final int qty,
                                     final long limitPxTicks) {
+        return submitReplace(orderRef, clOrdId, qty, limitPxTicks, 0);
+    }
+
+    /** G3: with the caller's ownership claim (0 = none). */
+    @Override
+    public ExecResult submitReplace(final int orderRef, final String clOrdId, final int qty,
+                                    final long limitPxTicks, final int accountId) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
         }
-        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, accountId, null, (char) 0,
             qty, limitPxTicks, clientOrderKey(clOrdId), orderRef);
         p.clOrdId = clOrdId;
         return submitPipelined(p);
@@ -1137,10 +1151,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     @Override
     public ExecResult submitTypedReplace(final int orderRef, final String clOrdId, final int qty,
                                          final TypedOrder typed) {
+        return submitTypedReplace(orderRef, clOrdId, qty, typed, 0);
+    }
+
+    /** G3: with the caller's ownership claim (0 = none). */
+    @Override
+    public ExecResult submitTypedReplace(final int orderRef, final String clOrdId, final int qty,
+                                         final TypedOrder typed, final int accountId) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND);
         }
-        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, accountId, null, (char) 0,
             qty, typed.limitPx(), clientOrderKey(clOrdId), orderRef);
         p.clOrdId = clOrdId;
         p.typed = typed;
@@ -1280,11 +1301,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 event.orderRef = 0;
                 event.accountId = p.accountId;
                 event.securityId = securityId;
-            } else { // cancel / replace: engine reads account+security off the original order
+            } else { // cancel / replace: engine reads security off the original order; the account
+                     // (0 when the caller supplied none) is the OWNERSHIP claim the engine checks (G3)
                 event.type = p.type;
                 event.side = 0;
                 event.orderRef = p.orderRef;
-                event.accountId = 0;
+                event.accountId = p.accountId;
                 event.securityId = 0;
             }
             event.qty = p.qty;
@@ -1463,11 +1485,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     return;
                 }
                 r = submitTypedReplace(orderRef, body.path("clientOrderId").asText(""),
-                    body.get("quantity").asInt(), (TypedOrder) parsed);
+                    body.get("quantity").asInt(), (TypedOrder) parsed, body.path("accountId").asInt(0));
             } else {
                 r = submitReplace(orderRef, body.path("clientOrderId").asText(""),
                     body.get("quantity").asInt(),
-                    Math.round(body.get("limitPrice").asDouble() * 1_000_000d));
+                    Math.round(body.get("limitPrice").asDouble() * 1_000_000d),
+                    body.path("accountId").asInt(0));
             }
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
@@ -1497,7 +1520,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final int orderRef = body.get("orderRef").asInt();
-            final ExecResult r = submitCancel(orderRef);
+            final ExecResult r = submitCancel(orderRef, body.path("accountId").asInt(0));
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
                 return;

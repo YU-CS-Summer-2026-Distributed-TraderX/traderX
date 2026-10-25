@@ -258,7 +258,8 @@ public final class FixGatewayAcceptor {
                 return;
             }
 
-            final OrderSubmitter.ExecResult result = submitter.submitCancel(orderRef);
+            // G3: the session's account is its ownership claim; the engine refuses a foreign ref.
+            final OrderSubmitter.ExecResult result = submitter.submitCancel(orderRef, accountOf(cancel));
             if (result == null) {
                 // Post-publish ambiguity: the cancel may yet apply, so no reject may be sent.
                 log.warn("FIX cancel of ord-{} ambiguous (no committed ack)", orderRef);
@@ -338,8 +339,8 @@ public final class FixGatewayAcceptor {
             }
 
             final OrderSubmitter.ExecResult result = typedReplace instanceof OrderSubmitter.TypedOrder typed
-                ? submitter.submitTypedReplace(orderRef, qualify(sessionId, clOrdId), qty, typed)
-                : submitter.submitReplace(orderRef, qualify(sessionId, clOrdId), qty, limitPxTicks);
+                ? submitter.submitTypedReplace(orderRef, qualify(sessionId, clOrdId), qty, typed, accountOf(replace))
+                : submitter.submitReplace(orderRef, qualify(sessionId, clOrdId), qty, limitPxTicks, accountOf(replace));
             if (result == null) {
                 // Post-publish ambiguity: the replace may yet apply, so no reject may be sent.
                 log.warn("FIX replace of ord-{} ambiguous (no committed ack)", orderRef);

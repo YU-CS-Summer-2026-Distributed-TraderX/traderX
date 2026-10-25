@@ -807,6 +807,17 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return true;
     }
 
+    /**
+     * ENGINE-REVIEW G3: a request that TARGETS an order (cancel, replace, force-fill) and names an
+     * account must name the order's owner. 0 = no account on the wire (the binary cancel/replace
+     * frames carry none, and operator paths send none) and is not checked — enforcement is only
+     * as strong as the gateway that fills the slot. Enforced HERE because the engine is replicated
+     * and cannot be bypassed by any one gateway.
+     */
+    private static boolean ownedBy(RestingOrder o, InputEvent e) {
+        return e.accountId == 0 || e.accountId == o.accountId;
+    }
+
     private void onNewOrder(InputEvent e) {
         if (answeredAsDuplicate(e)) {
             return;
@@ -1247,6 +1258,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             return;
         }
         long px = lastPxBySecurity[o.securityId];
+        if (!ownedBy(o, e)) {
+            out.emitRequestRejected(o, e.seq, (byte) RiskReason.NOT_ENTITLED.ordinal(), px, e.ingressNanos);
+            return;
+        }
         if (o.isOpen()) {
             if (o.isResting()) {
                 booksBySecurity[o.securityId].remove(o);   // unlink while remaining is still open qty
@@ -1314,6 +1329,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             return;
         }
         final long px = lastPxBySecurity[o.securityId];
+        if (!ownedBy(o, e)) {
+            out.emitRequestRejected(o, e.seq, (byte) RiskReason.NOT_ENTITLED.ordinal(), px, e.ingressNanos);
+            return;
+        }
         if (!o.isOpen()) {
             // Too late to replace. NOT the terminal-republish that cancel does: republishing a
             // FILLED order emits KIND_ORDER_FILLED, which is exactly what a replace that filled on
@@ -1411,6 +1430,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             return;
         }
         long px = lastPxBySecurity[o.securityId];
+        if (!ownedBy(o, e)) {
+            out.emitRequestRejected(o, e.seq, (byte) RiskReason.NOT_ENTITLED.ordinal(), px, e.ingressNanos);
+            return;
+        }
         // 009 parity: force-fill executes the full remaining quantity at the last trade
         // price, falling back to the limit price when no trade has printed yet. The forced
         // execution IS a trade, so it advances the last trade price like any other.
