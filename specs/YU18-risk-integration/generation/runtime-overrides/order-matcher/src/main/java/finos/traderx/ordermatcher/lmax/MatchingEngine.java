@@ -2050,6 +2050,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         int slot = LimitBook.NO_LEVEL;
         if (stopLimit) {
+            if (!book.onGrid(o.limitPx)) {
+                // F3 tripwire: rederiveIfEmpty now keeps the grid while stops pend, so this is
+                // unreachable; if it ever fires, refusing beats flooring the limit onto a level.
+                rejectLatched(o, e, RiskReason.INVALID);
+                return;
+            }
             slot = bandSlot(book, s, o.limitPx, null, e);
             if (slot == LimitBook.NO_LEVEL) {
                 rejectLatched(o, e, RiskReason.PRICE_COLLAR);
@@ -2912,7 +2918,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * best pointers are already clear; gates V1/V2).
      */
     private void rederiveIfEmpty(LimitBook book, int securityId) {
-        if (book.openOrders() != 0) {
+        // ENGINE-REVIEW F3: "empty" must include the PENDING store. A STOP_LIMIT's limit was
+        // validated on the grid it was admitted under; re-ticking the book while it waits leaves
+        // that limit off-grid, slotFor() then FLOORS it at trigger time (a sell rested and filled
+        // below its limit), and the next snapshot refuses to restore the off-grid open row.
+        // pendCount is replicated state, so the decision is identical on every member and replay.
+        if (book.openOrders() != 0 || pendCount[securityId] != 0) {
             return;
         }
         final long derived = tickPxForBook(securityId);
