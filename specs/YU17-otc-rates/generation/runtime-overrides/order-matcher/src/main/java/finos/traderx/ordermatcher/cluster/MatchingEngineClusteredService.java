@@ -474,6 +474,24 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     //                    at the gateway's length check — members and gateways roll together.
     static final int EGRESS_ACK_LENGTH = 32;
 
+    /**
+     * Egress coalescing (wire change, opt-in by {@code CLUSTER_EGRESS_COALESCE=true}, default off):
+     * the records one drain emits go out as ONE egress message of n x {@link #EGRESS_ACK_LENGTH}
+     * bytes (n &lt;= {@link #EGRESS_COALESCE_MAX}) instead of one session offer each. Records,
+     * their order and their bytes are unchanged; only the framing is. Every egress reader splits
+     * with {@link #egressRecordCount}. Roll every gateway / egress client first, then the member
+     * flag; an old reader refuses a coalesced message at its length check. Leader-side egress
+     * only: the log, the snapshot and replay are untouched, so it needs no fresh epoch.
+     */
+    static final boolean EGRESS_COALESCE = Boolean.parseBoolean(System.getenv("CLUSTER_EGRESS_COALESCE"));
+    static final int EGRESS_COALESCE_MAX = 64;
+
+    /** Records an egress message carries: n for a whole multiple of the record width above one
+     *  record, else 1 (one record, or a length the reader refuses as it always did). */
+    static int egressRecordCount(final int length) {
+        return length > EGRESS_ACK_LENGTH && length % EGRESS_ACK_LENGTH == 0 ? length / EGRESS_ACK_LENGTH : 1;
+    }
+
     /** Snapshot transport seam: production offers to the cluster snapshot publication; tests
      *  capture buffers directly. One call per record. */
     interface SnapshotWriter {
@@ -483,6 +501,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent event = new InputEvent();
     private final UnsafeBuffer ackBuffer = new UnsafeBuffer(new byte[EGRESS_ACK_LENGTH]);
+    private final UnsafeBuffer coalesceBuffer = new UnsafeBuffer(new byte[EGRESS_ACK_LENGTH * EGRESS_COALESCE_MAX]);
+    private int coalesced;
+    boolean egressCoalesce = EGRESS_COALESCE; // package-private for tests
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
 
     private Cluster cluster;
@@ -2145,9 +2166,35 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // the gateway still routes on the class bytes first, so a resting update carrying the
             // aggressor's id can never complete the aggressor's pending with counterparty data.
             ackBuffer.putLong(24, applyRequestId);
-            offerEgress(session);
+            if (egressCoalesce) {
+                coalesceBuffer.putBytes(coalesced * EGRESS_ACK_LENGTH, ackBuffer, 0, EGRESS_ACK_LENGTH);
+                if (++coalesced == EGRESS_COALESCE_MAX) {
+                    flushCoalesced(session);
+                }
+            } else {
+                offerEgress(session);
+            }
+        }
+        if (coalesced > 0) {
+            flushCoalesced(session);
         }
         outputConsumed.set(cursor);
+    }
+
+    /** {@link #offerEgress}'s best-effort bound, for the records one drain coalesced. */
+    private void flushCoalesced(final ClientSession session) {
+        final int n = coalesced;
+        coalesced = 0;
+        if (session == null || session.isClosing()) {
+            return;
+        }
+        idle.reset();
+        for (int i = 0; i < 20; i++) {
+            if (session.offer(coalesceBuffer, 0, n * EGRESS_ACK_LENGTH) > 0) {
+                return;
+            }
+            idle.idle();
+        }
     }
 
     /** Best-effort bounded offer: during replay or after disconnect the session is not

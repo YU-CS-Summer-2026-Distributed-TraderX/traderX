@@ -82,13 +82,20 @@ public final class FeedAdapterMain {
             .ingressChannel("aeron:udp?term-length=64k")
             .ingressEndpoints(ingressEndpoints)
             .egressChannel("aeron:udp?term-length=64k|endpoint=" + env("FEED_EGRESS_HOST", env("POD_IP", "localhost")) + ":" + env("FEED_EGRESS_PORT", "0"))
-            .egressListener((sessionId, timestamp, egress, offset, length, header) -> {
-                if (egress.getByte(offset + 12) == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
-                    final int id = egress.getInt(offset + 8);
-                    final String ticker = pendingRegistrations.remove(egress.getLong(offset + 13));
-                    if (ticker != null && id >= 0) {
-                        idByTicker.put(ticker, id);
-                        System.out.println("SYMBOL " + ticker + "=" + id);
+            .egressListener((sessionId, timestamp, egress, offset0, length, header) -> {
+                // Egress coalescing (YU17+ members, opt-in): a whole multiple of the record width is
+                // several records; inert on a member that never coalesces.
+                final int w = MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
+                final int n = length > w && length % w == 0 ? length / w : 1;
+                for (int i = 0; i < n; i++) {
+                    final int offset = offset0 + i * w;
+                    if (egress.getByte(offset + 12) == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
+                        final int id = egress.getInt(offset + 8);
+                        final String ticker = pendingRegistrations.remove(egress.getLong(offset + 13));
+                        if (ticker != null && id >= 0) {
+                            idByTicker.put(ticker, id);
+                            System.out.println("SYMBOL " + ticker + "=" + id);
+                        }
                     }
                 }
             }));

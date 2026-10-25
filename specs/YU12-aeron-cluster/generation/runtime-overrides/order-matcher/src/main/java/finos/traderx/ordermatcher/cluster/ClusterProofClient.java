@@ -64,6 +64,16 @@ public final class ClusterProofClient {
                 public void onMessage(final long clusterSessionId, final long timestamp,
                                       final org.agrona.DirectBuffer egress, final int offset, final int length,
                                       final io.aeron.logbuffer.Header header) {
+                    // Egress coalescing (YU17+ members, opt-in): a whole multiple of the record
+                    // width is several records; inert on a member that never coalesces.
+                    final int w = MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
+                    final int n = length > w && length % w == 0 ? length / w : 1;
+                    for (int i = 0; i < n; i++) {
+                        onRecord(egress, offset + i * w);
+                    }
+                }
+
+                private void onRecord(final org.agrona.DirectBuffer egress, final int offset) {
                 final int ref = egress.getInt(offset + 8);
                 final byte kind = egress.getByte(offset + 12);
                 if (kind != OutputEvent.KIND_ORDER_ACCEPTED) {

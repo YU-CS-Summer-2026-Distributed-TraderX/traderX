@@ -687,7 +687,18 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
     }
 
+    /** Egress coalescing: split a coalesced message so every record takes the per-record path
+     *  unchanged (see {@link MatchingEngineClusteredService#egressRecordCount}). */
     private void onEgress(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
+                          final int offset, final int length, final io.aeron.logbuffer.Header header) {
+        final int n = MatchingEngineClusteredService.egressRecordCount(length);
+        final int w = n == 1 ? length : MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
+        for (int i = 0; i < n; i++) {
+            onEgressRecord(clusterSessionId, timestamp, buffer, offset + i * w, w, header);
+        }
+    }
+
+    private void onEgressRecord(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
                           final int offset, final int length, final io.aeron.logbuffer.Header header) {
         // FAIL CLOSED on a wrong-width ack (option B). Every egress record on this tier is exactly
         // EGRESS_ACK_LENGTH; a 24-byte record means a pre-B member is answering a post-B gateway —

@@ -214,6 +214,12 @@ public final class FeedAdapterMain {
         volatile AeronCluster client; volatile boolean lost; long lastKeepAliveMs;
         Session(long generation) { this.generation = generation; }
         public void onMessage(long sessionId, long timestamp, DirectBuffer egress, int offset, int length, io.aeron.logbuffer.Header header) {
+            // Egress coalescing: one record at a time (MatchingEngineClusteredService.egressRecordCount).
+            final int n = MatchingEngineClusteredService.egressRecordCount(length);
+            final int w = n == 1 ? length : MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
+            for (int i = 0; i < n; i++) onRecord(sessionId, egress, offset + i * w, w);
+        }
+        private void onRecord(long sessionId, DirectBuffer egress, int offset, int length) {
             if (active != this || lost || client == null || sessionId != client.clusterSessionId() || length < 21) return;
             if (egress.getByte(offset + 12) == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
                 final int id = egress.getInt(offset + 8);

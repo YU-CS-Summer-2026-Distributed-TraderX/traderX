@@ -437,7 +437,18 @@ public final class RiskExtractMain {
         throw new IllegalStateException("risk extract: no marker ack within " + ACK_TIMEOUT_MS + "ms");
     }
 
+    /** Egress coalescing: split a coalesced message so every record takes the per-record path
+     *  unchanged (see {@link MatchingEngineClusteredService#egressRecordCount}). */
     private void onEgress(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
+                          final int offset, final int length, final io.aeron.logbuffer.Header header) {
+        final int n = MatchingEngineClusteredService.egressRecordCount(length);
+        final int w = n == 1 ? length : MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
+        for (int i = 0; i < n; i++) {
+            onEgressRecord(clusterSessionId, timestamp, buffer, offset + i * w, w, header);
+        }
+    }
+
+    private void onEgressRecord(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
                           final int offset, final int length, final io.aeron.logbuffer.Header header) {
         if (buffer.getByte(offset + 12) == MatchingEngineClusteredService.KIND_RISK_EXTRACT_MARKED) {
             lastExtractAck = new long[] {
