@@ -764,19 +764,52 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     // ----- event handling ----------------------------------------------------------------
 
+    /** Shell for answering a retry whose original order has aged out of retention. BLP thread only. */
+    private final RestingOrder evictedShell = new RestingOrder();
+
+    /**
+     * Idempotent retry (FR-IMRG14): a clientOrderKey already decided maps to its ONE original
+     * decision. Re-emit the original order unchanged when it is still addressable. When it has
+     * been EVICTED from bounded terminal retention, answer REJECTED/DUPLICATE naming the original
+     * ref — and never fall through. Falling through was the double-execution defect: the retry
+     * took a new ref, {@code decideAndReserve} saw the known key and returned ACCEPTED WITHOUT
+     * reserving, and a second, unreserved copy of a filled order entered the book. Retention
+     * (1,024 terminals) is far shorter than the idempotency window (256Ki), so a client retrying
+     * after a failover reap met this routinely. Returns true when the retry was answered.
+     */
+    private boolean answeredAsDuplicate(InputEvent e) {
+        if (risk == null || e.clientOrderKey() == 0L) {
+            return false;
+        }
+        final int originalRef = risk.existingOrderRef(e.clientOrderKey());
+        if (originalRef < 0) {
+            return false;   // never accepted under this key: decideAndReserve re-answers the rejection
+        }
+        final RestingOrder original = lookup(originalRef);
+        if (original != null) {
+            out.emitOrderUpdate(original, e.seq, 0, false,
+                lastPxBySecurity[original.securityId], e.ingressNanos);
+            return true;
+        }
+        evictedShell.reset();
+        evictedShell.orderRef = originalRef;
+        evictedShell.accountId = e.accountId;
+        evictedShell.securityId = e.securityId;
+        evictedShell.side = e.side;
+        evictedShell.quantity = e.qty;
+        evictedShell.limitPx = e.limitPx;
+        evictedShell.status = RestingOrder.STATUS_REJECTED;
+        evictedShell.createdAtMillis = e.eventTimeMillis;
+        evictedShell.updatedAtMillis = e.eventTimeMillis;
+        final long px = e.securityId >= 0 && e.securityId < lastPxBySecurity.length
+            ? lastPxBySecurity[e.securityId] : Px.NONE;
+        out.emitRequestRejected(evictedShell, e.seq, (byte) RiskReason.DUPLICATE.ordinal(), px, e.ingressNanos);
+        return true;
+    }
+
     private void onNewOrder(InputEvent e) {
-        // Idempotent retry (FR-IMRG14): a clientOrderKey already decided maps to its ONE original
-        // decision — re-emit the original order unchanged, never create or reserve a second one.
-        if (risk != null && e.clientOrderKey() != 0L) {
-            int originalRef = risk.existingOrderRef(e.clientOrderKey());
-            if (originalRef >= 0) {
-                RestingOrder original = lookup(originalRef);
-                if (original != null) {
-                    out.emitOrderUpdate(original, e.seq, 0, false,
-                        lastPxBySecurity[original.securityId], e.ingressNanos);
-                    return;
-                }
-            }
+        if (answeredAsDuplicate(e)) {
+            return;
         }
         if (e.securityId < 0 || e.securityId >= booksBySecurity.length) {
             return;   // unreachable from the gateway; bookFor below would have thrown before YU18
@@ -1270,17 +1303,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      */
     private void onReplace(InputEvent e) {
         // Idempotent retry (FR-IMRG14): a replace key already decided maps to its ONE original
-        // decision. Re-emit the order as it stands; never apply the replace twice.
-        if (risk != null && e.clientOrderKey() != 0L) {
-            final int originalRef = risk.existingOrderRef(e.clientOrderKey());
-            if (originalRef >= 0) {
-                final RestingOrder original = lookup(originalRef);
-                if (original != null) {
-                    out.emitOrderUpdate(original, e.seq, 0, false,
-                        lastPxBySecurity[original.securityId], e.ingressNanos);
-                    return;
-                }
-            }
+        // decision. Re-emit the order as it stands; never apply the replace twice — including when
+        // the order has aged out of retention (see answeredAsDuplicate).
+        if (answeredAsDuplicate(e)) {
+            return;
         }
         final RestingOrder o = lookup(e.orderRef);
         if (o == null) {
