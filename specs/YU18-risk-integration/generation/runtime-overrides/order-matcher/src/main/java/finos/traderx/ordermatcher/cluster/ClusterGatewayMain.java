@@ -94,6 +94,39 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // Negative = the pre-fix behaviour (strands reap at their own deadline).
     private static final long FAILOVER_REAP_MS = Long.parseLong(env("GATEWAY_FAILOVER_REAP_MS", "200"));
     private static final long BATCH_FENCE_RETRY_MS = 5;
+    // ENGINE-REVIEW S6: every JSON route materialised an unbounded request body as a tree, and
+    // /orders/batch accepted any array length while holding the owner thread for the whole batch.
+    // Both are now bounded; the defaults clear every bench in the tree and are env-tunable.
+    private static final int MAX_BODY_BYTES = Integer.parseInt(env("GATEWAY_MAX_BODY_BYTES", String.valueOf(8 << 20)));
+    private static final int MAX_BATCH_ORDERS = Integer.parseInt(env("GATEWAY_MAX_BATCH_ORDERS", "100000"));
+
+    static final class PayloadTooLarge extends RuntimeException {
+        PayloadTooLarge(final int limit) {
+            super("request body exceeds " + limit + " bytes");
+        }
+    }
+
+    /** Read at most {@code limit} bytes; one byte more is a {@link PayloadTooLarge}, never a bigger buffer. */
+    static byte[] readBounded(final java.io.InputStream in, final int limit) throws java.io.IOException {
+        final byte[] bytes = in.readNBytes(limit + 1);
+        if (bytes.length > limit) {
+            throw new PayloadTooLarge(limit);
+        }
+        return bytes;
+    }
+
+    private static java.io.InputStream readBody(final HttpExchange exchange) throws java.io.IOException {
+        return new java.io.ByteArrayInputStream(readBounded(exchange.getRequestBody(), MAX_BODY_BYTES));
+    }
+
+    /** The handlers' catch-all: an oversize body is the client's fault (413), anything else is 503. */
+    private static void fail(final HttpExchange exchange, final Exception e) {
+        if (e instanceof PayloadTooLarge) {
+            respond(exchange, 413, "{\"error\":\"" + e.getMessage() + "\"}");
+        } else {
+            fail(exchange, e);
+        }
+    }
     // Max order-lifecycle commands in flight per gateway before a submitter is backpressured. Set
     // well above any tested session count so the binding constraint is the consensus commit rate,
     // not the window; also caps how hard the ingress term / egress ring is filled.
@@ -1470,7 +1503,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = readOrderBody(exchange.getRequestBody());
+            final JsonNode body = readOrderBody(readBody(exchange));
             if (!checkExpectedRun(exchange, body)) return;
             final int claim = access.requireAccount(exchange, body.path("accountId").asInt(0), false);   // S1
             if (claim < 0) return;
@@ -1513,7 +1546,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             respond(exchange, code, "{\"orderRef\":" + orderRef + ",\"kind\":" + r.kind()
                 + ",\"replaced\":" + r.accepted() + reasonField(r) + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -1524,7 +1557,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             if (!checkExpectedRun(exchange, body)) return;
             final int claim = access.requireAccount(exchange, body.path("accountId").asInt(0), false);   // S1
             if (claim < 0) return;
@@ -1543,7 +1576,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             respond(exchange, code, "{\"orderRef\":" + orderRef + ",\"kind\":" + r.kind()
                 + ",\"canceled\":" + r.accepted() + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -1570,7 +1603,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = readOrderBody(exchange.getRequestBody());
+            final JsonNode body = readOrderBody(readBody(exchange));
             if (!checkExpectedRun(exchange, body)) return;
             final int accountId = access.requireAccount(exchange, body.path("accountId").asInt(), true);   // S1
             if (accountId < 0) return;
@@ -1625,7 +1658,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             respond(exchange, r.accepted() ? 200 : 422,
                 "{\"orderRef\":" + r.orderRef() + ",\"kind\":" + r.kind() + reasonField(r) + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -1639,8 +1672,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode arr = JSON.readTree(exchange.getRequestBody());
+            final JsonNode arr = JSON.readTree(readBody(exchange));
             if (!access.requireAll(exchange, arr)) return;   // S1: every element's account must be entitled
+            if (arr.size() > MAX_BATCH_ORDERS) {   // S6: one batch may not monopolise the owner thread
+                respond(exchange, 413, "{\"error\":\"batch exceeds " + MAX_BATCH_ORDERS + " orders\"}");
+                return;
+            }
             final int total = arr.size();
             final int[] accounts = new int[total];
             final String[] tickers = new String[total];
@@ -1740,7 +1777,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // only on 201 Created.
             respond(exchange, 201, "{\"accepted\":" + accepted + ",\"total\":" + total + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -1766,7 +1803,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             final int accountId = access.requireAccount(exchange, body.path("accountId").asInt(), true);   // S1
             if (accountId < 0) return;
             final String ticker = body.hasNonNull("securityId")
@@ -1804,7 +1841,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 422, "{\"booked\":false,\"reason\":\"" + RiskReason.values()[(int) ack[1]] + "\"}");
             }
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -1995,7 +2032,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 + ",\"clearedContracts\":" + ack[3]
                 + ",\"clearedQueued\":" + ack[4] + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -2011,7 +2048,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             if (!operatorAuthorised(exchange)) return;   // S2: a day roll expires every DAY order
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             final int date = parseBusinessDate(body.path("businessDate").asText(""));
             if (date <= 0) {
                 respond(exchange, 400, "{\"error\":\"businessDate must be a calendar date (yyyy-MM-dd)\"}");
@@ -2046,7 +2083,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 + (end ? "DAY_END" : "SESSION_START") + "\",\"outcome\":\""
                 + outcomes[(int) Math.max(0, Math.min(2, ack[1]))] + "\",\"sequence\":" + ack[0] + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -2210,7 +2247,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             if (!body.hasNonNull("phase")) {
                 respond(exchange, 400, "{\"error\":\"phase required\"}");
                 return;
@@ -2262,7 +2299,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 + MatchingEngineClusteredService.PHASE_NAMES[(int) ack[1]]
                 + "\",\"sequence\":" + ack[0] + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -2307,7 +2344,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             if (access.requireAccount(exchange, body.path("accountId").asInt(), true) < 0) return;   // S1
             final List<String> required = new ArrayList<>(List.of(
                 "accountId", "payReceive", "notional", "fixedRate", "effectiveDate",
@@ -2429,7 +2466,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     + RiskReason.values()[(int) ack[2]] + "\"}");
             }
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -2618,7 +2655,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             final String path = exchange.getRequestURI().getPath();
             final String action = path.substring(path.lastIndexOf('/') + 1);
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             // Wall-clock version, matching GatewayReplicaStore: monotonic across restarts, and only
             // ever compared for ordering. It is read on the gateway and then carried IN the command,
             // so every member applies the same number -- never read per-member, which would diverge.
@@ -2779,7 +2816,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // empty. Every other route on this gateway answers JSON, so this matches them.
             respond(exchange, 200, "{\"applied\":true,\"version\":" + version + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -2825,7 +2862,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             if (!operatorAuthorised(exchange)) return;   // S2: enables accounts/securities, seeds the reference price
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             final int accountId = body.path("accountId").asInt();
             final String[] tickers = body.path("tickers").asText("").split(",");
             final long priceTicks = Math.round(body.path("price").asDouble(150) * 1_000_000d);
@@ -2858,7 +2895,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             });
             respond(exchange, Boolean.TRUE.equals(ok) ? 200 : 422, "{\"seeded\":" + ok + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
@@ -2876,7 +2913,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
-            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final JsonNode body = JSON.readTree(readBody(exchange));
             final String ticker = instrumentOf(body).trim();
             if (ticker.isEmpty()) {
                 respond(exchange, 400, "{\"error\":\"ticker required\"}");
@@ -2889,7 +2926,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             respond(exchange, 200, "{\"ticker\":\"" + ticker + "\",\"securityId\":" + id + "}");
         } catch (final Exception e) {
-            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+            fail(exchange, e);
         }
     }
 
