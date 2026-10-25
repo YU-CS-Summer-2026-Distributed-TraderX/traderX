@@ -217,6 +217,13 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private int unsolicited;
     /** The security whose book the current command touched (-1 = none); settled after it. */
     private int settleSecurity = -1;
+    /**
+     * ENGINE-REVIEW F5: the band re-anchor {@link #bandSlot} decided for the current command, or
+     * -1. APPLIED by {@link #commitBand} only after the risk decision accepts, so a refused order
+     * (kill switch, unknown account, credit) can no longer move the band and cancel other
+     * participants' resting orders. Cleared at the top of every apply and of every bandSlot.
+     */
+    private long pendingRebase = -1L;
     // Per-process observability (never snapshotted, like bandReanchors).
     private long cascadeLimitEvents;
     private long fokInvariantBreaches;
@@ -393,6 +400,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     @Override
     public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
+        pendingRebase = -1L;   // F5: a refused command's planned re-anchor never leaks into the next
         switch (e.type) {
             case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
             case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
@@ -892,6 +900,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 return;
             }
         }
+        commitBand(book, e);   // F5: accepted — now the band may move
         index(o);
         // Ack first: the REST create response is the NEW order, exactly as in 009. The first
         // non-resting order-lifecycle ack after an offer is the gateway's correlation contract.
@@ -1196,6 +1205,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * strand the order being replaced, so a replace that would is refused and the order stands.
      */
     private int bandSlot(LimitBook book, int securityId, long limitPx, RestingOrder keep, InputEvent e) {
+        pendingRebase = -1L;
         final long ref = collarReferencePx(securityId);
         if (!book.anchored()) {
             book.anchorAround(ref != Px.NONE ? ref : limitPx);
@@ -1211,6 +1221,20 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         if (keep != null && keep.isResting() && !book.fitsAt(newBase, keep.limitPx)) {
             return LimitBook.NO_LEVEL;
         }
+        // F5: PLAN the re-anchor; commitBand applies it once the command is accepted. The slot is
+        // the limit's position under the new base (fitsAt just proved it is in range).
+        pendingRebase = newBase;
+        return (int) (limitPx / book.tickTicks() - newBase);
+    }
+
+    /** F5: apply the re-anchor bandSlot planned for this command — strand-cancel, then rebase. Called
+     *  after the risk decision accepts and before the order touches the book. No-op when none. */
+    private void commitBand(LimitBook book, InputEvent e) {
+        if (pendingRebase < 0L) {
+            return;
+        }
+        final long newBase = pendingRebase;
+        pendingRebase = -1L;
         cancelStranded(book, InputEvent.SIDE_BUY, newBase, e);
         cancelStranded(book, InputEvent.SIDE_SELL, newBase, e);
         book.rebase(newBase);
@@ -1218,7 +1242,6 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         if (InputEvent.isReplayFlow(e.accountId)) {   // ADR-072
             externalBandReanchors++;
         }
-        return book.slotFor(limitPx);
     }
 
     /** Cancel every resting order on {@code side} whose level a band anchored at {@code newBase}
@@ -1403,6 +1426,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
 
         // ---- committed from here: nothing below can fail ----
+        commitBand(book, e);   // F5
         if (newLimitPx == o.limitPx && newRemaining < o.remaining && o.isResting()) {
             book.reduce(o, o.remaining - newRemaining);   // keeps its queue slot: strict size-down
             o.quantity = e.qty;
@@ -1618,6 +1642,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 return;
             }
         }
+        commitBand(book, e);   // F5
         if (o.tif == OrderTypes.FOK && !fokFeasible(o, book)) {
             // FR-OT31: infeasible -> no prints, no STP, no replenishment. Only this order's own
             // record changes: its reservation is released and it answers CANCELED FOK_UNFILLABLE.
@@ -1792,6 +1817,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 return;
             }
         }
+        commitBand(book, e);   // F5
         if (pegHead[s] == null) {
             // The first peg of a security adopts the current reference; while pegs exist the
             // cascade loop keeps it current (FR-OT25).
@@ -2081,6 +2107,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 return;
             }
         }
+        commitBand(book, e);   // F5
         ordersTriggered++;
         o.triggered = true;
         o.status = RestingOrder.STATUS_NEW;
@@ -2468,6 +2495,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             }
         }
         // ---- committed from here ----
+        commitBand(book, e);   // F5 (the ICEBERG arm planned one)
         o.updatedAtMillis = e.eventTimeMillis;
         switch (type) {
             case OrderTypes.STOP, OrderTypes.STOP_LIMIT, OrderTypes.TRAILING_STOP -> {
