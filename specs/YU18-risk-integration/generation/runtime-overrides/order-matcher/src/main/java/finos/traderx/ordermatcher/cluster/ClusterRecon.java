@@ -219,7 +219,11 @@ final class ClusterRecon {
             }
             // No contract sink: this index feeds the ORPHAN sweep, which classifies trade ids
             // against the SQL projection. A swap books no trade and has no projection row.
-        }, null, counters);
+            // ENGINE-REVIEW F8: STRICT. ArchivePurgeMain truncates log segments behind the
+            // second-latest snapshot; a lenient replay then starts a fresh shadow mid-log and
+            // indexes a wrong history without a word. Refusing (GENESIS_MISSING / DISCONTINUITY)
+            // is the only honest answer once the archive no longer holds the epoch from 0.
+        }, null, counters, true);
         if (index.evictionCount() > 0) {
             // Refuse rather than serve a truncated index: every trade it dropped would come back
             // as a FALSE ORPHAN_IN_PROJECTION, which is a louder lie than an error.
@@ -254,7 +258,7 @@ final class ClusterRecon {
      * the same number and needs no second parameter.
      */
     synchronized java.util.Map<String,Object> projectionEvents() {
-        return projectionEvents(false);
+        return projectionEvents(true);   // ENGINE-REVIEW F8: a purged archive must refuse, not mislead
     }
 
     synchronized java.util.Map<String,Object> projectionEvents(boolean strict) {
