@@ -3211,9 +3211,29 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             this.side = side;
             this.qty = qty;
             this.limitPx = limitPx;
-            this.clientKey = clientKey;
+            this.clientKey = scopeKey(clientKey, accountId);
             this.orderRef = orderRef;
             this.securityId = securityId;
+        }
+
+        /**
+         * ENGINE-REVIEW G1: the engine's idempotency table is venue-global, so a raw clOrdId (REST
+         * hash or the binary client's own uint64) collided across clients — two firms numbering
+         * their orders from 1 had the second suppressed and answered with the first's order. Mix
+         * the account in HERE, once, so every reader of {@code clientKey} (the wire slot and the
+         * OTel trace key the member re-derives from it) sees the same scoped value. 0 stays 0 (no
+         * key); an unclaimed account (0, binary cancel/replace) leaves the key unscoped, which is
+         * consistent for every retry down the same path. Never returns 0 for a non-zero input.
+         */
+        static long scopeKey(final long clientKey, final int accountId) {
+            if (clientKey == 0L || accountId == 0) {
+                return clientKey;
+            }
+            long h = clientKey ^ (0x9e3779b97f4a7c15L * accountId);
+            h ^= h >>> 29;
+            h *= 0xbf58476d1ce4e5b9L;
+            h ^= h >>> 32;
+            return h == 0L ? 1L : h;
         }
     }
 
