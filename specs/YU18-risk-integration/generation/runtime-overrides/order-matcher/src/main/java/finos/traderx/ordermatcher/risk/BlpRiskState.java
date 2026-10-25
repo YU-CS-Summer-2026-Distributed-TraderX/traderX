@@ -97,7 +97,17 @@ public final class BlpRiskState {
         this.entitlementKeys = new long[tableSize(maxAccounts * 16)];
         java.util.Arrays.fill(this.entitlementKeys, EMPTY_KEY);
         this.entitlementEnabled = new byte[this.entitlementKeys.length];
-        this.exposureKeys = new long[tableSize(maxOpenOrders * 2)];
+        // ENGINE-REVIEW F2: keys are never deleted and never snapshotted, so a table that CAN fill
+        // makes admission depend on history — a restored member (open pairs only) admitted a pair
+        // the survivor refused as CAPACITY: permanent divergence. Size it over the whole
+        // (account-slot x security) domain at 50% load so it can never fill: 2^18 slots (~4 MB) at
+        // the cluster's 128 x 1024. Capped there: the Spring tier runs 4096 securities with a wider
+        // account bound and OOM'd on the uncapped product (it is not replicated, so a cap that can
+        // fill is a limit there, never a divergence).
+        // ponytail: cap instead of key deletion; add backward-shift deletion if a tier ever needs
+        // more than 2^18 live (account, security) pairs.
+        this.exposureKeys = new long[tableSize(Math.max(maxOpenOrders * 2,
+            (int) Math.min(1L << 18, 2L * accountsCapacity * Math.max(1, maxSecurities))))];
         java.util.Arrays.fill(this.exposureKeys, EMPTY_KEY);
         this.reservedBuyQtyByExposure = new int[this.exposureKeys.length];
         this.reservedSellQtyByExposure = new int[this.exposureKeys.length];
