@@ -140,6 +140,7 @@ public final class BlpRiskState {
 
     public void putAccount(int accountId, boolean enabled) {
         int slot = accountSlot(accountId, true);
+        if (slot < 0) return;   // ENGINE-REVIEW F7: table full — ignore deterministically, never index -1
         accountIds[slot] = accountId;
         accountEnabled[slot] = (byte) (enabled ? 1 : 0);
     }
@@ -148,6 +149,7 @@ public final class BlpRiskState {
     public void putSelfMatchGroup(int accountId, long group) {
         if (accountId <= 0 || group <= 0) throw new IllegalArgumentException("positive account and group required");
         int slot = accountSlot(accountId, true);
+        if (slot < 0) return;   // F7
         accountIds[slot] = accountId;
         selfMatchGroups[slot] = group;
     }
@@ -578,6 +580,7 @@ public final class BlpRiskState {
 
     public void bootstrapAccount(int accountId, boolean enabled, long executed) {
         int slot = accountSlot(accountId, true);
+        if (slot < 0) throw new IllegalStateException("restore incomplete: account table capacity");   // F7
         accountIds[slot] = accountId;
         accountEnabled[slot] = (byte) (enabled ? 1 : 0);
         executedNotional[slot] = executed;
@@ -618,6 +621,7 @@ public final class BlpRiskState {
                                         long notional, int qty) {
         if (notional <= 0 && qty <= 0) return;
         int slot = accountSlot(accountId, true);
+        if (slot < 0) throw new IllegalStateException("restore incomplete: account table capacity");   // F7
         accountIds[slot] = accountId;
         reservedNotional[slot] += notional;
         if (side == 0) {
