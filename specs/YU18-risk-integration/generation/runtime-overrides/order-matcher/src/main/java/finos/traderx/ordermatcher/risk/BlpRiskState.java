@@ -423,7 +423,11 @@ public final class BlpRiskState {
         if (reservedQty <= 0) return;
         int appliedQty = Math.min(fillQty, reservedQty);
         long reservedNotionalLeft = order.reservedNotional();
-        long release = reservedNotionalLeft * appliedQty / reservedQty;
+        // ENGINE-REVIEW G2: floor(N*a/q) without forming N*a — a 1M-share order at $100 partially
+        // filled 900k wrapped the product negative and GREW the reservation. Algebraically identical:
+        // N = p*q + r  =>  N*a/q = p*a + r*a/q, and r*a < q*a <= 1e12 cannot overflow.
+        long release = (reservedNotionalLeft / reservedQty) * appliedQty
+            + (reservedNotionalLeft % reservedQty) * appliedQty / reservedQty;
         int slot = accountSlot(accountId, false);
         if (slot >= 0) {
             reservedNotional[slot] = Math.max(0L, reservedNotional[slot] - release);
