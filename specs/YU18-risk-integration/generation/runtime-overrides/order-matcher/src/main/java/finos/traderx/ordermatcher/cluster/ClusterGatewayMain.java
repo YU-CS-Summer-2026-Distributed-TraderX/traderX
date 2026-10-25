@@ -132,6 +132,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // Same default as the Spring controller's risk.control.token, so a proof written against one
     // tier authenticates against the other without being told which it is talking to.
     private final String riskControlToken = env("RISK_CONTROL_TOKEN", "dev-risk-control");
+    /** ENGINE-REVIEW S1: JWT-bound account access on the order routes; same secret the members use. */
+    private final GatewayAccess access = new GatewayAccess(
+        new finos.traderx.ordermatcher.auth.JwtAuthenticator(env("AUTH_JWT_SECRET", "dev-jwt-shared-secret")));
     /**
      * ADR-073: whether this venue will ISSUE a sandbox reset. Off unless explicitly enabled, and
      * read once here rather than per request so the answer cannot change under a running venue.
@@ -1463,6 +1466,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             final JsonNode body = readOrderBody(exchange.getRequestBody());
             if (!checkExpectedRun(exchange, body)) return;
+            final int claim = access.requireAccount(exchange, body.path("accountId").asInt(0), false);   // S1
+            if (claim < 0) return;
             final boolean typedReplace = body.has("orderType");
             if (!body.hasNonNull("orderRef") || !body.hasNonNull("quantity")
                 || (!typedReplace && !body.hasNonNull("limitPrice"))) {
@@ -1485,12 +1490,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     return;
                 }
                 r = submitTypedReplace(orderRef, body.path("clientOrderId").asText(""),
-                    body.get("quantity").asInt(), (TypedOrder) parsed, body.path("accountId").asInt(0));
+                    body.get("quantity").asInt(), (TypedOrder) parsed, claim);
             } else {
                 r = submitReplace(orderRef, body.path("clientOrderId").asText(""),
                     body.get("quantity").asInt(),
                     Math.round(body.get("limitPrice").asDouble() * 1_000_000d),
-                    body.path("accountId").asInt(0));
+                    claim);
             }
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
@@ -1515,12 +1520,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
             if (!checkExpectedRun(exchange, body)) return;
+            final int claim = access.requireAccount(exchange, body.path("accountId").asInt(0), false);   // S1
+            if (claim < 0) return;
             if (!body.hasNonNull("orderRef")) {
                 respond(exchange, 400, "{\"error\":\"orderRef required\"}");
                 return;
             }
             final int orderRef = body.get("orderRef").asInt();
-            final ExecResult r = submitCancel(orderRef, body.path("accountId").asInt(0));
+            final ExecResult r = submitCancel(orderRef, claim);
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
                 return;
@@ -1559,6 +1566,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             final JsonNode body = readOrderBody(exchange.getRequestBody());
             if (!checkExpectedRun(exchange, body)) return;
+            final int accountId = access.requireAccount(exchange, body.path("accountId").asInt(), true);   // S1
+            if (accountId < 0) return;
             final String ticker = body.hasNonNull("securityId")
                 ? "#" + body.get("securityId").asInt() : instrumentOf(body);
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
@@ -1589,7 +1598,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     respond(exchange, 422, "{\"error\":\"" + error + "\"}");
                     return;
                 }
-                r = submitTypedOrder(body.path("clientOrderId").asText(""), body.path("accountId").asInt(),
+                r = submitTypedOrder(body.path("clientOrderId").asText(""), accountId,
                     ticker, side, qty, (TypedOrder) parsed);
             } else {
                 final String legacyError = legacyOrderError(body, px);
@@ -1601,7 +1610,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 // idempotency key, a shared default would make every key-less REST order a duplicate
                 // of the first one. Empty means "no key", which is the pre-existing behaviour exactly.
                 r = submitOrder(body.path("clientOrderId").asText(""),
-                    body.path("accountId").asInt(), ticker, side, qty, px);
+                    accountId, ticker, side, qty, px);
             }
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
@@ -1625,6 +1634,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode arr = JSON.readTree(exchange.getRequestBody());
+            if (!access.requireAll(exchange, arr)) return;   // S1: every element's account must be entitled
             final int total = arr.size();
             final int[] accounts = new int[total];
             final String[] tickers = new String[total];
@@ -1751,7 +1761,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
-            final int accountId = body.path("accountId").asInt();
+            final int accountId = access.requireAccount(exchange, body.path("accountId").asInt(), true);   // S1
+            if (accountId < 0) return;
             final String ticker = body.hasNonNull("securityId")
                 ? "#" + body.get("securityId").asInt() : instrumentOf(body);
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
@@ -2289,6 +2300,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            if (access.requireAccount(exchange, body.path("accountId").asInt(), true) < 0) return;   // S1
             final List<String> required = new ArrayList<>(List.of(
                 "accountId", "payReceive", "notional", "fixedRate", "effectiveDate",
                 "maturityDate", "conventions"));
@@ -3076,7 +3088,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             + tried.toString().replace('"', '\'') + "\"}");
     }
 
-    private static void respond(final HttpExchange exchange, final int code, final String body) {
+    static void respond(final HttpExchange exchange, final int code, final String body) {   // package: GatewayAccess
         try {
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
