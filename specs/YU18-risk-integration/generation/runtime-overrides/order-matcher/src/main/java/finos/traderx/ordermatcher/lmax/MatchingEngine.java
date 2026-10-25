@@ -1495,6 +1495,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     /** Sequenced market-data price: feeds risk freshness/collar state. It no longer triggers
      *  fills — matching is driven exclusively by crossing orders (FR-LOB05). */
     private void onPriceTick(InputEvent e) {
+        if (e.securityId < 0 || e.securityId >= lastPxBySecurity.length) {
+            return;   // ENGINE-REVIEW F10: a producer's out-of-range id must not throw inside apply
+        }
         if (risk != null) {
             // Sequenced price + event-carried source time: freshness state for staleness checks
             // is deterministic on replay (FR-IMRG09/17).
@@ -1514,6 +1517,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * are carried in the event; the booking pipeline of trade-processor is fused in here.
      */
     private void onTradeNew(InputEvent e) {
+        if (e.securityId < 0 || e.securityId >= lastPxBySecurity.length) {
+            // F10: refuse in the /trades correlation shape rather than throw inside apply.
+            out.emitTradeDecision(e.seq, (byte) RiskReason.UNKNOWN_SECURITY.ordinal(), false, e.ingressNanos);
+            return;
+        }
         // Stamp the trade at the BLP's current mark for the security (FR-09B40: the /trades
         // payload carries the execution price); Px.NONE -> 0.000 at the edge when no trade or
         // tick has been seen yet, matching 009's trade-processor null-price handling.
