@@ -2833,7 +2833,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 event.setControlVersion(version++);
                 offerBlocking();
                 for (final String ticker : tickers) {
-                    final int id = resolveSecurityId(ticker.trim());
+                    final int id = resolveSecurityId(ticker.trim(), true);   // S4: the one registering path
                     if (id < 0) {
                         return false;
                     }
@@ -2994,12 +2994,28 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      *  clears this on every (re)connect. It said "cached forever" and meant it, which is the defect.
      *  A "#<n>" pseudo-ticker is a pre-resolved securityId passthrough (REST securityId path). */
     private int resolveSecurityId(final String ticker) {
+        return resolveSecurityId(ticker, false);
+    }
+
+    /**
+     * ENGINE-REVIEW S4: an unknown ticker on an order used to be sequenced as a REGISTRATION —
+     * replicated, never evicted — so 1,024 junk tickers from anyone blocked every further real
+     * instrument until a fresh epoch. Order paths now only LOOK UP ({@code register=false}: the
+     * owner-thread cache, refreshed from a member's /symbols on a miss) and answer -1 for an
+     * unregistered ticker; only /seed, behind the operator credentials, registers.
+     */
+    private int resolveSecurityId(final String ticker, final boolean register) {
         if (ticker.startsWith("#")) {
             return Integer.parseInt(ticker.substring(1));
         }
         final Integer cached = idByTicker.get(ticker);
         if (cached != null) {
             return cached;
+        }
+        if (!register) {
+            refreshSymbolsFromMember();
+            final Integer known = idByTicker.get(ticker);
+            return known != null ? known : -1;
         }
         final long requestId = nextSymbolRequestId++;
         codec.encodeSymbolRegister(symbolBuffer, 0, requestId, ticker);
@@ -3013,6 +3029,34 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             idByTicker.put(ticker, id);
         }
         return id;
+    }
+
+    /** S4: pull the members' registered symbol table into the owner-thread cache (first member that
+     *  answers). A miss after this is a genuinely unregistered ticker. */
+    private void refreshSymbolsFromMember() {
+        final int healthPort = Integer.parseInt(env("GATEWAY_MEMBER_HEALTH_PORT", "8080"));
+        for (final String entry : endpointEntries) {
+            final int eq = entry.indexOf('=');
+            final String hostPort = eq < 0 ? entry : entry.substring(eq + 1);
+            final int colon = hostPort.lastIndexOf(':');
+            final String host = colon < 0 ? hostPort : hostPort.substring(0, colon);
+            try {
+                final HttpResponse<String> r = readModelClient.send(HttpRequest
+                    .newBuilder(URI.create("http://" + host + ":" + healthPort + "/symbols"))
+                    .timeout(Duration.ofSeconds(2)).GET().build(), HttpResponse.BodyHandlers.ofString());
+                if (r.statusCode() != 200) {
+                    continue;
+                }
+                final java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = JSON.readTree(r.body()).fields();
+                while (fields.hasNext()) {
+                    final java.util.Map.Entry<String, JsonNode> f = fields.next();
+                    idByTicker.put(f.getKey(), f.getValue().asInt());
+                }
+                return;
+            } catch (final Exception e) {
+                // next member
+            }
+        }
     }
 
     private boolean offerAndAwait(final UnsafeBuffer buffer, final int length,

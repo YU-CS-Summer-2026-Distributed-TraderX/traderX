@@ -333,6 +333,22 @@ public final class ClusterNodeMain {
         // Prices are emitted at the full 6dp tick scale, NOT Px.toBigDecimal's 3dp edge rounding:
         // a Treasury's fraction-of-par carries six decimals (ADR-057) and 3dp destroys it.
         // Cold path, same posture as the digest in /metrics: scrape deliberately.
+        // ENGINE-REVIEW S4: the registered symbol table, so a gateway can LOOK a ticker UP without
+        // registering it. Replicated state read off-thread; cold path, scrape deliberately.
+        server.createContext("/symbols", exchange -> {
+            final StringBuilder sb = new StringBuilder(4096).append('{');
+            for (int id = 0; ; id++) {
+                final String ticker = service.tickerFor(id);
+                if (ticker == null) {
+                    break;
+                }
+                if (id > 0) {
+                    sb.append(',');
+                }
+                sb.append('"').append(ticker).append("\":").append(id);
+            }
+            respond(exchange, 200, sb.append('}').toString());
+        });
         server.createContext("/bbo", exchange -> {
             if (service.engine() == null) {
                 respond(exchange, 503, "{\"error\":\"engine not started\"}");
