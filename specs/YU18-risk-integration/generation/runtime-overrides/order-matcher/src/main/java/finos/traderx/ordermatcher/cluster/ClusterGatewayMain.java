@@ -2004,6 +2004,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
+            if (!operatorAuthorised(exchange)) return;   // S2: a day roll expires every DAY order
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
             final int date = parseBusinessDate(body.path("businessDate").asText(""));
             if (date <= 0) {
@@ -2208,6 +2209,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 400, "{\"error\":\"phase required\"}");
                 return;
             }
+            if (!operatorAuthorised(exchange)) return;   // S2: a halt or an open is an operator act
             final String name = body.get("phase").asText("").toUpperCase(java.util.Locale.ROOT);
             int target = -1;
             for (int i = 0; i < MatchingEngineClusteredService.PHASE_NAMES.length; i++) {
@@ -2816,6 +2818,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
+            if (!operatorAuthorised(exchange)) return;   // S2: enables accounts/securities, seeds the reference price
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
             final int accountId = body.path("accountId").asInt();
             final String[] tickers = body.path("tickers").asText("").split(",");
@@ -3086,6 +3089,29 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
         respond(exchange, 503, "{\"error\":\"no cluster member answered " + suffix + "\",\"tried\":\""
             + tried.toString().replace('"', '\'') + "\"}");
+    }
+
+    /**
+     * ENGINE-REVIEW S2: the venue operator routes (halt/open, business day, seed) were open to
+     * anyone who could reach the listener. They now take the same credential pair /risk/control
+     * always required — X-Risk-Control-Token + a non-blank X-Risk-Operator — or an admin JWT.
+     */
+    private boolean operatorAuthorised(final HttpExchange exchange) {
+        final boolean tokenOk = operatorTokenMatches(exchange.getRequestHeaders().getFirst("X-Risk-Control-Token"),
+            exchange.getRequestHeaders().getFirst("X-Risk-Operator"), riskControlToken);
+        if (tokenOk || access.principal(exchange).map(finos.traderx.ordermatcher.auth.JwtPrincipal::admin).orElse(false)) {
+            return true;
+        }
+        respond(exchange, 401, "{\"error\":\"operator credentials required\"}");
+        return false;
+    }
+
+    /** Constant-time token compare plus the operator attribution the audit line needs. */
+    static boolean operatorTokenMatches(final String token, final String operator, final String expected) {
+        return token != null && operator != null && !operator.isBlank()
+            && java.security.MessageDigest.isEqual(
+                token.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                expected.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     static void respond(final HttpExchange exchange, final int code, final String body) {   // package: GatewayAccess
