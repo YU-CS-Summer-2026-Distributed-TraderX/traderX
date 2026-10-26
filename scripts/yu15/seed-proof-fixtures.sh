@@ -49,6 +49,21 @@ set -uo pipefail
 
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 CTX="${CTX:-kind-traderx-yu12-cluster}"
+# ENGINE-REVIEW S2: /seed takes the same operator credential pair as /risk/control (X-Risk-Control-Token +
+# X-Risk-Operator); a bare /seed is 401 "operator credentials required" and every account "seeds" 0/N.
+RISK_CONTROL_TOKEN="${RISK_CONTROL_TOKEN:-dev-risk-control}"
+OPERATOR=(-H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN}" -H 'X-Risk-Operator: seed-proof-fixtures')
+# /orders and /cancel take a bearer JWT for the account; without one every hold() below is refused "bearer JWT
+# required" and, because hold() only looks for a kind:2 reject, the script still printed "holds" (seen 2026-10-26:
+# the first real order of the session came back orderRef 1). Minted the way the proofs mint theirs: trade-processor's
+# dev-token route shares the gateway's AUTH_JWT_SECRET.
+EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
+mint_bearer() {
+  local accounts; accounts="$(IFS=,; echo "${ACCOUNTS[*]}")"
+  kubectl --context "${CTX}" -n "${NS}" exec deploy/trade-processor -- sh -c 'curl -fsS -X POST http://localhost:18091/auth/dev-token \
+    -H "X-Auth-Master-Secret: '"${EOD_MASTER_SECRET}"'" -H "Content-Type: application/json" \
+    -d "{\"subject\":\"seed-proof-fixtures\",\"accounts\":['"${accounts}"'],\"admin\":true,\"ttlSeconds\":1800}"' 2>/dev/null
+}
 NS="${NS:-traderx}"
 
 # Fresh-epoch mode: the read model belongs to a log that no longer exists. This runs FIRST -- before
@@ -127,6 +142,9 @@ ${LIVE_PX}"
 }
 
 echo "[seed] matcher ${MATCHER_URL}"
+BEARER="$(mint_bearer)"
+[[ -n "${BEARER}" ]] || { echo "[fail] could not mint a bearer token from trade-processor (is it up? EOD_MASTER_SECRET right?)"; exit 1; }
+AUTH=(-H "Authorization: Bearer ${BEARER}")
 if ! curl -sf -m8 -o /dev/null "${MATCHER_URL}/ready"; then
   echo "[fail] matcher not reachable at ${MATCHER_URL}"
   echo "[hint] kubectl --context ${CTX} -n ${NS} port-forward svc/order-matcher 18110:18110 &"
@@ -148,7 +166,7 @@ for acct in "${ACCOUNTS[@]}"; do
   while read -r t px; do
     [[ -n "${t}" ]] || continue
     code="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
-      -H 'Content-Type: application/json' \
+      -H 'Content-Type: application/json' "${OPERATOR[@]}" \
       -d "{\"accountId\":${acct},\"tickers\":\"${t}\",\"price\":${px}}")"
     [[ "${code}" == "200" ]] || { echo "[warn] seed ${acct} ${t} @ ${px}: HTTP ${code}"; bad=$((bad + 1)); }
   done <<< "${OPEN_PX}"
@@ -254,7 +272,7 @@ fi
 seeded_n=0
 while read -r otick opx; do
   [[ -n "${otick}" ]] || continue
-  out="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  out="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' "${OPERATOR[@]}" \
     -d "{\"accountId\":${ACCOUNTS[0]},\"tickers\":\"${otick}\",\"price\":${opx}}")"
   [[ "${out}" == *'"seeded":true'* ]] \
     || { echo "[fail] seed ${otick} @ ${opx}: ${out:-no answer from the matcher}"; exit 1; }
@@ -290,8 +308,8 @@ hold() { # hold <buyer> <seller> <ticker> <qty> <px>
   for body in \
     "{\"accountId\":$2,\"ticker\":\"$3\",\"side\":\"Sell\",\"quantity\":$4,\"limitPrice\":$5}" \
     "{\"accountId\":$1,\"ticker\":\"$3\",\"side\":\"Buy\",\"quantity\":$4,\"limitPrice\":$5}"; do
-    out="$(curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${body}")"
-    [[ "${out}" == *'"kind":2'* ]] && { echo "[fail] hold $3 x$4 @ $5 refused: ${out}"; exit 1; }
+    out="$(curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' "${AUTH[@]}" -d "${body}")"
+    [[ "${out}" == *'"kind":2'* || "${out}" != *'"orderRef"'* ]] && { echo "[fail] hold $3 x$4 @ $5 refused: ${out}"; exit 1; }
     refs+=("$(printf '%s' "${out}" | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("orderRef",""))
 except Exception: print("")')")
@@ -299,7 +317,7 @@ except Exception: print("")')")
   local left=0 r
   for r in "${refs[@]}"; do
     [[ "${r}" =~ ^[0-9]+$ ]] || continue
-    curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' \
+    curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' "${AUTH[@]}" \
       -d "{\"orderRef\":${r}}" >/dev/null 2>&1 && left=$((left + 1))
   done
   printf "   %-8s holds %s x%s @ %s (both legs cancelled after the cross: no residue on a replayed book)\n" \
