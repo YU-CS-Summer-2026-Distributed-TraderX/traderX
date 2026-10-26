@@ -44,7 +44,7 @@ class ThreeMemberClusterTest {
     private static final int SECURITY = 1;
     private static final int ACCOUNT = 11;
     private static final int COUNTER = 12; // counterparty: the aggressing opposite side
-    private static final int PORT_BASE = 21800;
+    private static final int PORT_BASE = TestPorts.freeBase(3);
     private static final List<String> HOSTNAMES = List.of("localhost", "localhost", "localhost");
 
     @TempDir

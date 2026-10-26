@@ -28,8 +28,9 @@ class AeronMdcReplicationTest {
             .dirDeleteOnStart(true)
             .dirDeleteOnShutdown(true)
             .threadingMode(ThreadingMode.SHARED);
-        String archiveChannel = "aeron:udp?endpoint=127.0.0.1:23127";
-        String followerChannel = "aeron:udp?endpoint=127.0.0.1:23123";
+        int portBase = finos.traderx.ordermatcher.cluster.TestPorts.freeBase(1);   // was fixed 23127 / 23123
+        String archiveChannel = "aeron:udp?endpoint=127.0.0.1:" + (portBase + 1);
+        String followerChannel = "aeron:udp?endpoint=127.0.0.1:" + (portBase + 2);
 
         try (MediaDriver driver = MediaDriver.launch(driverContext);
              Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));

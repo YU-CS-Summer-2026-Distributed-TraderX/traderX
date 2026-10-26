@@ -49,9 +49,10 @@ class AeronClusterSpikeTest {
     private static final int ACCOUNT = 11;
     private static final int COUNTER = 12; // counterparty: the resting/aggressing opposite side
     private static final long CLIENT_KEY = 0x5EEDF00DL;
-    private static final String CLUSTER_MEMBERS =
-        "0,localhost:21610,localhost:21611,localhost:21612,localhost:21613,localhost:21614";
-    private static final String INGRESS_CHANNEL = "aeron:udp?endpoint=localhost:21610|term-length=64k";
+    private static final int PORT_BASE = TestPorts.freeBase(1);   // one member: base+0..4 (was 21610..21614)
+    private static final String CLUSTER_MEMBERS = "0,localhost:" + PORT_BASE + ",localhost:" + (PORT_BASE + 1)
+        + ",localhost:" + (PORT_BASE + 2) + ",localhost:" + (PORT_BASE + 3) + ",localhost:" + (PORT_BASE + 4);
+    private static final String INGRESS_CHANNEL = "aeron:udp?endpoint=localhost:" + PORT_BASE + "|term-length=64k";
 
     @TempDir
     Path tempDir;
@@ -264,7 +265,7 @@ class AeronClusterSpikeTest {
             new Archive.Context()
                 .aeronDirectoryName(aeronDir)
                 .archiveDir(archiveDir)
-                .controlChannel("aeron:udp?endpoint=localhost:21614|term-length=64k")
+                .controlChannel("aeron:udp?endpoint=localhost:" + (PORT_BASE + 4) + "|term-length=64k")
                 .replicationChannel("aeron:udp?endpoint=localhost:0")
                 .recordingEventsEnabled(false)
                 .threadingMode(ArchiveThreadingMode.SHARED)

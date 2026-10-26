@@ -30,7 +30,7 @@ class ClusterNodeShutdownTest {
             .redirectErrorStream(true);
         pb.environment().put("CLUSTER_MEMBER_ID", "0");
         pb.environment().put("CLUSTER_HOSTNAMES", "localhost");
-        pb.environment().put("CLUSTER_PORT_BASE", "27800");
+        pb.environment().put("CLUSTER_PORT_BASE", String.valueOf(TestPorts.freeBase(1)));
         pb.environment().put("CLUSTER_BASE_DIR", dir.resolve("data").toString());
         pb.environment().put("CLUSTER_AERON_DIR", dir.resolve("aeron").toString());
         pb.environment().put("HEALTH_PORT", "0");

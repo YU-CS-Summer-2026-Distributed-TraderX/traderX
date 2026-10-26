@@ -131,6 +131,7 @@ class ArchiveOffloadTest {
         final File bucket = new File(root, "bucket");
         final List<ArchivePurgeTest.Member> members = new ArrayList<>();
         for (int i = 0; i < 3; i++) members.add(new ArchivePurgeTest.Member(i, root));
+        ArchivePurgeTest.awaited = members;
         for (final ArchivePurgeTest.Member m : members) m.start(true);
         final MediaDriver clientDriver = MediaDriver.launchEmbedded(new MediaDriver.Context()
             .threadingMode(ThreadingMode.SHARED).dirDeleteOnShutdown(true));
@@ -163,13 +164,16 @@ class ArchiveOffloadTest {
                 }
             }
 
-            // The member that will rejoin from nothing: stop it and wipe its disk.
-            final ArchivePurgeTest.Member j = members.get(2);
+            // The member that will rejoin from nothing: a FOLLOWER, stopped and wiped. Wiping the leader (members.get(2)
+            // was the leader one run in three) forces an election, and a client offer in that window is accepted by the
+            // old leader's endpoint and dropped: every member then sits one message short of the count forever.
+            final ArchivePurgeTest.Member j = ArchivePurgeTest.follower(members);
+            final List<ArchivePurgeTest.Member> survivors = members.stream().filter(m -> m != j).toList();
             j.stop();
             org.agrona.IoUtil.delete(j.base, true);
 
             // Restore the survivors' history (gcloud storage cp in the cloud) and attach it.
-            for (final ArchivePurgeTest.Member m : members.subList(0, 2)) {
+            for (final ArchivePurgeTest.Member m : survivors) {
                 final File from = new File(bucket, "member-" + m.id);
                 for (final String name : from.list((d, n) -> n.endsWith(".rec"))) {
                     final Path target = m.archiveDir().toPath().resolve(name);

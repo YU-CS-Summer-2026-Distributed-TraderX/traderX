@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @Timeout(180)
 class ApplyStallElectionTest {
-    private static final int PORT_BASE = 22800;
+    private static final int PORT_BASE = TestPorts.freeBase(3);
     private static final List<String> HOSTNAMES = List.of("localhost", "localhost", "localhost");
 
     @TempDir

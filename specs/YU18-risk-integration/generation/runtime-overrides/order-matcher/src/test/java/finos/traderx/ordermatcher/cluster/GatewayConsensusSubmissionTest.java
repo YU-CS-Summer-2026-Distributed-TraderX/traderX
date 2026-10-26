@@ -43,7 +43,7 @@ class GatewayConsensusSubmissionTest {
 
     @SuppressWarnings("unchecked")
     @Test void typedNewAndReplaceReachConsensusAndChangeTheRestingOrder() throws Exception {
-        var hosts=List.of("localhost","localhost","localhost");int port=23800;
+        var hosts=List.of("localhost","localhost","localhost");int port=TestPorts.freeBase(3);
         for(int id=0;id<3;id++) {
             var service=new MatchingEngineClusteredService();services.add(service);
             var contexts=ClusterNodeConfig.contexts(id,hosts,port,root.resolve("aeron-"+id).toString(),

@@ -98,7 +98,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @Timeout(240)
 class VarEsEndToEndTest {
-    private static final int PORT_BASE = 24800;
+    private static final int PORT_BASE = TestPorts.freeBase(3);
     private static final List<String> HOSTS = List.of("localhost", "localhost", "localhost");
     static final int BUYER = 22214;
     static final int SELLER = 42422;

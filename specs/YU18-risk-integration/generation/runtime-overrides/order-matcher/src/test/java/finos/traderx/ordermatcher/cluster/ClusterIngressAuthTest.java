@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @Timeout(180)
 class ClusterIngressAuthTest {
-    private static final int PORT_BASE = 23800;
+    private static final int PORT_BASE = TestPorts.freeBase(3);
     private static final List<String> HOSTS = List.of("localhost", "localhost", "localhost");
     private static final String SECRET = "test-cluster-client-secret-7f3a";
 

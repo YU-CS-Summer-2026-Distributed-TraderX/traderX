@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *      copy, never from empty. If this check ever fails, Aeron learned to seed a joiner from a snapshot: revisit.
  */
 class ArchivePurgeTest {
-    static final int PORT_BASE = 31000;
+    static final int PORT_BASE = TestPorts.freeBase(3);
     static final List<String> HOSTS = List.of("localhost", "localhost", "localhost");
 
     /** Sums the payload longs; snapshot = {count, sum}. Same shape of determinism as the real engine. */
@@ -90,7 +90,13 @@ class ArchivePurgeTest {
             final ClusterNodeConfig.Contexts c = ClusterNodeConfig.contexts(id, HOSTS, PORT_BASE, aeronDir, base, svc, clean);
             c.mediaDriver().threadingMode(ThreadingMode.SHARED);
             c.archive().segmentFileLength(256 * 1024);
-            c.consensusModule().logChannel("aeron:udp?term-length=64k").leaderHeartbeatTimeoutNs(2_000_000_000L).startupCanvassTimeoutNs(4_000_000_000L).sessionTimeoutNs(300_000_000_000L);
+            // fc=min: the tiny 64k term gives each follower a 32 KB receive window, and under Aeron's default MAX flow
+            // control the leader runs at the fastest follower, so a 4000-message burst over-ran the other one (counter
+            // "Flow control over runs" in the thousands); its log image then died at the 10 s liveness timeout and it
+            // recovered by a catch-up election, ~12 s per cycle, which is where "member N applied ..." timeouts came
+            // from (2026-10-26, 2 runs in 3). With fc=min the leader waits for the slowest follower: no over-runs, no
+            // catch-up cycles, the whole test runs in seconds instead of a minute.
+            c.consensusModule().logChannel("aeron:udp?term-length=64k|fc=min").leaderHeartbeatTimeoutNs(2_000_000_000L).startupCanvassTimeoutNs(4_000_000_000L).sessionTimeoutNs(300_000_000_000L);
             md = ClusteredMediaDriver.launch(c.mediaDriver(), c.archive(), c.consensusModule());
             container = ClusteredServiceContainer.launch(c.container());
             if (health == null) {
@@ -122,6 +128,7 @@ class ArchivePurgeTest {
         final File root = Files.createTempDirectory("hxpurge").toFile();
         final List<Member> members = new ArrayList<>();
         for (int i = 0; i < 3; i++) members.add(new Member(i, root));
+        awaited = members;
         for (final Member m : members) m.start(true);
         System.out.println("members launched");
         final MediaDriver clientDriver = MediaDriver.launchEmbedded(new MediaDriver.Context().threadingMode(ThreadingMode.SHARED).dirDeleteOnShutdown(true));
@@ -193,7 +200,7 @@ class ArchivePurgeTest {
         for (final Member m : members) check(m.svc.sum.get() == expected[1], "member " + m.id + " applies after restart sum=" + m.svc.sum.get());
 
         System.out.println("6. an empty-disk member cannot rejoin after the purge");
-        final Member j = members.get(2);
+        final Member j = follower(members);   // not the leader: its loss would add an election to what is measured
         j.stop();
         org.agrona.IoUtil.delete(j.base, true);
         j.start(true);
@@ -212,6 +219,10 @@ class ArchivePurgeTest {
         clientDriver.close();
         org.agrona.IoUtil.delete(root, true);
         org.junit.jupiter.api.Assertions.assertEquals(0, failures, "see the FAIL lines above");
+    }
+
+    static Member follower(final List<Member> members) {
+        return members.stream().filter(m -> m.svc.role != Cluster.Role.LEADER).findFirst().orElseThrow();
     }
 
     static AeronCluster connect(final MediaDriver driver) {
@@ -255,10 +266,14 @@ class ArchivePurgeTest {
     }
 
     interface Cond { boolean ok(); }
+    static volatile List<Member> awaited;   // named in a timeout: which member stalled, and in which role
     static void await(final Cond c, final String what) throws InterruptedException {
         final long deadline = System.currentTimeMillis() + 30_000;
         while (!c.ok()) {
-            if (System.currentTimeMillis() > deadline) throw new IllegalStateException("timeout: " + what);
+            if (System.currentTimeMillis() > deadline) {
+                throw new IllegalStateException("timeout: " + what + (awaited == null ? "" : " members="
+                    + awaited.stream().map(m -> m.id + ":" + m.svc.role + "/" + m.svc.applied.get()).toList()));
+            }
             Thread.sleep(5);
         }
     }
