@@ -21,6 +21,13 @@ spec:
         - /opt/app/classes:/opt/app/lib/*
         - finos.traderx.ordermatcher.cluster.ClusterProofClient
       env:
+        # ADR-079 §4: the Aeron ingress credential. Members refuse a session without it; every cluster
+        # client (gateway, risk-extract, proof client) presents it.
+        - name: CLUSTER_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: auth-secrets
+              key: cluster-client-secret
         - name: POD_IP
           valueFrom:
             fieldRef:

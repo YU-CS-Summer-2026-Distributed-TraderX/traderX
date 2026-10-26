@@ -83,3 +83,44 @@ agent also has no way to learn the marker's log position without a new member su
 needs cross-member delete coordination. The bucket wants a lifecycle rule. Not wired into any
 manifest yet, exactly as before: enabling the purge is a deployment decision, and now so is the
 offload target.
+
+## 4. Cluster ingress is authenticated (item 5)
+
+**Context.** ENGINE-REVIEW S1–S6 put credentials on every HTTP and FIX route. The Aeron ingress
+behind them stayed open: any process that reached a member's client-facing UDP port could connect a
+session and sequence commands the gateway's checks never see (orders, extract markers, symbol
+registrations). It could also spend the `CLUSTER_MAX_SESSIONS` budget the gateways need. The kind
+tier had a member NetworkPolicy. The GKE tier, which is what runs, had none.
+
+**Decision.**
+- Members install a shared-secret Aeron `Authenticator` (`ClusterClientAuth`) when
+  `CLUSTER_CLIENT_SECRET` is set. A connect request is admitted only on a constant-time match of its
+  credentials; anything else is rejected, counted (`traderx_cluster_ingress_rejected`) and logged
+  (`CLUSTER-INGRESS-REJECTED`).
+- As with S5, a member refuses to start when the secret is unset or a dev value, unless
+  `ALLOW_DEV_SECRETS=true`. It then logs `CLUSTER-INGRESS-UNAUTHENTICATED`; the kind tier runs this
+  way.
+- Every cluster client presents the secret: `ClusterGatewayMain`, `RiskExtractMain`,
+  `FeedAdapterMain`, and `ClusterProofClient`, whose YU12 class gets a YU18 copy for this one line.
+- On GKE the secret comes from `auth-secrets` key `cluster-client-secret`, generated from the
+  git-ignored env file like the S5 secrets. The tier also gains the member NetworkPolicy as defence
+  in depth. It is enforced only on a Dataplane V2 or network-policy cluster, so the secret, not the
+  policy, is what closes the ingress.
+
+**Rejected:** NetworkPolicy alone. It is inert on a GKE Standard cluster without enforcement, and
+nothing here shows that ours have it. It also trusts any pod that can carry an allowed label.
+
+**Session budget (64 by default).** One session per client: the GKE tier holds 3 gateways, the
+risk-extract job (connected only for the duration of one batch), and the proof client when applied,
+so 5. The hxb rig holds 18 gateways plus the extract job and a feed adapter, so about 20. A gateway that
+reconnects after a failover can briefly hold its old session until the session timeout, so budget
+2x the gateway count. `ClusterIngressAuthTest` (3 members, `maxConcurrentSessions=2`) shows that
+refused connects do not spend the budget: after ten refusals, two good clients both get in and have
+their commands applied, and a third finds the budget full.
+
+**Rollout.** No engine, wire, snapshot or epoch change. But it is a startup contract change on every
+tier, as S5 was: a member without the secret, or without the explicit dev opt-in, no longer starts.
+A client without the secret is refused by a member that has one. Set the secret on all members and
+clients in one rollout. The hxb harness has to supply it, or `ALLOW_DEV_SECRETS=true`. `sandbox.yaml`
+is outside the kustomization, and its gateway already lacks the S5 secrets.
+

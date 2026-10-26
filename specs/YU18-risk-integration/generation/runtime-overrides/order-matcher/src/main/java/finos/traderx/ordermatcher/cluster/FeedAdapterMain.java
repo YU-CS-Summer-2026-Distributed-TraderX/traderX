@@ -142,7 +142,8 @@ public final class FeedAdapterMain {
         active = session; // callbacks capture only this generation's own maps
         final AeronCluster.Context context = new AeronCluster.Context().aeronDirectoryName(settings.aeronDir())
             .ingressChannel("aeron:udp?term-length=64k").ingressEndpoints(settings.ingress())
-            .egressChannel(settings.egress()).egressListener(session);
+            .egressChannel(settings.egress()).egressListener(session)
+            .credentialsSupplier(ClusterClientAuth.credentialsFromEnv());
         if (timeoutNanos > 0) context.messageTimeoutNs(timeoutNanos);
         try {
             session.client = connector.connect(context);

@@ -32,6 +32,9 @@ import java.util.List;
  * furthest-ahead peer — the gate that makes k8s rolling restarts safe on emptyDir members.
  */
 public final class ClusterNodeMain {
+    /** Cluster sessions refused for bad or missing credentials (ClusterClientAuth); exported on /metrics. */
+    static final java.util.concurrent.atomic.AtomicLong INGRESS_REJECTED = new java.util.concurrent.atomic.AtomicLong();
+
     public static void main(final String[] args) throws Exception {
         final int memberId = memberId();
         final List<String> hostnames = Arrays.asList(env("CLUSTER_HOSTNAMES", "localhost").split(","));
@@ -42,6 +45,14 @@ public final class ClusterNodeMain {
         // ENGINE-REVIEW S5: the admin routes must not be guarded by a secret the repository publishes.
         finos.traderx.ordermatcher.auth.DevSecrets.refuse("AUTH_JWT_SECRET", env("AUTH_JWT_SECRET", ""),
             finos.traderx.ordermatcher.auth.DevSecrets.allowDevFromEnv());
+        // EOD-RISK item 5 / ADR-079 §4: the Aeron ingress behind those routes needs a credential too.
+        final String clientSecret = env(ClusterClientAuth.ENV, "");
+        finos.traderx.ordermatcher.auth.DevSecrets.refuse(ClusterClientAuth.ENV, clientSecret,
+            finos.traderx.ordermatcher.auth.DevSecrets.allowDevFromEnv());
+        System.out.println(clientSecret.isBlank()
+            ? "CLUSTER-INGRESS-UNAUTHENTICATED " + ClusterClientAuth.ENV + " unset (ALLOW_DEV_SECRETS=true): any"
+                + " process that reaches the client-facing port can connect a session"
+            : "CLUSTER-INGRESS-AUTHENTICATED shared secret required on every client session");
 
         // The consensus module resolves every member endpoint when it parses the member list;
         // an unresolvable peer at that instant is a terminal error (observed live on kind:
@@ -79,6 +90,10 @@ public final class ClusterNodeMain {
         while (true) {
             final ClusterNodeConfig.Contexts contexts =
                 ClusterNodeConfig.contexts(memberId, hostnames, portBase, aeronDir, baseDir, service, false);
+            if (!clientSecret.isBlank()) {
+                contexts.consensusModule().authenticatorSupplier(
+                    ClusterClientAuth.authenticator(clientSecret, INGRESS_REJECTED));
+            }
             contexts.consensusModule().terminationHook(() -> {
                 System.err.println("Consensus module terminated; exiting for pod restart");
                 Runtime.getRuntime().halt(70);
@@ -434,6 +449,8 @@ public final class ClusterNodeMain {
             final MatchingEngine.RecoveryDigest d = started ? service.engine().recoveryDigest() : null;
             final String body =
                   "# TYPE traderx_cluster_role gauge\ntraderx_cluster_role" + m + role + "\n"
+                + "# TYPE traderx_cluster_ingress_rejected counter\ntraderx_cluster_ingress_rejected" + m
+                    + INGRESS_REJECTED.get() + "\n"
                 + "# TYPE traderx_cluster_applied counter\ntraderx_cluster_applied" + m + applied + "\n"
                 + "# TYPE traderx_cluster_trades counter\ntraderx_cluster_trades" + m + trades + "\n"
                 + "# TYPE traderx_cluster_snapshots counter\ntraderx_cluster_snapshots" + m + service.snapshotsTaken() + "\n"

@@ -242,6 +242,13 @@ spec:
                 secretKeyRef:
                   name: auth-secrets
                   key: jwt-secret
+            # ADR-079 §4: the Aeron ingress credential. Members refuse a session without it; every cluster
+            # client (gateway, risk-extract, proof client) presents it.
+            - name: CLUSTER_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: cluster-client-secret
             - name: JAVA_TOOL_OPTIONS
               # Heap sized for the CATALOG, not for a handful of demo names. Admitting all 533
               # reference-data instruments and touching each one allocates a YU13 book grid per

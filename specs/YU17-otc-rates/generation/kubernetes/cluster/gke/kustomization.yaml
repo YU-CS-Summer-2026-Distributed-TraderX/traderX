@@ -83,10 +83,12 @@ namespace: traderx
 # file outside its root; referencing it in place keeps exactly one copy of the schema):
 #   ../../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
 #
-# No NetworkPolicy on the GKE tier (matching YU12-YU14). If one is ever added, the risk-extract
-# pod label MUST be in the member ingress allowlist — a missing allow surfaces as a marker ack
-# timeout, not a connection error (T-LOB16).
+# NetworkPolicy (ADR-079 §4): the member UDP allowlist. The risk-extract pod label MUST stay in it —
+# a missing allow surfaces as a marker ack timeout, not a connection error (T-LOB16). It is enforced
+# only on a Dataplane V2 / network-policy-enabled cluster; CLUSTER_CLIENT_SECRET is what closes the
+# ingress either way.
 resources:
+  - networkpolicy.yaml
   - statefulset-emptydir.yaml
   - gateway.yaml
   - backup-cronjob.yaml

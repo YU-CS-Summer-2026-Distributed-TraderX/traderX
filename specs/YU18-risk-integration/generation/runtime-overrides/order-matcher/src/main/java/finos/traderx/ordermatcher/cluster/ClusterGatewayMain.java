@@ -712,7 +712,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     .egressChannel("aeron:udp?term-length=1m|endpoint="
                         + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":"
                         + env("GATEWAY_EGRESS_PORT", "0"))
-                    .egressListener(egressListener));
+                    .egressListener(egressListener)
+                    .credentialsSupplier(ClusterClientAuth.credentialsFromEnv()));
                 connectRotation = (connectRotation + 1) % endpointEntries.length;
                 sessionLost = false;   // a fresh session: whatever killed the last one is behind us
                 // ticker -> securityId ids are PER-EPOCH engine state, and this cache had no

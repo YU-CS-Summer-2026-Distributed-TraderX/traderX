@@ -1,0 +1,44 @@
+# ADR-079 §4 (EOD-RISK item 5): the members' Aeron UDP range admits only the pods that are cluster
+# clients or members. Defence in depth behind CLUSTER_CLIENT_SECRET, which is what actually closes the
+# ingress: a NetworkPolicy is only ENFORCED on a GKE cluster created with Dataplane V2
+# (--enable-dataplane-v2) or --enable-network-policy, and is silently inert otherwise.
+# A cluster client missing from this list fails as a connect / marker-ack TIMEOUT, not a connection
+# error (T-LOB16): add any new client's label here in the same change that deploys it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-matcher-cluster
+spec:
+  podSelector:
+    matchLabels:
+      app: order-matcher-cluster
+  policyTypes:
+    - Ingress
+  ingress:
+    # Member-facing (consensus, log, transfer, archive control/replication) and client-facing
+    # (ingress) UDP. Members at 21800 + id*100 + offset; three members fit under 22200.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: order-matcher-cluster
+        - podSelector:
+            matchLabels:
+              app: cluster-gateway
+        - podSelector:
+            matchLabels:
+              app: risk-extract
+        - podSelector:
+            matchLabels:
+              app: cluster-proof-client
+        - podSelector:
+            matchLabels:
+              app: feed-adapter
+      ports:
+        - protocol: UDP
+          port: 21800
+          endPort: 22200
+    # Member HTTP (health, metrics, the gateway's /recon and /regulatory proxy). Its routes carry their
+    # own credentials (ENGINE-REVIEW S1-S6); kubelet probes are node-local and bypass policy.
+    - ports:
+        - protocol: TCP
+          port: 8080

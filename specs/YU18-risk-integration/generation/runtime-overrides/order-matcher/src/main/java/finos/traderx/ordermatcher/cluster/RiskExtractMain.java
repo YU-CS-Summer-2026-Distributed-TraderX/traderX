@@ -407,7 +407,8 @@ public final class RiskExtractMain {
             .egressChannel("aeron:udp?term-length=64k|endpoint="
                 + env("RISK_EXTRACT_EGRESS_HOST", env("POD_IP", "localhost")) + ":"
                 + env("RISK_EXTRACT_EGRESS_PORT", "0"))
-            .egressListener(this::onEgress));
+            .egressListener(this::onEgress)
+            .credentialsSupplier(ClusterClientAuth.credentialsFromEnv()));
     }
 
     /** Offer one sequenced marker and return its ack as {@code {sequence, rowCount}}. */
