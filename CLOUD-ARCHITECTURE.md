@@ -145,6 +145,34 @@ kubectl set env  statefulset/order-matcher BLP_REPLICATION_ENABLED=true -n trade
 kubectl scale    statefulset/order-matcher --replicas=2 -n traderx
 ```
 
+### Creating the next cluster: Dataplane V2 is required
+
+The cluster tier ships a NetworkPolicy (`specs/YU17-otc-rates/generation/kubernetes/cluster/gke/networkpolicy.yaml`,
+ADR-079 §4): only pods labelled as cluster members or cluster clients may reach the members' Aeron
+UDP ingress. GKE accepts that object on any cluster and **enforces it only on a cluster created with
+Dataplane V2** (`--enable-dataplane-v2`) or the legacy `--enable-network-policy`. On the hxb rig it
+was applied and inert (EOD-RISK.md, 2026-10-26): every pod could reach the members. Dataplane V2
+cannot be switched on for an existing cluster, so it is a creation-time decision:
+
+```bash
+gcloud container clusters create <cluster> --zone us-east1-b --project <project> \
+  --enable-dataplane-v2 \
+  --release-channel regular --num-nodes 1 --machine-type e2-standard-4 \
+  --workload-pool=<project>.svc.id.goog
+# then the node pools as below (blp-pool / engine-pool), unchanged
+```
+
+`--enable-dataplane-v2` replaces `--enable-network-policy` (Calico); do not pass both. Until the
+proof below passes, `CLUSTER_CLIENT_SECRET` (the Aeron authenticator) is the only control that
+actually closes the ingress.
+
+Bring-up proof, after the members are Running (positive and negative control, same image and
+secret, only the label differs; a cluster without enforcement fails the negative control):
+
+```bash
+CLUSTER=<cluster> ZONE=us-east1-b PROJECT=<project> scripts/proofs/yu18-networkpolicy-enforced.sh
+```
+
 ### blp-pool node pool
 ```bash
 # Create (one-time):

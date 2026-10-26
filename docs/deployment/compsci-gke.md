@@ -90,6 +90,15 @@ sidecar (2.5 CPU, not wired by default; ADR-079 §6), run members on `c4d-standa
 initial functional demo. Anti-affinity must keep members on separate hostnames.
 No autoscaling, spot nodes, performance tuning or full-HA gateway claim.
 
+The member NetworkPolicy (ADR-079 §4) is enforced only on a cluster created with Dataplane V2
+(`gcloud container clusters create ... --enable-dataplane-v2`); it cannot be enabled on an
+existing cluster, and on a cluster without it the policy is applied and inert, as measured on
+the hxb rig (EOD-RISK.md). Whether `traderx-demo` was created with it has not been verified
+from this checkout. Create the next production cluster with the flag, and after the members
+are Running run `scripts/proofs/yu18-networkpolicy-enforced.sh` (positive and negative control
+through the real Aeron ingress); until it passes, `CLUSTER_CLIENT_SECRET` is the only control
+that closes the ingress.
+
 Operator creation command (do not repeat for the existing pool):
 
 ```bash
