@@ -10,8 +10,6 @@ from pathlib import Path
 
 from corpus import digest, encoded
 from intake import snapshot
-from profiles import CONTRACT
-from request_identity import content_sha256
 
 MAX_FILE = 32 * 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
@@ -65,13 +63,13 @@ class GCS:
 
 def verify_queue(root, accepted):
     with closing(sqlite3.connect('file:' + str(root / 'jobs.sqlite') + '?mode=ro', uri=True)) as con:
-        rows = con.execute('SELECT id,kind,status,execution_contract,request,result FROM jobs').fetchall()
+        rows = con.execute('SELECT id,kind,status,idempotency_key,keep,request,result FROM jobs').fetchall()
     require(len(rows) == 1, 'queue must contain exactly one job')
-    job, kind, status, contract, request, result = rows[0]
-    require((job, kind, status, contract) == (accepted['job_id'], 'portfolio', 'done', CONTRACT),
+    job, kind, status, key, keep, request, result = rows[0]
+    require((job, kind, status, key, keep) == (accepted['job_id'], 'run', 'done', accepted['submission_id'], 1),
             'queue completion/identity mismatch')
-    require(content_sha256(request) == content_sha256((root / 'job/request.json').read_bytes()),
-            'queue request content mismatch')
+    # The queue keeps the HTTP body as received.
+    require(request == (root / 'job/request.json').read_bytes(), 'queue request content mismatch')
     require(json.loads(result) == json.loads((root / 'job/result.json').read_bytes()), 'queue result mismatch')
 
 

@@ -78,9 +78,10 @@ def mapping(source, market_path, expected):
                        'maturity_date': t['maturityDate'], 'redemption_fraction': 1.0, 'coupon_rate': 0.0,
                        'coupon_schedule': [], 'accrual_day_count': 'ACT/ACT (ICMA)'})
         identities.append(dict(identity, trade_id=trade_id, quantity=row['quantity'], quantity_unit=t['quantityUnit']))
-    request = {'base_currency': 'USD', 'compute_greeks': False, 'scenario_risk': False,
+    request = {'analytics': ['npv'], 'config': {'base_currency': 'USD'},
+               'idempotency_key': expected['run_id'], 'keep': True,
                'market': {'asof': asof, 'currencies': {'USD': {'discount_curve': {
-                   'times': [0.0, 1.0, 5.0, 10.0], 'rates': [float(rate)] * 4}}}}, 'trades': trades}
+                   'times': [0.0, 1.0, 5.0, 10.0], 'rates': [float(rate)] * 4}}}}, 'portfolio': trades}
     validate(request)
     raw = encoded(request) + b'\n'
     receipt = {'profile': PROFILE, 'expected': expected, 'cluster_epoch': manifest['clusterEpoch'],

@@ -1,4 +1,7 @@
-# Current CPU synthetic portfolio contract
+# Current CPU synthetic portfolio contract (v1, superseded)
+
+Superseded on 2026-10-25 by [portfolio-current-cpu-v2](portfolio-current-cpu-v2.md): Alex's upstream replaced
+`/portfolio/price` and `/jobs/{id}` with `/runs`, and the owned service profile is retired.
 
 Numerical revision: `c3d7c6ae485213dbb24abd2724f9ae8cb85acbb8`. Profile:
 `current-cpu-v1`. Execution contract:

@@ -57,17 +57,17 @@ def main():
                 sys.dont_write_bytecode = True
                 sys.path.insert(0, str(root))
                 if revision == CURRENT_ENGINE:
-                    from engine.api.requests import MarketPortfolioRequestSchema
-                    from engine.run.pipeline import validate_request
+                    from engine.api.requests import RunRequestSchema
+                    engine = lambda body: RunRequestSchema.model_validate(body).check()  # noqa: E731
                 else:
                     from engine.api.market_schemas import MarketPortfolioRequestSchema
                     from engine.portfolio.market_path import validate_request
-                engine = (MarketPortfolioRequestSchema, validate_request)
+                    engine = lambda body: validate_request(MarketPortfolioRequestSchema.model_validate(body).to_dataclass())  # noqa: E731
             for item in m["files"]:
                 body = load_request(args.directory / item["path"])
                 verify_entry(body, item)
                 if engine:
-                    engine[1](engine[0].model_validate(body).to_dataclass())
+                    engine(body)
             print(json.dumps({"files_validated": len(m["files"]), "engine_schema_validated": bool(engine),
                               "financial_validation": False}))
         elif args.command == "inspect":

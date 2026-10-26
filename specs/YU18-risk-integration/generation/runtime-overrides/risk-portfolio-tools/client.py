@@ -1,4 +1,4 @@
-"""Loopback-only single-POST driver with raw request/reply custody and bounded polling."""
+"""Loopback-only POST-once driver with raw request/reply custody and bounded polling."""
 import http.client
 import json
 import math
@@ -9,9 +9,8 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from corpus import digest, encoded, load_request
-from reference import check_result
-from profiles import CONTRACT, CURRENT, CURRENT_ENGINE, CONTENT_DIGEST_ALGORITHM, request_profile
-from request_identity import content_sha256
+from reference import check_result, request_binding
+from profiles import CONTRACT, CURRENT, request_profile
 
 MAX_REPLY = 16 * 1024 * 1024
 MAX_EVIDENCE = 128 * 1024 * 1024
@@ -107,98 +106,129 @@ class Driver:
     def run(self, request, job_id=None, submission_id=None, recover=False):
         if submission_id is not None and not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", submission_id):
             raise ValueError("submission identity must be 1..200 safe ASCII characters")
-        if recover and (not submission_id or job_id):
-            raise ValueError("recover requires submission_id and no job_id")
+        if recover and job_id:
+            raise ValueError("recover takes no job_id")
         load_request(request)
         snapshot = self.evidence / "request.json"
         shutil.copyfile(request, snapshot)
         body = load_request(snapshot)
         current = request_profile(body) == CURRENT
-        if current and not submission_id:
-            raise ValueError("current profile requires a manifest or explicit submission identity")
+        if current:
+            # The body carries its own key; a caller's identity can only confirm it.
+            if submission_id not in (None, body["idempotency_key"]):
+                raise ValueError("submission identity contradicts the request's idempotency_key")
+            submission_id = body["idempotency_key"]
+            self.state["execution_contract"] = CONTRACT
+        elif recover and not submission_id:
+            raise ValueError("recover requires submission_id")
         self.state.update(request_sha256=digest(snapshot), request_bytes=snapshot.stat().st_size,
                           submission_id=submission_id)
-        expected_content = content_sha256(snapshot.read_bytes()) if current else None
-        if current:
-            self.state["request_content_sha256"] = expected_content
+        if job_id is not None:
+            self.state["job_id"] = job_id
         self.save()
         try:
             if current:
-                code, caps = self.exchange("GET", "/portfolio/capabilities")
-                if (code != 200 or caps.get("execution_contract") != CONTRACT or caps.get("numerical_engine_revision") != CURRENT_ENGINE
-                        or caps.get("request_content_digest") != CONTENT_DIGEST_ALGORITHM):
-                    return self.finish("INCOMPATIBLE_ENGINE", "current pinned CPU submission contract required; no POST")
-                self.state["execution_contract"] = CONTRACT
-            if recover:
-                code, reply = self.exchange("GET", "/portfolio/submissions/" + quote(submission_id, safe=""))
-                if code != 200 or not isinstance(reply.get("job_id"), str):
-                    return self.finish("UNKNOWN", f"submission recovery HTTP {code}; no POST")
-                job_id = reply["job_id"]
-                self.state["job_id"] = job_id
-                if current and reply.get("execution_contract") != CONTRACT:
-                    return self.finish("UNKNOWN", "recovered job has another/unknown execution contract")
-                if current and reply.get("request_content_sha256") != expected_content:
-                    return self.finish("REQUEST_MISMATCH", "recovered job belongs to different request content; no POST")
-            if job_id is None:
-                # Persist uncertainty before any byte is sent. Never retry POST, even on 500.
-                self.state.update(outcome="SUBMISSION_UNKNOWN", post_attempts=1)
-                self.save()
-                code, reply = self.exchange("POST", "/portfolio/price", snapshot,
-                                            {"Idempotency-Key": submission_id} if submission_id else {})
-                if code != 202:
-                    return self.finish("REJECTED" if code in (400, 409, 413, 422, 429) else "SUBMISSION_UNKNOWN",
-                                       f"HTTP {code}; no POST retry")
-                job_id = reply.get("job_id")
-                if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
-                    return self.finish("SUBMISSION_UNKNOWN", "accepted response lacks valid job_id")
-                self.state["job_id"] = job_id
-                if current and reply.get("execution_contract") != CONTRACT:
-                    return self.finish("UNKNOWN", "accepted job has another/unknown execution contract")
-                if current and reply.get("request_content_sha256") != expected_content:
-                    return self.finish("REQUEST_MISMATCH", "accepted job belongs to different request content; no retry")
-            if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
-                raise ValueError("invalid resume job_id")
-            self.state.update(job_id=job_id, outcome="ACCEPTED")
-            self.save()
-            if current and submission_id:
-                code, bound = self.exchange("GET", "/portfolio/submissions/" + quote(submission_id, safe=""))
-                if code != 200 or bound.get("job_id") != job_id or bound.get("execution_contract") != CONTRACT:
-                    return self.finish("UNKNOWN", "submission binding could not be reconciled; no POST retry")
-                if bound.get("request_content_sha256") != expected_content:
-                    return self.finish("REQUEST_MISMATCH", "submission belongs to different request content; no POST")
-            for _ in range(self.max_polls):
-                path = "/jobs/" if current else "/portfolio/price/"
-                code, reply = self.exchange("GET", path + quote(job_id, safe=""))
-                if code == 404:
-                    return self.finish("UNKNOWN", "job not found; no resubmission")
-                if code != 200:
-                    return self.finish("UNKNOWN", f"poll HTTP {code}; retained job identity")
-                if current and (reply.get("execution_contract") != CONTRACT or reply.get("kind") != "portfolio"):
-                    return self.finish("UNKNOWN", "polled job contract/kind mismatch")
-                if current and reply.get("request_content_sha256") != expected_content:
-                    return self.finish("REQUEST_MISMATCH", "job belongs to different request content; no POST")
-                status = reply.get("status")
-                if status == "done":
-                    try:
-                        verdict = check_result(body, reply["result"])
-                    except (ValueError, KeyError, TypeError) as exc:
-                        return self.finish("INVALID_RESULT", str(exc))
-                    self.state["result_checks"] = verdict
-                    if current:
-                        from intake import publish
-                        self.state["accepted"] = publish(self.evidence, self.state, reply["result"])
-                    return self.finish("DONE")
-                if status in ("failed", "interrupted"):
-                    return self.finish(status.upper(), "terminal; no automatic resubmission")
-                if status not in ("pending", "running"):
-                    return self.finish("UNKNOWN", "unrecognized job state")
-                self.state["last_job_status"] = status
-                self.save()
-                delay = min(self.interval, max(0, self.end - time.monotonic()))
-                time.sleep(delay)
-            return self.finish("TIMEOUT", "poll limit reached; retained job identity")
+                return self.run_current(snapshot, body, job_id, recover)
+            return self.run_legacy(snapshot, body, job_id, submission_id, recover)
         except KeyboardInterrupt:
             return self.finish("CLIENT_INTERRUPTED", "request outcome may be uncertain; no retry")
         except (OSError, ValueError, http.client.HTTPException, TypeError, KeyError) as exc:
-            return self.finish("TIMEOUT" if isinstance(exc, TimeoutError) and job_id else
-                               "UNKNOWN" if job_id else "SUBMISSION_UNKNOWN", str(exc))
+            known = self.state.get("job_id")
+            return self.finish("TIMEOUT" if isinstance(exc, TimeoutError) and known else
+                               "UNKNOWN" if known else "SUBMISSION_UNKNOWN", str(exc))
+
+    def run_current(self, snapshot, body, job_id, recover):
+        """POST /runs and GET /runs/{run_id} (Alex's upstream). The body's idempotency_key makes a
+        resend safe: the queue returns the run it first created, or 409 if the key holds another
+        body, and `keep` exempts that run from retention. Only `recover` resends; never automatic."""
+        if job_id is None:
+            self.state.update(outcome="SUBMISSION_UNKNOWN", post_attempts=self.state["post_attempts"] + 1,
+                              recovery=recover)
+            self.save()
+            code, reply = self.exchange("POST", "/runs", snapshot)
+            if code == 404:
+                return self.finish("INCOMPATIBLE_ENGINE", "engine has no POST /runs; nothing was queued")
+            if code == 409:
+                return self.finish("REQUEST_MISMATCH", "idempotency_key is bound to another request; no run created")
+            if code != 202:
+                return self.finish("REJECTED" if code in (400, 413, 422, 429, 503) else "SUBMISSION_UNKNOWN",
+                                   f"HTTP {code}; no automatic resend")
+            job_id = reply.get("run_id")
+            if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
+                return self.finish("SUBMISSION_UNKNOWN", "accepted response lacks valid run_id")
+        self.state.update(job_id=job_id, outcome="ACCEPTED")
+        self.save()
+        for _ in range(self.max_polls):
+            code, reply = self.exchange("GET", "/runs/" + quote(job_id, safe=""))
+            if code == 404:
+                return self.finish("UNKNOWN", "run not found; no resubmission")
+            if code != 200:
+                return self.finish("UNKNOWN", f"poll HTTP {code}; retained run identity")
+            if reply.get("kind") != "run" or reply.get("run_id") != job_id:
+                return self.finish("UNKNOWN", "polled run kind/identity mismatch")
+            status = reply.get("status")
+            if status == "done":
+                if not request_binding(body, reply.get("result")):
+                    return self.finish("REQUEST_MISMATCH", "run was made from another request; nothing accepted")
+                try:
+                    self.state["result_checks"] = check_result(body, reply["result"])
+                except (ValueError, KeyError, TypeError) as exc:
+                    return self.finish("INVALID_RESULT", str(exc))
+                from intake import publish
+                self.state["accepted"] = publish(self.evidence, self.state, reply["result"])
+                return self.finish("DONE")
+            if status in ("failed", "interrupted", "cancelled"):
+                return self.finish(status.upper(), "terminal; no automatic resubmission")
+            if not self.wait(status):
+                return self.finish("UNKNOWN", "unrecognized run state")
+        return self.finish("TIMEOUT", "poll limit reached; retained run identity")
+
+    def run_legacy(self, snapshot, body, job_id, submission_id, recover):
+        if recover:
+            code, reply = self.exchange("GET", "/portfolio/submissions/" + quote(submission_id, safe=""))
+            if code != 200 or not isinstance(reply.get("job_id"), str):
+                return self.finish("UNKNOWN", f"submission recovery HTTP {code}; no POST")
+            job_id = reply["job_id"]
+            self.state["job_id"] = job_id
+        if job_id is None:
+            # Persist uncertainty before any byte is sent. Never retry POST, even on 500.
+            self.state.update(outcome="SUBMISSION_UNKNOWN", post_attempts=1)
+            self.save()
+            code, reply = self.exchange("POST", "/portfolio/price", snapshot,
+                                        {"Idempotency-Key": submission_id} if submission_id else {})
+            if code != 202:
+                return self.finish("REJECTED" if code in (400, 409, 413, 422, 429) else "SUBMISSION_UNKNOWN",
+                                   f"HTTP {code}; no POST retry")
+            job_id = reply.get("job_id")
+            if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
+                return self.finish("SUBMISSION_UNKNOWN", "accepted response lacks valid job_id")
+        if not isinstance(job_id, str) or not job_id or len(job_id) > 200:
+            raise ValueError("invalid resume job_id")
+        self.state.update(job_id=job_id, outcome="ACCEPTED")
+        self.save()
+        for _ in range(self.max_polls):
+            code, reply = self.exchange("GET", "/portfolio/price/" + quote(job_id, safe=""))
+            if code == 404:
+                return self.finish("UNKNOWN", "job not found; no resubmission")
+            if code != 200:
+                return self.finish("UNKNOWN", f"poll HTTP {code}; retained job identity")
+            status = reply.get("status")
+            if status == "done":
+                try:
+                    self.state["result_checks"] = check_result(body, reply["result"])
+                except (ValueError, KeyError, TypeError) as exc:
+                    return self.finish("INVALID_RESULT", str(exc))
+                return self.finish("DONE")
+            if status in ("failed", "interrupted"):
+                return self.finish(status.upper(), "terminal; no automatic resubmission")
+            if not self.wait(status):
+                return self.finish("UNKNOWN", "unrecognized job state")
+        return self.finish("TIMEOUT", "poll limit reached; retained job identity")
+
+    def wait(self, status):
+        if status not in ("pending", "running"):
+            return False
+        self.state["last_job_status"] = status
+        self.save()
+        time.sleep(min(self.interval, max(0, self.end - time.monotonic())))
+        return True

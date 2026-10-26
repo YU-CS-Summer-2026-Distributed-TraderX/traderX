@@ -8,9 +8,8 @@ import os
 from pathlib import Path
 
 from corpus import digest, encoded, load_request
-from profiles import CONTRACT, CONTENT_DIGEST_ALGORITHM
-from reference import check_result
-from request_identity import content_sha256
+from profiles import CONTRACT, scenario
+from reference import check_result, request_binding
 
 
 def read_json(path, limit=16 * 1024 * 1024):
@@ -37,8 +36,6 @@ def publish(root, state, result):
                   "provenance": "direct-synthetic-portfolio; no sequenced TraderX export lineage",
                   "job_id": state["job_id"], "submission_id": state["submission_id"],
                   "execution_contract": CONTRACT, "files": records,
-                  "request_content_sha256": state["request_content_sha256"],
-                  "request_content_digest": CONTENT_DIGEST_ALGORITHM,
                   "events": state["events"], "checks": state["result_checks"]}
     # Publication is the final step; incomplete result bytes alone are never accepted.
     tmp = root / "acceptance.pending"
@@ -56,8 +53,6 @@ def snapshot(root):
     acceptance = read_json(root / "acceptance.json", 1024 * 1024)
     if acceptance.get("execution_contract") != CONTRACT or acceptance.get("synthetic") is not True:
         raise ValueError("unknown accepted portfolio contract")
-    if acceptance.get("request_content_digest") != CONTENT_DIGEST_ALGORITHM:
-        raise ValueError("unknown request content digest algorithm")
     if acceptance.get("financial_validation") is not False or not acceptance.get("submission_id") or not acceptance.get("job_id"):
         raise ValueError("invalid acceptance scope/identity")
     files = acceptance["files"]
@@ -73,27 +68,28 @@ def snapshot(root):
     if total > 128 * 1024 * 1024:
         raise ValueError("raw replies exceed evidence byte budget")
     body = load_request(root / "request.json")
-    expected_content = content_sha256((root / "request.json").read_bytes())
-    if acceptance.get("request_content_sha256") != expected_content:
-        raise ValueError("accepted request content identity mismatch")
+    if body["idempotency_key"] != acceptance["submission_id"]:
+        raise ValueError("accepted submission identity is not the request's idempotency_key")
     result = read_json(root / "result.json")
-    events = acceptance["events"]
+    run = acceptance["job_id"]
     bound = completed = False
-    for event in events:
+    for event in acceptance["events"]:
         if not event.get("sha256") or files.get(event["file"]) != event["sha256"]:
             raise ValueError("unverified HTTP event")
         reply = read_json(root / event["file"])
-        if event["method"] == "GET" and event["path"] == "/portfolio/submissions/" + acceptance["submission_id"]:
-            bound = (event["http_status"] == 200 and reply.get("job_id") == acceptance["job_id"]
-                     and reply.get("execution_contract") == CONTRACT and reply.get("request_content_sha256") == expected_content)
-        if event["method"] == "GET" and event["path"] == "/jobs/" + acceptance["job_id"] and reply.get("status") == "done":
-            completed = (event["http_status"] == 200 and reply.get("execution_contract") == CONTRACT
-                         and reply.get("request_content_sha256") == expected_content
-                         and reply.get("kind") == "portfolio" and reply.get("result") == result)
-    if not bound or not completed:
-        raise ValueError("missing matching submission binding/completed HTTP result")
+        # The 202 binds the key (and this request) to the run; a run polled by ID has no POST.
+        if event["method"] == "POST" and event["path"] == "/runs":
+            bound = event["http_status"] == 202 and reply.get("run_id") == run
+        if event["method"] == "GET" and event["path"] == "/runs/" + run and reply.get("status") == "done":
+            completed = (event["http_status"] == 200 and reply.get("kind") == "run"
+                         and reply.get("run_id") == run and reply.get("result") == result)
+    posted = any(event["method"] == "POST" for event in acceptance["events"])
+    if not completed or posted and not bound:
+        raise ValueError("missing matching run binding/completed HTTP result")
+    if not request_binding(body, result):
+        raise ValueError("accepted result was run from another request")
     checks = check_result(body, result)
-    return {"integrity": "VERIFIED", "job_id": acceptance["job_id"],
+    return {"integrity": "VERIFIED", "job_id": run,
             "submission_id": acceptance["submission_id"], "trade_count": len(result["trades"]),
-            "base_npv_usd": result["base_npv"], "scenario_risk_available": result["scenario_risk_available"],
+            "base_npv_usd": result["npv"], "scenario_risk_available": scenario(body),
             "checks": checks, "financial_validation": False, "warnings": result["warnings"]}

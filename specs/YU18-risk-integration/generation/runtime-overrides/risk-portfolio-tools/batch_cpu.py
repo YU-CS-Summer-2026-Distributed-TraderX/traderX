@@ -66,15 +66,15 @@ def run_local(raw, root, manifest, runtime):
             while True:
                 require(proc.poll() is None, 'API exited before ready')
                 try:
-                    with urllib.request.urlopen(origin + '/portfolio/capabilities', timeout=2) as response:
+                    with urllib.request.urlopen(origin + '/health', timeout=2) as response:
                         if response.status == 200:
                             break
                 except OSError:
                     pass
                 require(time.monotonic() < ready, 'API readiness timeout')
                 time.sleep(0.25)
-            result = Driver(origin, root / 'job', deadline=300, interval=0.5, max_polls=600).run(
-                root / 'input.json', submission_id=runtime['run_id'])
+            # The request's idempotency_key is its identity (the run ID for a mapped export).
+            result = Driver(origin, root / 'job', deadline=300, interval=0.5, max_polls=600).run(root / 'input.json')
             require(result['outcome'] == 'DONE', 'portfolio failed: ' + result['outcome'])
     finally:
         stop(proc)

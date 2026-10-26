@@ -1,4 +1,4 @@
-# Linux amd64 CPython3.14.6 CPU wheel hashes; checked against c3d7c6a constraints.
+# Linux amd64 CPython3.14.6 CPU wheel hashes; checked against c3d7c6a and f9cc4c1 constraints (api extra unchanged).
 annotated-doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
 annotated-types==0.8.0 --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
 anyio==4.15.1 --hash=sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101
