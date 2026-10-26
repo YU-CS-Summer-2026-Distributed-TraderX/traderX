@@ -261,7 +261,11 @@ spec:
               # 12g (EOD-RISK, 2026-10-26): every touched security allocates a 2^17-level LimitBook, ~5 MB
               # on this G1 heap with compressed oops (~7 MB under ZGC). The hxb rig OOMed all three members
               # at once at 1,000 symbols x 3 GB. 1,024 (MAX_SECURITIES) books ≈ 5-7 GB, plus base state.
-              value: "-Xms12g -Xmx12g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              # MaxGCPauseMillis=50 (hxb row 8, 2026-10-26): G1's default 200 ms goal equals
+              # CLUSTER_HEARTBEAT_TIMEOUT_MS above, so 204-221 ms mixed pauses at 1,000 books started an
+              # election every time and made an empty-disk rejoin restart its log copy 764 times. At 50 ms
+              # the max pause was 69-79 ms: no elections, and the rejoin finished in ~121 s at 200 ms.
+              value: "-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50 --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080

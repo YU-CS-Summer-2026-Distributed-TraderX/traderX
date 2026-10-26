@@ -141,8 +141,9 @@ spec:
                   name: auth-secrets
                   key: cluster-client-secret
             - name: JAVA_TOOL_OPTIONS
-              # 12g, as statefulset-emptydir.yaml (EOD-RISK 2026-10-26: book grids for 1,024 securities).
-              value: "-Xms12g -Xmx12g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              # 12g and MaxGCPauseMillis=50, as statefulset-emptydir.yaml (EOD-RISK 2026-10-26: book grids for
+              # 1,024 securities; hxb row 8: G1's default 200 ms pause goal causes elections at that size).
+              value: "-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50 --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080
