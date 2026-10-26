@@ -209,7 +209,9 @@ class VarEsEndToEndTest {
         // 6. the EOD cut: the sequenced marker names N; every member renders the identical cut at it.
         connectMarkerClient();
         offerMarker(1L);
-        await(() -> services.stream().allMatch(s -> s.lastExtractCutSeq() > 0), "marker applied on every member");
+        // seq is published one statement before the sha is hashed; waiting on seq alone read a null sha under load
+        // ("one cut hash on every member ==> expected: <null>", 2026-10-26, a loaded Mac; 6/6 green quiet)
+        await(() -> services.stream().allMatch(s -> s.lastExtractCutSeq() > 0 && s.lastExtractCutSha() != null), "marker applied on every member");
         final long seq = services.get(0).lastExtractCutSeq();
         final String sha = services.get(0).lastExtractCutSha();
         final List<String> cuts = new ArrayList<>();
