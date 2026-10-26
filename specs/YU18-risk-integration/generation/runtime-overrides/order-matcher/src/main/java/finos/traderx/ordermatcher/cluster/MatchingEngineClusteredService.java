@@ -1766,8 +1766,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * determinism proof (and the same rendering happens again on any replay to N). Only the leader
      * hands it to the NATS bridge, so followers never duplicate.
      *
-     * <p>Cold path — once per EOD batch. It allocates freely (the render is inherently O(positions))
-     * and is deliberately kept off the order-flow branch above so the hot path is untouched.
+     * <p>Cold path — once per EOD batch, kept off the order-flow branch above so the hot path is
+     * untouched. It renders on this (apply) thread on purpose: measured 2026-10-25 (EOD-RISK item 3,
+     * {@code ApplyStallElectionTest}) a 600-800 ms stall here on all three members does NOT start an
+     * election at the 200 ms heartbeat timeout — the consensus module is its own agent — so a copy
+     * of state handed to another thread would buy nothing. What CAN elect is a JVM-wide pause, so the
+     * render's job is to allocate little: {@link RiskExtractCut#renderBytes} writes one exact-size
+     * byte array (~1.6x the cut's size at 1M positions, vs ~5x for the old StringBuilder path).
      */
     private void onRiskExtract(final ClientSession session, final DirectBuffer buffer,
                                final int offset, final int length) {
@@ -1780,15 +1785,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // per-trade OTC contracts. Two artifacts are rendered downstream from these same bytes and
         // therefore share a sequence, a session date and a cutSha256 by construction rather than by
         // the producer being careful.
-        String cut = RiskExtractCut.render(appliedSeq, codec.extractSessionDateEpochDay(),
+        final String identity = runDescriptor != null && runDescriptor.managedIds()
+            ? " runDescriptorHash=" + runDescriptor.hash() + " projectionScope=" + runDescriptor.projectionScope()
+                + " eventIdScheme=" + runDescriptor.scheme()
+            : "";
+        final byte[] cut = RiskExtractCut.renderBytes(appliedSeq, codec.extractSessionDateEpochDay(),
             codec.extractPriceVersion(), positions, engine.priceTuples(),
-            tickerById, risk::contractMultiplier, contracts);
-        if(runDescriptor!=null && runDescriptor.managedIds()) {
-            int newline=cut.indexOf('\n');
-            cut=cut.substring(0,newline)+" runDescriptorHash="+runDescriptor.hash()
-                +" projectionScope="+runDescriptor.projectionScope()+" eventIdScheme="+runDescriptor.scheme()
-                +cut.substring(newline);
-        }
+            tickerById, risk::contractMultiplier, contracts, identity);
         lastExtractCutSeq = appliedSeq;
         lastExtractCutSha = RiskExtractCut.sha256(cut);
         // Stamped on every member so a cross-member diff needs nothing but the pod logs. Only a
@@ -1800,7 +1803,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 + " sha256=" + lastExtractCutSha + " role=" + role);
         }
         if (role == Cluster.Role.LEADER && extractBridge != null) {
-            extractBridge.offer(cut);
+            extractBridge.offer(appliedSeq, cut, lastExtractCutSha);
         }
         ackBuffer.putLong(0, appliedSeq);
         ackBuffer.putInt(8, positions.size());

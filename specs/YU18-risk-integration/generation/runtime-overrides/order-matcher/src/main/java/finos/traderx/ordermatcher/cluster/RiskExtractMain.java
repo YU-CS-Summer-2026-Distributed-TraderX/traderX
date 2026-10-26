@@ -343,6 +343,9 @@ public final class RiskExtractMain {
             connectCluster(aeronDir);
             // Subscribe BEFORE the marker so the cut cannot arrive before we are listening.
             final Subscription cutSub = nats.subscribe(cutSubject);
+            // A multi-part cut is queued here whole before we drain it; jnats' default 64 MB pending
+            // cap would drop parts of a cut over ~1.8M positions as a slow consumer.
+            cutSub.setPendingLimits(-1, 1L << 30);
             try {
                 final long[] first = mark(sessionDate, version);
                 final String cut = awaitCut(cutSub, first[0]);
@@ -447,17 +450,19 @@ public final class RiskExtractMain {
         }
     }
 
-    /** Wait for the cut the leader rendered at {@code seq}, ignoring any other cut on the wire. */
+    /** Wait for the cut the leader rendered at {@code seq}, ignoring any other cut on the wire. It
+     *  arrives in parts (YU18); {@link RiskExtractCutPublisher.Assembly} yields it only whole and
+     *  hash-verified, and throws on parts that contradict each other. */
     private String awaitCut(final Subscription sub, final long seq) throws InterruptedException {
-        final String want = "seq=" + seq + " ";
+        final RiskExtractCutPublisher.Assembly assembly = new RiskExtractCutPublisher.Assembly(seq);
         final long deadline = System.currentTimeMillis() + CUT_TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {
             final Message m = sub.nextMessage(Duration.ofSeconds(2));
             if (m == null) {
                 continue;
             }
-            final String cut = new String(m.getData(), StandardCharsets.US_ASCII);
-            if (cut.startsWith("#cut ") && cut.contains(want)) {
+            final String cut = assembly.accept(m.getData());
+            if (cut != null) {
                 return cut;
             }
         }
