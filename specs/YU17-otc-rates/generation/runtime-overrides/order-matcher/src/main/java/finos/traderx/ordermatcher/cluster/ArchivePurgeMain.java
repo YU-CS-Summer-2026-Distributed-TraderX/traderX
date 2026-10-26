@@ -50,6 +50,19 @@ import java.util.regex.Pattern;
  * passes 9-84 ms, /data flat at 3.7-3.8 GB, snapshot+tail replay valid. Start: {@code java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ArchivePurgeMain
  * /data/cluster /dev/shm/aeron-...} next to the member, with the member's env; it needs
  * {@code --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED} like the member JVM.
+ *
+ * <p>Offload before delete (ADR-079 §3). A purged segment is history: without it, a past EOD cut can no
+ * longer be re-created by replay (FR-RXT10) and a full-history replay refuses (ENGINE-REVIEW F8). So a
+ * detached segment file is UPLOADED, write-once, to {@code ARCHIVE_PURGE_OFFLOAD_URI} ({@code gs://bucket/prefix}
+ * via GCS HMAC as ARCHIVE_OFFLOAD_GCS_HMAC_KEY_ID / _SECRET_ACCESS_KEY, or {@code file:///dir}) under
+ * {@code member-<id>/}, and unlinked only after the upload is confirmed. A failed upload deletes nothing, so the
+ * archive grows until it succeeds: backpressure is the disk filling, never lost history (yaakov, 2026-10-23).
+ * The only way to purge without an offload is the explicit ARCHIVE_PURGE_DISCARD_HISTORY=true; with neither set,
+ * the agent refuses to start. To bring history back: copy the member's objects into its {@code /data/archive}
+ * ({@code gcloud storage cp gs://.../member-<id>/* /data/archive/}) and run
+ * {@code ArchivePurgeMain --attach /data/cluster /dev/shm/aeron-...}, which re-attaches them to the recordings so
+ * replay from 0 works again. // ponytail: every member offloads its own copy of the same log (3x the bytes); one
+ * uploader needs cross-member delete coordination, worth it when the bucket bill is.
  */
 public final class ArchivePurgeMain implements AutoCloseable {
     static final String ARCHIVE_LOCAL_CONTROL = "aeron:ipc?term-length=64k";   // ClusterNodeConfig's localControlChannel
@@ -64,14 +77,22 @@ public final class ArchivePurgeMain implements AutoCloseable {
     private final long maxLag;
     private final long dataLimitBytes;
     private final int forcePct;
+    private final Offload offload;                  // null = history explicitly discarded
     private final Aeron aeron;
     private final AeronArchive archive;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(500)).build();
     private long lastS1 = Long.MIN_VALUE;
     private boolean lastHeld;
 
+    /** Discards purged history: for tests that are about the purge itself, and ARCHIVE_PURGE_DISCARD_HISTORY=true. */
     public ArchivePurgeMain(final File clusterDir, final String aeronDir, final List<String> peerHealthUrls,
                           final long maxLag, final long dataLimitBytes, final int forcePct) {
+        this(clusterDir, aeronDir, peerHealthUrls, maxLag, dataLimitBytes, forcePct, null);
+    }
+
+    public ArchivePurgeMain(final File clusterDir, final String aeronDir, final List<String> peerHealthUrls,
+                          final long maxLag, final long dataLimitBytes, final int forcePct, final Offload offload) {
+        this.offload = offload;
         this.clusterDir = clusterDir;
         this.dataDir = clusterDir.getAbsoluteFile().getParentFile();
         this.archiveDir = new File(dataDir, "archive");                     // ClusterNodeConfig: baseDir/archive
@@ -90,7 +111,24 @@ public final class ArchivePurgeMain implements AutoCloseable {
     }
 
     public static void main(final String[] args) throws Exception {
+        if (args.length == 3 && "--attach".equals(args[0])) {
+            try (ArchivePurgeMain p = new ArchivePurgeMain(new File(args[1]), args[2], List.of(), 0, 0, 100)) {
+                System.out.println(p.attach());
+            }
+            return;
+        }
         final String me = env("CLUSTER_MEMBER_ID", env("HOSTNAME", "?"));
+        final Offload offload;
+        try {
+            offload = offloadFrom(System.getenv("ARCHIVE_PURGE_OFFLOAD_URI"), me,
+                "true".equals(System.getenv("ARCHIVE_PURGE_DISCARD_HISTORY")));
+        } catch (final IllegalStateException e) {
+            System.out.println("PURGE_REFUSED " + e.getMessage());
+            System.exit(2);
+            return;
+        }
+        System.out.println(offload == null ? "PURGE_DISCARDS_HISTORY ARCHIVE_PURGE_DISCARD_HISTORY=true: purged log is"
+            + " gone for good; past EOD cuts cannot be re-created by replay" : "PURGE_OFFLOAD " + offload);
         final String port = env("HEALTH_PORT", "8080");
         final List<String> urls = new ArrayList<>();
         for (final String h : env("CLUSTER_HOSTNAMES", "localhost").split(",")) {
@@ -103,7 +141,7 @@ public final class ArchivePurgeMain implements AutoCloseable {
             try (ArchivePurgeMain p = new ArchivePurgeMain(new File(args[0]), args[1], urls,
                     Long.parseLong(env("CLUSTER_READY_MAX_LAG", "5000")),
                     Long.parseLong(env("ARCHIVE_PURGE_DATA_LIMIT_BYTES", "0")),
-                    Integer.parseInt(env("ARCHIVE_PURGE_FORCE_PCT", "70")))) {
+                    Integer.parseInt(env("ARCHIVE_PURGE_FORCE_PCT", "70")), offload)) {
                 while (true) {
                     if (hold == null || !new File(hold).exists()) p.poll();
                     Thread.sleep(pollMs);
@@ -152,14 +190,155 @@ public final class ArchivePurgeMain implements AutoCloseable {
         for (final long[] f : detached) {
             if (n >= limit) break;
             final File file = new File(archiveDir, f[0] + "-" + f[1] + ".rec");
-            final long bytes = file.length(), t0 = System.nanoTime();
+            final long bytes = file.length();
+            long offloadUs = 0;
+            if (offload != null) {
+                final long u0 = System.nanoTime();
+                try {
+                    offload.put(file);
+                } catch (final Exception e) {
+                    log("PURGE_OFFLOAD_FAILED file=" + file.getName() + " backlog=" + (detached.size() - n) + " " + e);
+                    break;   // delete nothing that is not safely stored; the next poll retries oldest-first
+                }
+                offloadUs = (System.nanoTime() - u0) / 1000;
+            }
+            final long t0 = System.nanoTime();
             if (file.delete()) {
                 n++;
                 log("PURGE_DELETE file=" + file.getName() + " bytes=" + bytes + " us=" + (System.nanoTime() - t0) / 1000
-                    + " backlog=" + (detached.size() - n));
+                    + (offload != null ? " offloadUs=" + offloadUs : " offload=none") + " backlog=" + (detached.size() - n));
             }
         }
         return n;
+    }
+
+    /** Re-attach every segment file below each log recording's start (restored history); returns what moved. */
+    String attach() {
+        final StringBuilder out = new StringBuilder("PURGE_ATTACH");
+        for (final long id : termRecordingIds()) {
+            final long before = archive.getStartPosition(id);
+            final long n = archive.attachSegments(id);
+            out.append(" log").append(id).append('=').append(before).append("->").append(archive.getStartPosition(id))
+                .append(" segments=").append(n);
+        }
+        return out.toString();
+    }
+
+    private Set<Long> termRecordingIds() {
+        final Set<Long> ids = new LinkedHashSet<>();
+        try (RecordingLog log = new RecordingLog(clusterDir, false)) {
+            for (final RecordingLog.Entry e : log.entries()) {
+                if (e.isValid && e.type == RecordingLog.ENTRY_TYPE_TERM) ids.add(e.recordingId);
+            }
+        }
+        return ids;
+    }
+
+    /** Where purged segments go before they are unlinked. One method; a file or a GCS object store. */
+    public interface Offload {
+        /** Store {@code segment} write-once under its own name; returns only once it is durably there. */
+        void put(File segment) throws Exception;
+    }
+
+    /** The offload for {@code uri}, or null when history is explicitly discarded; refuses when neither is chosen. */
+    static Offload offloadFrom(final String uri, final String member, final boolean discard) {
+        if (uri == null || uri.isBlank()) {
+            if (discard) return null;
+            throw new IllegalStateException("set ARCHIVE_PURGE_OFFLOAD_URI (gs://bucket/prefix or file:///dir) so purged"
+                + " log is kept, or ARCHIVE_PURGE_DISCARD_HISTORY=true to accept that past EOD cuts can no longer be"
+                + " re-created by replay; refusing to purge with neither");
+        }
+        if (discard) {
+            throw new IllegalStateException("ARCHIVE_PURGE_OFFLOAD_URI and ARCHIVE_PURGE_DISCARD_HISTORY=true contradict");
+        }
+        final String sub = "member-" + member;
+        if (uri.startsWith("file:")) {
+            return new FileOffload(new File(new File(URI.create(uri)), sub));
+        }
+        if (uri.startsWith("gs://")) {
+            return new GcsOffload(URI.create(uri), sub);
+        }
+        throw new IllegalStateException("ARCHIVE_PURGE_OFFLOAD_URI must be gs:// or file://, not " + uri);
+    }
+
+    /** Local directory (tests, kind, a mounted volume). Write-once: an existing object must be byte-identical. */
+    record FileOffload(File dir) implements Offload {
+        public void put(final File segment) throws Exception {
+            final java.nio.file.Path target = new File(dir, segment.getName()).toPath();
+            if (java.nio.file.Files.exists(target)) {
+                if (java.nio.file.Files.mismatch(target, segment.toPath()) != -1L) {
+                    throw new IllegalStateException("offloaded " + target + " exists with different bytes");
+                }
+                return;   // a previous poll stored it and died before the unlink
+            }
+            java.nio.file.Files.createDirectories(dir.toPath());
+            final java.nio.file.Path tmp = new File(dir, "." + segment.getName() + ".tmp").toPath();
+            java.nio.file.Files.copy(segment.toPath(), tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            try (java.nio.channels.FileChannel c = java.nio.channels.FileChannel.open(tmp, java.nio.file.StandardOpenOption.WRITE)) {
+                c.force(true);
+            }
+            java.nio.file.Files.move(tmp, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        }
+
+        @Override
+        public String toString() {
+            return dir.toURI().toString();
+        }
+    }
+
+    /** GCS via its S3-compatible XML API and an HMAC key, the same transport RiskExtractGcsSink uses (and its two
+     *  mandatory settings). Write-once by If-None-Match; Content-MD5 makes GCS refuse a corrupted upload; an object
+     *  that already exists is accepted only at the same size (a previous poll stored it and died before the unlink). */
+    static final class GcsOffload implements Offload {
+        private final String bucket;
+        private final String prefix;
+        private final software.amazon.awssdk.services.s3.S3Client s3;
+
+        GcsOffload(final URI uri, final String sub) {
+            final String keyId = System.getenv("ARCHIVE_OFFLOAD_GCS_HMAC_KEY_ID");
+            final String secret = System.getenv("ARCHIVE_OFFLOAD_GCS_HMAC_SECRET_ACCESS_KEY");
+            if (keyId == null || keyId.isBlank() || secret == null || secret.isBlank()) {
+                throw new IllegalStateException("ARCHIVE_PURGE_OFFLOAD_URI is gs:// but ARCHIVE_OFFLOAD_GCS_HMAC_KEY_ID/"
+                    + "ARCHIVE_OFFLOAD_GCS_HMAC_SECRET_ACCESS_KEY are unset");
+            }
+            this.bucket = uri.getHost();
+            final String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("^/+|/+$", "");
+            this.prefix = (path.isEmpty() ? "" : path + "/") + sub + "/";
+            this.s3 = software.amazon.awssdk.services.s3.S3Client.builder()
+                .endpointOverride(URI.create("https://storage.googleapis.com"))
+                .region(software.amazon.awssdk.regions.Region.US_EAST_1)
+                .credentialsProvider(software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(
+                    software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create(keyId, secret)))
+                .serviceConfiguration(software.amazon.awssdk.services.s3.S3Configuration.builder()
+                    .chunkedEncodingEnabled(false).pathStyleAccessEnabled(true).build())
+                .build();
+        }
+
+        public void put(final File segment) throws Exception {
+            final String key = prefix + segment.getName();
+            final java.security.MessageDigest md5 = java.security.MessageDigest.getInstance("MD5");
+            try (java.io.InputStream in = new java.security.DigestInputStream(new java.io.FileInputStream(segment), md5)) {
+                in.transferTo(java.io.OutputStream.nullOutputStream());
+            }
+            try {
+                s3.putObject(software.amazon.awssdk.services.s3.model.PutObjectRequest.builder().bucket(bucket).key(key)
+                        .contentMD5(java.util.Base64.getEncoder().encodeToString(md5.digest()))
+                        .overrideConfiguration(o -> o.putHeader("If-None-Match", "*")).build(),
+                    software.amazon.awssdk.core.sync.RequestBody.fromFile(segment));
+            } catch (final software.amazon.awssdk.services.s3.model.S3Exception e) {
+                if (e.statusCode() != 412) throw e;
+                final long size = s3.headObject(b -> b.bucket(bucket).key(key)).contentLength();
+                if (size != segment.length()) {
+                    throw new IllegalStateException("gs://" + bucket + "/" + key + " exists at " + size + " bytes, segment is "
+                        + segment.length());
+                }
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "gs://" + bucket + "/" + prefix;
+        }
     }
 
     record Snapshots(long s0, long s1, List<Long> olderRecordingIds, Set<Long> logRecordingIds) { }

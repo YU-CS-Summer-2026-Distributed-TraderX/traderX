@@ -55,3 +55,31 @@ fresh epoch, and members can be rolled in any order. The wire format did change:
 `risk-extract` job ignores `#cutpart` messages and would time out. A new job still reads an old
 member's single message. So roll the `risk-extract` Deployment first, or with the members (both
 ship in the cluster-node image).
+
+## 3. Purged log is offloaded before it is deleted (item 4)
+
+**Context.** `ArchivePurgeMain` bounds a member's archive by deleting log behind the second-latest
+snapshot. That silently withdrew two promises: ADR-055 / FR-RXT10 (a past cut is re-created by
+replaying to its sequence), and every full-history replay (ENGINE-REVIEW F8; recon now refuses
+rather than mislead). An empty-disk member also cannot rejoin a purged cluster.
+
+**Decision.** A detached segment is uploaded write-once before it is unlinked, to
+`ARCHIVE_PURGE_OFFLOAD_URI`, under `member-<id>/`. The URI is `gs://bucket/prefix`, through the same
+GCS-over-S3/HMAC transport as `RiskExtractGcsSink`, with Content-MD5 and `If-None-Match: *`; or
+`file:///dir`. A failed upload deletes nothing, so the backpressure is the disk filling, never lost
+history (yaakov's offload decision, 2026-10-23). Purging without an offload requires the explicit
+`ARCHIVE_PURGE_DISCARD_HISTORY=true`. With neither set, the agent refuses to start
+(`PURGE_REFUSED`, exit 2).
+
+To bring history back: copy the objects into the member's `/data/archive`, then run
+`ArchivePurgeMain --attach <clusterDir> <aeronDir>`. That re-attaches them to the recordings, so a
+replay from 0, ClusterRecon's strict full-history replay, and an empty-disk join all work again.
+
+**Rejected:** "refuse to purge past the last EOD marker's snapshot". It keeps only the latest EOD
+re-creatable, and it holds a whole trading day of log on the member (~110 GB/h at 250K/s). The
+agent also has no way to learn the marker's log position without a new member surface.
+
+**Consequences.** Every member uploads its own copy of the same log, so storage is 3x; deduplicating
+needs cross-member delete coordination. The bucket wants a lifecycle rule. Not wired into any
+manifest yet, exactly as before: enabling the purge is a deployment decision, and now so is the
+offload target.
