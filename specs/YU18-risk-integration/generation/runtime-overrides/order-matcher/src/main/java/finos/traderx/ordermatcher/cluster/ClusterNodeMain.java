@@ -132,12 +132,14 @@ public final class ClusterNodeMain {
         System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
             + " portBase=" + portBase + " baseDir=" + baseDir);
 
-        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        // Agrona 2.x: the barrier's own shutdown hook blocks until close(), so SIGTERM never ended
+        // the JVM (it logged "ShutdownSignalBarrier hasn't terminated" until the pod's SIGKILL, and the
+        // archive and driver were never closed). Clean up on the main thread, then close the barrier.
+        try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier()) {
+            barrier.await();
             health.stop(0);
             CloseHelper.quietCloseAll(container, driver);
-        }));
-        barrier.await();
+        }
     }
 
     private static void awaitDns(final List<String> hostnames) throws InterruptedException {
