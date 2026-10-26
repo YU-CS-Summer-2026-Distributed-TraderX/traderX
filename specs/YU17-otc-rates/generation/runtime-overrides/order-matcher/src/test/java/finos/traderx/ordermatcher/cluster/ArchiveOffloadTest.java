@@ -58,6 +58,73 @@ class ArchiveOffloadTest {
         assertThrows(IllegalStateException.class, () -> o.put(seg), "different bytes under the same name never replace");
     }
 
+    private List<File> segments(final int n) throws Exception {
+        final List<File> files = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            final File f = tmp.resolve("7-" + (i << 20) + ".rec").toFile();
+            Files.write(f.toPath(), new byte[] {(byte) i});
+            files.add(f);
+        }
+        return files;
+    }
+
+    /** ADR-079 §3, parallel: uploads overlap (>= 2 in flight), and each file is unlinked after its own upload. */
+    @Test
+    void uploadsRunConcurrentlyAndEachSegmentIsDeletedAfterItsOwnUpload() throws Exception {
+        final List<File> files = segments(6);
+        final java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger maxInFlight = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.CountDownLatch two = new java.util.concurrent.CountDownLatch(2);
+        final java.util.Set<String> stored = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        final List<String> deletedWhileUnstored = java.util.Collections.synchronizedList(new ArrayList<>());
+        final ArchivePurgeMain.Offload slow = seg -> {
+            maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+            two.countDown();
+            two.await(10, java.util.concurrent.TimeUnit.SECONDS);   // only passes once a second upload is running too
+            stored.add(seg.getName());
+            inFlight.decrementAndGet();
+        };
+        final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            final int deleted = ArchivePurgeMain.offloadThenDelete(files, slow, pool, files.size(), line -> {
+                final String name = line.replaceAll(".*file=(\\S+).*", "$1");
+                if (line.startsWith("PURGE_DELETE") && !stored.contains(name)) deletedWhileUnstored.add(name);
+            });
+            assertEquals(6, deleted);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertTrue(maxInFlight.get() >= 2, "uploads overlapped: max in flight " + maxInFlight.get());
+        assertTrue(deletedWhileUnstored.isEmpty(), "a segment was unlinked before its upload returned: " + deletedWhileUnstored);
+        assertTrue(files.stream().noneMatch(File::exists));
+    }
+
+    /** A failure mid-batch: the segment before it is gone, it and EVERY later one stay, even ones whose upload succeeded. */
+    @Test
+    void aFailedUploadMidBatchLeavesThatSegmentAndAllLaterOnesOnDisk() throws Exception {
+        final List<File> files = segments(5);
+        final String bad = files.get(2).getName();
+        final java.util.Set<String> stored = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        final ArchivePurgeMain.Offload flaky = seg -> {
+            if (seg.getName().equals(bad)) throw new java.io.IOException("simulated 503");
+            stored.add(seg.getName());
+        };
+        final List<String> lines = new ArrayList<>();
+        final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        final int deleted;
+        try {
+            deleted = ArchivePurgeMain.offloadThenDelete(files, flaky, pool, files.size(), lines::add);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(2, deleted, String.join("\n", lines));
+        assertTrue(!files.get(0).exists() && !files.get(1).exists(), "the segments before the failure are deleted");
+        for (int i = 2; i < 5; i++) assertTrue(files.get(i).exists(), files.get(i).getName() + " must stay on disk");
+        assertTrue(stored.contains(files.get(3).getName()) && stored.contains(files.get(4).getName()),
+            "later uploads did succeed, and their files were still kept: no hole below a file the archive holds");
+        assertTrue(lines.stream().anyMatch(l -> l.startsWith("PURGE_OFFLOAD_FAILED file=" + bad)), String.join("\n", lines));
+    }
+
     @Test
     void offloadedHistoryRestoresAndAnEmptyDiskMemberRejoins() throws Exception {
         final File root = tmp.toFile();

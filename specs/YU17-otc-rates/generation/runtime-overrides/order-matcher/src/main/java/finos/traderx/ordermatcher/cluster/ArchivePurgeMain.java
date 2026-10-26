@@ -61,7 +61,9 @@ import java.util.regex.Pattern;
  * the agent refuses to start. To bring history back: copy the member's objects into its {@code /data/archive}
  * ({@code gcloud storage cp gs://.../member-<id>/* /data/archive/}) and run
  * {@code ArchivePurgeMain --attach /data/cluster /dev/shm/aeron-...}, which re-attaches them to the recordings so
- * replay from 0 works again. // ponytail: every member offloads its own copy of the same log (3x the bytes); one
+ * replay from 0 works again. Uploads run ARCHIVE_PURGE_UPLOAD_PARALLELISM (4) at a time: one 128 MiB segment took 12.3 s
+ * at 0.3 CPU on the hxb rig (~11 MB/s), under the ~12.5 MB/s a member writes at 100K orders/s (EOD-RISK.md); a poll
+ * takes that many detached files, and each is unlinked only after its own upload returns, in order (offloadThenDelete). // ponytail: every member offloads its own copy of the same log (3x the bytes); one
  * uploader needs cross-member delete coordination, worth it when the bucket bill is.
  */
 public final class ArchivePurgeMain implements AutoCloseable {
@@ -78,6 +80,8 @@ public final class ArchivePurgeMain implements AutoCloseable {
     private final long dataLimitBytes;
     private final int forcePct;
     private final Offload offload;                  // null = history explicitly discarded
+    private final int parallelism;                  // ARCHIVE_PURGE_UPLOAD_PARALLELISM: concurrent segment uploads
+    private final java.util.concurrent.ExecutorService uploads;
     private final Aeron aeron;
     private final AeronArchive archive;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(500)).build();
@@ -93,6 +97,12 @@ public final class ArchivePurgeMain implements AutoCloseable {
     public ArchivePurgeMain(final File clusterDir, final String aeronDir, final List<String> peerHealthUrls,
                           final long maxLag, final long dataLimitBytes, final int forcePct, final Offload offload) {
         this.offload = offload;
+        this.parallelism = Math.max(1, Integer.parseInt(env("ARCHIVE_PURGE_UPLOAD_PARALLELISM", "4")));
+        this.uploads = offload == null ? null : java.util.concurrent.Executors.newFixedThreadPool(parallelism, r -> {
+            final Thread t = new Thread(r, "archive-offload");
+            t.setDaemon(true);
+            return t;
+        });
         this.clusterDir = clusterDir;
         this.dataDir = clusterDir.getAbsoluteFile().getParentFile();
         this.archiveDir = new File(dataDir, "archive");                     // ClusterNodeConfig: baseDir/archive
@@ -186,27 +196,56 @@ public final class ArchivePurgeMain implements AutoCloseable {
             }
         }
         detached.sort((a, b) -> Long.compare(a[1], b[1]));
+        final List<File> files = new ArrayList<>();
+        // With an offload, the upload is the bottleneck, so a poll takes up to `parallelism` files at once.
+        for (int i = 0; i < detached.size() && i < (offload == null ? limit : Math.max(limit, parallelism)); i++) {
+            files.add(new File(archiveDir, detached.get(i)[0] + "-" + detached.get(i)[1] + ".rec"));
+        }
+        return offloadThenDelete(files, offload, uploads, detached.size(), ArchivePurgeMain::log);
+    }
+
+    /**
+     * Upload {@code files} (oldest first) concurrently on {@code pool}, then unlink them IN ORDER, each only after its own
+     * upload returned. The first failed upload deletes nothing more: that file and every later one stay on disk even if
+     * their uploads succeeded, so the archive never has a hole below a file it still holds (ADR-079 §3); the next poll
+     * retries oldest-first, and an already-stored object is accepted by the offload's write-once rule.
+     * {@code offload == null} (history explicitly discarded) just unlinks. Returns files deleted.
+     */
+    static int offloadThenDelete(final List<File> files, final Offload offload, final java.util.concurrent.ExecutorService pool,
+                                 final int backlog, final java.util.function.Consumer<String> log) {
+        final List<java.util.concurrent.Future<Long>> stored = new ArrayList<>();
+        if (offload != null) {
+            for (final File file : files) {
+                stored.add(pool.submit(() -> {
+                    final long u0 = System.nanoTime();
+                    offload.put(file);
+                    return (System.nanoTime() - u0) / 1000;
+                }));
+            }
+        }
         int n = 0;
-        for (final long[] f : detached) {
-            if (n >= limit) break;
-            final File file = new File(archiveDir, f[0] + "-" + f[1] + ".rec");
-            final long bytes = file.length();
+        for (int i = 0; i < files.size(); i++) {
+            final File file = files.get(i);
             long offloadUs = 0;
             if (offload != null) {
-                final long u0 = System.nanoTime();
                 try {
-                    offload.put(file);
-                } catch (final Exception e) {
-                    log("PURGE_OFFLOAD_FAILED file=" + file.getName() + " backlog=" + (detached.size() - n) + " " + e);
-                    break;   // delete nothing that is not safely stored; the next poll retries oldest-first
+                    offloadUs = stored.get(i).get();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (final java.util.concurrent.ExecutionException e) {
+                    log.accept("PURGE_OFFLOAD_FAILED file=" + file.getName() + " backlog=" + (backlog - n) + " " + e.getCause());
+                    for (int k = i + 1; k < stored.size(); k++) {
+                        try { stored.get(k).get(); } catch (final Exception ignore) { /* later files stay on disk regardless */ }
+                    }
+                    break;   // delete nothing that is not safely stored, and nothing after it
                 }
-                offloadUs = (System.nanoTime() - u0) / 1000;
             }
-            final long t0 = System.nanoTime();
+            final long bytes = file.length(), t0 = System.nanoTime();
             if (file.delete()) {
                 n++;
-                log("PURGE_DELETE file=" + file.getName() + " bytes=" + bytes + " us=" + (System.nanoTime() - t0) / 1000
-                    + (offload != null ? " offloadUs=" + offloadUs : " offload=none") + " backlog=" + (detached.size() - n));
+                log.accept("PURGE_DELETE file=" + file.getName() + " bytes=" + bytes + " us=" + (System.nanoTime() - t0) / 1000
+                    + (offload != null ? " offloadUs=" + offloadUs : " offload=none") + " backlog=" + (backlog - n));
             }
         }
         return n;
@@ -473,6 +512,7 @@ public final class ArchivePurgeMain implements AutoCloseable {
 
     @Override
     public void close() {
+        if (uploads != null) uploads.shutdownNow();
         archive.close();
         aeron.close();
     }
