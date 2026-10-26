@@ -124,3 +124,37 @@ A client without the secret is refused by a member that has one. Set the secret 
 clients in one rollout. The hxb harness has to supply it, or `ALLOW_DEV_SECRETS=true`. `sandbox.yaml`
 is outside the kustomization, and its gateway already lacks the S5 secrets.
 
+## 5. The extract no longer waits on the SQL projection (item 1)
+
+**Context.** The concern was that the EOD marks depend on the SQL read models that trade-processor
+feeds, measured at ~950 orders/s and lossy under lag (DOWNSTREAM.md, 2026-10-25). Traced:
+- **Positions:** the cut at N, from cluster state.
+- **Closes:** `eod_price_snapshot` is produced from trade-processor's price history, which is the
+  `pricing.*` market-data feed sampled at the session-close instant (YU06), not from the
+  trade/position projection. It is immutable once published.
+- **Fallback mark:** a security without a published close is marked at the cut's own last trade at N.
+- **The fixture's P&L columns:** cut × marks.
+
+The one link through the projection was the trigger. The job waited on `eod.pnl.done`, which
+position-service emits only after marking the SQL `positions` table. So a lagging projection delayed
+the extract, a dead one blocked it, and the SQL P&L could disagree with the fixture it preceded. The
+consumer (`eod-risk-bundles`) reads only the ready message's `uri` / `contractsUri` / `cutUri` and those
+three files, never the SQL P&L.
+
+**Decision: source the EOD path from the cluster.** The job triggers on `eod.prices.ready` (the
+closes are published and frozen), through a new durable `risk-extract-prices` created with
+`DeliverPolicy.New`. The YU15 durable filters the old subject and cannot be refiltered in place. A
+fresh durable would otherwise replay the stream's history and re-extract every past session. Marks,
+`markSource` values and the ready payload are unchanged.
+
+**Rejected:** gating on the projection's catch-up. The persisted completeness cursor
+(`projection_catchup_cursor.verified_through_seq`) is maintained only by RI06 auto-recovery, which is
+local-only by design ("GKE profiles never enable this"). The live feed counters
+(`/v2/projection-feed`) are per-process and reset on restart. A gate on either would be a proxy that
+can be wrong, protecting a number the risk engine does not read.
+
+**Consequences.** The SQL P&L (`eod_pnl`) is still produced, for the UI. It is still only as good as
+the projection, and it is no longer on the risk-engine path. Rollout: one `risk-extract` restart,
+with no engine or epoch change. The old durable `risk-extract` is orphaned and can be deleted.
+`RISK_EXTRACT_TRIGGER_SUBJECT` / `RISK_EXTRACT_DURABLE` restore the old trigger, but only under a new
+durable name, since `DeliverPolicy.New` cannot be applied to the existing one.

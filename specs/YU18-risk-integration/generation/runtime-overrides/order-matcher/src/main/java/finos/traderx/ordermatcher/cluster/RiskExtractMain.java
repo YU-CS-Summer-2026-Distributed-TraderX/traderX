@@ -34,9 +34,13 @@ import java.util.Map;
  *
  * <p>The whole job in order:
  * <ol>
- *   <li>wait on {@code eod.pnl.done} (JetStream durable) — not {@code eod.prices.ready}, because
- *       the later event is the one that guarantees both that closing prices are final and that our
- *       own P&amp;L already exists as the consumer's reconciliation target;</li>
+ *   <li>wait on {@code eod.prices.ready} (JetStream durable): the closes are published and frozen.
+ *       YU15 waited on the later {@code eod.pnl.done}, so the extract could not run before
+ *       position-service had marked the SQL {@code positions} read model — a projection measured at
+ *       ~950 orders/s that lost data under lag (DOWNSTREAM.md, 2026-10-25). Nothing the extract
+ *       emits comes from that model (ADR-079 §5): positions are the cut at N, marks are the frozen
+ *       closes or the cut's own last trade at N, and the fixture's P&amp;L columns are cut x marks.
+ *       Waiting on it only let a lagging or dead projection delay or block the extract;</li>
  *   <li>offer a sequenced risk-extract marker to the cluster and take its ack's sequence as N;</li>
  *   <li>receive the position cut the leader rendered at N;</li>
  *   <li>offer a second marker and require it landed at exactly N+1 — the consensus log is its own
@@ -118,11 +122,16 @@ public final class RiskExtractMain {
         final String cutSubject = env("RISK_EXTRACT_CUT_SUBJECT", "risk.extract.cut");
         final String readySubject = env("RISK_EXTRACT_READY_SUBJECT", "risk.extract.ready");
         final String stream = env("EOD_STREAM", "TRADERX_EOD");
-        final String pnlDone = env("EOD_PNL_DONE_SUBJECT", "eod.pnl.done");
-        final String durable = env("RISK_EXTRACT_DURABLE", "risk-extract");
-        // The other subject on the shared YU06 stream. We never consume it, but the stream must
-        // carry it or trade-processor's gate event has nowhere to land.
         final String pricesReady = env("EOD_PRICES_READY_SUBJECT", "eod.prices.ready");
+        // The other subject on the shared YU06 stream. We no longer consume it (ADR-079 §5), but the
+        // stream must carry it or position-service's eod.pnl.done has nowhere to land.
+        final String pnlDone = env("EOD_PNL_DONE_SUBJECT", "eod.pnl.done");
+        final String trigger = env("RISK_EXTRACT_TRIGGER_SUBJECT", pricesReady);
+        // A NEW durable name, because a durable's filter subject cannot change in place (the YU15
+        // "risk-extract" filters eod.pnl.done and is simply left behind). Created with
+        // DeliverPolicy.New: a fresh durable otherwise replays the stream's whole history, which on
+        // an existing rig would extract every past session again.
+        final String durable = env("RISK_EXTRACT_DURABLE", "risk-extract-prices");
 
         final String aeronDir = env("RISK_EXTRACT_AERON_DIR", "/dev/shm/aeron-risk-extract");
         final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
@@ -182,9 +191,12 @@ public final class RiskExtractMain {
                         return;
                     }
                     ensureStream(nats, stream, pricesReady, pnlDone);
-                    js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
-                        false, PushSubscribeOptions.builder().stream(stream).durable(durable).build());
-                    System.out.println("RISK-EXTRACT bound durable='" + durable + "' subject=" + pnlDone
+                    js.subscribe(trigger, dispatcher, msg -> onTrigger(nats, msg, cutSubject, readySubject),
+                        false, PushSubscribeOptions.builder().stream(stream).durable(durable)
+                            .configuration(io.nats.client.api.ConsumerConfiguration.builder()
+                                .deliverPolicy(io.nats.client.api.DeliverPolicy.New).build())
+                            .build());
+                    System.out.println("RISK-EXTRACT bound durable='" + durable + "' subject=" + trigger
                         + " after " + attempts + " retries" + (reconnect ? " (re-bind)" : ""));
                     return;
                 } catch (final Exception e) {
@@ -229,7 +241,7 @@ public final class RiskExtractMain {
         };
         bind.accept(false);
 
-        System.out.println("RISK-EXTRACT up: nats=" + natsUrl + " trigger=" + pnlDone
+        System.out.println("RISK-EXTRACT up: nats=" + natsUrl + " trigger=" + trigger
             + " durable=" + durable + " sink=" + env("RISK_EXTRACT_SINK_URI", "<unset>"));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -329,7 +341,7 @@ public final class RiskExtractMain {
      * addressed by {@code (sessionDate, version, sequence)} and written write-once, so a retry
      * either produces a new sequence or refuses to clobber — never a half-written fixture.
      */
-    private void onPnlDone(final Connection nats, final Message msg, final String cutSubject,
+    private void onTrigger(final Connection nats, final Message msg, final String cutSubject,
                            final String readySubject) {
         try {
             final JSONObject event = new JSONObject(new String(msg.getData(), StandardCharsets.UTF_8));

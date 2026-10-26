@@ -3,7 +3,9 @@
 #
 # Proves, in order:
 #   1. the trigger is real           — the whole YU06 chain runs (session close → published
-#                                      prices → P&L → eod.pnl.done); nothing is hand-seeded
+#                                      prices → eod.prices.ready, which the extract fires on since
+#                                      ADR-079 §5; P&L → eod.pnl.done runs beside it); nothing is
+#                                      hand-seeded
 #   2. the cut is a consistent cut   — every member logs the same RISK-EXTRACT-CUT sha256 for the
 #                                      same sequence N, so N names one portfolio, not three
 #   3. quiescence was verified       — the announcement's quiesceWitnessSequence == N + 1
@@ -117,7 +119,7 @@ fi
 echo "[ok] ${SESSION_DATE} v${PRICE_VERSION} PUBLISHED - ${CLOSE_INSTRUMENTS} instruments, ${CLOSE_FLAGGED} flagged,"
 echo "     including ${CLOSE_OPTIONS} option contracts (${CLOSE_OPTIONS_OK} quality OK)"
 
-step "2. the extract fires off the real eod.pnl.done"
+step "2. the extract fires off the real eod.prices.ready (and the P&L completes beside it)"
 for _ in $(seq 1 60); do
   AFTER="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
   [[ "${AFTER}" -gt "${BEFORE}" ]] && break
@@ -128,7 +130,12 @@ done
   ${K} logs "${POD}" --tail=30
   fail "no RISK-EXTRACT-READY after the EOD chain completed"
 }
-PNL="$(${K} logs deploy/position-service --tail=-1 | grep 'eod pnl marked' | tail -1)"
+# Since ADR-079 §5 the extract no longer waits for the P&L, so either may finish first: wait for both.
+for _ in $(seq 1 60); do
+  PNL="$(${K} logs deploy/position-service --tail=-1 | grep 'eod pnl marked' | tail -1)"
+  [[ -n "${PNL}" ]] && break
+  sleep 2
+done
 echo "[ok] position-service: ${PNL#*: }"
 [[ "${PNL}" == *"halted=0"* ]] || fail "an account was halted - an unpriced holding blocks its P&L"
 READY="$(${K} logs "${POD}" --tail=-1 | grep 'RISK-EXTRACT-READY' | tail -1 | sed 's/^RISK-EXTRACT-READY //')"
