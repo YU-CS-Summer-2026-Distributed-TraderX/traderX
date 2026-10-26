@@ -85,8 +85,11 @@ function checkPassword(user, password) {
 
 const sign = (v) => createHmac('sha256', SESSION_SECRET).update(v).digest('hex');
 
+// One token per LOGIN, not per user: a random session id rides in the signed body, so every
+// browser that signs in holds its own session even while they all share the one admin password.
+// The user is base64url'd because a desk workspace name may contain dots.
 function issueToken(user) {
-  const body = `${user}.${Date.now() + SESSION_TTL_MS}`;
+  const body = `${Buffer.from(user).toString('base64url')}.${randomBytes(9).toString('base64url')}.${Date.now() + SESSION_TTL_MS}`;
   return `${body}.${sign(body)}`;
 }
 
@@ -102,9 +105,9 @@ function readToken(req) {
   // Length-check first: timingSafeEqual THROWS on a length mismatch, and an exception here would be
   // a 500 on every request carrying a malformed cookie.
   if (mac.length !== expect.length || !timingSafeEqual(Buffer.from(mac), Buffer.from(expect))) return null;
-  const [user, exp] = body.split('.');
-  if (!Number(exp) || Number(exp) < Date.now()) return null;
-  return { user };
+  const [user, session, exp] = body.split('.');
+  if (!session || !Number(exp) || Number(exp) < Date.now()) return null;
+  return { user: Buffer.from(user, 'base64url').toString(), session };
 }
 
 // OVERRIDES, not changes. The first cut of this list gated everything the admin page could mutate,
@@ -1113,13 +1116,14 @@ const server = http.createServer(async (req, res) => {
     const origin=req.headers.origin;
     try{if(origin && new URL(origin).host!==req.headers.host)return json(res,403,{error:'Cross-origin request refused.'});}catch{return json(res,403,{error:'Invalid origin.'});}
     try {
-      const body=req.method==='POST'?JSON.parse(await readBody(req)):{};
+      // The Desk's Sign out POSTs no body; parsing '' threw, answered 400, and left both cookies set.
+      const body=req.method==='POST'?JSON.parse(await readBody(req)||'{}'):{};
       const r=await deskSessions.handle(req,p,body);
       if(r.cookie) {
         const secure=(req.headers['x-forwarded-proto']??'').split(',')[0].trim()==='https';
         const cookies=[r.cookie + (secure ? '; Secure' : '')];
         if(p==='/desk-api/login'||p==='/desk-api/logout')cookies.push(r.admin
-          ? `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`
+          ? `${COOKIE}=${encodeURIComponent(issueToken(r.body.name))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`
           : `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
         res.setHeader('Set-Cookie',cookies);
       }
@@ -1161,9 +1165,11 @@ const server = http.createServer(async (req, res) => {
   if (p === '/healthz') return json(res, 200, { ok: true, cliReads:cliReads.stats(), serviceAuth: internalToken.get() ? 'ready' : MASTER_SECRET ? 'recovering' : 'not-configured' });
 
   // ---- auth ----
+  // Per-cookie answers: no shared cache may hand one browser's identity to another.
+  if (p.startsWith('/auth/')) res.setHeader('Cache-Control', 'no-store');
   if (p === '/auth/me') {
     const s = readToken(req);
-    return s ? json(res, 200, { user: s.user }) : json(res, 401, { code: 'signed_out', error: 'not signed in' });
+    return s ? json(res, 200, { user: s.user, session: s.session }) : json(res, 401, { code: 'signed_out', error: 'not signed in' });
   }
   if (p === '/auth/logout') {
     res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
@@ -1181,9 +1187,10 @@ const server = http.createServer(async (req, res) => {
     // the load balancer, so hardcoding Secure would work on the rig and silently drop the cookie on
     // a local http:// run — and hardcoding it off would ship a cookie over plaintext on the rig.
     const secure = (req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
-    res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; `
+    const token = issueToken(ADMIN_USER);
+    res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; `
       + `SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`);
-    return json(res, 200, { user: ADMIN_USER });
+    return json(res, 200, { user: ADMIN_USER, session: token.split('.')[1] });
   }
   // The mint is not a route this console offers. It answered an unauthenticated POST with a signed
   // admin JWT for as long as this file forwarded the master secret, and a token, once issued, is

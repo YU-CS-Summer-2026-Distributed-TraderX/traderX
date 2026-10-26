@@ -288,6 +288,8 @@ export class Api {
    * It exists so an operator sees a sign-in prompt instead of a raw 401.
    */
   readonly authUser = signal<string | null>(null);
+  /** This browser's own login session id: every sign-in gets its own, even with one admin user. */
+  readonly authSession = signal<string | null>(null);
   /** Set when a change was refused for want of a sign-in, so one prompt can be shown centrally. */
   readonly authPrompt = signal(false);
 
@@ -313,6 +315,7 @@ export class Api {
       return;
     }
     this.authUser.set(null);
+    this.authSession.set(null);
     this.authPrompt.set(true);
   }
 
@@ -322,20 +325,23 @@ export class Api {
    * unauthenticated operator as signed in. Same fallthrough that made /mN and /grafana lie.
    */
   async checkAuth(): Promise<void> {
-    const r = await this.load<{ user?: string }>('/auth/me');
-    const user = r.status === 200 && r.body && typeof r.body === 'object' ? r.body.user : undefined;
+    const r = await this.load<{ user?: string; session?: string }>('/auth/me');
+    const me = r.status === 200 && r.body && typeof r.body === 'object' ? r.body : undefined;
+    const user = me?.user;
     this.authUser.set(user ?? null);
+    this.authSession.set(user ? me?.session ?? null : null);
     if (user) this.authPrompt.set(false);
   }
 
   /** Returns an error string, or null on success. The password is never stored or echoed. */
   async login(user: string, password: string): Promise<string | null> {
-    const r = await this.load<{ user?: string; error?: string }>('/auth/login', {
+    const r = await this.load<{ user?: string; session?: string; error?: string }>('/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user, password }),
     });
     if (r.status === 200 && r.body && typeof r.body === 'object' && r.body.user) {
       this.authUser.set(r.body.user);
+      this.authSession.set(r.body.session ?? null);
       this.authPrompt.set(false);
       return null;
     }
@@ -349,6 +355,7 @@ export class Api {
   async logout(): Promise<void> {
     await this.load('/auth/logout', { method: 'POST' });
     this.authUser.set(null);
+    this.authSession.set(null);
   }
 
   async load<T>(url: string, init?: RequestInit): Promise<{ status: number; body: T | null; headers?: Headers }> {

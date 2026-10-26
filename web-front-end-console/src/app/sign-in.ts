@@ -23,7 +23,7 @@ import { Api } from './api';
   imports: [FormsModule],
   template: `
     @if (api.authUser(); as who) {
-      <span class="pill good" title="changes are signed as {{ who }}">signed in · {{ who }}</span>
+      <span class="pill good" title="changes are signed as {{ who }}; session {{ api.authSession() }} is this browser's own">signed in · {{ who }}@if (api.authSession(); as sid) { · {{ sid.slice(0, 6) }} }</span>
       <button (click)="out()">Sign out</button>
     } @else {
       <button [class.btn-primary]="api.authPrompt()" (click)="open.set(!open())">Sign in</button>
