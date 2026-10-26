@@ -1,6 +1,12 @@
 {
-  "base_currency": "USD",
-  "compute_greeks": false,
+  "analytics": [
+    "npv"
+  ],
+  "config": {
+    "base_currency": "USD"
+  },
+  "idempotency_key": "current-golden",
+  "keep": true,
   "market": {
     "asof": "2026-01-15",
     "currencies": {
@@ -22,8 +28,7 @@
       }
     }
   },
-  "scenario_risk": false,
-  "trades": [
+  "portfolio": [
     {
       "accrual_day_count": "ACT/ACT (ICMA)",
       "coupon_rate": 0.0,

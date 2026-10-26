@@ -54,26 +54,23 @@ separate operations.
 
 ## API and job identity
 
-The current CPU integration uses the regular asynchronous API:
+The current CPU integration uses the engine's own run API (upstream `f9cc4c1`, unmodified):
 
 | Operation | Interface |
 | --- | --- |
-| Submit a portfolio | `POST /portfolio/price` → HTTP 202 with `job_id` |
-| Poll status and retrieve a result | `GET /jobs/{job_id}` |
-| Recover a submission by client identity | `GET /portfolio/submissions/{submission_id}` in the separate integration service profile |
+| Submit a portfolio | `POST /runs` with `idempotency_key` and `keep: true` → HTTP 202 with `run_id` |
+| Poll status and retrieve a result | `GET /runs/{run_id}` |
+| Recover a submission by client identity | Resend the same body: the key returns the original `run_id`, or 409 if it holds another body |
 
 The `/eod/price` adapter has a different input/output contract and is not used by
 this CPU loop.
 
-TraderX's client records a submission intent before sending the request. Recovery
-uses the persisted request identity and GET lookup rather than an automatic second
-POST after an uncertain response. Results are associated with the request digest,
-engine execution profile and job identity.
-
-The submission-recovery extension is present in integration service revision
-`270a907a313bc0184ddcc7cda2e50904d103fce3`; it is not part of the inspected engine
-main at `c3d7c6ae485213dbb24abd2724f9ae8cb85acbb8`. This is an interface difference
-between the tested integration and the engine repository.
+TraderX's client records a submission intent before sending the request and never
+resends automatically; an explicit recovery resends the same bytes. Results are
+associated with the request, its key and the run identity, and a run polled by ID is
+bound to the request by the configuration it echoes. The earlier owned
+submission-recovery service (`270a907a` on `c3d7c6a`) is retired; see
+[portfolio-current-cpu-v2](../../specs/YU18-risk-integration/contracts/portfolio-current-cpu-v2.md).
 
 For the full TraderX connection, the remaining mapping includes account scope,
 portfolio/export identity, valuation cut, instrument terms, quantity and sign
@@ -212,7 +209,7 @@ Standalone accelerator examples and service options are in the
 
 | Reference | Contents |
 | --- | --- |
-| [CPU request contract](../../specs/YU18-risk-integration/contracts/portfolio-current-cpu-v1.md) | Supported synthetic profile and request/result checks. |
+| [CPU request contract](../../specs/YU18-risk-integration/contracts/portfolio-current-cpu-v2.md) | Supported synthetic profile and request/result checks. |
 | [Portfolio CLI](../../scripts/risk-portfolio.py) | Portfolio generation, submission, polling, recovery and inspection. |
 | [Portfolio tools](../../specs/YU18-risk-integration/generation/runtime-overrides/risk-portfolio-tools/) | Client, request identity, intake, profiles, fixtures and reference calculations. |
 | [Local CPU loop](local-cpu-loop.md) | Reproduction commands and local acceptance scope. |

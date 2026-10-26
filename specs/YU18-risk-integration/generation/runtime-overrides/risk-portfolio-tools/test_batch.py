@@ -14,7 +14,7 @@ import batch_artifacts as a
 import batch_prepare as p
 from batch_cpu import run_local
 from corpus import digest, encoded
-from profiles import CURRENT_ENGINE, CONTRACT
+from profiles import CURRENT_ENGINE
 import test_current as current_tests
 current_result, FIXTURE = current_tests.current_result, current_tests.FIXTURE
 
@@ -63,8 +63,8 @@ class BatchPayloadTests(unittest.TestCase):
         self.assertEqual(state['outcome'], 'DONE')
         root = self.root / 'payload'
         with closing(sqlite3.connect(root / 'jobs.sqlite')) as con:
-            con.execute('CREATE TABLE jobs(id,kind,status,execution_contract,request,result)')
-            con.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?)', ('fixture-job', 'portfolio', 'done', CONTRACT,
+            con.execute('CREATE TABLE jobs(id,kind,status,idempotency_key,keep,request,result)')
+            con.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?)', ('fixture-job', 'run', 'done', 'current-golden', 1,
                         FIXTURE.read_bytes(), json.dumps(current_result())))
             con.commit()
         build = encoded({'engine_revision': 'engine', 'numerical_revision': CURRENT_ENGINE}) + b'\n'
@@ -101,7 +101,7 @@ class BatchPayloadTests(unittest.TestCase):
     def test_actual_queue_missing_or_extra_or_changed_work_is_refused(self):
         root, expected, receipt = self.payload()
         original = (root / 'jobs.sqlite').read_bytes()
-        for sql in ('DELETE FROM jobs', "UPDATE jobs SET status='pending'", "UPDATE jobs SET request='{}'",
+        for sql in ('DELETE FROM jobs', "UPDATE jobs SET status='pending'", "UPDATE jobs SET request='{}'", "UPDATE jobs SET keep=0",
                     "INSERT INTO jobs SELECT * FROM jobs"):
             with self.subTest(sql=sql):
                 with closing(sqlite3.connect(root / 'jobs.sqlite')) as con:

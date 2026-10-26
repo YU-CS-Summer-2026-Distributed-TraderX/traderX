@@ -1,12 +1,12 @@
 # Local synthetic USD Treasury tools
 
-Current local CPU profile (October 14): the CLI now generates `current-cpu-v1`
-for numerical engine `c3d7c6a` by default. Use `--profile legacy-2df78cb` to
+Current local CPU profile (October 25): the CLI now generates `current-cpu-v2`
+run requests for Alex's unmodified upstream `f9cc4c1` (`POST /runs`) by default. Use `--profile legacy-2df78cb` to
 reproduce the legacy delivery described below. The Python function keeps its
 legacy default for old callers. See the [current CPU guide](../../../../../docs/risk-integration/local-cpu-loop.md)
-and [current contract](../../../contracts/portfolio-current-cpu-v1.md) for actual
+and [current contract](../../../contracts/portfolio-current-cpu-v2.md) for actual
 installed service/worker execution, row-based results, offline `inspect`, and
-durable submission/GET recovery. Current per-position NPVs use a restricted
+idempotent resend recovery. Current per-position NPVs use a restricted
 independent flat-curve cashflow oracle; future exposure has no independent model
 oracle. Runtime evidence remains private and `financial_validation=false`.
 

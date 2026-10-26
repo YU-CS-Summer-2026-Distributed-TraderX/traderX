@@ -19,9 +19,6 @@ def verify(path=Path('/opt/pilot/build.json')):
     for name, expected in manifest['consumer_files'].items():
         if hashlib.sha256((path.parent / name).read_bytes()).hexdigest() != expected:
             raise ValueError('installed consumer identity mismatch: ' + name)
-    from engine.api.service_identity import NUMERICAL_ENGINE_REVISION
-    if NUMERICAL_ENGINE_REVISION != manifest['numerical_revision']:
-        raise ValueError('numerical revision mismatch')
     return manifest
 
 

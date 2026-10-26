@@ -4,11 +4,12 @@ import hashlib
 import json
 import math
 import random
+import re
 import shutil
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
-from profiles import CURRENT, LEGACY, PROFILES, request_profile
+from profiles import CURRENT, LEGACY, PROFILES, request_profile, trades as positions
 
 ENGINE = "2df78cb08f782010f61acffc07d78030580e7639"
 MAX_TRADES = 100_000
@@ -33,16 +34,25 @@ def add_months(d, months):
     return date(year, month + 1, min(d.day, calendar.monthrange(year, month + 1)[1]))
 
 
-def header(asof, rate, samples, seed, profile=LEGACY):
-    body = {"schema_version": "2", "market": {"asof": asof.isoformat(), "currencies": {
-        "USD": {"discount_curve": {"times": [0.0, 1.0, 5.0, 10.0], "rates": [rate] * 4}}}},
-        "base_currency": "USD", "scenario_risk": bool(samples), "compute_greeks": False}
-    if samples:
-        body["simulation"] = {"dates": [(asof + timedelta(days=n)).isoformat() for n in (30, 90, 180)],
-                              "base_currency": "USD", "samples": samples, "seed": seed,
-                              "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}}
+def header(asof, rate, samples, seed, profile=LEGACY, key=None):
+    market = {"asof": asof.isoformat(), "currencies": {
+        "USD": {"discount_curve": {"times": [0.0, 1.0, 5.0, 10.0], "rates": [rate] * 4}}}}
+    dates = [(asof + timedelta(days=n)).isoformat() for n in (30, 90, 180)]
     if profile == CURRENT:
-        del body["schema_version"]
+        # A run request (POST /runs): the key binds a retry to this body; keep exempts it from retention.
+        body = {"market": market, "analytics": ["npv"], "config": {"base_currency": "USD"},
+                "idempotency_key": key, "keep": True}
+        if samples:
+            body["analytics"].append("exposure")
+            body["config"].update(simulation={"dates": dates, "samples": samples, "seed": seed},
+                                  models={"ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}})
+            body["outputs"] = {"npv_cube": "inline"}
+        return body
+    body = {"schema_version": "2", "market": market, "base_currency": "USD",
+            "scenario_risk": bool(samples), "compute_greeks": False}
+    if samples:
+        body["simulation"] = {"dates": dates, "base_currency": "USD", "samples": samples, "seed": seed,
+                              "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}}
     return body
 
 
@@ -104,8 +114,8 @@ def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", ra
                 "financial_validation": False, "expected_refused": 0, "files": []}
     total = 0
     if profile == CURRENT:
-        manifest.update(version=2, engine_revision=PROFILES[profile], generator_version=2,
-                        request_schema="engine.api.requests.MarketPortfolioRequestSchema@c3d7c6a")
+        manifest.update(version=2, engine_revision=PROFILES[profile], generator_version=3,
+                        request_schema="engine.api.requests.RunRequestSchema@f9cc4c1")
     rng = random.Random(seed)
     try:
         for p in range(portfolios):
@@ -121,7 +131,8 @@ def generate(output, *, seed=42, trades=100, portfolios=1, asof="2026-10-07", ra
                     if total > max_bytes:
                         raise ValueError("corpus request bytes exceed limit")
                     f.write(data)
-                emit(encoded(header(asof, rate, samples, seed, profile))[:-1] + b',"trades":[')
+                emit(encoded(header(asof, rate, samples, seed, profile, pid))[:-1]
+                     + (b',"portfolio":[' if profile == CURRENT else b',"trades":['))
                 for i in range(trades):
                     t = trade(asof, rng, mode, f"{pid}-t{i:06d}", i)
                     stats["note" if t["coupon_schedule"] else "bill"] += 1
@@ -160,9 +171,27 @@ def load_request(path, limit=8 * 1024 * 1024):
 
 def validate(body):
     """The intentionally narrow generated profile, not a replacement for engine validation."""
-    allowed = {"schema_version", "market", "base_currency", "scenario_risk", "compute_greeks", "trades", "simulation"}
-    if set(body) - allowed or ("schema_version" in body and body["schema_version"] != "2") or body.get("base_currency") != "USD":
-        raise ValueError("unsupported request profile")
+    current = request_profile(body) == CURRENT
+    if current:
+        allowed = {"market", "portfolio", "analytics", "config", "outputs", "idempotency_key", "keep"}
+        exposure = body.get("analytics") == ["npv", "exposure"]
+        config = body.get("config")
+        if (set(body) - allowed or body.get("analytics") not in (["npv"], ["npv", "exposure"]) or body.get("keep") is not True
+                or not isinstance(config, dict) or config.get("base_currency") != "USD"
+                or set(config) != ({"base_currency", "simulation", "models"} if exposure else {"base_currency"})
+                or body.get("outputs") != ({"npv_cube": "inline"} if exposure else None)):
+            raise ValueError("unsupported request profile")
+        key = body.get("idempotency_key")
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", key):
+            raise ValueError("idempotency_key of 1..200 safe ASCII characters required")
+        simulation = config.get("simulation")
+    else:
+        allowed = {"schema_version", "market", "base_currency", "scenario_risk", "compute_greeks", "trades", "simulation"}
+        if set(body) - allowed or body.get("schema_version") != "2" or body.get("base_currency") != "USD":
+            raise ValueError("unsupported request profile")
+        if body.get("compute_greeks") is not False or type(body.get("scenario_risk")) is not bool:
+            raise ValueError("unsupported computation profile")
+        exposure, simulation = body["scenario_risk"], body.get("simulation")
     asof = date.fromisoformat(body["market"]["asof"])
     if set(body["market"]) != {"asof", "currencies"} or set(body["market"]["currencies"]) != {"USD"}:
         raise ValueError("USD-only synthetic market required")
@@ -171,9 +200,7 @@ def validate(body):
         raise ValueError("flat synthetic curve profile required")
     if not all(math.isfinite(r) and -0.05 <= r <= 0.20 for r in c["rates"]):
         raise ValueError("invalid curve rate")
-    if body.get("compute_greeks") is not False or type(body.get("scenario_risk")) is not bool:
-        raise ValueError("unsupported computation profile")
-    trades = body["trades"]
+    trades = positions(body)
     if not 1 <= len(trades) <= MAX_TRADES:
         raise ValueError("trade count outside bounds")
     ids = set()
@@ -207,20 +234,19 @@ def validate(body):
             prior = end
         if schedule and (prior != maturity or not date.fromisoformat(schedule[0]["start_date"]) <= asof < date.fromisoformat(schedule[0]["end_date"])):
             raise ValueError("schedule must cover valuation and end at maturity")
-    simulation = body.get("simulation")
-    if body["scenario_risk"]:
-        if not simulation or not 1 <= simulation["samples"] <= 128 or simulation["base_currency"] != "USD":
-            raise ValueError("bounded USD simulation required")
+    if exposure:
+        if not simulation or type(simulation.get("samples")) is not int or not 1 <= simulation["samples"] <= 128:
+            raise ValueError("bounded simulation required")
         dates = [date.fromisoformat(d) for d in simulation["dates"]]
         if len(dates) != 3 or dates != sorted(set(dates)) or dates[0] <= asof:
             raise ValueError("three increasing future scenario dates required")
         seed = simulation.get("seed")
-        if type(seed) is not int or not 0 <= seed <= 2**32 - 1 or type(simulation["samples"]) is not int:
+        if type(seed) is not int or not 0 <= seed <= 2**32 - 1:
             raise ValueError("invalid simulation seed/sample type")
-        expected = header(asof, c["rates"][0], simulation["samples"], seed)["simulation"]
-        if simulation != expected:
+        expected = header(asof, c["rates"][0], simulation["samples"], seed, request_profile(body))
+        if (body["config"] != expected["config"]) if current else (simulation != expected["simulation"]):
             raise ValueError("unsupported simulation profile")
-        if simulation["samples"] * (3 if request_profile(body) == CURRENT else 4) * len(trades) * 8 > MAX_CUBE:
+        if simulation["samples"] * (3 if current else 4) * len(trades) * 8 > MAX_CUBE:
             raise ValueError("cube lower bound exceeds budget")
     elif simulation is not None:
         raise ValueError("base-NPV profile has no simulation")
@@ -254,8 +280,11 @@ def verify_manifest(directory):
         p = directory / name
         if p.is_symlink() or p.stat().st_size != item["bytes"] or digest(p) != item["sha256"]:
             raise ValueError("request checksum/size mismatch")
-        if request_profile(load_request(p)) != profile:
+        body = load_request(p)
+        if request_profile(body) != profile:
             raise ValueError("request contradicts manifest engine profile")
+        if profile == CURRENT and body["idempotency_key"] != item["submission_id"]:
+            raise ValueError("request idempotency_key contradicts manifest submission identity")
         total += p.stat().st_size
     if total != m["request_bytes"] or total + len(data) > MAX_BYTES:
         raise ValueError("manifest total bytes mismatch/budget exceeded")
@@ -263,7 +292,7 @@ def verify_manifest(directory):
 
 
 def verify_entry(body, item):
-    ts = body["trades"]
+    ts = positions(body)
     if len(ts) != item["expected_supported"]:
         raise ValueError("manifest coverage mismatch")
     expected = {"bill": sum(not t["coupon_schedule"] for t in ts),

@@ -12,14 +12,13 @@ from pathlib import Path
 
 from batch_artifacts import require, safe_run, verify_local
 from corpus import digest, encoded
-from profiles import CURRENT_ENGINE
+from profiles import CURRENT_ENGINE, trades
 
 PROJECT = 'project-compsci-484414'
 ACCOUNT = 'aseif@mail.yu.edu'
 REGION = 'us-east1'
 BUCKET = PROJECT + '-risk-engine-pilot'
 IMAGE_ROOT = REGION + '-docker.pkg.dev/' + PROJECT + '/risk-engine/cpu'
-BASE_SERVICE = '270a907a313bc0184ddcc7cda2e50904d103fce3'
 ROOT = Path(__file__).resolve().parents[5]
 TOOLS = 'specs/YU18-risk-integration/generation/runtime-overrides/risk-portfolio-tools'
 
@@ -48,16 +47,14 @@ def prepare(engine, output, run, upstream, mapped=None):
     safe_run(run)
     require(upstream == CURRENT_ENGINE, 'Alex upstream changed; reconcile and rerun proofs first')
     revision, traderx = clean(engine), clean(ROOT)
-    require(revision == BASE_SERVICE, 'exact accepted owned service revision required')
-    allowed = {'engine/api/' + n for n in ('job_queue.py', 'routes.py', 'results.py', 'worker.py', 'service_identity.py')}
-    changed = set(git(engine, 'diff', '--name-only', CURRENT_ENGINE, revision, '--', 'engine').splitlines())
-    require(changed <= allowed, 'numerical source changed outside accepted API integration')
+    # Alex's upstream itself, with no owned service changes on top.
+    require(revision == CURRENT_ENGINE, 'exact upstream engine revision required')
     output = output.resolve()
     require(not any((p / '.git').exists() for p in (output, *output.parents)), 'package must be outside Git')
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     context = output / 'context'
     manifest = {'version': 1, 'numerical_revision': CURRENT_ENGINE, 'engine_revision': revision,
-                'service_base_revision': BASE_SERVICE, 'traderx_revision': traderx,
+                'traderx_revision': traderx,
                 'engine_files': {}, 'engine_source_files': {}, 'consumer_files': {}, 'dependencies': {}}
     paths = git(engine, 'ls-tree', '-r', '--name-only', revision, '--',
                 'engine', 'pyproject.toml', 'constraints.txt').splitlines()
@@ -77,7 +74,7 @@ def prepare(engine, output, run, upstream, mapped=None):
     require(all(constraints.get(k, v) == v for k, v in manifest['dependencies'].items()), 'dependency constraint drift')
     for path in git(ROOT, 'ls-tree', '-r', '--name-only', traderx, '--', TOOLS).splitlines():
         name = Path(path).relative_to(TOOLS).as_posix()
-        if name in {'client.py', 'corpus.py', 'intake.py', 'profiles.py', 'reference.py', 'request_identity.py',
+        if name in {'client.py', 'corpus.py', 'intake.py', 'profiles.py', 'reference.py',
                     'batch_cpu.py', 'batch_artifacts.py', 'export_mapping.py', 'fixtures/usd-treasury-current.json'}:
             data = git(ROOT, 'show', traderx + ':' + path, raw=True)
             write(context / 'consumer' / name, data)
@@ -103,8 +100,8 @@ def prepare(engine, output, run, upstream, mapped=None):
                 manifest['consumer_files'][name] = hashlib.sha256(data).hexdigest()
         request = (mapped / 'request.json').read_bytes()
     manifest['request_sha256'] = hashlib.sha256(request).hexdigest()
-    require(len(json.loads(request)['trades']) > 0, 'nonempty request required')
-    manifest['trade_count'] = len(json.loads(request)['trades'])
+    require(len(trades(json.loads(request))) > 0, 'nonempty request required')
+    manifest['trade_count'] = len(trades(json.loads(request)))
     manifest['platform_files'] = {p.name: digest(p) for p in (context / 'platform').iterdir()}
     write(output / 'request.json', request)
     write(context / 'build.json', encoded(manifest) + b'\n')

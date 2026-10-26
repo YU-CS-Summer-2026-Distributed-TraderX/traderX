@@ -43,7 +43,8 @@ class MappingTests(unittest.TestCase):
         for account, face in [('22214', 100000), ('42422', -100000)]:
             self.expected['account_id'] = account
             raw, receipt = m.mapping(self.source, self.market, self.expected)
-            self.assertEqual(json.loads(raw)['trades'][0]['face_amount'], face)
+            self.assertEqual(json.loads(raw)['portfolio'][0]['face_amount'], face)
+            self.assertEqual(json.loads(raw)['idempotency_key'], self.expected['run_id'])
             self.assertEqual(receipt['coverage'], {'selected': 1, 'mapped': 1,
                              'unselected_positions': 1, 'unselected_contracts': 0})
             self.assertEqual(receipt['cut']['consensusSequence'], '8')
