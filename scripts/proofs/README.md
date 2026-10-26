@@ -296,6 +296,13 @@ build, run red against `:yu17-markwait2` to bank its red half, and turned green 
 rows here. They predate this section and belong to other lanes' work; the gap is recorded rather
 than silently filled.
 
+### Risk integration (YU18)
+
+| Script | What it proves | CI counterpart |
+|---|---|---|
+| [`yu18-var-es-e2e.sh`](yu18-var-es-e2e.sh) | **Alex's request: VaR and ES end to end on each instrument.** Every instrument class TraderX books (listed equity over REST, listed option over FIX, Treasury bill over the binary fast path, OTC swaps over REST) through the real gateway into three real members; venue close; the sequenced EOD marker at N; the cut byte-identical on every member; the production exporters' write-once fixture; `eod-risk-bundles` packaging; one `POST /runs` (`npv` + `market_risk`) to Alex's upstream engine; VaR **and** ES finite and non-zero for the portfolio and attributed to every trade from the inline P&L with the engine's own rank rule. Negative controls: a counterparties table missing one account makes the extract refuse; a market missing a curve is refused by the engine (400), never priced to 0. Exit 0 only when **every** instrument is priced: today the equity, option and USD-SOFR (ACT/360) legs are refused by name, which is the finding. Local, no rig: in-process members, child-JVM gateway, the engine at `RISK_ENGINE_ORIGIN`. | `VarEsEndToEndTest`, `test_var_es_e2e.py` |
+| [`yu18-networkpolicy-enforced.sh`](yu18-networkpolicy-enforced.sh) | The members' NetworkPolicy (ADR-079 §4) is **enforced**, not merely applied: the checked-in proof client with an allowed label connects; the same image, secret and endpoints under an unlisted label is seen trying and never connects. GKE only (Dataplane V2 or `--enable-network-policy`); a cluster without enforcement fails the negative control, which is the right verdict. | none (cluster property) |
+
 ### Observability (OTEL-01)
 
 | Script | What it proves | CI counterpart |
