@@ -258,7 +258,10 @@ spec:
               # so the cluster came back leaderless and every gateway went NotReady.
               # It is a POISON PILL: the trigger is a committed log event, so a plain restart
               # re-OOMs on replay. The heap has to be raised BEFORE the members come back.
-              value: "-Xms1g -Xmx3g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              # 12g (EOD-RISK, 2026-10-26): every touched security allocates a 2^17-level LimitBook, ~5 MB
+              # on this G1 heap with compressed oops (~7 MB under ZGC). The hxb rig OOMed all three members
+              # at once at 1,000 symbols x 3 GB. 1,024 (MAX_SECURITIES) books ≈ 5-7 GB, plus base state.
+              value: "-Xms12g -Xmx12g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080
@@ -302,10 +305,12 @@ spec:
               # 148k/s soak: the orderRef index array OOM'd a 512m heap at ~33M cumulative
               # orders (engine bug, see implementation-status "sweep postmortem"), and a 201MB
               # replay publication could not fit in the 512Mi shm during the ensuing catch-up.
-              memory: 8Gi
+              # 16Gi = the 12g heap + metaspace/threads/direct buffers + the 1Gi Memory-medium /dev/shm, which
+              # is charged to this pod's cgroup.
+              memory: 16Gi
             limits:
               cpu: "3"
-              memory: 8Gi
+              memory: 16Gi
           volumeMounts:
             - name: data
               mountPath: /data

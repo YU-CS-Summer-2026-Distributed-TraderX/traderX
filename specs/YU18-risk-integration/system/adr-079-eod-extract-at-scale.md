@@ -158,3 +158,41 @@ the projection, and it is no longer on the risk-engine path. Rollout: one `risk-
 with no engine or epoch change. The old durable `risk-extract` is orphaned and can be deleted.
 `RISK_EXTRACT_TRIGGER_SUBJECT` / `RISK_EXTRACT_DURABLE` restore the old trigger, but only under a new
 durable name, since `DeliverPolicy.New` cannot be applied to the existing one.
+
+## 6. Sizing found by the cloud test (2026-10-26)
+
+**Member heap 12 GB.** Every touched security allocates a `LimitBook` of `DEFAULT_BOOK_LEVELS = 2^17`
+levels: four `RestingOrder[]`, two `long[]`, two `int[]` and the bit maps. That is ~5 MB per book on G1
+with compressed oops, and ~7 MB under ZGC. On the hxb rig (ZGC, 3 GB heap), 62 accounts × 1,000 symbols
+ran **all three members** out of memory on the apply thread within 27 s of the load starting. The
+election that followed came back with a dead service on every member. `MAX_SECURITIES = 1024` books need
+~5–7 GB, so the GKE members now run `-Xms12g -Xmx12g` (collector unchanged: G1) at 16Gi request = limit.
+The 1Gi memory-backed `/dev/shm` counts against the same cgroup.
+
+**Offload uploads run in parallel.** On the rig, one 128 MiB segment took 12.3 s at 0.3 CPU (~11 MB/s
+per member), under the ~12.5 MB/s a member writes at 100K orders/s. `ArchivePurgeMain` now uploads
+`ARCHIVE_PURGE_UPLOAD_PARALLELISM` (4) segments at a time. It still unlinks them in order, each only
+after its own upload returns. The first failure stops the batch: that segment and every later one stay
+on disk, even where a later upload succeeded, so the archive never has a hole below a segment it still
+holds. Size the purge sidecar at 2.5 CPU. Its pod then needs member CPU + 2.5, so **run members on
+c4d-standard-16 when the purge sidecar runs.** An SMT-off c4d-standard-8 shows only 4 cores.
+
+**The purge is still not wired into the GKE tier, deliberately.** That tier's members use `emptyDir`.
+Any pod replacement (rollout, node drain, eviction) starts on an empty disk, and once the log is purged
+it cannot rejoin until an operator restores the offloaded segments and runs `--attach` (ADR-079 §3;
+proven on the rig: 30 segments, 4 GB, back in under a minute per member). Enabling it is the
+deployment's decision. Its inputs would be an `archive-offload` Secret (URI + HMAC, never inline) and
+c4d-standard-16 members.
+
+**Proposed, not built (a deterministic-core change, so yaakov's call): refuse, don't OOM.** Book
+allocation is unbounded by memory, so the next overflow of this class kills every member at once. The
+proposal: a per-member `MAX_ACTIVE_BOOKS`, derived from heap ÷ book size and fixed in the run's
+configuration so all members agree. A NEW order on a security with no book yet is then **refused**
+with a deterministic reason (`BOOK_CAPACITY`) once that many books exist, exactly as `MAX_SECURITIES`
+and the F7 account-table overflow refuse. One order fails visibly instead of three JVMs dying.
+
+Constraints on the design:
+- The cap is part of replicated behaviour, so it changes the engine's state function. It needs a fresh
+  epoch (or a cap high enough that no existing log crosses it), and every member must run the same value.
+- The cap must count books allocated, including those restored from a snapshot, not securities
+  registered.

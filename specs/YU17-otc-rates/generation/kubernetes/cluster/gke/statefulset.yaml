@@ -141,7 +141,8 @@ spec:
                   name: auth-secrets
                   key: cluster-client-secret
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              # 12g, as statefulset-emptydir.yaml (EOD-RISK 2026-10-26: book grids for 1,024 securities).
+              value: "-Xms12g -Xmx12g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080
@@ -184,10 +185,10 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 768Mi
+              memory: 16Gi
             limits:
               cpu: "1"
-              memory: 1536Mi
+              memory: 16Gi
           volumeMounts:
             - name: data
               mountPath: /data

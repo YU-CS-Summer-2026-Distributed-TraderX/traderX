@@ -76,8 +76,9 @@ remain unchanged when the variable is unset.
 
 Existing `default-pool`: one `e2-standard-4` support node.
 User-created `engine-pool`: three `c4d-standard-8` nodes, one member per node,
-taint `traderx-engine=true:NoSchedule`. Each member requests three CPUs and 8 GiB,
-exactly as its inherited configuration. Gateway/console replicas are one for the
+taint `traderx-engine=true:NoSchedule`. Each member requests three CPUs and 16 GiB
+(12 GB heap, ADR-079 §6), exactly as its inherited configuration. With the archive purge
+sidecar (2.5 CPU, not wired by default; ADR-079 §6), run members on `c4d-standard-16`. Gateway/console replicas are one for the
 initial functional demo. Anti-affinity must keep members on separate hostnames.
 No autoscaling, spot nodes, performance tuning or full-HA gateway claim.
 

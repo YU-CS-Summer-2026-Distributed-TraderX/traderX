@@ -87,6 +87,10 @@ namespace: traderx
 # a missing allow surfaces as a marker ack timeout, not a connection error (T-LOB16). It is enforced
 # only on a Dataplane V2 / network-policy-enabled cluster; CLUSTER_CLIENT_SECRET is what closes the
 # ingress either way.
+# ARCHIVE PURGE is not wired here, deliberately (ADR-079 §6): these members are emptyDir, so a replaced pod
+# starts empty and cannot rejoin a purged cluster until its offloaded segments are restored and attached.
+# Enabling it means a 2.5-CPU ArchivePurgeMain sidecar per member (members on c4d-standard-16) and an
+# archive-offload Secret for the URI + HMAC, never inline.
 resources:
   - networkpolicy.yaml
   - statefulset-emptydir.yaml
