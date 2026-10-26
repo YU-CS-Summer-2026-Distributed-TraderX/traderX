@@ -11,7 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -32,6 +33,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * output-ring thread via a ConcurrentHashMap — lock-free, and the output-ring thread sits
  * outside the exact-zero allocation boundary, so the boxed key lookup is acceptable there
  * (NFR-FIX01).
+ *
+ * <p>Retention (ENGINE-REVIEW F11). The in-memory index holds the newest {@link #CAPACITY}
+ * correlations, the same bound as the cluster gateway's {@code FixGatewayAcceptor} ClOrdID map,
+ * and rehydration reads only that many records from the file's tail, so neither heap nor startup
+ * grows with the life of the file. Eviction costs the OrigClOrdID/status convenience for an order
+ * older than the newest 64Ki; OrderID (37) still resolves, and the engine's replicated
+ * clientOrderKey table stays the duplicate authority. ponytail: the file itself is still
+ * append-only (88 B per order); rotate it when disk, not heap, becomes the bound.
+ *
+ * <p>Ambiguous orders (FR-FIX12 outcome d) enter the ledger with {@link #ORDER_REF_UNKNOWN}:
+ * the ClOrdID was submitted but no sequenced response named its order. A same-ClOrdID retry is
+ * NOT a duplicate (it is the documented reconciliation path, and the engine answers it from the
+ * same key); the response to that retry resolves the entry. A cancel or status request against
+ * an unresolved entry is refused as "outcome unknown" rather than "unknown order".
  */
 public final class ClOrdIdLedger implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ClOrdIdLedger.class);
@@ -39,14 +54,26 @@ public final class ClOrdIdLedger implements AutoCloseable {
     static final int RECORD_SIZE = 88;
     static final int MAX_CLORDID_BYTES = 64;
     private static final int FORCE_EVERY = 64;
+    /** Newest correlations kept in memory: the cluster gateway's {@code CLORDID_MAP_CAPACITY}. */
+    static final int CAPACITY = 65_536;
+    /** The orderRef of an ambiguous submission: no sequenced response named an order. Real refs
+     *  are positive ({@code FixMessages.parseOrderRef} answers -1 for none). */
+    public static final int ORDER_REF_UNKNOWN = 0;
 
     public enum AppendResult { OK, DUPLICATE, UNAVAILABLE }
 
-    /** One correlated order. */
-    public record Entry(long sessionKey, String clOrdId, int orderRef) { }
+    /** One correlated order. {@link #resolved()} is false while the outcome is unknown. */
+    public record Entry(long sessionKey, String clOrdId, int orderRef) {
+        public boolean resolved() {
+            return orderRef > 0;
+        }
+    }
+
+    private record Key(long sessionKey, String clOrdId) { }
 
     private final Path file;
-    private final Map<Long, Map<String, Entry>> bySession = new HashMap<>();
+    /** Insertion-ordered so the eldest correlation is the one evicted; a resolution re-inserts. */
+    private final LinkedHashMap<Key, Entry> index = new LinkedHashMap<>(1024, 0.75f, false);
     private final ConcurrentHashMap<Integer, Entry> byOrderRef = new ConcurrentHashMap<>();
     private final ByteBuffer writeBuf = ByteBuffer.allocate(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
 
@@ -84,7 +111,8 @@ public final class ClOrdIdLedger implements AutoCloseable {
     }
 
     /** Record an admitted order. DUPLICATE means already correlated (do not re-admit);
-     *  UNAVAILABLE means fail closed — reject at the session level (FR-FIX10). */
+     *  UNAVAILABLE means fail closed — reject at the session level (FR-FIX10). A ClOrdID recorded
+     *  as ambiguous ({@link #appendAmbiguous}) is resolved, not duplicated, by a positive ref. */
     public synchronized AppendResult append(long sessionKey, String clOrdId, int orderRef) {
         if (!available) {
             return AppendResult.UNAVAILABLE;
@@ -93,8 +121,12 @@ public final class ClOrdIdLedger implements AutoCloseable {
         if (id.length == 0 || id.length > MAX_CLORDID_BYTES) {
             throw new IllegalArgumentException("ClOrdID must be 1.." + MAX_CLORDID_BYTES + " UTF-8 bytes");
         }
-        Map<String, Entry> session = bySession.computeIfAbsent(sessionKey, k -> new HashMap<>());
-        if (session.containsKey(clOrdId)) {
+        if (orderRef < 0) {
+            throw new IllegalArgumentException("orderRef must be positive, or ORDER_REF_UNKNOWN for an ambiguous order");
+        }
+        Key key = new Key(sessionKey, clOrdId);
+        Entry existing = index.get(key);
+        if (existing != null && (existing.resolved() || orderRef == ORDER_REF_UNKNOWN)) {
             return AppendResult.DUPLICATE;
         }
         writeBuf.clear();
@@ -117,16 +149,38 @@ public final class ClOrdIdLedger implements AutoCloseable {
             available = false;
             return AppendResult.UNAVAILABLE;
         }
-        Entry e = new Entry(sessionKey, clOrdId, orderRef);
-        session.put(clOrdId, e);
-        byOrderRef.put(orderRef, e);
+        remember(new Entry(sessionKey, clOrdId, orderRef));
         return AppendResult.OK;
+    }
+
+    /** Record a submission whose outcome is unknown (FR-FIX12 outcome d): no reject may be sent and
+     *  no ref is known, but the ClOrdID has been submitted. DUPLICATE if already recorded. */
+    public synchronized AppendResult appendAmbiguous(long sessionKey, String clOrdId) {
+        return append(sessionKey, clOrdId, ORDER_REF_UNKNOWN);
+    }
+
+    /** Index an entry as the newest, evicting the eldest past {@link #CAPACITY}. A resolution
+     *  replaces its ambiguous entry in place of age: it is re-inserted as newest. */
+    private void remember(Entry e) {
+        Key key = new Key(e.sessionKey(), e.clOrdId());
+        index.remove(key);
+        index.put(key, e);
+        if (e.resolved()) {
+            byOrderRef.put(e.orderRef(), e);
+        }
+        if (index.size() > CAPACITY) {
+            Iterator<Entry> eldest = index.values().iterator();
+            Entry evicted = eldest.next();
+            eldest.remove();
+            if (evicted.resolved()) {
+                byOrderRef.remove(evicted.orderRef(), evicted);
+            }
+        }
     }
 
     /** Session-thread lookup for cancels/status (OrigClOrdID resolution). */
     public synchronized Entry byClOrdId(long sessionKey, String clOrdId) {
-        Map<String, Entry> session = bySession.get(sessionKey);
-        return session == null ? null : session.get(clOrdId);
+        return index.get(new Key(sessionKey, clOrdId));
     }
 
     /** Output-ring-thread lookup joining OutputEvent.orderRef to the owning session. */
@@ -139,7 +193,7 @@ public final class ClOrdIdLedger implements AutoCloseable {
     }
 
     public synchronized int size() {
-        return byOrderRef.size();
+        return index.size();
     }
 
     /** Flush any unforced appends (shutdown hook / tests). */
@@ -152,8 +206,12 @@ public final class ClOrdIdLedger implements AutoCloseable {
 
     private long rehydrate() throws IOException {
         ByteBuffer buf = ByteBuffer.allocate(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
-        long offset = 0;
         long size = channel.size();
+        // Only the newest CAPACITY records can survive into the index, so start there: a record
+        // older than that would be evicted as soon as the tail replays over it. Records are fixed
+        // size and the file is append-only, so the offset lands on a record boundary; a torn tail
+        // still truncates at the last good record below.
+        long offset = Math.max(0L, (size / RECORD_SIZE - CAPACITY) * RECORD_SIZE);
         while (offset + RECORD_SIZE <= size) {
             buf.clear();
             int read = channel.read(buf, offset);
@@ -165,14 +223,16 @@ public final class ClOrdIdLedger implements AutoCloseable {
             buf.getLong();  // reserved slot
             int orderRef = buf.getInt();
             short len = buf.getShort();
-            if (len <= 0 || len > MAX_CLORDID_BYTES) {
+            if (len <= 0 || len > MAX_CLORDID_BYTES || orderRef < 0) {
                 break;  // torn/corrupt record: stop, caller truncates here
             }
             byte[] id = new byte[len];
             buf.get(id);
             Entry e = new Entry(sessionKey, new String(id, StandardCharsets.UTF_8), orderRef);
-            bySession.computeIfAbsent(sessionKey, k -> new HashMap<>()).put(e.clOrdId(), e);
-            byOrderRef.put(orderRef, e);
+            Entry existing = index.get(new Key(sessionKey, e.clOrdId()));
+            if (existing == null || (!existing.resolved() && e.resolved())) {
+                remember(e);   // an ambiguous record followed by its resolution replays to resolved
+            }
             offset += RECORD_SIZE;
         }
         return offset;

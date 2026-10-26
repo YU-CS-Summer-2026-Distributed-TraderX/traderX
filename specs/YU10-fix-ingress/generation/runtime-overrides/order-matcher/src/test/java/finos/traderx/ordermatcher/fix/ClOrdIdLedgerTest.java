@@ -96,6 +96,61 @@ class ClOrdIdLedgerTest {
         }
     }
 
+    /** ENGINE-REVIEW F11: an ambiguous submission (no sequenced response) enters the ledger with no
+     *  ref, survives a restart, is NOT a duplicate for the same-ClOrdID retry, and that retry's
+     *  response resolves it; only then is a further append a duplicate. */
+    @Test
+    void ambiguousOrderEntersTheLedgerAndIsResolvedByTheRetry(@TempDir Path dir) {
+        try (ClOrdIdLedger ledger = new ClOrdIdLedger(dir)) {
+            assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.appendAmbiguous(SESSION, "amb-1"));
+            ClOrdIdLedger.Entry entry = ledger.byClOrdId(SESSION, "amb-1");
+            assertFalse(entry.resolved(), "no ref is known yet");
+            assertEquals(ClOrdIdLedger.ORDER_REF_UNKNOWN, entry.orderRef());
+            assertNull(ledger.byOrderRef(ClOrdIdLedger.ORDER_REF_UNKNOWN), "an unknown ref is never indexed");
+            assertEquals(ClOrdIdLedger.AppendResult.DUPLICATE, ledger.appendAmbiguous(SESSION, "amb-1"),
+                "the ambiguity is recorded once");
+        }
+        try (ClOrdIdLedger reopened = new ClOrdIdLedger(dir)) {
+            assertFalse(reopened.byClOrdId(SESSION, "amb-1").resolved(), "the ambiguity survives a restart");
+            // the retry's sequenced response names the order: the entry resolves, it is not a duplicate
+            assertEquals(ClOrdIdLedger.AppendResult.OK, reopened.append(SESSION, "amb-1", 41));
+            assertTrue(reopened.byClOrdId(SESSION, "amb-1").resolved());
+            assertEquals("amb-1", reopened.byOrderRef(41).clOrdId());
+            assertEquals(ClOrdIdLedger.AppendResult.DUPLICATE, reopened.append(SESSION, "amb-1", 42),
+                "resolved once, duplicate thereafter");
+            assertEquals(1, reopened.size(), "one correlation, not two");
+        }
+        try (ClOrdIdLedger again = new ClOrdIdLedger(dir)) {
+            assertEquals(41, again.byClOrdId(SESSION, "amb-1").orderRef(), "the resolution replays over the ambiguity");
+            assertEquals(1, again.size());
+        }
+    }
+
+    /** ENGINE-REVIEW F11: the in-memory index is bounded at the cluster gateway's ClOrdID-map
+     *  capacity, in heap and across a restart; the eldest correlations are the ones that go. */
+    @Test
+    void retentionIsBoundedLikeTheGatewaysClOrdIdMap(@TempDir Path dir) {
+        final int extra = 100;
+        try (ClOrdIdLedger ledger = new ClOrdIdLedger(dir)) {
+            for (int i = 1; i <= ClOrdIdLedger.CAPACITY + extra; i++) {
+                assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.append(SESSION, "b-" + i, i));
+            }
+            assertEquals(ClOrdIdLedger.CAPACITY, ledger.size(), "never more than CAPACITY in memory");
+            assertNull(ledger.byClOrdId(SESSION, "b-1"), "the eldest correlation is evicted");
+            assertNull(ledger.byOrderRef(extra), "...from both indexes");
+            assertEquals(extra + 1, ledger.byClOrdId(SESSION, "b-" + (extra + 1)).orderRef(), "the newest CAPACITY stay");
+            assertEquals("b-" + (ClOrdIdLedger.CAPACITY + extra),
+                ledger.byOrderRef(ClOrdIdLedger.CAPACITY + extra).clOrdId());
+            assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.append(SESSION, "b-1", 7),
+                "an evicted ClOrdID is no longer a gateway duplicate; the engine's key table stays the authority");
+        }
+        try (ClOrdIdLedger reopened = new ClOrdIdLedger(dir)) {
+            assertEquals(ClOrdIdLedger.CAPACITY, reopened.size(), "rehydration is bounded too");
+            assertNull(reopened.byClOrdId(SESSION, "b-" + (extra + 1)), "the re-append pushed one more out");
+            assertEquals(7, reopened.byClOrdId(SESSION, "b-1").orderRef());
+        }
+    }
+
     @Test
     void sessionKeyIsStableAndDiscriminates() {
         assertEquals(ClOrdIdLedger.sessionKey("A", "B"), ClOrdIdLedger.sessionKey("A", "B"));

@@ -175,8 +175,11 @@ public final class FixOrderApplication implements Application {
         }
         // Duplicate pre-filter (fast path). The AUTHORITY is the engine's clientOrderKey
         // idempotency (FR-IMRG14): a crash-window retry that slips past this check maps back to
-        // the one original order inside the BLP — never a second execution.
-        if (ledger.byClOrdId(ctx.sessionKey, clOrdId) != null) {
+        // the one original order inside the BLP — never a second execution. A ClOrdID whose
+        // outcome is UNKNOWN (ambiguous batch, F11) is deliberately let through: the same-ClOrdID
+        // retry is the documented reconciliation (FR-FIX12 d), and its response resolves the entry.
+        ClOrdIdLedger.Entry known = ledger.byClOrdId(ctx.sessionKey, clOrdId);
+        if (known != null && known.resolved()) {
             FixMessages.sendBusinessReject(ctx.sessionId, "D", clOrdId, "duplicate ClOrdID");
             return;
         }
@@ -206,6 +209,11 @@ public final class FixOrderApplication implements Application {
             FixMessages.sendCancelReject(ctx.sessionId, clOrdId, origClOrdId, "unknown order");
             return;
         }
+        if (!entry.resolved()) {
+            FixMessages.sendCancelReject(ctx.sessionId, clOrdId, origClOrdId,
+                "order outcome unknown; retry the order with the same ClOrdID first");
+            return;
+        }
         try {
             OrderResponse response = orders.cancelOrder(FixMessages.publicOrderId(entry.orderRef()), ctx.bearer);
             FixMessages.sendReportFromResponse(ctx.sessionId, entry.clOrdId(), response, '4');
@@ -229,6 +237,11 @@ public final class FixOrderApplication implements Application {
             FixMessages.sendBusinessReject(ctx.sessionId, "H", clOrdId, "unknown order");
             return;
         }
+        if (!entry.resolved()) {
+            FixMessages.sendBusinessReject(ctx.sessionId, "H", clOrdId,
+                "order outcome unknown; retry the order with the same ClOrdID first");
+            return;
+        }
         try {
             OrderResponse response = orders.getOrder(FixMessages.publicOrderId(entry.orderRef()));
             FixMessages.sendReportFromResponse(ctx.sessionId, entry.clOrdId(), response, 'I');
@@ -238,6 +251,16 @@ public final class FixOrderApplication implements Application {
     }
 
     // ---- the submitter: one amortized sequenced batch per drain --------------------------------
+
+    /** F11: an ambiguous submission enters the ledger without a ref, so a restart still knows the
+     *  ClOrdID was sent, status/cancel answer "outcome unknown" rather than "unknown order", and
+     *  the retry's response resolves it. Unavailable ledger: nothing to record, admission is
+     *  already failing closed. */
+    private void recordAmbiguous(SessionCtx ctx, List<PendingOrder> drain) {
+        for (PendingOrder p : drain) {
+            ledger.appendAmbiguous(ctx.sessionKey, p.clOrdId());
+        }
+    }
 
     private void submitLoop(SessionCtx ctx) {
         List<PendingOrder> drain = new ArrayList<>(MAX_DRAIN);
@@ -263,6 +286,7 @@ public final class FixOrderApplication implements Application {
                     // the eventual ExecutionReport is the outcome; clients reconcile via H or a
                     // same-ClOrdID retry (engine idempotency answers it deterministically).
                     log.warn("FIX batch outcome ambiguous ({} orders): {}", drain.size(), ex.getReason());
+                    recordAmbiguous(ctx, drain);
                 } else {
                     // Pre-sequencing validation failure: provably nothing published.
                     for (PendingOrder p : drain) {
@@ -272,6 +296,7 @@ public final class FixOrderApplication implements Application {
                 continue;
             } catch (Exception ex) {
                 log.warn("FIX batch outcome ambiguous ({} orders): {}", drain.size(), ex.toString());
+                recordAmbiguous(ctx, drain);
                 continue;
             }
             for (int i = 0; i < responses.size(); i++) {
