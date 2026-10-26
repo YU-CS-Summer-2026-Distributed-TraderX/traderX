@@ -97,6 +97,34 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         return env == null || env.isEmpty() ? OUTPUT_RING_SIZE : Integer.parseInt(env);
     }
     static final int MAX_ACCOUNTS = 64;
+
+    /**
+     * ADR-079 §6: the most order books one member allocates. A book costs bookLevels x (4 refs + 24.25 bytes): ~5.3 MB
+     * with compressed oops (G1), ~7.4 MB without (ZGC). On the hxb rig, 1,000 of them ran three 3 GB members out of
+     * heap at once. Past the cap, a NEW on a security with no book is refused BOOK_CAPACITY, so one order fails, not
+     * every member. Replicated behaviour like {@link #MAX_SECURITIES}: every member must run the same value (same env,
+     * same heap flags), changed only by a fresh-epoch same-image roll. {@code MAX_ACTIVE_BOOKS=<n>} pins it; unset or
+     * {@code auto} gives half the max heap to books. Never above MAX_SECURITIES, never below 1.
+     */
+    static int maxActiveBooks(final String env, final long maxHeapBytes, final int bookLevels, final boolean compressedOops) {
+        if (env != null && !env.isEmpty() && !"auto".equalsIgnoreCase(env)) {
+            return Math.max(1, Math.min(MAX_SECURITIES, Integer.parseInt(env)));
+        }
+        final double bookBytes = bookLevels * ((compressedOops ? 4 : 8) * 4 + 24.25);
+        return (int) Math.max(1, Math.min(MAX_SECURITIES, (long) (maxHeapBytes / 2 / bookBytes)));
+    }
+
+    private static boolean compressedOops() {
+        try {
+            return Boolean.parseBoolean(java.lang.management.ManagementFactory
+                .getPlatformMXBean(com.sun.management.HotSpotDiagnosticMXBean.class).getVMOption("UseCompressedOops").getValue());
+        } catch (final RuntimeException e) {
+            return false;   // the bigger book: a lower cap, never a higher one
+        }
+    }
+
+    private static boolean bookCapacityLogged;
+
     /**
      * Duplicate-suppression window, GLOBAL across every session (FR-IMRG14).
      *
@@ -819,6 +847,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.outputs = new OutputPublisher(outputRing, this::drainOnBackpressure);
         this.engine = new MatchingEngine(outputs, new HotPathMetrics(),
             MAX_SECURITIES, 0, initialPoolSize, POOL_SIZE, terminalRetain, risk);
+        this.engine.maxActiveBooks(maxActiveBooks(System.getenv("MAX_ACTIVE_BOOKS"), Runtime.getRuntime().maxMemory(),
+            engine.bookLevels(), compressedOops()));
+        if (!bookCapacityLogged) {
+            bookCapacityLogged = true;
+            System.out.println("BOOK-CAPACITY maxActiveBooks=" + engine.maxActiveBooks() + " bookLevels=" + engine.bookLevels()
+                + " maxHeapBytes=" + Runtime.getRuntime().maxMemory() + " compressedOops=" + compressedOops());
+        }
         this.nextOrderRef = 1;
         this.externalOrderRefs = 0;
         this.highestIssuedRef = 0;

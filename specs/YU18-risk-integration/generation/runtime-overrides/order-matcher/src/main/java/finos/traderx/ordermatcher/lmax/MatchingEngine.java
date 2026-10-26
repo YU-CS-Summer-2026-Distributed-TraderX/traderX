@@ -95,6 +95,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // warmup (zero steady-state allocation, NGC-01).
     private final Int2ObjectHashMap<RestingOrder> ordersByRef;
     private final LimitBook[] booksBySecurity;   // per-security two-sided book (lazy, log-driven)
+    private int booksAllocated;   // ADR-079 §6: books in booksBySecurity, snapshot-restored ones included
+    private int maxActiveBooks;   // ADR-079 §6: consensus cap; maxSecurities unless the service sets one
     // YU16 (ADR-060): per-security book-grid override; 0 = the global grid. DERIVED from the
     // committed ticker at registration/restore (the ADR-052 pattern) and stored nowhere - the
     // snapshot format is untouched. Consulted only on the cold book-creation path.
@@ -266,6 +268,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // crossing book fills exactly what the opposite side offers — there is no
         // threshold-driven half-fill policy any more.
         this.booksBySecurity = new LimitBook[maxSecurities];
+        this.maxActiveBooks = maxSecurities;
         this.lastPxBySecurity = new long[maxSecurities];
         this.bookTickPxBySecurity = new long[maxSecurities];
         this.bookLevels = envInt("BOOK_LEVELS", DEFAULT_BOOK_LEVELS);
@@ -554,6 +557,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         if (book == null) {
             book = new LimitBook(bookLevels, tickPx);
             booksBySecurity[securityId] = book;
+            booksAllocated++;   // counted, never refused: the snapshot already holds it
         } else if (book.tickTicks() != tickPx) {
             book.retick(tickPx);   // throws if anything rests: restore order puts T_BOOK before T_ORDER
         }
@@ -862,6 +866,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // (on every member, and into every snapshot). Same reason the risk gate would have given.
         if (risk != null && !risk.securityKnown(e.securityId)) {
             reject(o, e, RiskReason.UNKNOWN_SECURITY);
+            return;
+        }
+        if (bookCapacityReached(e.securityId)) {
+            reject(o, e, RiskReason.BOOK_CAPACITY);
             return;
         }
         final LimitBook book = bookFor(e.securityId);
@@ -1618,6 +1626,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         if (risk != null && !risk.securityKnown(s)) {
             rejectTyped(o, e, RiskReason.UNKNOWN_SECURITY);   // F4: before bookFor allocates
+            return;
+        }
+        if (bookCapacityReached(s)) {
+            rejectTyped(o, e, RiskReason.BOOK_CAPACITY);   // ADR-079 §6
             return;
         }
         final LimitBook book = bookFor(s);
@@ -2912,8 +2924,31 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             // anchor, chosen from replicated state by bandSlot) is identical on every member and replay.
             book = new LimitBook(bookLevels, tickPxForBook(securityId));
             booksBySecurity[securityId] = book;
+            booksAllocated++;
         }
         return book;
+    }
+
+    /**
+     * ADR-079 §6: admitting this order would allocate a book past {@link #maxActiveBooks}. Checked at both
+     * admission paths before {@link #bookFor}, so an overflow refuses one order instead of running every member
+     * out of heap at once. Replicated state only (the count and the configured cap), so every member agrees.
+     */
+    private boolean bookCapacityReached(int securityId) {
+        return booksBySecurity[securityId] == null && booksAllocated >= maxActiveBooks;
+    }
+
+    /** ADR-079 §6: set by the service from MAX_ACTIVE_BOOKS. Configuration, like the book levels: never snapshotted. */
+    public void maxActiveBooks(int cap) {
+        this.maxActiveBooks = cap;
+    }
+
+    public int maxActiveBooks() {
+        return maxActiveBooks;
+    }
+
+    public int booksAllocated() {
+        return booksAllocated;
     }
 
     /**

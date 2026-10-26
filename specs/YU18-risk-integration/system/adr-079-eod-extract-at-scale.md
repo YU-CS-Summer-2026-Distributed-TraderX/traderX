@@ -184,15 +184,27 @@ proven on the rig: 30 segments, 4 GB, back in under a minute per member). Enabli
 deployment's decision. Its inputs would be an `archive-offload` Secret (URI + HMAC, never inline) and
 c4d-standard-16 members.
 
-**Proposed, not built (a deterministic-core change, so yaakov's call): refuse, don't OOM.** Book
-allocation is unbounded by memory, so the next overflow of this class kills every member at once. The
-proposal: a per-member `MAX_ACTIVE_BOOKS`, derived from heap ÷ book size and fixed in the run's
-configuration so all members agree. A NEW order on a security with no book yet is then **refused**
-with a deterministic reason (`BOOK_CAPACITY`) once that many books exist, exactly as `MAX_SECURITIES`
-and the F7 account-table overflow refuse. One order fails visibly instead of three JVMs dying.
+**Refuse, don't OOM: `MAX_ACTIVE_BOOKS` (built 2026-10-26, yaakov's decision).** Book allocation was
+unbounded by memory, so an overflow of this class killed every member at once. Now a NEW order on a
+security with no book yet is **refused** with `BOOK_CAPACITY` (appended to `RiskReason`) once the member
+holds `MAX_ACTIVE_BOOKS` books, exactly as `MAX_SECURITIES` and the F7 account-table overflow refuse. One
+order fails visibly instead of three JVMs dying. Both admission paths (untyped and typed) check it after
+the unknown-security check and before `bookFor` allocates. A security that already has a book keeps
+trading at the cap.
 
-Constraints on the design:
-- The cap is part of replicated behaviour, so it changes the engine's state function. It needs a fresh
-  epoch (or a cap high enough that no existing log crosses it), and every member must run the same value.
-- The cap must count books allocated, including those restored from a snapshot, not securities
-  registered.
+- **The cap.** `MAX_ACTIVE_BOOKS=<n>` pins it. Unset or `auto` derives it from the heap: half the max
+  heap ÷ book size, where a book is `BOOK_LEVELS × (4 refs + 24.25 B)` (refs 4 B with compressed oops,
+  8 B without). It is clamped to `[1, MAX_SECURITIES]`. Examples: 12 GB G1 → 1,024 (all of them);
+  12 GB ZGC → 873; 3 GB ZGC (the attempt that ran out of memory at 1,000 symbols) → 218. Each member
+  logs `BOOK-CAPACITY maxActiveBooks=… bookLevels=… maxHeapBytes=… compressedOops=…` at start, so a
+  mismatch is visible.
+- **Replicated behaviour.** The cap changes the engine's state function. Every member must run the same
+  value (same env and heap flags), and it changes only by a fresh-epoch, same-image roll. It is
+  configuration, not state: it is never snapshotted, and the snapshot format is unchanged.
+- **Restore counts.** Books are counted where they are allocated, `bootstrapBook` included, so a
+  restored member holds the same count as the member that wrote the snapshot and gives the same
+  decision. Restore itself never refuses: the snapshot already holds those books.
+- **Tests (`BookCapacityTest`):** no refusal below the cap; `BOOK_CAPACITY` at cap + 1 on both paths with
+  no book allocated; an existing book still trades at the cap; the same refusal and acceptance on the
+  original and on a member restored from its snapshot; the heap derivation. Negative control: with the
+  check disabled, the cap + 1 assertion fails.

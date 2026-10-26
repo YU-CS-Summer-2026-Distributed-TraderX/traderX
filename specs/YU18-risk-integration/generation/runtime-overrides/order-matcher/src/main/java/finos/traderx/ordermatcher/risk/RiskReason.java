@@ -77,5 +77,7 @@ public enum RiskReason {
     /** FR-OT08: a DAY order submitted while no trading day is open. */
     NO_TRADING_DAY,
     /** FR-OT40: cancelled by the cascade exhaustion path; rides a CANCELED order. */
-    CASCADE_LIMIT
+    CASCADE_LIMIT,
+    /** ADR-079 §6: a NEW on a security with no book while the member already holds MAX_ACTIVE_BOOKS books. */
+    BOOK_CAPACITY
 }
