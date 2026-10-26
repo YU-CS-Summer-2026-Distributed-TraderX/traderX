@@ -1,0 +1,33 @@
+# Dedicated archive volume for the cluster members (STALLS.md, 2026-10-25, hxb lanes A/B).
+#
+# WHY A SEPARATE DISK. At 400K orders/s every between-snapshot member spike (22-27 ms) was the
+# leader's Aeron archive write() blocked in the ext4 journal of the NODE BOOT DISK
+# (start_this_handle / do_get_write_access), which the archive shared with kubelet, container
+# logs and image layers. Aeron bounds commit by the leader's recorded position, so the whole
+# cluster waited on it. With member /data on its own Hyperdisk Balanced ext4 volume the probe
+# counted 0 journal waits in all four dedicated-volume arms, against 5-6 per 3 minutes on the
+# boot disk. lazytime made no further difference, so it is not set here.
+#
+# THIS IS THE RIG'S VOLUME: hyperdisk-balanced, ext4, 32Gi, one per member, generic ephemeral
+# (created with the pod, deleted with it), exactly `hxb-arch-hd` in
+# independent-baseline/stall-probe/storageclasses.yaml. The one deliberate difference is
+# volumeBindingMode: the rig's pods were nodeName-bound with no scheduler, so it bound
+# Immediate inside allowedTopologies; these members are scheduled (nodeSelector + anti-affinity),
+# so the claim waits for the pod and lands in the pod's zone. Binding mode changes where the
+# disk is created, not how it performs, so no separate cloud proof is queued for it.
+#
+# MACHINE-TYPE TRAP. Hyperdisk is attachable to C4D/C4/C3/N4-class machines, NOT to N2. The pool
+# behind `blp-c4d-tuned-pool` has been recreated as n2-standard-8 before (see statefulset
+# comments); on an N2 pool the claim stays Pending ("not supported for this machine type") and
+# the member never starts. On such a pool switch `type` to pd-balanced: still a dedicated disk,
+# still off the boot-disk journal, just a slower one.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: order-matcher-archive
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: hyperdisk-balanced
+  csi.storage.k8s.io/fstype: ext4
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

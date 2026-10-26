@@ -77,7 +77,9 @@ namespace: traderx
 # `gcloud container node-pools create --system-config-from-file` when creating blp-c4d-tuned-pool,
 # not a Kubernetes object. Listing it here fails the whole build with "missing Resource metadata".
 #
-# statefulset.yaml (PVC variant) is kept for reference only; the emptyDir variant is what runs.
+# statefulset.yaml (PVC variant) is kept for reference only; the ephemeral-volume variant
+# (statefulset-emptydir.yaml, historically a boot-disk emptyDir, since 2026-10-26 a dedicated
+# Hyperdisk with the same pod lifecycle) is what runs.
 #
 # Applied separately by the deploy, NOT part of this kustomization (kustomize cannot reference a
 # file outside its root; referencing it in place keeps exactly one copy of the schema):
@@ -93,6 +95,10 @@ namespace: traderx
 # archive-offload Secret for the URI + HMAC, never inline.
 resources:
   - networkpolicy.yaml
+  # The members' archive volume (STALLS.md): a dedicated Hyperdisk per member, generic ephemeral
+  # so the emptyDir lifecycle above still holds. Cluster-scoped, so it survives a namespace delete;
+  # on an N2 pool read the machine-type trap in the file before applying.
+  - storageclass.yaml
   - statefulset-emptydir.yaml
   - gateway.yaml
   - backup-cronjob.yaml

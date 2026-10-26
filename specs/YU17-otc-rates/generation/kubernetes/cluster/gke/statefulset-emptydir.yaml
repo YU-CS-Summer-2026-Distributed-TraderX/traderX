@@ -113,8 +113,8 @@ spec:
           env:
             # LEADER-SIDE KDB TAP. Off by default on this tier, and that is exactly why the
             # console's Kdb page reads empty on GKE while working on kind — nothing is broken, the
-            # producer was never switched on. /data here is the node-disk emptyDir (95G, 83G free),
-            # NOT the memory-backed `shm` volume, so captures cost disk rather than the members'
+            # producer was never switched on. /data here is the member's dedicated 32Gi archive
+            # volume, NOT the memory-backed `shm` volume, so captures cost disk rather than the members'
             # 4Gi. The tap caps itself at KDB_TAP_MAX_MB rather than competing with the consensus
             # journal that shares the volume.
             #
@@ -322,12 +322,22 @@ spec:
             medium: Memory
             sizeLimit: 1Gi
         - name: data
-          emptyDir:
-            # The Aeron consensus log + archive live here. Under high-throughput bench load the
-            # archive grows fast (~10-20 MB/s at ~100k orders/s); a 2Gi cap fills in minutes and
-            # k8s EVICTS the pod (cascading eviction → lost leader → throughput collapse). The
-            # node's local NVMe backs this (95G, ~44GiB allocatable ephemeral) and there is one
-            # member per node, so give it generous headroom. ponytail: 20Gi buys ~15-30 min of
-            # sustained flood; the real bound is archive segment purge-after-snapshot if runs go
-            # longer than that.
-            sizeLimit: 20Gi
+          # The Aeron consensus log + archive live here, on a DEDICATED disk (storageclass.yaml):
+          # the boot-disk emptyDir this used to be shared the node's ext4 journal with kubelet,
+          # container logs and image layers, and at 400K/s every between-snapshot spike was the
+          # leader's archive write() waiting in that journal (STALLS.md). A generic ephemeral
+          # volume keeps the emptyDir LIFECYCLE the tier relies on - created with the pod, deleted
+          # with it, so a replaced member starts empty and rejoins by catch-up, and the purge
+          # sidecar stays unwired for the same reason (kustomization.yaml) - while the bytes
+          # land on their own volume. Under bench load the archive grows ~10-20 MB/s at ~100k
+          # orders/s (~33 MB/s at 300K); a full volume is ENOSPC on the recorder, not an
+          # eviction. ponytail: 32Gi (the rig's size) buys ~15-30 min of sustained flood; the
+          # real bound is archive segment purge-after-snapshot if runs go longer than that.
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: order-matcher-archive
+                resources:
+                  requests:
+                    storage: 32Gi

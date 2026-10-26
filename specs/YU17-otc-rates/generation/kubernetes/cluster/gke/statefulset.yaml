@@ -204,7 +204,10 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: standard-rwo
+        # Same dedicated Hyperdisk class as the emptyDir variant (storageclass.yaml): the archive
+        # must never share the boot disk's ext4 journal (STALLS.md). This variant's claim OUTLIVES
+        # the pod, which is the one thing that distinguishes it from the running variant.
+        storageClassName: order-matcher-archive
         resources:
           requests:
-            storage: 1Gi
+            storage: 32Gi

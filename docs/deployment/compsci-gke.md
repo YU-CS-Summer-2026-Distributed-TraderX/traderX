@@ -34,9 +34,17 @@ the separately authorized HTTPS resources below add the hosted frontend. The bas
 pack has no automatic seed job or automatic EOD cut.
 Use local port forwarding for the first proof. Source buckets stay intact.
 
-The engine retains the inherited `emptyDir` demo storage. Pod/node loss can destroy
-engine state. Do not resize to zero after meaningful trading and treat subsequent
-boots as restoration. The database PVC alone does not make this a durable profile.
+The engine keeps the inherited pod-lifetime storage, but since 2026-10-26 each member's
+`/data` (Aeron log + archive) is a dedicated 32 GiB Hyperdisk Balanced ext4 volume
+(`storageclass.yaml` `order-matcher-archive`, a generic ephemeral volume in
+`statefulset-emptydir.yaml`), not the node boot disk. The stall hunt on the hxb rig
+(STALLS.md, 2026-10-25) traced every between-snapshot member spike at 400K orders/s to the
+leader's archive write waiting in the boot disk's shared ext4 journal: 5-6 waits per 3 minutes
+on the boot disk, 0 on a dedicated volume. The volume is created with the pod and deleted with
+it, so recovery semantics are unchanged: pod/node loss still destroys that member's state and
+it rejoins by catch-up. Hyperdisk attaches to C4D/C4/C3/N4 machines only; on an N2 pool set
+the class's `type` to `pd-balanced`. Do not resize to zero after meaningful trading and treat
+subsequent boots as restoration. The database PVC alone does not make this a durable profile.
 
 ## Build and render
 
