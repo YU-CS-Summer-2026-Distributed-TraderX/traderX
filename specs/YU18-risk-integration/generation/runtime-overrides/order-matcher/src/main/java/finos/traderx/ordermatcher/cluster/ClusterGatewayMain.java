@@ -2773,7 +2773,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                             event.accountId = body.path("accountId").asInt();
                             event.securityId = 0;
                         } else {
-                            final int id = resolveSecurityId(instrument);
+                            // register on action=security: this route is the operator's (S2: risk-control
+                            // token or admin JWT), the same trust as /seed, and the GKE profile seeds its
+                            // catalog through it (there is no control-feed adapter there). S4 made it a
+                            // lookup, so on a fresh epoch every instrument came back 422 "unknown instrument"
+                            // (traderx-tip, 2026-10-26). Restrictions stay lookup-only.
+                            final int id = resolveSecurityId(instrument, "security".equals(action));
                             if (id < 0) {
                                 return false;
                             }

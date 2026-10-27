@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -12,7 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = 'project-compsci-484414'
 REGISTRY = f'us-east1-docker.pkg.dev/{PROJECT}/traderx-demo/'
-NAMESPACE = 'traderx'
+NAMESPACE = os.environ.get('TRADERX_NAMESPACE') or 'traderx'  # ponytail: a side namespace for a proof next to the live demo
 CUSTOM_WORKLOADS = {'order-matcher-cluster','cluster-gateway','risk-extract',
                     'people-service','account-service','trade-service','trade-processor',
                     'position-service','price-publisher','reference-data','execution-algo-engine',
@@ -235,6 +236,11 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
                         entry['valueFrom']['secretKeyRef'].pop('optional', None)
             if doc['metadata']['name'] == 'risk-extract':
                 env.append({'name':'RISK_EXTRACT_READY_DIRECTORY','value':'/data/risk-extracts/ready'})
+                if NAMESPACE != 'traderx':
+                    # A side namespace never writes the demo's write-once extract bucket.
+                    env[:] = [e for e in env if not e['name'].startswith('RISK_EXTRACT_GCS_HMAC')
+                              and e['name'] != 'RISK_EXTRACT_SINK_URI']
+                    env.append({'name':'RISK_EXTRACT_SINK_URI','value':'file:///data/risk-extracts'})
         if doc['metadata']['name'] == 'web-front-end-console':
             pod['serviceAccountName'] = 'web-front-end-console'
     # Structured objects first, exact bucket substitutions second. No substring
@@ -242,6 +248,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
     raw = yaml.safe_dump_all(docs, sort_keys=False)
     for old,new in BUCKETS.items(): raw = raw.replace(old,new)
     raw = re.sub(r'resolver [0-9.]+ ', f'resolver {dns} ', raw)
+    raw = raw.replace('.traderx.svc.', f'.{NAMESPACE}.svc.')  # member/ingress FQDNs follow the namespace
     docs = list(yaml.safe_load_all(raw))
     configure_private_runtime(docs)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'

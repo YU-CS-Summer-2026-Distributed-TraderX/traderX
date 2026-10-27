@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit CompSci cold-demo initialization; default is read-only verification."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 
@@ -9,7 +10,7 @@ p.add_argument('--apply', action='store_true', help='Admit absent directory acco
 a = p.parse_args()
 cmd = ['kubectl', '--kubeconfig=' + str(Path.home()/'.kube/traderx-compsci'),
        '--context=gke_project-compsci-484414_us-east1-b_traderx-demo', '--request-timeout=30s',
-       '-n', 'traderx', 'exec', '-i', 'deployment/web-front-end-console', '--',
+       '-n', os.environ.get('TRADERX_NAMESPACE') or 'traderx', 'exec', '-i', 'deployment/web-front-end-console', '--',
        'node', '--input-type=module', '-']
 if a.apply:
     cmd.append('--apply')
