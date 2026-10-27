@@ -222,3 +222,25 @@ Images proven in `traderx-tip` (`tip-8ea15b88`, linux/amd64, pinned by these dig
 | web-front-end-angular | `sha256:ca5a9438185c03eaa39a907e16fb7c1f8ec2223e777fca2920bd2db60c8e535f` |
 | api-explorer | `sha256:9c045168704e2426073a643a6d88e74371a4ce5b25fc2bbc09fad7ab0100c9e9` |
 | web-front-end-console | `sha256:b705c6ff9e9749067212a6b422ae2126929fa8d1313764bcabe6bb3d9d25cb54` |
+
+## 8. Live verification of the fixes in `traderx-tip2` (2026-10-27, 12:58–1:50 am ET)
+
+Commit `951ed3c9` (the six 2026-10-26 findings) was built amd64 on a throwaway VM, pushed as `tip-951ed3c9`
+and run in a fresh namespace with NO hand-applied StorageClass (the earlier one was deleted first; the
+render's own class bound all three member volumes). Rebuilt images, pinned by digest; the other nine stay
+at the `tip-8ea15b88` digests above:
+
+| Image | Digest |
+|---|---|
+| trade-service | `sha256:ae8ce6dadfb996289d7dbbf678b295c50c32b843edf3d6c6f0da54b773de822b` |
+| price-publisher | `sha256:6992127af590ef10bdabf1559338463357f57fa13fe3cdb4f4fcfe6cac03b22e` |
+| web-front-end-angular | `sha256:47ff15fec32f8c119882deb99d3110821f45b93b3d53be2ef33428603f33e75c` — build it from `web-front-end/angular/Dockerfile` (node), not `Dockerfile.compose` (nginx): `prepare.py` runs the container with `npm run start` |
+
+Results: legacy ticket `POST trade-service /trade/` booked (members 0 → 1 trades, applied 1292 on all
+three) while a bare gateway `/trades` is 401; a qty-0 ticket is `422 {"detail":"Order matcher refused the
+trade: INVALID"}`; `yu16-treasury-pricing` PASS (13-week bill 16 days out at 0.99816 / 4.28%);
+`yu17-retick-determinism`, `yu17-halt-survives-failover` and `yu17-closed-survives-restart` PASS with
+`DESTRUCTIVE=1 EXPECT=after`. Two proof fixes fell out: the destructive proofs' snapshot barrier now follows
+`CLUSTER_SNAPSHOT_INTERVAL_MS` (300 s here, 60 s on kind), and the retick proof stages the scale-drift
+re-derivation (ENGINE-REVIEW F4 closed "create-before-tick" by construction). TAQ replay proofs skipped:
+TAQ path retired (yaakov 2026-10-27). Teardown: namespace deleted, pools 0/1, VM deleted.

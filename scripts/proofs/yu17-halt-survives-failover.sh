@@ -30,6 +30,12 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+# SNAPSHOT BARRIER BUDGET follows the rig, not a literal. The members' periodic trigger is
+# CLUSTER_SNAPSHOT_INTERVAL_MS: 60 s on kind, 300 s on the GKE tier -- where a fixed 150 s wait failed
+# yu17-halt-survives-failover on traderx-tip2 (2026-10-27) against a perfectly healthy cluster. Read it
+# off the StatefulSet (interval + 60 s of slack); SNAPSHOT_BARRIER_S overrides; 150 if unreadable.
+_ival="$("${K[@]}" get statefulset order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CLUSTER_SNAPSHOT_INTERVAL_MS")].value}' 2>/dev/null || true)"
+BARRIER_S="${SNAPSHOT_BARRIER_S:-$([[ "${_ival}" =~ ^[0-9]+$ ]] && echo $(( _ival / 1000 + 60 )) || echo 150)}"
 source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
@@ -84,12 +90,12 @@ snapshot_barrier() {
   b0="$(snap_count 0)"; b1="$(snap_count 1)"; b2="$(snap_count 2)"
   [[ -n "${b0}" && -n "${b1}" && -n "${b2}" ]] || fail "cannot read snapshot counters ([${b0}] [${b1}] [${b2}])"
   echo "    waiting for a snapshot barrier (from [${b0} ${b1} ${b2}])"
-  for i in $(seq 1 150); do
+  for i in $(seq 1 "${BARRIER_S}"); do
     [[ "$(snap_count 0)" -gt "${b0}" && "$(snap_count 1)" -gt "${b1}" && "$(snap_count 2)" -gt "${b2}" ]] \
       && { ok "snapshot barrier taken — the halt and its queue are now IN a snapshot, not only in the log"; return 0; }
     sleep 1
   done
-  fail "no snapshot barrier within 150s"; }
+  fail "no snapshot barrier within ${BARRIER_S}s (CLUSTER_SNAPSHOT_INTERVAL_MS=${_ival:-unreadable})"; }
 
 CLEANUP_REFS=(); PHASE_TOUCHED=0
 cleanup() { local r

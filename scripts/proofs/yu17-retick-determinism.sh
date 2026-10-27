@@ -22,10 +22,17 @@
 # read as the full claim (the exit code is the verdict). Standing scope-§5 discipline: do not run
 # the destructive tail against a shared epoch another lane is measuring.
 #
-# Step 1's refusal is itself a recorded fixture of the §1.1 window: a ticker REGISTERED but NOT
-# ENABLED, so the order creates-and-anchors a book and is then refused UNKNOWN_SECURITY (engine ack
-# byte 22; BlpRiskState reads a disabled security as unknown) — the exact population the provisional
-# grid exists for.
+# Step 1's refusal is a recorded fixture of the §1.1 window: a ticker REGISTERED but NOT ENABLED, so
+# the order is refused UNKNOWN_SECURITY (engine ack byte 22; BlpRiskState reads a disabled security as
+# unknown). WHAT THE REFUSAL DOES NOW: nothing else. ENGINE-REVIEW F4 refuses an unknown security
+# BEFORE bookFor allocates, so "create-before-tick" can no longer leave a frozen provisional book
+# behind — that job of the re-derivation rule (format-8 §2.3 job 1) is closed by construction, and
+# step 3 of this proof used to count it (measured 2026-10-27 on traderx-tip2: deltas [0] [0] [0]).
+# The rule's REACHABLE job is §2.3 job 2, scale drift: a book created under one price decade
+# re-derives its grid at its next EMPTY admission after the reference moves decades — identically on
+# every member (job 3). So steps 2-3 stage exactly that: create the book at ${STAGE_PX} (tick regime A),
+# empty it, move the reference to ${SEED_PX} (regime B), and the first admission must count ONE
+# re-derivation on every member; a further admission in the same regime must count none.
 #
 # HOW THE WINDOW IS STAGED, since ENGINE-REVIEW S4 (5ca69f3f). /resolve used to register on first
 # ask; S4 made it a lookup, so the old step 1 ("/resolve registers; the order is refused") could no
@@ -47,6 +54,12 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+# SNAPSHOT BARRIER BUDGET follows the rig, not a literal. The members' periodic trigger is
+# CLUSTER_SNAPSHOT_INTERVAL_MS: 60 s on kind, 300 s on the GKE tier -- where a fixed 150 s wait failed
+# yu17-halt-survives-failover on traderx-tip2 (2026-10-27) against a perfectly healthy cluster. Read it
+# off the StatefulSet (interval + 60 s of slack); SNAPSHOT_BARRIER_S overrides; 150 if unreadable.
+_ival="$("${K[@]}" get statefulset order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CLUSTER_SNAPSHOT_INTERVAL_MS")].value}' 2>/dev/null || true)"
+BARRIER_S="${SNAPSHOT_BARRIER_S:-$([[ "${_ival}" =~ ^[0-9]+$ ]] && echo $(( _ival / 1000 + 60 )) || echo 150)}"
 source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
@@ -57,6 +70,8 @@ OPERATOR=(-H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN}" -H "X-Risk-Operator: 
 TICKER="${TICKER:-RTD$(date +%H%M%S)}"
 SEED_PX="${SEED_PX:-1.15}"
 IN_PX="${IN_PX:-1.10}"
+STAGE_PX="${STAGE_PX:-150}"      # regime A: the book is CREATED on this decade's grid, then emptied
+STAGE_IN="${STAGE_IN:-149}"
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }
 field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''))" <<<"$1"; }
@@ -106,19 +121,19 @@ agree() { # agree <label>
 }
 leader() { for m in 0 1 2; do [[ "$(metric "${m}" traderx_cluster_role 2>/dev/null)" == "1" ]] && { echo "${m}"; return 0; }; done; return 1; }
 snap_count() { metric "$1" traderx_cluster_snapshots; }
-# The members' own periodic trigger (60 s) — nothing to race (see yu13-stp-and-replace.sh).
+# The members' own periodic trigger (CLUSTER_SNAPSHOT_INTERVAL_MS; BARRIER_S above) — nothing to race (see yu13-stp-and-replace.sh).
 snapshot_barrier() {
   local b0 b1 b2 i
   b0="$(snap_count 0)"; b1="$(snap_count 1)"; b2="$(snap_count 2)"
   [[ -n "${b0}" && -n "${b1}" && -n "${b2}" ]] || fail "cannot read snapshot counters ([${b0}] [${b1}] [${b2}])"
   echo "    waiting for a snapshot barrier (from [${b0} ${b1} ${b2}])"
-  for i in $(seq 1 150); do
+  for i in $(seq 1 "${BARRIER_S}"); do
     if [[ "$(snap_count 0)" -gt "${b0}" && "$(snap_count 1)" -gt "${b1}" && "$(snap_count 2)" -gt "${b2}" ]]; then
       ok "snapshot barrier taken"; return 0
     fi
     sleep 1
   done
-  fail "no snapshot barrier within 150s"
+  fail "no snapshot barrier within ${BARRIER_S}s (CLUSTER_SNAPSHOT_INTERVAL_MS=${_ival:-unreadable})"
 }
 
 echo "=== yu17-retick-determinism, EXPECT=${EXPECT}, DESTRUCTIVE=${DESTRUCTIVE}, ticker ${TICKER} ==="
@@ -148,19 +163,40 @@ ok "${TICKER} registered as securityId ${SEC_ID}, not enabled"
 O1="$(order "${ACCT}" Buy 50.00)"
 [[ "$(field "${O1}" kind)" == "2" && "$(field "${O1}" reason)" == "UNKNOWN_SECURITY" ]] \
   || fail "registered-but-unenabled order should be refused kind 2 UNKNOWN_SECURITY (the §1.1 window, book created then risk refused); got ${O1}"
-ok "the §1.1 window, recorded: book created-and-anchored, order refused UNKNOWN_SECURITY (ack byte 22)"
+ok "the §1.1 window, recorded: order refused UNKNOWN_SECURITY (ack byte 22); F4 allocates no book for it"
 agree "the rejected create"
 
-echo "--- 2. tick: /seed ${TICKER} @${SEED_PX} (enable + reference)"
-SEEDED="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")"
-[[ "${SEEDED}" == *'"seeded":true'* ]] || fail "seed did not take: ${SEEDED}"
+seed() { # price -- enable + reference tick through the operator route
+  local r; r="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":$1}")"
+  [[ "${r}" == *'"seeded":true'* ]] || fail "seed @$1 did not take: ${r}"; }
+cancel_ref() { local c; c="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}")"
+  [[ "$(field "${c}" canceled)" == "True" || "$(field "${c}" canceled)" == "true" ]] || fail "cancel of ${1} did not take: ${c}"; }
+
+echo "--- 2. regime A: /seed ${TICKER} @${STAGE_PX}; BUY @${STAGE_IN} creates the book on that grid; cancel empties it"
+seed "${STAGE_PX}"
+RA_0="$(metric 0 traderx_book_reticks || true)"; RA_1="$(metric 1 traderx_book_reticks || true)"; RA_2="$(metric 2 traderx_book_reticks || true)"
+OA="$(order "${ACCT}" Buy "${STAGE_IN}")"
+[[ "$(field "${OA}" kind)" == "1" ]] || fail "BUY @${STAGE_IN} (regime A, the book's creation) did not rest: ${OA}"
+cancel_ref "$(field "${OA}" orderRef)"
+if [[ "${EXPECT}" == "after" ]]; then
+  sleep 2
+  for _m in 0 1 2; do _b="RA_${_m}"; _a="$(metric "${_m}" traderx_book_reticks || true)"
+    [[ "${!_b}" =~ ^[0-9]+$ && "${_a}" =~ ^[0-9]+$ ]] || fail "member-${_m} reticks unreadable at creation (${!_b:-<none>} -> ${_a:-<none>})"
+    (( _a - ${!_b} == 0 )) || fail "member-${_m} counted $(( _a - ${!_b} )) re-derivation(s) while the book was CREATED and emptied in one regime; creation is not a retick, so this counter is not counting what it claims"
+  done
+  ok "book created at ${STAGE_PX} and emptied: 0 re-derivations on all three (creation is not a retick)"
+fi
+agree "the regime-A occupancy"
+
+echo "--- 2b. regime B: /seed ${TICKER} @${SEED_PX} (the reference moves decades; the book is empty)"
+seed "${SEED_PX}"
 
 # PER-MEMBER BASELINES, because the assertion below is a DELTA. See the block at step 3.
 T0_0="$(metric 0 traderx_book_reticks || true)"
 T0_1="$(metric 1 traderx_book_reticks || true)"
 T0_2="$(metric 2 traderx_book_reticks || true)"
-echo "--- 3. first admission after the tick: BUY @${IN_PX} rests (format 8: this is the retick)"
+echo "--- 3. first EMPTY admission after the move: BUY @${IN_PX} rests (format 8 §2.3 job 2: this is the retick)"
 O2="$(order "${ACCT}" Buy "${IN_PX}")"
 [[ "$(field "${O2}" kind)" == "1" ]] || fail "BUY @${IN_PX} did not rest: ${O2}"
 CLEANUP_REFS+=("$(field "${O2}" orderRef)")
@@ -191,8 +227,18 @@ if [[ "${EXPECT}" == "after" ]]; then
       || fail "member-${_m} counted $(( ${!_a} - ${!_b} )) re-derivation(s) across the first post-tick admission, not exactly 1 (${!_b} -> ${!_a}). Deltas on all three: [$((RT0-T0_0))] [$((RT1-T0_1))] [$((RT2-T0_2))]. A member that re-derives a different number of times than its peers holds a member-local grid — the §2.3.3 divergence."
   done
   ok "all three members counted exactly one re-derivation (deltas [$((RT0-T0_0))] [$((RT1-T0_1))] [$((RT2-T0_2))]; absolutes [${RT0}] [${RT1}] [${RT2}] differ legitimately by restart history)"
+  # THE NEGATIVE CONTROL: a second admission in the SAME regime, on the now-occupied book, must not
+  # re-derive. A counter that moved here would be counting admissions, not grid changes.
+  OC="$(order "${ACCT}" Buy "${IN_PX}" samegrid)"
+  [[ "$(field "${OC}" kind)" == "1" ]] || fail "control BUY @${IN_PX} (same regime) did not rest: ${OC}"
+  cancel_ref "$(field "${OC}" orderRef)"
+  sleep 2
+  for _m in 0 1 2; do _a="$(metric "${_m}" traderx_book_reticks || true)"; _r="RT${_m}"
+    (( _a - ${!_r} == 0 )) || fail "member-${_m} counted $(( _a - ${!_r} )) re-derivation(s) on an admission in the SAME regime (${!_r} -> ${_a}); the counter is counting admissions, not grid changes"
+  done
+  ok "control: a same-regime admission counted 0 re-derivations on all three"
 fi
-agree "the post-tick admission"
+agree "the post-move admission"
 
 if [[ "${DESTRUCTIVE}" != "1" ]]; then
   # Cancel the resting order so the prefix leaves nothing, then refuse to claim the full sequence.
