@@ -10,7 +10,7 @@ import { QResult, runQ } from './qeval';
 //   txorder: seq,epoch,ref,account,sym,side,qty,remaining,limitPx,status,lastExecPx,lastFillQty,
 //            createdMs,updatedMs
 interface CapTrade { seq: number; epoch: number; tradeSeq: number; account: number; sym: string; side: string; qty: number; px: number; tsMs: number; }
-interface CapOrder {
+export interface CapOrder {
   seq: number; epoch: number; ref: number; account: number; sym: string; side: string;
   qty: number; remaining: number; limitPx: number; status: string; updatedMs: number;
 }
@@ -23,6 +23,22 @@ interface OrderState {
 }
 
 interface Gap { from: number; to: number; missing: number; }
+
+export function mergeOrders(members: { orders: CapOrder[] }[]): CapOrder[] {
+  const seen = new Set<string>();
+  const out: CapOrder[] = [];
+  for (const m of members) {
+    for (const o of m.orders) {
+      // seq is the consensus position of the INPUT, not of the event: an aggressor that fills on
+      // arrival emits NEW and FILLED at one seq, so status and remaining belong in the key or the
+      // fill is dropped as a duplicate of the NEW and the order reads as resting forever.
+      const k = `${o.epoch}-${o.seq}-${o.ref}-${o.status}-${o.remaining}`;
+      if (!seen.has(k)) { seen.add(k); out.push(o); }
+    }
+  }
+  // Within one input an order's remaining only falls, so it orders that input's events.
+  return out.sort((a, b) => a.seq - b.seq || b.remaining - a.remaining);
+}
 
 @Component({
   selector: 'kdb-panel',
@@ -367,19 +383,7 @@ export class KdbPanel implements OnInit, OnDestroy {
     return out.sort((a, b) => a.seq - b.seq);
   });
 
-  readonly allOrders = computed(() => {
-    const seen = new Set<string>();
-    const out: CapOrder[] = [];
-    for (const m of this.members()) {
-      for (const o of m.orders) {
-        // seq is the consensus position of the input that produced the row, so it is unique per
-        // event within an epoch — the right dedup key across members that both led at some point.
-        const k = `${o.epoch}-${o.seq}-${o.ref}`;
-        if (!seen.has(k)) { seen.add(k); out.push(o); }
-      }
-    }
-    return out.sort((a, b) => a.seq - b.seq);
-  });
+  readonly allOrders = computed(() => mergeOrders(this.members()));
 
   readonly epochs = computed(() =>
     [...new Set([...this.allTrades().map(t => t.epoch), ...this.allOrders().map(o => o.epoch)])].sort());

@@ -8,6 +8,9 @@ data:
     server {
         listen 8080;
         server_name localhost;
+        # Relative Location headers: behind the TLS load balancer an absolute one names
+        # http://<host>:8080, so /grafana -> /grafana/ would leave HTTPS for a dead port.
+        absolute_redirect off;
     
         location = /health {
             add_header Content-Type text/plain;

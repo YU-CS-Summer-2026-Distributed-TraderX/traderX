@@ -9,7 +9,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -17,17 +22,29 @@ import org.springframework.stereotype.Component;
  * research.md Decision 2: submits a child order through order-matcher's existing {@code POST
  * /orders} — the same endpoint and {@code OrderCreateRequest} shape the web front end's order
  * ticket already uses. No new field, no bypass.
+ *
+ * <p>ENGINE-REVIEW S1 put a bearer JWT, bound to the account, on the cluster gateway's order routes.
+ * With {@code AUTH_JWT_SECRET} set, each child carries the same HS256 shape trade-service mints
+ * ({@code sub}, {@code accounts}, {@code admin}, {@code exp}): ONE account, never admin, sixty
+ * seconds. Without the secret it posts bare, as before S1. Missing it on the cluster tier made every
+ * child a 401, and the scheduler retried that bucket every tick forever.
  */
 @Component
 public class OrderMatcherClient {
   private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
+  private static final String BEARER_SUBJECT = "execution-algo-engine";
+  private static final long BEARER_TTL_SECONDS = 60;
+
   private final String orderMatcherUrl;
+  private final String authJwtSecret;
   private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(TIMEOUT).build();
   private final ObjectMapper mapper = new ObjectMapper();
 
-  public OrderMatcherClient(@Value("${order.matcher.url}") String orderMatcherUrl) {
+  public OrderMatcherClient(@Value("${order.matcher.url}") String orderMatcherUrl,
+      @Value("${auth.jwt.secret:}") String authJwtSecret) {
     this.orderMatcherUrl = orderMatcherUrl;
+    this.authJwtSecret = authJwtSecret;
   }
 
   /** Returns order-matcher's assigned {@code orderId} for the accepted child order. Throws if the
@@ -43,9 +60,13 @@ public class OrderMatcherClient {
     body.put("quantity", quantity);
     body.put("limitPrice", limitPrice);
 
-    HttpRequest request = HttpRequest.newBuilder(URI.create(orderMatcherUrl + "/orders"))
+    HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(orderMatcherUrl + "/orders"))
         .timeout(TIMEOUT)
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if (authJwtSecret != null && !authJwtSecret.isBlank()) {
+      builder.header("Authorization", "Bearer " + bearer(accountId));
+    }
+    HttpRequest request = builder
         .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
         .build();
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -71,5 +92,22 @@ public class OrderMatcherClient {
           + response.body());
     }
     return id.asText();
+  }
+
+  private String bearer(int accountId) throws Exception {
+    ObjectNode header = mapper.createObjectNode().put("alg", "HS256").put("typ", "JWT");
+    ObjectNode payload = mapper.createObjectNode()
+        .put("sub", BEARER_SUBJECT)
+        .put("admin", false)
+        .put("exp", Instant.now().getEpochSecond() + BEARER_TTL_SECONDS);
+    payload.putArray("accounts").add(accountId);
+    String signingInput = b64(mapper.writeValueAsBytes(header)) + "." + b64(mapper.writeValueAsBytes(payload));
+    Mac mac = Mac.getInstance("HmacSHA256");
+    mac.init(new SecretKeySpec(authJwtSecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+    return signingInput + "." + b64(mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8)));
+  }
+
+  private static String b64(byte[] bytes) {
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
   }
 }

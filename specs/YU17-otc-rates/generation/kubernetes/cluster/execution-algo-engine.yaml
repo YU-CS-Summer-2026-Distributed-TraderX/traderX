@@ -82,6 +82,15 @@ spec:
               value: "nats"
             - name: ORDER_MATCHER_URL
               value: "http://order-matcher:18110"
+            # ENGINE-REVIEW S1 (YU18): the gateway's /orders takes a bearer bound to the account, so
+            # each child order is signed over the gateway's own AUTH_JWT_SECRET (same Secret, same
+            # key). Optional: a rig without auth-secrets posts bare, as before S1.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+                  optional: true
             - name: PRICE_SERVICE_URL
               value: "http://price-publisher:18100"
             - name: ALGO_BUCKET_SECONDS_DEFAULT
