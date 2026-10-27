@@ -1,0 +1,890 @@
+{
+  "nats:2.14-alpine": {
+    "reference": "nats@sha256:b2301863d84fda2cf8260d308203708f5231b2db34d821cc518d5c4c3c79780a",
+    "manifest": {
+      "manifests": [
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "amd64",
+            "org.opencontainers.image.base.digest": "sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764",
+            "org.opencontainers.image.base.name": "alpine:3.22",
+            "org.opencontainers.image.created": "2026-09-17T21:16:33Z",
+            "org.opencontainers.image.revision": "0e72748d3cb553ccdb8c2da7c75ec3b767be51a5",
+            "org.opencontainers.image.source": "https://github.com/nats-io/nats-docker.git#0e72748d3cb553ccdb8c2da7c75ec3b767be51a5:2.14.x/alpine3.22",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nats",
+            "org.opencontainers.image.version": "2.14.7-alpine3.22"
+          },
+          "digest": "sha256:b2301863d84fda2cf8260d308203708f5231b2db34d821cc518d5c4c3c79780a",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          },
+          "size": 1728
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "amd64",
+            "vnd.docker.reference.digest": "sha256:b2301863d84fda2cf8260d308203708f5231b2db34d821cc518d5c4c3c79780a",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:01256327eb88c75c0d4cdff160878373d48ffb7f45dd53416cf550bf52238732",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v6",
+            "org.opencontainers.image.base.digest": "sha256:450c744b1ef46c709ee72b733c54813f149999273fffb17f2097f79160aba27a",
+            "org.opencontainers.image.base.name": "alpine:3.22",
+            "org.opencontainers.image.created": "2026-09-17T21:21:20Z",
+            "org.opencontainers.image.revision": "0e72748d3cb553ccdb8c2da7c75ec3b767be51a5",
+            "org.opencontainers.image.source": "https://github.com/nats-io/nats-docker.git#0e72748d3cb553ccdb8c2da7c75ec3b767be51a5:2.14.x/alpine3.22",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nats",
+            "org.opencontainers.image.version": "2.14.7-alpine3.22"
+          },
+          "digest": "sha256:0bc6dbcb1ff4e6f158d420782a459d570f33f951b0ae919b93b5bbb9111e6421",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v6"
+          },
+          "size": 1730
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v6",
+            "vnd.docker.reference.digest": "sha256:0bc6dbcb1ff4e6f158d420782a459d570f33f951b0ae919b93b5bbb9111e6421",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:c38fe265da263b1303f3e3e7c7a682a4b2c30d453ea28e9aa6bac47225b40fe1",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v7",
+            "org.opencontainers.image.base.digest": "sha256:947bab19f99aef448855af6d1886613d95d311a1b8bf9d32e7b329eb76ab4e44",
+            "org.opencontainers.image.base.name": "alpine:3.22",
+            "org.opencontainers.image.created": "2026-09-17T21:19:56Z",
+            "org.opencontainers.image.revision": "0e72748d3cb553ccdb8c2da7c75ec3b767be51a5",
+            "org.opencontainers.image.source": "https://github.com/nats-io/nats-docker.git#0e72748d3cb553ccdb8c2da7c75ec3b767be51a5:2.14.x/alpine3.22",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nats",
+            "org.opencontainers.image.version": "2.14.7-alpine3.22"
+          },
+          "digest": "sha256:256fd1357c5498907ce43247113fa59846fcce1cae9edebf5142c9e4a40740e7",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          },
+          "size": 1730
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v7",
+            "vnd.docker.reference.digest": "sha256:256fd1357c5498907ce43247113fa59846fcce1cae9edebf5142c9e4a40740e7",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:9ca5fbc398f4fe3568d7f893ea421d0e9ba5c05c07f96dcde1a83d9d05fced00",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm64v8",
+            "org.opencontainers.image.base.digest": "sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f",
+            "org.opencontainers.image.base.name": "alpine:3.22",
+            "org.opencontainers.image.created": "2026-09-17T21:16:00Z",
+            "org.opencontainers.image.revision": "0e72748d3cb553ccdb8c2da7c75ec3b767be51a5",
+            "org.opencontainers.image.source": "https://github.com/nats-io/nats-docker.git#0e72748d3cb553ccdb8c2da7c75ec3b767be51a5:2.14.x/alpine3.22",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nats",
+            "org.opencontainers.image.version": "2.14.7-alpine3.22"
+          },
+          "digest": "sha256:7db8dc39d5dc71ceb3718b705cd8e176bac506b82c24411e6825a809b02e15f7",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          },
+          "size": 1730
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm64v8",
+            "vnd.docker.reference.digest": "sha256:7db8dc39d5dc71ceb3718b705cd8e176bac506b82c24411e6825a809b02e15f7",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:0ffefb37d2c84a8125374cee5dffc10f0bdd31c1641b1a4e0b4659a2cd2d4df1",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "ppc64le",
+            "org.opencontainers.image.base.digest": "sha256:d3f9354d41e5bc6cd8b4e7127860553fa3c3a76369c4bedca0b01d8922b29627",
+            "org.opencontainers.image.base.name": "alpine:3.22",
+            "org.opencontainers.image.created": "2026-09-17T21:31:42Z",
+            "org.opencontainers.image.revision": "0e72748d3cb553ccdb8c2da7c75ec3b767be51a5",
+            "org.opencontainers.image.source": "https://github.com/nats-io/nats-docker.git#0e72748d3cb553ccdb8c2da7c75ec3b767be51a5:2.14.x/alpine3.22",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nats",
+            "org.opencontainers.image.version": "2.14.7-alpine3.22"
+          },
+          "digest": "sha256:29e838b8e3f4031280610bd0ec53a9963a4deffef56a88c1e73abfd0b8b7da44",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "ppc64le",
+            "os": "linux"
+          },
+          "size": 1730
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "ppc64le",
+            "vnd.docker.reference.digest": "sha256:29e838b8e3f4031280610bd0ec53a9963a4deffef56a88c1e73abfd0b8b7da44",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:7535a1294aa9946c6ddd8caf9efa7e8cd9a2cc90e4d84a38d10423119a9271ba",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "s390x",
+            "org.opencontainers.image.base.digest": "sha256:5fd1c1a839a5c24fe563cb20862fca94368fa229800ad960bdc22fe166b06d6c",
+            "org.opencontainers.image.base.name": "alpine:3.22",
+            "org.opencontainers.image.created": "2026-09-17T22:25:13Z",
+            "org.opencontainers.image.revision": "0e72748d3cb553ccdb8c2da7c75ec3b767be51a5",
+            "org.opencontainers.image.source": "https://github.com/nats-io/nats-docker.git#0e72748d3cb553ccdb8c2da7c75ec3b767be51a5:2.14.x/alpine3.22",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nats",
+            "org.opencontainers.image.version": "2.14.7-alpine3.22"
+          },
+          "digest": "sha256:f26fd9396e8affd9b873a4674e040ac248e479e857ad08977d33d8bb7d32ec4d",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "s390x",
+            "os": "linux"
+          },
+          "size": 1728
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "s390x",
+            "vnd.docker.reference.digest": "sha256:f26fd9396e8affd9b873a4674e040ac248e479e857ad08977d33d8bb7d32ec4d",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:21c3f6bd936e1a34fb97b42937236206c6eca20187c971449cb3a8a80d8478f0",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        }
+      ],
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "schemaVersion": 2
+    }
+  },
+  "mariadb:11.4": {
+    "reference": "mariadb@sha256:f2f5e00999bd335343e09091e27e39c9386eb1822efcd0e0bac40b0003fa47e3",
+    "manifest": {
+      "manifests": [
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "amd64",
+            "org.opencontainers.image.base.digest": "sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b",
+            "org.opencontainers.image.base.name": "ubuntu:noble",
+            "org.opencontainers.image.created": "2026-10-02T01:30:57Z",
+            "org.opencontainers.image.revision": "bdfe641466a5312bb97d06a1a4e1fb411c49e6b6",
+            "org.opencontainers.image.source": "https://github.com/MariaDB/mariadb-docker.git#bdfe641466a5312bb97d06a1a4e1fb411c49e6b6:11.4",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/mariadb",
+            "org.opencontainers.image.version": "11.4.13-noble"
+          },
+          "digest": "sha256:f2f5e00999bd335343e09091e27e39c9386eb1822efcd0e0bac40b0003fa47e3",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          },
+          "size": 2479
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "amd64",
+            "vnd.docker.reference.digest": "sha256:f2f5e00999bd335343e09091e27e39c9386eb1822efcd0e0bac40b0003fa47e3",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:4a86ba8758b30cfa43331d6100a3cbcf5390020690bec3b7790796eeb54c3a81",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 841
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm64v8",
+            "org.opencontainers.image.base.digest": "sha256:08571ca13e00ca07a2a84eab83a959b4242e22cceb16486a11bef1428c9e93a7",
+            "org.opencontainers.image.base.name": "ubuntu:noble",
+            "org.opencontainers.image.created": "2026-10-02T01:30:31Z",
+            "org.opencontainers.image.revision": "bdfe641466a5312bb97d06a1a4e1fb411c49e6b6",
+            "org.opencontainers.image.source": "https://github.com/MariaDB/mariadb-docker.git#bdfe641466a5312bb97d06a1a4e1fb411c49e6b6:11.4",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/mariadb",
+            "org.opencontainers.image.version": "11.4.13-noble"
+          },
+          "digest": "sha256:0130d92c05fbf2d82adc2b86de742eaede65b2596c65d91786f8e03cd19e6a39",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          },
+          "size": 2481
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm64v8",
+            "vnd.docker.reference.digest": "sha256:0130d92c05fbf2d82adc2b86de742eaede65b2596c65d91786f8e03cd19e6a39",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:b1fefd4554799af3f39b5c10972378ce42280c760b5491e843477c1fabe94075",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 841
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "ppc64le",
+            "org.opencontainers.image.base.digest": "sha256:c685b09303e6cd9fba83c243c7510d2d3723c5257a65dc822cd55cf75a8f63c9",
+            "org.opencontainers.image.base.name": "ubuntu:noble",
+            "org.opencontainers.image.created": "2026-10-02T04:50:48Z",
+            "org.opencontainers.image.revision": "bdfe641466a5312bb97d06a1a4e1fb411c49e6b6",
+            "org.opencontainers.image.source": "https://github.com/MariaDB/mariadb-docker.git#bdfe641466a5312bb97d06a1a4e1fb411c49e6b6:11.4",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/mariadb",
+            "org.opencontainers.image.version": "11.4.13-noble"
+          },
+          "digest": "sha256:74586e1b86bcc30b69dd2d484de5fad090814003b44c29aaeef2617b66462ed6",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "ppc64le",
+            "os": "linux"
+          },
+          "size": 2481
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "ppc64le",
+            "vnd.docker.reference.digest": "sha256:74586e1b86bcc30b69dd2d484de5fad090814003b44c29aaeef2617b66462ed6",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:0d09ec36afb3afccf1c73233a58aff7e5cc9c62bb253610d57eddfd5f06343ef",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 841
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "s390x",
+            "org.opencontainers.image.base.digest": "sha256:ed9fb832733ac3e7ca6f8bb29c369763f7f25ebff65b555990cbb88636320501",
+            "org.opencontainers.image.base.name": "ubuntu:noble",
+            "org.opencontainers.image.created": "2026-10-02T02:06:53Z",
+            "org.opencontainers.image.revision": "bdfe641466a5312bb97d06a1a4e1fb411c49e6b6",
+            "org.opencontainers.image.source": "https://github.com/MariaDB/mariadb-docker.git#bdfe641466a5312bb97d06a1a4e1fb411c49e6b6:11.4",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/mariadb",
+            "org.opencontainers.image.version": "11.4.13-noble"
+          },
+          "digest": "sha256:a26e04da4296e2c4ce56bc89749d0daec05eb0d67c5d9f9a5fba5c050d524cf4",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "s390x",
+            "os": "linux"
+          },
+          "size": 2479
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "s390x",
+            "vnd.docker.reference.digest": "sha256:a26e04da4296e2c4ce56bc89749d0daec05eb0d67c5d9f9a5fba5c050d524cf4",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:f7cfc631f798cf2df9ca9194c16cee20c3c1ecbb54f35de54cd0e776dd3fa1e3",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 841
+        }
+      ],
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "schemaVersion": 2
+    }
+  },
+  "nginx:1.27-alpine": {
+    "reference": "nginx@sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8",
+    "manifest": {
+      "manifests": [
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "amd64",
+            "org.opencontainers.image.base.digest": "sha256:816d6a9736a3ccb74b5b0eb915c4ffb37bf6b7a98e7aaa715001ce3235a8a019",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T17:07:33Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          },
+          "size": 2495
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "amd64",
+            "vnd.docker.reference.digest": "sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:24abdb3793b81417dc2ef58cde30bd1add6c81d03eba077ab4f8a020d870d763",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v6",
+            "org.opencontainers.image.base.digest": "sha256:ada650ccd1c3492e062915f615ad0e18951b178fcf23f99dd8a8e3fb5408fb5e",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T17:07:24Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:0c423916aba526b3013ab7c725ccb8de3872fdba1988cd5f31cfc3fb1c41e48e",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v6"
+          },
+          "size": 2497
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v6",
+            "vnd.docker.reference.digest": "sha256:0c423916aba526b3013ab7c725ccb8de3872fdba1988cd5f31cfc3fb1c41e48e",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:4cd8ee7ae5b4f82e001886b62723b7f6851998fc1dd47e004b4be720d2597e35",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 567
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v7",
+            "org.opencontainers.image.base.digest": "sha256:5987cf25bbcad0b2a3368222d216ec805012c2df5289844ca7d56ad9254da39e",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T17:16:15Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:a47e59cb8b0dc65713dac345d58357ebc5849f504322f07248467e84fb95ff11",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          },
+          "size": 2497
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm32v7",
+            "vnd.docker.reference.digest": "sha256:a47e59cb8b0dc65713dac345d58357ebc5849f504322f07248467e84fb95ff11",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:e9ba9743109fde7e272b7f43bae6390fb74438b617d2cdf360b98789207c7f85",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm64v8",
+            "org.opencontainers.image.base.digest": "sha256:81c453ddf0370ef54dc7ee207c334df7efa3c452138212eebfe3717f494adc4e",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T17:07:57Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:63ffc0d1f14e4082b832c6a42e606e9a0384a526f16ddd720af7c1f018f2f7c4",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          },
+          "size": 2497
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "arm64v8",
+            "vnd.docker.reference.digest": "sha256:63ffc0d1f14e4082b832c6a42e606e9a0384a526f16ddd720af7c1f018f2f7c4",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:efec97e07db5b617892129fb28056b1f5dedabf5bf9a05297ec57cdbb63421c6",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "i386",
+            "org.opencontainers.image.base.digest": "sha256:62b1ba6a50e8046e305c86b52a126bad5c1c76fde1af47d5108e3adaacb2433d",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T17:07:34Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:297103a3c691cdcf92468fe0a3000e14399530c42a3d6a9ec4b4fc0b2442a4bb",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "386",
+            "os": "linux"
+          },
+          "size": 2494
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "i386",
+            "vnd.docker.reference.digest": "sha256:297103a3c691cdcf92468fe0a3000e14399530c42a3d6a9ec4b4fc0b2442a4bb",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:2079782fcbba5c682e6de06e50c168aa39919c6c6ddd59ea183e9460b6d5679f",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "ppc64le",
+            "org.opencontainers.image.base.digest": "sha256:8fd44d0eabef73838189151f3e3bdb6d19fcc1395e4ef7bf30d03c03f0e97ca4",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T18:09:55Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:d4b29f8fae6da6d7ceeef8b00cec367ae2a65a28a9f8ab78ef95f1515e466eb4",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "ppc64le",
+            "os": "linux"
+          },
+          "size": 2497
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "ppc64le",
+            "vnd.docker.reference.digest": "sha256:d4b29f8fae6da6d7ceeef8b00cec367ae2a65a28a9f8ab78ef95f1515e466eb4",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:441460ebaaa717abb22a717224d0f0710be5587d5301f0d0408e66ea4ec714d0",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "riscv64",
+            "org.opencontainers.image.base.digest": "sha256:2da9a9a349fb07bfc854993bc671d01e00dd07a5d7bfbbab5a0c23a571c1faff",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T18:07:35Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:c3c39065d81b06b8267616213e09ba4ccf35bc18b73d1b99691a287c66eafd7b",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "riscv64",
+            "os": "linux"
+          },
+          "size": 2497
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "riscv64",
+            "vnd.docker.reference.digest": "sha256:c3c39065d81b06b8267616213e09ba4ccf35bc18b73d1b99691a287c66eafd7b",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:0f62d942d5e8dd98c5451270e23bb7411257d42b5fd8f5127100d763dc862d52",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "s390x",
+            "org.opencontainers.image.base.digest": "sha256:aeab3f0c03e190d2fbd1f0e4b6121c2ce03a326b45a8698b42169e71b0c5059f",
+            "org.opencontainers.image.base.name": "nginx:1.27.5-alpine-slim",
+            "org.opencontainers.image.created": "2025-04-16T18:08:01Z",
+            "org.opencontainers.image.revision": "eaf8875a1967d24cea6ed8b37109075e39ed9e43",
+            "org.opencontainers.image.source": "https://github.com/nginx/docker-nginx.git#eaf8875a1967d24cea6ed8b37109075e39ed9e43:mainline/alpine",
+            "org.opencontainers.image.url": "https://hub.docker.com/_/nginx",
+            "org.opencontainers.image.version": "1.27.5-alpine"
+          },
+          "digest": "sha256:a697209b4a44cc8fd0718cc883e9b6b09dac91b7e777a00b26bf8b9e9a2048a0",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "s390x",
+            "os": "linux"
+          },
+          "size": 2495
+        },
+        {
+          "annotations": {
+            "com.docker.official-images.bashbrew.arch": "s390x",
+            "vnd.docker.reference.digest": "sha256:a697209b4a44cc8fd0718cc883e9b6b09dac91b7e777a00b26bf8b9e9a2048a0",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:02689ce8ee2c9590a9d5389a09382f6127982886d626397e2d63a4e08cd2bc83",
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          },
+          "size": 840
+        }
+      ],
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "schemaVersion": 2
+    }
+  },
+  "grafana/tempo:2.5.0": {
+    "reference": "grafana/tempo@sha256:be9fb28c0479e90e1e3d65bf94578e312c55d708250b2f018c1f6bb4c1e56788",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1365,
+          "digest": "sha256:be9fb28c0479e90e1e3d65bf94578e312c55d708250b2f018c1f6bb4c1e56788",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1365,
+          "digest": "sha256:0f168afdf979b3796c01f26786bce250f4b9d3293b3e640a8199fe90d48e5c3a",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        }
+      ]
+    }
+  },
+  "prom/prometheus:v2.53.2": {
+    "reference": "prom/prometheus@sha256:55de222691fa328ae6bd577a2d56f74386ae070f7191b10c5f4dfdfe30494622",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2824,
+          "digest": "sha256:55de222691fa328ae6bd577a2d56f74386ae070f7191b10c5f4dfdfe30494622",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2824,
+          "digest": "sha256:7f6957b7a6e98037855ad8fb8af4e2cafd295f2a00bb4c4b4473409505d68edc",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2824,
+          "digest": "sha256:767b9748d388cfdc40930e5957e92608b40e6b4bf0e805f9fbd08960ed805862",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2825,
+          "digest": "sha256:66416347dbc81e0ad588a27f74fb76f0e7c3be4dddf2ba43a83b40ad6249b19d",
+          "platform": {
+            "architecture": "ppc64le",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2825,
+          "digest": "sha256:590c575e44e11adfeb2cc141073d28b7e1abd62eeb1cc75dfd90cffc989258e7",
+          "platform": {
+            "architecture": "s390x",
+            "os": "linux"
+          }
+        }
+      ]
+    }
+  },
+  "grafana/loki:2.9.8": {
+    "reference": "grafana/loki@sha256:101829cadac82fe8caef54319f46c2e72812834e7e934e830f729fdcc120cbf3",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1572,
+          "digest": "sha256:101829cadac82fe8caef54319f46c2e72812834e7e934e830f729fdcc120cbf3",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1572,
+          "digest": "sha256:9e94378054a52ae5fc02d373356789d597fdde78abb97db0d5bc8584c4b0e6ff",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1572,
+          "digest": "sha256:6d4b15c4ce5a3b7bdc5abb622fcc5ac9eab0f0a34300350adc8085f0d8440bd2",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          }
+        }
+      ]
+    }
+  },
+  "grafana/grafana:11.1.0": {
+    "reference": "grafana/grafana@sha256:83c197f05ad57b51f5186ca902f0c95fcce45810e7fe738a84cc38f481a2227a",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2416,
+          "digest": "sha256:83c197f05ad57b51f5186ca902f0c95fcce45810e7fe738a84cc38f481a2227a",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2411,
+          "digest": "sha256:bde5c7baab9cae482cf7ef7a4c4e6b52d035e4e7a4f9784fca3a875c8a459291",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 2411,
+          "digest": "sha256:360840d8503489d75f61d3f419e62f8c13fe4f8e060df6d3c23ef94d149ef38a",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          }
+        }
+      ]
+    }
+  },
+  "otel/opentelemetry-collector-contrib:0.103.1": {
+    "reference": "otel/opentelemetry-collector-contrib@sha256:ba61cc94a059614fe2846e609e0716419c5a2d8c938425ab46904a78c035419b",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 946,
+          "digest": "sha256:52d24c8b0f1cee664119ceff13e1d7ce2bab9a0f77ee4551a6eb98d6db101f6b",
+          "platform": {
+            "architecture": "386",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 946,
+          "digest": "sha256:ba61cc94a059614fe2846e609e0716419c5a2d8c938425ab46904a78c035419b",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 946,
+          "digest": "sha256:10cadef66b8e34cffd21ad1b35769604f4457108b56463fe8d69365162b59b93",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 946,
+          "digest": "sha256:8e0f550c1c10eaedd5e691a0170244f13a684ace3a4411b85189369907d0b5d7",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 946,
+          "digest": "sha256:55d292b4f4c55cbcffa676d3b8fd7330c0a050f1c1a489524d8f18f167d34ba8",
+          "platform": {
+            "architecture": "ppc64le",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 946,
+          "digest": "sha256:7c2318254cf61963e269ffa27533cb7cbe195d4cf1851021f9d0f638a75942b0",
+          "platform": {
+            "architecture": "s390x",
+            "os": "linux"
+          }
+        }
+      ]
+    }
+  },
+  "grafana/promtail:2.9.8": {
+    "reference": "grafana/promtail@sha256:0a818ddc2a6f8404d1f85dfee007618247fbe2b8cc34b4062de4f0867e241984",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1577,
+          "digest": "sha256:0a818ddc2a6f8404d1f85dfee007618247fbe2b8cc34b4062de4f0867e241984",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1577,
+          "digest": "sha256:5dcdaef8ddb708817039d4dec0cee34ee4cd79bff8c6302498c0b2b586f07d2b",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          }
+        },
+        {
+          "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "size": 1991,
+          "digest": "sha256:6f4ed606e9629208ef103e75a980d5b14905f8ea0829d7e2c69099c5a9b9e398",
+          "platform": {
+            "architecture": "arm",
+            "os": "linux",
+            "variant": "v7"
+          }
+        }
+      ]
+    }
+  }
+}

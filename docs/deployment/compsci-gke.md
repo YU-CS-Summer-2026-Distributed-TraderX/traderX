@@ -67,10 +67,14 @@ generation before compiling anything. The root-owned console has a separate
 content-hashed snapshot. Evidence includes derivation, context hashes and actual
 Docker image IDs/architectures. No push/apply occurs. The renderer's `candidate.yaml`
 requires per-image payload review and deployment admission before apply. Pass
-`--published <published.json> --public-lock <public-image-lock.json>` to reproduce
+`--published <published.json> --public-lock scripts/gcp-compsci/public-image-lock.json` to reproduce
 the private/public immutable pins from reviewed locks. Both locks are required
 together; public pins must select the recorded linux/amd64 manifest and private
 pins must agree with the recorded registry identity.
+The reviewed public lock is committed at `scripts/gcp-compsci/public-image-lock.json`: the
+October 11 lock plus `grafana/promtail:2.9.8` (amd64 child `sha256:0a818ddc…`, added 2026-10-27 because
+the render emits promtail since `c8c8ac31`). Every pin was re-checked with `docker buildx imagetools
+inspect` that day; the `nats` and `mariadb` tags have since moved upstream, the pinned digests have not.
 The inherited fixed-path RI20 GKE entrypoint does not consume this custom profile.
 Use the explicit `scripts/gcp-compsci/admit.py` companion below; the inherited
 admission path and its refusal rules remain unchanged.
