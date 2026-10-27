@@ -347,3 +347,40 @@ was then entered one field at a time, the ticket read back before each Submit.
 
 Further finding: the console's Grafana link is `/grafana`, which 301s to `http://demo.yaakovseif.dev:8080/grafana/`
 and fails behind the HTTPS load balancer; `/grafana/` works.
+
+## 10. Demo walk-through and fixes on `traderx` (2026-10-27, 11:30 am–12:26 pm ET)
+
+Every tab of demo.yaakovseif.dev was exercised on the rolled namespace, signed in as admin, except what needs
+data we do not hold (Replay, Corpus, Sandbox: the TAQ venue is retired). Working as found: all eleven ticket
+stories, System, FIX (ExecutionReport New), Admin (bands, TCA, force-settle, reconciliation), Accounts
+(enable/disable), EOD reading, and every legacy UI page. Not configured on this deployment, as in October: EOD job
+status (`EOD_COORDINATOR_STATE`), the Treasury demo (`TREASURY_DEMO_STATE`), reference examples
+(`RISK_DEMO_ARTIFACT`).
+
+Four defects, fixed in `0c002f80` and the custody renderer, rolled 12:20 pm ET:
+
+| Defect | Fix | Proof on `traderx` |
+|---|---|---|
+| Kdb "Order final state" / playback dropped a fill sharing its seq with the NEW (an aggressor filling on arrival read as resting) | dedup key adds status + remaining; `mergeOrders` spec | orderRef 17 (Buy 30 IBM, crossed on arrival) shows FILLED, 4 events |
+| Algo child orders posted bare → 401 since S1; TWAP `ec765d89` retried every tick (354 401s in 2 min) | `OrderMatcherClient` signs a 60 s account-bound non-admin HS256 bearer; `AUTH_JWT_SECRET` (optional) in both algo manifests | children 14/15/16 accepted; filled by the Buy 30; parent COMPLETED; 0 401s since |
+| `/grafana`, `/api/docs`, `/prometheus` 301 to `http://…:8080/` behind the TLS LB | `absolute_redirect off` in the edge-proxy config | all three now 301 to `https://demo.yaakovseif.dev/…/` |
+| Risk tab Cloud Batch empty: §9's console replace dropped October's hand-added batch custody | `render-console-batch-custody.py` re-adds the init container, emptyDir and env; console is a risk-runtime layer | init container hydrated `risk-cpu-cloud-20261023-022416`, status VERIFIED; tab shows NPV 846,759.12 |
+
+Images (`tip-0c002f80`, built on throwaway VM `yu18-demofix-20261027`, deleted 12:26 pm ET, ≈ $0.50):
+
+| Workload | Digest |
+|---|---|
+| execution-algo-engine | `sha256:b7fc56bbd0acf749c3871a4a2d6b933f54c59f2407a572ce7494f7ddc4ac9411` |
+| web-front-end-console (base for the next two) | `sha256:853e38fce4b63ad298d2d469a6cb7a3a6ca36250f561227e5229afc0164e0e71` |
+| web-front-end-console, risk runtime (deployed) | `sha256:c1e9258d3b5327e9c539e630a0f829104d4c721127f35df523ae037b15c55eb4` |
+| web-front-end-desk | `sha256:2e42c414fa81017f54fb085179218fcdc0334815dc5dd12141662d034d596d88` |
+
+All four resolve as linux/amd64 and carry `dev.traderx.source.commit=0c002f80`. The risk layer's Python tools
+come from `671029d1` (label `dev.traderx.risk-tools.commit`), the commit the October image was built from: it is
+on `claude/risk-e2e-462e6cd`, not on this branch, whose `risk-portfolio-tools` has no `cloud_result.py`. The EOD
+bundles and the console's batch reader are byte-identical between the two. These four images are outside the
+`9e0fd80b` admission; the edge-proxy ConfigMap was patched live (one inserted line, resolver kept). Rollback specs:
+shared notes `demo-fixes-20261027/`.
+
+Test orders placed and removed: 10, 11, 12, 13 cancelled through the Admin control; 14–17 traded. Open orders 0;
+members agree at sequence 1319, 12 trades.
