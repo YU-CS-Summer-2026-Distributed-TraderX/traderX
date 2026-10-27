@@ -35,6 +35,16 @@ public final class ProjectionFeedController {
         m.put("missingTradeSides", t.gaps().missing());
         m.put("lastTradeSeq", t.gaps().last());
         m.put("firstTradeSeqSinceStart", t.gaps().firstSeen());
+        m.put("projection", t.projectionMode());
+        if (!t.views().isEmpty()) {
+          m.put("snapshots", t.snapshots());
+          m.put("snapshotRows", t.snapshotRows());
+          m.put("snapshotFailures", t.snapshotFailures());
+          Map<String, Object> parts = new LinkedHashMap<>();
+          t.views().forEach((p, v) -> parts.put(String.valueOf(p), Map.of("streamSeq", v.streamSeq(), "applied", v.applied(),
+              "positions", v.positionCount(), "dirty", v.dirtyCount())));
+          m.put("partitions", parts);
+        }
         out.put("trades", m);
       } else if (s instanceof OrderFeedHandler o) {
         Map<String, Object> m = new LinkedHashMap<>();

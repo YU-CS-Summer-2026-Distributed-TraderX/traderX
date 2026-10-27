@@ -93,6 +93,18 @@ public final class JetStreamFeed {
         .build();
   }
 
+  /** An ephemeral consumer from a stream sequence: the trade store, whose cursor is its own ack. */
+  public static ConsumerConfiguration fromSequence(String filterSubject, long startSequence) {
+    ConsumerConfiguration.Builder b = ConsumerConfiguration.builder()
+        .filterSubject(filterSubject)
+        .ackPolicy(AckPolicy.All)
+        .ackWait(Duration.ofSeconds(60))
+        .inactiveThreshold(Duration.ofMinutes(5));
+    if (startSequence <= 1) { b.deliverPolicy(DeliverPolicy.All); }
+    else { b.deliverPolicy(DeliverPolicy.ByStartSequence).startSequence(startSequence); }
+    return b.build();
+  }
+
   /** An ephemeral consumer that replays the last {@code replay} of the subject: the in-memory views. */
   public static ConsumerConfiguration replayWindow(String filterSubject, Duration replay) {
     return ConsumerConfiguration.builder()

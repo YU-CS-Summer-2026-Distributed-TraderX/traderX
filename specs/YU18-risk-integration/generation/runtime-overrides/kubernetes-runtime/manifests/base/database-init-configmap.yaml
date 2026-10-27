@@ -324,6 +324,15 @@ data:
     CREATE TABLE IF NOT EXISTS projection_schema (singleton_id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
     INSERT INTO projection_schema VALUES (1,2) ON DUPLICATE KEY UPDATE version=GREATEST(version,2);
 
+    -- YU18 trade store (docs/engineering/downstream-at-400k.md §7): where the in-memory trade
+    -- projection's last snapshot sits in the replayable stream, per partition. A restart reloads
+    -- positions + the blotter windows and replays the stream from stream_seq + 1.
+    CREATE TABLE IF NOT EXISTS projection_cursor (
+     projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
+     stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,
+     snapshot_at DATETIME, PRIMARY KEY (projection_scope, partition_id)
+    );
+
   # Idempotent desired-state schema for a PERSISTENT (PVC-backed) datadir. The MariaDB
   # entrypoint runs /docker-entrypoint-initdb.d only on an EMPTY volume, so this key is
   # (a) run by the entrypoint right after 001 on first boot (every statement no-ops), and
@@ -674,3 +683,12 @@ data:
     );
     CREATE TABLE IF NOT EXISTS projection_schema (singleton_id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
     INSERT INTO projection_schema VALUES (1,2) ON DUPLICATE KEY UPDATE version=GREATEST(version,2);
+
+    -- YU18 trade store (docs/engineering/downstream-at-400k.md §7): where the in-memory trade
+    -- projection's last snapshot sits in the replayable stream, per partition. A restart reloads
+    -- positions + the blotter windows and replays the stream from stream_seq + 1.
+    CREATE TABLE IF NOT EXISTS projection_cursor (
+     projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
+     stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,
+     snapshot_at DATETIME, PRIMARY KEY (projection_scope, partition_id)
+    );

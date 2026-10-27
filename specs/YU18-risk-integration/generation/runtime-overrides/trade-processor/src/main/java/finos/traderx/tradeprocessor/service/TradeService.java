@@ -281,6 +281,11 @@ public class TradeService {
   }
 
   /** Computes the booked (not-yet-settled) trade and mutates {@code position} in place. Does not persist. */
+  /** YU18 trade store: the in-memory projection books with exactly this math (TradeView). */
+  public Trade book(TradeOrder order, Position position) {
+    return bookTrade(order, position);
+  }
+
   private Trade bookTrade(TradeOrder order, Position position) {
     Trade trade = newTradeFrom(order);
     // YU05 (post-trade-compliance, FR-PTC02): booking and settlement are no longer the same

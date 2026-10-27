@@ -40,7 +40,7 @@ Three things fall out of the table:
 | Stream → projection | **at-least-once, in order per partition, replayable from the durable cursor** | pull consumer per partition, batch acked after the SQL commit; bounded by the stream's size/age limits |
 | Projection → SQL | idempotent: trade id dedupe, order `(consensusSequence, outputOrdinal)` monotone, positions absolute per batch | unchanged |
 | Projection → in-memory order view | idempotent, same ordering rule, rebuilt from the stream's replay window on restart | `OrderView` |
-| Leader failover | still a gap: the dead leader's unpublished bridge queues (≤64K events per bridge) | unchanged; see §6 |
+| Leader failover | still a gap: the dead leader's unpublished bridge queues (≤64K events per bridge) | unchanged; see §8 |
 
 The bridge-side guarantee is deliberately unchanged: the only way to make hop 1 lossless is for the bridge to read the
 Aeron log instead of a queue the apply thread fills, which is §5 item 3 of DOWNSTREAM.md (an archive-replay consumer) and
@@ -251,7 +251,95 @@ With the stream in place the three questions and their answers are cheap:
 The live blotter on the apply thread (`RECON_BLOTTER_CAPACITY`, ~9% of an apply thread at 400K/s on all three members)
 is no longer needed for the managed path and can be set to 0 on the 400K tier.
 
-## 6. Open items and next steps
+## 7. The trade store: an append-only log plus SQL snapshots
+
+Decision (yaakov, 2026-10-27, early morning ET): an append-only trade store; SQL keeps only the blotter window and the
+EOD inputs. This section is the design and the prototype's numbers (§7.4).
+
+### 7.1 Store choice
+
+| Candidate | Already in the stack | Ordered, replayable by position | Durable | Write rate measured | Verdict |
+|---|---|---|---|---|---|
+| **The JetStream capture stream** (`TRADERX_FEED`, the bridges' own subjects) | yes, since §4 | yes: stream sequence per partition subject | file storage, size/age limits, survives a replica `kill -9` (§4.3) | 1.34M msgs/s, 662 MB/s | **chosen** as the system of record for the projection |
+| The kdb capture (brief 06, `txTrade` → ZSTD Parquet, read natively by KDB-X) | yes | by `tradeSeq`, as files | yes | ~100 MB/s per member, capped at 256 MB per tap | **kept** as the queryable history; not a replay source for the projection (it is per member and best-effort) |
+| Segment files or a columnar log keyed by `tradeSeq`, written by trade-processor | no | would be | would be | not built | rejected: a second copy of what the stream already holds, plus a new format to recover |
+
+The stream is what the bridge published, i.e. a durable replica of the leader's egress; the Aeron Archive remains the
+cluster's own record, and the failover gap of §8 item 1 applies to every downstream store equally.
+
+### 7.2 What SQL keeps
+
+| Reader | Needs | Source after §7 | How fresh |
+|---|---|---|---|
+| Positions (console, position-service `GET`) | every (account, security) quantity and average cost | SQL `positions`, written as a **snapshot** of the in-memory projection every `snapshot-ms` | ≤ snapshot interval (5 s default) |
+| Blotter (console `/accounts/{id}/trades`, position-service `GET /trades`) | an account's recent fills | SQL `trades` holds the last `blotter-depth` (100) fills **per account**, rewritten in the same snapshot | ≤ snapshot interval |
+| EOD P&L | positions at the close | SQL `positions` at the close (the market is closed, the last snapshot is final), or the engine cut (§5 (b)) | exact at the cut's N; the SQL snapshot carries its `consensus_seq` |
+| Risk-extract cross-check | positions at N | the cut; SQL `projection_cursor.consensus_seq` says which N the snapshot is at | exact when `consensus_seq ≥ N` and the projection was quiescent |
+| FIX status, open orders | order state | the in-memory order view (§4) | live |
+| Full trade history, regulatory, analytics | every fill | the kdb/Parquet capture; the stream for its retention window | — |
+| Recon | "is the projection complete?" | `projection_cursor.stream_seq` against the stream's last sequence per partition; the bridge's published count against the stream's message count | continuous |
+| Repair | "rebuild from where?" | restart: snapshot + replay from `stream_seq + 1`. Destroyed SQL: replay the stream's retained window into an empty view, then snapshot. Beyond the window: the archive-replay tool, as today | — |
+
+What SQL no longer gets: one row per trade side. `trades` is a per-account window, so settlement sweeps and the
+live-blotter recon (`SettlementService`, `ReconciliationService`), which treat `trades` as the ledger, are off on this
+tier (they are already disabled by interval on the bench), and `TRADE_ID_CONFLICT` dedupe is replaced by the cursor:
+a seq at or below the cursor is a replay and is ignored.
+
+### 7.3 Write path (prototype, `traderx.trade-projection.mode=snapshot`)
+
+- `TradeView`, one per owned partition: positions and per-account blotter rings in memory. A fill is booked with the
+  same `TradeService.book` math as the row path (average cost, bond face-weighting), so positions are bit-identical to
+  what the row path would hold.
+- The consumer is ephemeral and starts at `projection_cursor.stream_seq + 1`; the cursor is the acknowledgement.
+- `TradeSnapshotStore.write`, every `snapshot-ms`, in ONE transaction under the partition's lock row: the changed
+  positions (multi-row upsert), each changed account's window (insert the window's rows, delete the account's rows
+  outside it), the cursor, and the scope's counters. A failed snapshot is re-marked and retried at the next tick.
+- Restart: load the scope's positions and windows, replay from the cursor. `TradeView.apply` ignores `seq ≤ cursor`.
+- Not in the prototype: the YU16 bond fail-closed rejection (`bondRejection`) is applied only on the row path; the
+  snapshot path books every side. Carry it over before using snapshot mode with bonds.
+
+The SQL rate is bounded by the state, not the trade rate: per snapshot at most (dirty positions) + (dirty accounts ×
+blotter depth) rows, i.e. for 1,000 accounts × 50 symbols and depth 100 at most 150K rows per interval, however many
+trades arrived.
+
+### 7.4 Measured
+
+Same rig shape and method as §4.2, on a dedicated VM (`dsq-store`, `c4d-standard-16`, 2026-10-27 ~1:05–1:15 am ET;
+deleted afterwards). Snapshot interval 5 s, blotter depth 100, orders in memory. "Drain" includes up to one snapshot
+interval, because a step counts a trade as booked only when its snapshot has landed in SQL.
+
+| Arm | Feed | Offered msgs/s | Booked | Dropped | Rows/s | CPU µs/row | vs row path |
+|---|---|---|---|---|---|---|---|
+| store, P=1 | trades | 80K | 1,200,000 / 1,200,000 | 0 | 47,329 | 13.1 | 25,671 |
+| store, P=1 | trades | 160K | 2,400,000 / 2,400,000 | 0 | 72,390 | 10.8 | — |
+| store, P=1 | both | 160K | 2,400,000 / 2,400,000 | 0 | 45,146 | 23.8 | 47,646 (both, P=1) |
+| store, P=4 | trades | 160K | 2,400,000 / 2,400,000 | 0 | **115,163** | 15.1 | 31,491 (P=4) |
+| store, P=4 | trades | 320K | 4,800,000 / 4,800,000 | 0 | **158,755** | 9.1 | — |
+| store, P=4 | both | 320K | 2,400,000 + 2,400,000 | 0 | **172,091** | 9.4 | 57,784 (P=4, both) |
+
+What SQL received for all of that: after the P=1 arm (4.8M trade sides booked) `trades` held **100,000 rows** (1,000
+accounts × the 100-fill window) and `positions` 1,960 rows (the keys the mix touches), with the cursor at stream
+sequence 6,000,000. The database's write rate is now set by the snapshot interval and the number of dirty accounts,
+not by the trade rate.
+
+**Loss under a crash, the hard case.** 600,000 trade sides were published at 973K msgs/s and the replica was
+`kill -9`ed 5 s later, before its first snapshot (cursor empty, `trade_rows` 0). After restart:
+
+| Check | Result |
+|---|---|
+| `trade_rows` | 600,000 of 600,000 |
+| Cursor | stream sequence 600,000 |
+| tradeSeq gaps | 0 |
+| SQL `trades` rows | 100,000 (the windows), `positions` 1,960 |
+| Every position vs an independent recomputation from the load mix (`expect.py`) | 1,960 keys: 0 missing, 0 wrong, 0 extra |
+
+**Against 400K orders/s** (~400K trade sides/s): four partitions on one 16-vCPU VM reached 159K trade sides/s with
+the trade consumers CPU-bound at ~9 µs per side, so ~10 partitions of this consumer cover the trade side, and the
+database is no longer in the equation; the order side was already covered (§4.4). What is left to size is the stream
+(1.34M msgs/s, 662 MB/s measured on one node; retention must span the longest outage plus the snapshot interval) and
+the consumer's parse cost, where the compact wire of §8 item 3 is the next lever.
+
+## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K
    events per bridge. Options, in order of cost: (i) make the new leader republish from its own last-published sequence
@@ -269,10 +357,10 @@ is no longer needed for the managed path and can be set to 0 on the 400K tier.
    (the cluster's own wire is untouched) and must be called out as such.
 4. **Run transitions vs partitions.** `ProjectionTransitionService` takes lock row 1 only; before running partitions
    alongside a transition it must take rows 1..P.
-5. **Choose the trade store.** The cap is the single MariaDB instance (§4.4). Two candidates, both a design decision:
-   one database instance per partition (`PROJECTION_FEED_OWNED` already maps a replica to its partitions; each would
-   get its own datasource), or an append-only store for trades with SQL keeping the per-account blotter window and the
-   EOD inputs. Measure the per-instance rate with the full per-batch work before sizing the shard count.
+5. **Trade store: decided and prototyped (§7).** The append-only log is the JetStream capture stream; SQL holds
+   snapshots. Before production: carry the bond fail-closed rejection onto the snapshot path, decide the stream's
+   retention against the snapshot interval (a restart needs the stream back to the last cursor, so retention must
+   exceed the longest outage), and move settlement off the `trades` window.
 6. **Live cluster.** The prototype was measured with the bridges' exact wire from a load generator, not from a running
    leader. A run on the hxb rig with `BRIDGE_PARTITIONS=4` on the members would confirm that the leader's apply thread is
    unaffected (the bridges' offer path is unchanged, so no effect is expected).

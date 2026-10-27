@@ -4,6 +4,12 @@ import finos.traderx.messaging.Envelope;
 import finos.traderx.messaging.nats.NatsJSONSubscriber;
 import finos.traderx.tradeprocessor.model.TradeOrder;
 import finos.traderx.tradeprocessor.service.ProjectionWriteLock;
+import finos.traderx.tradeprocessor.service.RunRegistry;
+import finos.traderx.tradeprocessor.service.TradeSnapshotStore;
+import finos.traderx.tradeprocessor.model.Position;
+import finos.traderx.tradeprocessor.model.Trade;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import finos.traderx.tradeprocessor.service.TradeService;
 import io.nats.client.Message;
 import java.time.Duration;
@@ -72,6 +78,16 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   // and the per-batch SQL costs (lock, prefetch, counter) amortized over ~200 rows instead of 1000,
   // tripling CPU per trade row. Latency under low load is bounded by this value.
   @Value("${traderx.feed.fetch-wait-ms:200}") long fetchWaitMillis = 200;
+  // YU18 trade store (docs/engineering/downstream-at-400k.md §7): "snapshot" books trades in memory
+  // (TradeView) and writes SQL every snapshotMillis; "rows" is the row-per-trade path.
+  @Value("${traderx.trade-projection.mode:rows}") String projectionMode = "rows";
+  @Value("${traderx.trade-projection.snapshot-ms:5000}") long snapshotMillis = 5000;
+  @Value("${traderx.trade-projection.blotter-depth:100}") int blotterDepth = 100;
+  private final Map<Integer, TradeView> views = new ConcurrentHashMap<>();
+  private final AtomicLong snapshots = new AtomicLong();
+  private final AtomicLong snapshotRows = new AtomicLong();
+  private final AtomicLong snapshotFailures = new AtomicLong();
+  private volatile String snapshotScope;
 
   public TradeFeedHandler() {
     super(TradeOrder.class);
@@ -81,8 +97,13 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private TradeService tradeService;
   @Autowired(required = false)
   private ProjectionWriteLock writeLock;
+  @Autowired(required = false)
+  private TradeSnapshotStore snapshotStore;
+  @Autowired(required = false)
+  private RunRegistry runRegistry;
 
   boolean jetstream() { return "jetstream".equalsIgnoreCase(feedMode); }
+  boolean snapshotMode() { return "snapshot".equalsIgnoreCase(projectionMode); }
 
   @Override
   protected boolean autoSubscribe() { return !jetstream(); }
@@ -102,6 +123,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private void startJetStream() throws Exception {
     JetStreamFeed.ensureStream(connection(), stream, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
     if (writeLock != null) { writeLock.ensurePartitions(partitionCount); }
+    if (snapshotMode()) { startSnapshotMode(); return; }
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
       feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), stream, subject,
@@ -110,6 +132,80 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     }
     log.info("trade feed: jetstream mode, {} of {} partitions owned", feedThreads.size(), partitionCount);
   }
+
+  /**
+   * Snapshot mode: per owned partition, load the last snapshot (positions, blotter windows, cursor),
+   * replay the stream from the cursor, and snapshot every {@link #snapshotMillis}. The consumer is
+   * ephemeral: the cursor row IS the acknowledgement, so a crash before a snapshot replays from the
+   * last one and books nothing twice (TradeView ignores seq <= cursor).
+   */
+  private void startSnapshotMode() {
+    final String scope = runRegistry == null ? RunRegistry.UNKNOWN : runRegistry.activeScope();
+    snapshotScope = scope;
+    List<Position> allPositions = snapshotStore.loadPositions(scope);
+    List<Trade> allTrades = snapshotStore.loadBlotters(scope);
+    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
+      final int partition = p;
+      TradeView view = new TradeView(blotterDepth);
+      TradeSnapshotStore.Cursor cursor = snapshotStore.loadCursor(scope, p);
+      List<Position> mine = new ArrayList<>();
+      for (Position pos : allPositions) { if (Math.floorMod(pos.getAccountId(), partitionCount) == p) { mine.add(pos); } }
+      List<Trade> myTrades = new ArrayList<>();
+      for (Trade t : allTrades) { if (Math.floorMod(t.getAccountId(), partitionCount) == p) { myTrades.add(t); } }
+      view.load(mine, myTrades, cursor == null ? 0 : cursor.streamSeq(), cursor == null ? 0 : cursor.consensusSeq());
+      views.put(p, view);
+      String subject = JetStreamFeed.subject("/trades", p, partitionCount);
+      feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), stream, subject,
+          JetStreamFeed.fromSequence(subject, view.streamSeq() + 1), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
+          msgs -> onSnapshotBatch(partition, msgs)));
+      Thread snap = new Thread(() -> snapshotLoop(partition), "trade-snapshot-p" + p);
+      snap.setDaemon(true);
+      snap.start();
+      feedThreads.add(snap);
+      log.info("trade store: partition {} loaded {} positions, {} blotter rows, cursor stream_seq={}",
+          p, mine.size(), myTrades.size(), view.streamSeq());
+    }
+  }
+
+  void onSnapshotBatch(int partition, List<Message> msgs) {
+    TradeView view = views.get(partition);
+    Map<String, Map<String, Object>> runs = new java.util.HashMap<>();
+    for (Message m : msgs) {
+      try {
+        TradeOrder t = decode(m.getData());
+        if (t == null) { continue; }
+        if (runRegistry != null) { runRegistry.validate(t, runs.computeIfAbsent(t.getProjectionScope(), runRegistry::scope)); }
+        if (view.apply(t, m.metaData().streamSequence(), tradeService::book)) { applied.incrementAndGet(); }
+      } catch (Exception x) {
+        log.error("trade store: /trades message skipped: {}", x.toString());
+      }
+    }
+    if (partitionCount <= 1) { for (Message m : msgs) { try { TradeOrder t = decode(m.getData()); if (t != null) { gaps.observe(t.getId()); } } catch (Exception ignore) { } } }
+  }
+
+  private void snapshotLoop(int partition) {
+    TradeView view = views.get(partition);
+    while (running) {
+      try { Thread.sleep(snapshotMillis); } catch (InterruptedException x) { return; }
+      TradeView.Cut cut = view.cut();
+      if (cut.isEmpty()) { continue; }
+      try {
+        snapshotRows.addAndGet(snapshotStore.write(snapshotScope, partition, cut));
+        snapshots.incrementAndGet();
+      } catch (Exception x) {
+        snapshotFailures.incrementAndGet();
+        view.remark(cut);
+        log.error("trade store: snapshot of partition {} failed ({} positions, {} accounts); kept for the next one",
+            partition, cut.positions().size(), cut.blotters().size(), x);
+      }
+    }
+  }
+
+  public long snapshots() { return snapshots.get(); }
+  public long snapshotRows() { return snapshotRows.get(); }
+  public long snapshotFailures() { return snapshotFailures.get(); }
+  public Map<Integer, TradeView> views() { return views; }
+  public String projectionMode() { return snapshotMode() ? "snapshot" : "rows"; }
 
   /** One fetched batch: decode on this partition's own thread, project, count. */
   void onJetStreamBatch(int partition, List<Message> msgs) {
