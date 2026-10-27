@@ -37,7 +37,8 @@ Use local port forwarding for the first proof. Source buckets stay intact.
 The engine keeps the inherited pod-lifetime storage, but since 2026-10-26 each member's
 `/data` (Aeron log + archive) is a dedicated 32 GiB Hyperdisk Balanced ext4 volume
 (`storageclass.yaml` `order-matcher-archive`, a generic ephemeral volume in
-`statefulset-emptydir.yaml`), not the node boot disk. The stall hunt on the hxb rig
+`statefulset-emptydir.yaml`; `prepare.py` renders the class into the candidate since 2026-10-27, so a
+fresh cluster needs no hand-applied object), not the node boot disk. The stall hunt on the hxb rig
 (STALLS.md, 2026-10-25) traced every between-snapshot member spike at 400K orders/s to the
 leader's archive write waiting in the boot disk's shared ext4 journal: 5-6 waits per 3 minutes
 on the boot disk, 0 on a dedicated volume. The volume is created with the pod and deleted with

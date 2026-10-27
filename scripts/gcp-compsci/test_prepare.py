@@ -31,6 +31,17 @@ class Rendering(unittest.TestCase):
         self.assertEqual(engine['spec']['template']['spec']['nodeSelector'],
                          {'cloud.google.com/gke-nodepool':'engine-pool'})
 
+    def test_member_archive_storageclass_is_rendered(self):
+        # Members claim a generic ephemeral volume of this class; a render without it leaves them Pending.
+        engine=next(d for d in self.docs if d['kind']=='StatefulSet')
+        claimed={v['ephemeral']['volumeClaimTemplate']['spec']['storageClassName']
+                 for v in engine['spec']['template']['spec'].get('volumes',[]) if 'ephemeral' in v}
+        self.assertEqual(claimed,{'order-matcher-archive'})
+        sc=[d for d in self.docs if d['kind']=='StorageClass']
+        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive'])
+        self.assertNotIn('namespace',sc[0]['metadata'])
+        self.assertEqual(sc[0]['provisioner'],'pd.csi.storage.gke.io')
+
     def test_promtail_ships_this_namespace_from_every_node(self):
         ds=next(d for d in self.docs if d['kind']=='DaemonSet' and d['metadata']['name']=='promtail')
         pod=ds['spec']['template']['spec']

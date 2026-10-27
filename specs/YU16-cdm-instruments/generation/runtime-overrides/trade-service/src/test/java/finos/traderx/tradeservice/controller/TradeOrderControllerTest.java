@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.headerDoesNotExist;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
@@ -11,6 +13,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import finos.traderx.messaging.Publisher;
+import finos.traderx.tradeservice.auth.GatewayBearer;
 import finos.traderx.tradeservice.exceptions.ResourceNotFoundException;
 import finos.traderx.tradeservice.model.TradeOrder;
 import finos.traderx.tradeservice.model.TradeSide;
@@ -56,6 +59,7 @@ class TradeOrderControllerTest {
       + "\"debtEconomics\":{\"maturityDate\":\"2028-06-30\"}}";
   private static final String ACCOUNTS = "http://account-service:18088";
   private static final String MATCHER = "http://order-matcher:18110";
+  private static final String JWT_SECRET = "unit-test-jwt-secret";
 
   private Publisher<TradeOrder> tradePublisher;
   private TradeOrderController controller;
@@ -76,6 +80,7 @@ class TradeOrderControllerTest {
    * off the network without changing production code to suit the test.
    */
   private void setAddresses(String matcherUrl) {
+    ReflectionTestUtils.setField(controller, "authJwtSecret", JWT_SECRET);
     ReflectionTestUtils.setField(controller, "referenceDataServiceAddress", REF_DATA);
     ReflectionTestUtils.setField(controller, "accountServiceAddress", ACCOUNTS);
     ReflectionTestUtils.setField(controller, "orderMatcherAddress", matcherUrl);
@@ -411,6 +416,94 @@ class TradeOrderControllerTest {
     assertThatThrownBy(() -> controller.createTradeOrder(order()))
         .isInstanceOf(HttpClientErrorException.class)
         .isNotInstanceOf(ResourceNotFoundException.class);
+
+    http.verify();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // ENGINE-REVIEW S1 (YU18 tip): the gateway's /trades takes a bearer bound to the account, and a
+  // refusal must reach the trader as a refusal. Found on kind 2026-10-26: 401 from the gateway was
+  // answered to the legacy UI as a 500.
+
+  /** Decodes the bearer the forward carried and checks it the way the gateway's authenticator does. */
+  private static void assertGatewayBearerFor(String authorization, int accountId) throws Exception {
+    assertThat(authorization).startsWith("Bearer ");
+    String[] parts = authorization.substring(7).split("\\.");
+    assertThat(parts).hasSize(3);
+    byte[] expected = GatewayBearer.sign(JWT_SECRET, parts[0] + "." + parts[1]);
+    assertThat(java.util.Base64.getUrlDecoder().decode(parts[2])).isEqualTo(expected);
+    com.fasterxml.jackson.databind.JsonNode payload = new com.fasterxml.jackson.databind.ObjectMapper()
+        .readTree(java.util.Base64.getUrlDecoder().decode(parts[1]));
+    assertThat(payload.get("sub").asText()).isEqualTo("trade-service");
+    assertThat(payload.get("admin").asBoolean()).isFalse();
+    assertThat(payload.get("accounts")).hasSize(1);
+    assertThat(payload.get("accounts").get(0).asInt()).isEqualTo(accountId);
+    assertThat(payload.get("exp").asLong()).isGreaterThan(java.time.Instant.now().getEpochSecond());
+    assertThat(payload.get("exp").asLong()).isLessThanOrEqualTo(java.time.Instant.now().getEpochSecond() + 60);
+  }
+
+  @Test
+  void theForwardCarriesAnAccountBoundNonAdminBearerSignedWithTheSharedSecret() throws Exception {
+    expectTickerFound();
+    expectAccountFound();
+    java.util.concurrent.atomic.AtomicReference<String> seen = new java.util.concurrent.atomic.AtomicReference<>();
+    http.expect(requestTo(MATCHER + "/trades"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(request -> seen.set(request.getHeaders().getFirst("Authorization")))
+        .andRespond(withSuccess());
+
+    controller.createTradeOrder(order());
+
+    http.verify();
+    assertGatewayBearerFor(seen.get(), 44044);
+  }
+
+  @Test
+  void withoutASharedSecretTheForwardIsBareAsBeforeS1() {
+    ReflectionTestUtils.setField(controller, "authJwtSecret", "");
+    expectTickerFound();
+    expectAccountFound();
+    http.expect(requestTo(MATCHER + "/trades"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(headerDoesNotExist("Authorization"))
+        .andRespond(withSuccess());
+
+    controller.createTradeOrder(order());
+
+    http.verify();
+  }
+
+  @Test
+  void aGatewayRefusalIsAnsweredWithItsOwnStatusAndReasonNotA500() {
+    expectTickerFound();
+    expectAccountFound();
+    http.expect(requestTo(MATCHER + "/trades"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(header("Authorization", org.hamcrest.Matchers.startsWith("Bearer ")))
+        .andRespond(withStatus(HttpStatus.UNAUTHORIZED)
+            .contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"bearer JWT required\"}"));
+
+    assertThatThrownBy(() -> controller.createTradeOrder(order()))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasFieldOrPropertyWithValue("status", HttpStatus.UNAUTHORIZED)
+        .hasFieldOrPropertyWithValue("reason", "Order matcher refused the trade: bearer JWT required");
+
+    http.verify();
+  }
+
+  @Test
+  void aRiskRejectFromTheGatewayNamesTheRiskReason() {
+    expectTickerFound();
+    expectAccountFound();
+    http.expect(requestTo(MATCHER + "/trades"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+            .contentType(MediaType.APPLICATION_JSON).body("{\"booked\":false,\"reason\":\"UNKNOWN_SECURITY\"}"));
+
+    assertThatThrownBy(() -> controller.createTradeOrder(order()))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasFieldOrPropertyWithValue("status", HttpStatus.UNPROCESSABLE_ENTITY)
+        .hasFieldOrPropertyWithValue("reason", "Order matcher refused the trade: UNKNOWN_SECURITY");
 
     http.verify();
   }

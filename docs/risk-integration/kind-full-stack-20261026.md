@@ -82,11 +82,16 @@ not a crash, but it means no stock bring-up can trade from the Desk.
 
 1. **Legacy UI order path is broken by S1.** trade-service forwards to the gateway's `/trades` without a
    bearer, gets 401, and answers the user 500. Needs a service credential decision for trade-service.
+   *Fixed 2026-10-27:* trade-service mints an account-bound, non-admin, 60 s HS256 bearer over the shared
+   `AUTH_JWT_SECRET` (`GatewayBearer`), a gateway 4xx is answered with the gateway's status and reason as
+   `{detail}`, and the legacy ticket shows that refusal instead of an HTTP failure line.
 2. (fixed, above) A proof deleting reference data without a durable park.
-3. **Offline bill prices never accrete.** Without a FRED key the publisher random-walks Treasury prices from
+3. **Offline bill prices never accrete** (*fixed 2026-10-27:* a zero's walk anchors on its issue-date yield
+   re-priced at the quote instant, `treasury.accretionAnchor`).** Without a FRED key the publisher random-walks Treasury prices from
    the auction seed, so a 13-week bill 16 days from maturity still prints 0.98975 and a 25% yield. With the
    FRED curve, bills are priced by remaining term. Kind (and any rig without `fred-api`) shows it.
-4. **`yu17-retick-determinism` step 1 needs a decision.** It records the "registered but not enabled" window
+4. **`yu17-retick-determinism` step 1 needs a decision** (*re-expressed 2026-10-27:* the window is staged by
+   `/risk/control/security {enabled:false}`, with `/resolve` 404-then-200 as the controls).** It records the "registered but not enabled" window
    via `/resolve`; S4 made `/resolve` a lookup, so that window is no longer reachable from any client path.
    The proof's owner should decide whether the step is retired or re-expressed.
 5. **`build-images.py`'s derivation guard refuses while other chats commit** ("current source changed during
@@ -132,8 +137,8 @@ Found and fixed (`8ea15b88`):
 
 Found, not fixed:
 
-- **The `order-matcher-archive` StorageClass is not emitted by the renderer.** Members stay Pending until it
-  exists. It was applied once by hand (cluster-scoped, harmless to `traderx`) and is still on the cluster.
+- **The `order-matcher-archive` StorageClass is not emitted by the renderer** (fixed 2026-10-27: `prepare.py`
+  renders it). Members stay Pending until it exists. It was applied once by hand (cluster-scoped, harmless to `traderx`) and is still on the cluster.
 - **Loki got no logs in this profile** (the collector has no logs pipeline, and no promtail shipped).
   **Fixed afterwards** (11:45 pm ET, yaakov approved the cluster-wide apply): `prepare.py` now renders
   promtail, with a per-namespace ClusterRole/Binding (`promtail-<namespace>`), a scrape glob of

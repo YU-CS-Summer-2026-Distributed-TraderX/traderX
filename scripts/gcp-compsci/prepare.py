@@ -156,18 +156,27 @@ def validate(docs):
 
 def prepare(output, tag, dns, published_path=None, public_path=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    generated = ROOT / 'generated/code/target-generated'
+    generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
     gke = ROOT / 'specs/YU17-otc-rates/generation/kubernetes/cluster/gke'
     docs = []
     inputs = []
+    def rel(path):
+        # The recorded input path is derivation identity: an empty-root render (TRADERX_GENERATED_ROOT
+        # outside the checkout) must record the same 'generated/code/target-generated/...' string as
+        # an in-repo one, or the two admit different candidates for the same source.
+        return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) \
+            else str(Path('generated/code/target-generated') / path.relative_to(generated))
     def include(path):
-        inputs.append({'path': str(path.relative_to(ROOT)),
+        inputs.append({'path': rel(path),
                        'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
         docs.extend(read(path))
     # Explicit inherited cluster manifests; generated runtime service overrides
     # compose afterward. Sandbox, backups and seeding jobs are separate scopes.
-    for name in ['statefulset-emptydir.yaml', 'gateway.yaml', 'nats.yaml',
+    # The members' /data is a generic ephemeral volume of class order-matcher-archive
+    # (statefulset-emptydir.yaml); without the class the claims never bind and the members stay
+    # Pending. It was applied by hand on traderx-demo (2026-10-26); rendered here since.
+    for name in ['storageclass.yaml', 'statefulset-emptydir.yaml', 'gateway.yaml', 'nats.yaml',
                  'eod-price-db.yaml', 'eod-chain.yaml', 'risk-extract.yaml',
                  'reference-data.yaml', 'execution-algo-engine.yaml']:
         include(gke / name)
@@ -187,7 +196,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
         include(base / f'{name}.yaml')
     include(ROOT / 'specs/YU17-otc-rates/generation/kubernetes/frontend-gke/console.yaml')
     schema = read(base / 'database-init-configmap.yaml')
-    inputs.append({'path':str((base/'database-init-configmap.yaml').relative_to(ROOT)),
+    inputs.append({'path':rel(base/'database-init-configmap.yaml'),
                    'sha256':hashlib.sha256((base/'database-init-configmap.yaml').read_bytes()).hexdigest()})
     # Place the database schema before all workloads in the output.
     docs = schema + docs
@@ -201,6 +210,9 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
                          {'name':n,'port':p,'targetPort':t} for n,p,t in ports]}})
     docs.append({'apiVersion':'v1','kind':'ServiceAccount','metadata':{'name':'taq-reader'}})
     for doc in docs:
+        if doc['kind'] == 'StorageClass':
+            doc['metadata'].pop('namespace', None)  # cluster-scoped and shared: one class, every namespace
+            continue
         if doc['kind'] in ('ClusterRole', 'ClusterRoleBinding'):
             # Cluster-scoped: one per namespace, so a side namespace never rebinds the live one's.
             doc['metadata'].pop('namespace', None)

@@ -22,9 +22,28 @@
 # read as the full claim (the exit code is the verdict). Standing scope-§5 discipline: do not run
 # the destructive tail against a shared epoch another lane is measuring.
 #
-# Step 1's refusal is itself a recorded fixture of the §1.1 window: /resolve registers the ticker
-# WITHOUT enabling it, so the order creates-and-anchors a book and is then refused
-# UNKNOWN_SECURITY (engine ack byte 22) — the exact population the provisional grid exists for.
+# Step 1's refusal is itself a recorded fixture of the §1.1 window: a ticker REGISTERED but NOT
+# ENABLED, so the order creates-and-anchors a book and is then refused UNKNOWN_SECURITY (engine ack
+# byte 22; BlpRiskState reads a disabled security as unknown) — the exact population the provisional
+# grid exists for.
+#
+# HOW THE WINDOW IS STAGED, since ENGINE-REVIEW S4 (5ca69f3f). /resolve used to register on first
+# ask; S4 made it a lookup, so the old step 1 ("/resolve registers; the order is refused") could no
+# longer stage the window from any client path and failed on its first assertion (kind,
+# 2026-10-26). The operator control route still registers (8ea15b88: /risk/control/security
+# registers on action=security, the same trust as /seed), and `enabled:false` is exactly
+# registered-without-enabling. So step 1 now:
+#   (a) /resolve -> 404: the ticker is NEW and /resolve is a lookup (if 200 here the window cannot
+#       be staged on this ticker, and that is a FAIL, not a skip);
+#   (b) POST /risk/control/security {ticker, enabled:false} with the OPERATOR PAIR -> 200;
+#   (c) /resolve -> 200 with a securityId: registered (a control that silently stopped registering,
+#       the S4 class of regression, fails HERE and not three steps later);
+#   (d) the order is refused kind 2 UNKNOWN_SECURITY: the engine holds the book and refuses the risk.
+# Each of (a)-(d) is a distinct assertion with a distinct message; a build on which any one of them
+# does not hold is a build this proof must go red on.
+#
+# Operator pair: RISK_CONTROL_TOKEN (kind default `dev-risk-control`; on GKE pass the Secret's value)
+# + an operator name. The admin JWT the library mints is for the order routes.
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
@@ -33,6 +52,8 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 DESTRUCTIVE="${DESTRUCTIVE:-1}"
 ACCT="${ACCT:-22214}"; ACCT2="${ACCT2:-52355}"   # both in reference data (yu17-band-follows-market)
+RISK_CONTROL_TOKEN="${RISK_CONTROL_TOKEN:-dev-risk-control}"
+OPERATOR=(-H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN}" -H "X-Risk-Operator: yu17-retick-determinism")
 TICKER="${TICKER:-RTD$(date +%H%M%S)}"
 SEED_PX="${SEED_PX:-1.15}"
 IN_PX="${IN_PX:-1.10}"
@@ -103,12 +124,30 @@ snapshot_barrier() {
 echo "=== yu17-retick-determinism, EXPECT=${EXPECT}, DESTRUCTIVE=${DESTRUCTIVE}, ticker ${TICKER} ==="
 agree "baseline"
 
-echo "--- 1. create-before-tick: /resolve registers ${TICKER} (no enable, no tick); the order must be refused"
-RES="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/resolve" -H 'Content-Type: application/json' -d "{\"ticker\":\"${TICKER}\"}")"
-[[ "${RES}" == *'"securityId"'* ]] || fail "/resolve did not register ${TICKER}: ${RES}"
+echo "--- 1. create-before-tick: register ${TICKER} WITHOUT enabling it (operator control); the order must be refused"
+resolve() { curl -s -m20 -o "$1" -w '%{http_code}' -X POST "${MATCHER_URL}/resolve" -H 'Content-Type: application/json' -d "{\"ticker\":\"${TICKER}\"}"; }
+RES_BODY="$(mktemp)"; trap 'rm -f "${RES_BODY}"; cleanup' EXIT
+# (a) a NEW ticker, and /resolve is a lookup (S4): anything but 404 means the window cannot be staged here.
+CODE="$(resolve "${RES_BODY}")"
+[[ "${CODE}" == "404" ]] \
+  || fail "/resolve answered HTTP ${CODE} for the fresh ticker ${TICKER} ($(cat "${RES_BODY}")): expected 404. 200 = already registered (pick another TICKER) or /resolve registers again (S4 regression); 000 = gateway unreachable"
+# (b) register without enabling: the operator control is the one path that still registers (8ea15b88).
+CTL_BODY="$(mktemp)"
+CODE="$(curl "${OPERATOR[@]}" -s -m20 -o "${CTL_BODY}" -w '%{http_code}' -X POST "${MATCHER_URL}/risk/control/security" \
+  -H 'Content-Type: application/json' -d "{\"ticker\":\"${TICKER}\",\"enabled\":false}")"
+[[ "${CODE}" == "200" ]] \
+  || { c="$(cat "${CTL_BODY}")"; rm -f "${CTL_BODY}"; fail "/risk/control/security did not register ${TICKER} disabled: HTTP ${CODE} ${c} (401 = RISK_CONTROL_TOKEN wrong for this rig; 422 = the control no longer registers)"; }
+rm -f "${CTL_BODY}"
+# (c) registered: /resolve now answers an id. This is where a control that stopped registering fails.
+CODE="$(resolve "${RES_BODY}")"
+[[ "${CODE}" == "200" && "$(cat "${RES_BODY}")" == *'"securityId"'* ]] \
+  || fail "after the control, /resolve answered HTTP ${CODE} $(cat "${RES_BODY}"): the ticker was not registered, so there is no §1.1 window to record"
+SEC_ID="$(field "$(cat "${RES_BODY}")" securityId)"
+ok "${TICKER} registered as securityId ${SEC_ID}, not enabled"
+# (d) the engine holds the book and refuses the risk: registered-but-disabled reads UNKNOWN_SECURITY.
 O1="$(order "${ACCT}" Buy 50.00)"
 [[ "$(field "${O1}" kind)" == "2" && "$(field "${O1}" reason)" == "UNKNOWN_SECURITY" ]] \
-  || fail "registered-but-unenabled order should be refused UNKNOWN_SECURITY (the §1.1 window, book created then risk refused); got ${O1}"
+  || fail "registered-but-unenabled order should be refused kind 2 UNKNOWN_SECURITY (the §1.1 window, book created then risk refused); got ${O1}"
 ok "the §1.1 window, recorded: book created-and-anchored, order refused UNKNOWN_SECURITY (ack byte 22)"
 agree "the rejected create"
 

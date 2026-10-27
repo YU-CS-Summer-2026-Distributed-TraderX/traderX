@@ -3,12 +3,18 @@ import { ACTIVE_URL, REGISTRY_URL, LEGACY_SCOPE, readActive, readRegistry, scope
 
 // Tests opt into this explicitly. The running application provides true; no network failure can select fixtures.
 export const CONNECTED_RIG = new InjectionToken<boolean>('connected rig', {providedIn:'root',factory:()=>false});
+/** The Desk trades only inside a managed run; a stock bring-up provisions none. */
+export const NO_MANAGED_RUN = 'No managed run on this rig: the projection registry (position-service /v2/projections) is empty and the gateway has no run descriptor (RUN_DESCRIPTOR_PATH). The Desk trades only inside a managed run; on a plain bring-up, trade from the Demo console.';
+
 export async function readRigAccount(load: Loader, account: number, view: View) {
   const reg = await load(REGISTRY_URL);
   const registry = readRegistry(reg.status, reg.body);
   if (registry.kind === 'unavailable') throw Error(registry.error);
   let scope: string | null = null;
   if (registry.kind === 'managed') {
+    // A plain bring-up (kind or GKE, 2026-10-26) registers no run: the registry is `[]` and the
+    // active pointer is a 503. Say what is missing rather than 'active run: HTTP 503'.
+    if (registry.runs.length === 0) throw Error(NO_MANAGED_RUN);
     if (view.kind === 'history') scope = view.scope;
     else {
       const r = await load(ACTIVE_URL); const a = readActive(r.status,r.body);

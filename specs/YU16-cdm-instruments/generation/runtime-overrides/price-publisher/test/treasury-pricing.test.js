@@ -679,3 +679,26 @@ test('a partial publication is reported as partial and does not stop the feed (P
     }
   }
 });
+
+// Offline accretion (kind full-stack proof, 2026-10-26): a bill priced off a fixed auction seed
+// never approached par, so 16 days from maturity it printed a 25% yield. The anchor must move with
+// time, reach the seed at issue and par at maturity, and keep the seed's yield in between.
+test('a zero offline accretes toward par at its issue-date yield', () => {
+  const bill = {
+    couponRatePercent: 0, originalTermYears: 0.25, issueDate: '2026-08-13', maturityDate: '2026-11-12',
+    seedCleanPercent: 98.969, cleanPercent: 98.969, dayCount: treasury.DAY_COUNT.ACT_ACT_ICMA
+  };
+  bill.seedYieldPercent = treasury.seedYieldPercent(bill);
+  assert.ok(bill.seedYieldPercent > 3 && bill.seedYieldPercent < 6, `seed yield ${bill.seedYieldPercent}`);
+  const at = (iso) => treasury.accretionAnchor(bill, Date.parse(`${iso}T12:00:00.000Z`));
+  assert.ok(Math.abs(at('2026-08-13') - 98.969) < 0.01, `at issue ${at('2026-08-13')}`);
+  const late = at('2026-10-27');   // 16 days to maturity, the date the defect was seen
+  assert.ok(late > 99.7 && late < 100, `16 days out ${late}`);
+  assert.ok(at('2026-11-11') > late && at('2026-11-11') < 100, `eve of maturity ${at('2026-11-11')}`);
+  // The published yield off the anchor is the seed's yield again, not 25%.
+  const y = treasury.ytmPercent(bill, Date.parse('2026-10-27T12:00:00.000Z'), late, bill.dayCount);
+  assert.ok(Math.abs(y - bill.seedYieldPercent) < 0.25, `yield off the anchor ${y} vs seed ${bill.seedYieldPercent}`);
+  // Coupon bonds keep their fixed seed: no anchor.
+  assert.equal(treasury.accretionAnchor({ ...bill, couponRatePercent: 4.125 }, Date.now()), null);
+  assert.equal(treasury.seedYieldPercent({ ...bill, couponRatePercent: 4.125 }), null);
+});

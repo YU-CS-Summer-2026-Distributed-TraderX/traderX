@@ -341,7 +341,7 @@ export class Desk {
     }
     if(generation!==this.session.generation() || !this.ctx.isCurrent(token) || this.runView().kind!=='active') return {ok:false,text:'Context changed. Nothing sent.'};
     const orderAction=['/order-matcher/orders','/order-matcher/cancel','/order-matcher/replace'].includes(url);
-    if(orderAction && scope===null) return {ok:false,text:'Managed run identity is required. Nothing sent.'};
+    if(orderAction && scope===null) return {ok:false,text:'This rig has no managed run (legacy projection, no run descriptor). The Desk trades only inside a managed run; use the Demo console. Nothing sent.'};
     const target=orderAction?'/desk-api/orders/'+url.split('/').pop():url;
     const payload=orderAction?{...(body as object),accountId:account,projectionScope:scope}:body;
     const r=await this.api.load<any>(target,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(12000)});

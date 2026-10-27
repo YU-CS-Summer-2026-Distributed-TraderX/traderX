@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { AlertModule } from 'ngx-bootstrap/alert';
 import { BsModalService } from 'ngx-bootstrap/modal';
-import { of, Subject, BehaviorSubject } from 'rxjs';
+import { of, throwError, Subject, BehaviorSubject } from 'rxjs';
 import { OrderAdminService } from '../service/order-admin.service';
 import { AlgoService } from '../service/algo.service';
 import { PositionService } from '../service/position.service';
@@ -58,6 +58,16 @@ describe('Trade account and ticket controls', () => {
     fixture.detectChanges(); component.openTicket({} as any); component.createTradeTicket(TICKET);
     expect(symbols.createTicket).toHaveBeenCalledWith(TICKET); expect(component.createTicketResponse).toEqual({ success: true });
     expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refused ticket shows the refusal detail instead of escaping as an HTTP failure', () => {
+    fixture.detectChanges();
+    symbols.createTicket.and.returnValue(throwError(() => ({ status: 401, error: { detail: 'Order matcher refused the trade: bearer JWT required' } })));
+    component.createTradeTicket(TICKET);
+    expect(component.createTicketResponse).toEqual({ success: false, message: 'Order matcher refused the trade: bearer JWT required' });
+    symbols.createTicket.and.returnValue(throwError(() => ({ status: 500, message: 'Http failure response: 500' })));
+    component.createTradeTicket(TICKET);
+    expect(component.createTicketResponse).toEqual({ success: false, message: 'Http failure response: 500' });
   });
 
   it('all-account selection refuses a ticket and does not open its modal', () => {

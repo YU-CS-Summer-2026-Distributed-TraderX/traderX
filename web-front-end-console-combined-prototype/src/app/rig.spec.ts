@@ -1,4 +1,4 @@
-import { readRigAccount } from './rig';
+import { NO_MANAGED_RUN, readRigAccount } from './rig';
 import { ACTIVE_URL, REGISTRY_URL } from '../../../web-front-end-console/src/app/run-scope';
 describe('connected desk run boundary',()=>{
   const run={projection_scope:'r1',phase:'ACTIVE'};
@@ -15,6 +15,11 @@ describe('connected desk run boundary',()=>{
     for(const bad of [{accountId:7,projectionScope:'r1'},{accountId:22214,projectionScope:'r2'}]) {
       await expectAsync(readRigAccount(async u=>u.endsWith('/positions')?{status:200,body:[bad]}:good(u),22214,{kind:'active'})).toBeRejected();
     }
+  });
+  it('names the missing managed run on a plain bring-up instead of an HTTP status',async()=>{
+    const plain=async(u:string)=>u===REGISTRY_URL?{status:200,body:[]}:u===ACTIVE_URL?{status:503,body:{error:'active projection scope unavailable'}}:{status:200,body:[]};
+    await expectAsync(readRigAccount(plain,22214,{kind:'active'})).toBeRejectedWithError(NO_MANAGED_RUN);
+    expect(NO_MANAGED_RUN).toContain('Demo console');
   });
   it('does not treat a failed or HTML registry as legacy',async()=>{
     for(const r of [{status:503,body:[]},{status:200,body:'<html>'},{status:0,body:null}]) await expectAsync(readRigAccount(async()=>r,22214,{kind:'active'})).toBeRejected();

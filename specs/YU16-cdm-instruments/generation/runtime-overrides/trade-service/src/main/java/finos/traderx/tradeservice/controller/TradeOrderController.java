@@ -1,6 +1,7 @@
 package finos.traderx.tradeservice.controller;
 
 import finos.traderx.messaging.Publisher;
+import finos.traderx.tradeservice.auth.GatewayBearer;
 import finos.traderx.tradeservice.exceptions.ResourceNotFoundException;
 import finos.traderx.tradeservice.model.Account;
 import finos.traderx.tradeservice.model.Security;
@@ -10,6 +11,8 @@ import io.swagger.v3.oas.annotations.Parameter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
@@ -35,6 +39,13 @@ import org.springframework.web.server.ResponseStatusException;
  * {@code /stocks/{ticker}} — and for a {@code UST-}-routed Treasury it validates the order
  * content (face minimum/increment, maturity) before anything reaches the sequencer. Validation
  * failures surface as {@code {"detail": message}} (see {@link ApiExceptionHandler}).
+ *
+ * <p>ENGINE-REVIEW S1 (YU18 tip): the gateway's {@code /trades} wants a bearer JWT bound to the
+ * account, so the forward carries one minted here over the shared {@code AUTH_JWT_SECRET}
+ * ({@link GatewayBearer}); without the secret it forwards bare, as before S1. A gateway REFUSAL
+ * (4xx: 401 no credential, 403 not entitled, 422 risk reject) is answered with the gateway's own
+ * status and reason as {@code {"detail": ...}} -- it used to be swallowed into a 500 that told the
+ * trader the platform had failed when the venue had said no.
  */
 @RestController
 @RequestMapping(value = "/trade", produces = "application/json")
@@ -81,6 +92,13 @@ public class TradeOrderController {
   @Value("${order.matcher.url:http://order-matcher:18110}")
   private String orderMatcherAddress;
 
+  /** Shared HS256 secret (env {@code AUTH_JWT_SECRET}); blank = forward without a bearer. */
+  @Value("${auth.jwt.secret:}")
+  private String authJwtSecret;
+
+  static final String BEARER_SUBJECT = "trade-service";
+  static final long BEARER_TTL_SECONDS = 60;
+
   public TradeOrderController(Publisher<TradeOrder> tradePublisher) {
     this.tradePublisher = tradePublisher;
   }
@@ -112,11 +130,39 @@ public class TradeOrderController {
    */
   private void forwardToSequencer(TradeOrder tradeOrder) {
     String url = trimTrailingSlash(orderMatcherAddress) + "/trades";
+    HttpHeaders headers = new HttpHeaders();
+    if (authJwtSecret != null && !authJwtSecret.isBlank()) {
+      headers.setBearerAuth(GatewayBearer.mint(authJwtSecret, BEARER_SUBJECT,
+          tradeOrder.getAccountId() == null ? 0 : tradeOrder.getAccountId(), BEARER_TTL_SECONDS));
+    }
     try {
-      restTemplate.postForEntity(url, tradeOrder, Void.class);
+      restTemplate.postForEntity(url, new HttpEntity<>(tradeOrder, headers), Void.class);
+    } catch (HttpStatusCodeException ex) {
+      if (ex.getStatusCode().is4xxClientError()) {
+        // The gateway refused; say so with ITS status and reason, never a 500.
+        throw new ResponseStatusException(ex.getStatusCode(), gatewayReason(ex.getResponseBodyAsString()));
+      }
+      throw new RuntimeException("Failed to forward trade order to order-matcher sequencer", ex);
     } catch (RestClientException ex) {
       throw new RuntimeException("Failed to forward trade order to order-matcher sequencer", ex);
     }
+  }
+
+  /** The gateway answers {"error": ...} (auth) or {"booked": false, "reason": ...} (risk). */
+  static String gatewayReason(String body) {
+    if (body != null && !body.isBlank()) {
+      try {
+        com.fasterxml.jackson.databind.JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+        for (String field : new String[] {"reason", "error", "detail"}) {
+          if (node.hasNonNull(field)) {
+            return "Order matcher refused the trade: " + node.get(field).asText();
+          }
+        }
+      } catch (Exception ignored) {
+        // not JSON: fall through to the generic sentence
+      }
+    }
+    return "Order matcher refused the trade";
   }
 
   /**

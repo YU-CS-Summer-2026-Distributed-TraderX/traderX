@@ -473,6 +473,41 @@ function round6(value) {
   return Math.round((Number(value) + Number.EPSILON) * 1000000) / 1000000;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Offline accretion for zeros (bills and STRIPs). The synthetic walk mean-reverts to a FIXED seed,
+// so without a curve a 13-week bill still printed its auction price 16 days from maturity -- a 25%
+// yield that drifted higher every day (kind, 2026-10-26). A zero has one price driver, time: hold
+// the yield its seed implied AT ISSUE and re-price at the quote instant, and the walk's anchor
+// accretes toward par the way the instrument does. Coupon bonds keep their fixed seed: their
+// pull-to-par is small per day and already inside the walk's band. Null means "no anchor, walk as
+// before" -- never a price.
+// ---------------------------------------------------------------------------------------------
+
+/** The semiannual-basis yield the seed clean price implied on the issue date; null if unsolvable. */
+function seedYieldPercent(quote) {
+  if (Number(quote.couponRatePercent) !== 0 || !quote.issueDate) {
+    return null;
+  }
+  try {
+    const y = yieldFromCleanPrice(quote, parseDate(quote.issueDate), quote.seedCleanPercent, quote.dayCount);
+    return y === null ? null : round6(y);
+  } catch (err) {
+    if (err instanceof UnsolvableYieldError || err.code === 'YIELD_UNSOLVABLE') {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/** Where a zero's walk should be centred at `ts`: its seed yield re-priced today. Percent, 3dp. */
+function accretionAnchor(quote, ts) {
+  if (Number(quote.couponRatePercent) !== 0 || !Number.isFinite(quote.seedYieldPercent)) {
+    return null;
+  }
+  const clean = cleanPriceFromYield(quote, new Date(ts), quote.seedYieldPercent, quote.dayCount);
+  return clean === null ? null : round3(clean);
+}
+
 module.exports = {
   UnsolvableYieldError,
   TREASURY_PROFILE_BY_TERM,
@@ -493,5 +528,7 @@ module.exports = {
   dirtyPriceFromYield,
   cleanPriceFromYield,
   yieldFromCleanPrice,
-  ytmPercent
+  ytmPercent,
+  seedYieldPercent,
+  accretionAnchor
 };

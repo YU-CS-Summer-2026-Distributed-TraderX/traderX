@@ -137,9 +137,22 @@ export class TradeComponent implements OnInit, OnDestroy {
             this.createTicketResponse = { success: false, message: 'Select a specific account to create a trade.' };
             return;
         }
-        this.symbolService.createTicket(ticket).subscribe((response) => {
-            this.createTicketResponse = response;
-            this.loadAllPositions();
+        this.symbolService.createTicket(ticket).subscribe({
+            next: (response) => {
+                this.createTicketResponse = response;
+                this.loadAllPositions();
+            },
+            // A refusal is a refusal, not a crash. trade-service answers {detail} with the gateway's
+            // own status since ENGINE-REVIEW S1 (401 no credential, 403 not entitled, 422 risk
+            // reject, 409 matured); without this branch the error escaped the subscription and the
+            // trader saw an HTTP failure line instead of the venue's reason.
+            error: (error) => {
+                this.createTicketResponse = {
+                    success: false,
+                    message: error?.error?.detail ?? error?.error?.reason ?? error?.error?.error
+                        ?? error?.message ?? 'Trade refused.'
+                };
+            }
         });
         this.closeTicket();
     }

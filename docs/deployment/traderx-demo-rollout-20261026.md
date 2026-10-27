@@ -200,8 +200,8 @@ The plan was exercised end to end in a side namespace (results:
   (`422 unknown instrument` from `/risk/control`).
 - **Build recipe:** `export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"`, render with
   `TRADERX_SKIP_LOCKFILE_REFRESH=1`, then `build-images.py`. Run from a checkout no other chat commits to.
-- **Apply order gains a step before the engine:** `kubectl apply -f specs/YU17-otc-rates/generation/kubernetes/cluster/gke/storageclass.yaml`
-  (already present on `traderx-demo` since this run). Without it the members stay Pending.
+- **StorageClass:** `order-matcher-archive` is in the rendered candidate since 2026-10-27 (`prepare.py`); it is
+  also already present on `traderx-demo` from this run. Without it the members stay Pending.
 - **Secrets:** `auth-secrets` needs six keys including `cluster-client-secret`; `mariadb-credentials` and
   `grafana-credentials` as before. Fresh random values worked first time; S5 never refused.
 - **Seeding:** `initialize-accounts.py --apply`, then `initialize-reference-data.py --apply`.

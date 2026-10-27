@@ -148,7 +148,7 @@ function normalizeQuote(ticker, openPrice, closePrice, source) {
 function normalizeTreasuryQuote(instrumentKey, snapshotEntry) {
   const seedPercent = treasury.round3(Number(snapshotEntry.runtimeSeedCleanPrice));
   const fraction = treasury.pctToFraction(seedPercent);
-  return {
+  const quote = {
     ticker: instrumentKey,
     openPrice: fraction,
     closePrice: fraction,
@@ -181,6 +181,10 @@ function normalizeTreasuryQuote(instrumentKey, snapshotEntry) {
       ? 'simulated-corporate-credit-spread'
       : 'simulated-us-treasury-auction-seed'
   };
+  // A zero's offline anchor accretes toward par at the yield its auction seed implied at issue
+  // (treasury.accretionAnchor); a coupon bond has none and walks around its fixed seed.
+  quote.seedYieldPercent = treasury.seedYieldPercent(quote);
+  return quote;
 }
 
 function chooseVolatilityProfile() {
@@ -430,8 +434,12 @@ function updateTick(ticker, sharedRoll) {
     // would silently discard the very thing being integrated.
     const fromCurve = curveCleanPercent(treasuryQuote, ts);
     const localRoll = Math.random() * 2 - 1;
+    // Offline zeros walk around an anchor that accretes toward par (treasury.accretionAnchor);
+    // everything else walks around its fixed seed, as before.
+    const anchor = fromCurve === null ? treasury.accretionAnchor(treasuryQuote, ts) : null;
+    const walkBase = anchor === null ? treasuryQuote : { ...treasuryQuote, seedCleanPercent: anchor };
     const nextPercent = fromCurve !== null ? fromCurve : treasury.updateTreasuryCleanPrice(
-      treasuryQuote, Number.isFinite(sharedRoll) ? sharedRoll : Math.random() * 2 - 1, localRoll);
+      walkBase, Number.isFinite(sharedRoll) ? sharedRoll : Math.random() * 2 - 1, localRoll);
     const next = {
       ...treasuryQuote,
       cleanPercent: nextPercent,
