@@ -14,7 +14,8 @@
 # core NATS does not replay). After the projection is back, a third cross must surface that loss in
 # missingTradeSides (FR-DRS-02: "count trade sides that never reached it"). It leaves the lost pair
 # unprojected on the minted ticker, so run it last. On a jetstream-mode tier the stream replays
-# them instead, and the arm asserts THAT.
+# them instead, and the arm asserts THAT: 6 of 6 sides, positions +15/-15 equal to the rows, nothing
+# counted missing (FR-DRS-25).
 #
 # Usage: CTX=<ctx> NS=<ns> [ACCT_A=22214 ACCT_B=42422] [NEGATIVE=1] bash scripts/proofs/yu18-projection-effect-end.sh
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -86,7 +87,14 @@ if [[ "${NEGATIVE:-0}" == 1 ]]; then
   cross
   sleep 10; F2="$(feed)"; n="$(sql_sides)"; miss="$(jget 'd["trades"]["missingTradeSides"]' <<<"${F2}")"
   echo "    after the outage: SQL sides on ${T}=${n} (engine booked 6); feed: ${F2}"
-  if [[ "${n}" == 6 ]]; then ok "the outage pair was replayed into SQL (mode ${MODE})"
+  if [[ "${n}" == 6 ]]; then
+    for i in $(seq 1 20); do [[ "$(pos "${ACCT_A}")" == 15 && "$(pos "${ACCT_B}")" == -15 ]] && break; sleep 1; done
+    for a in "${ACCT_A}" "${ACCT_B}"; do
+      [[ "$(pos "${a}")" == "$(signed_sum "${a}")" ]] || fail "account ${a}: positions $(pos "${a}") != signed sum of its ${T} trades $(signed_sum "${a}")"
+    done
+    [[ "$(pos "${ACCT_A}")" == 15 && "$(pos "${ACCT_B}")" == -15 ]] || fail "after the replay positions A=$(pos "${ACCT_A}") B=$(pos "${ACCT_B}"), want +15/-15"
+    [[ "${miss:-0}" == 0 ]] || fail "all 6 sides reached SQL but missingTradeSides=${miss}: a replay counted as a loss"
+    ok "the outage pair was replayed into SQL (mode ${MODE}): 6 of 6 sides, positions +15/-15 = the rows' signed sums, missingTradeSides 0"
   elif [[ "${n}" == 4 && "${miss:-0}" -ge 2 ]]; then ok "the outage pair is lost on the ${MODE} feed and COUNTED: missingTradeSides=${miss}"
   else fail "SQL has ${n} of 6 sides and missingTradeSides=${miss:-?}: trade sides never reached the projection and it does not say so (FR-DRS-02)"; fi
 fi

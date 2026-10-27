@@ -197,6 +197,20 @@ class Rendering(unittest.TestCase):
             'java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!']
         with self.assertRaises(AssertionError): module.validate(docs)
 
+    def test_projection_pulls_the_durable_feed(self):
+        tp=next(d for d in self.docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
+        env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
+        self.assertEqual(env['PROJECTION_FEED_MODE'],'jetstream')
+        self.assertNotIn('TRADE_PROJECTION_MODE',env)   # row projection: SQL trades stays complete
+        docs=copy.deepcopy(self.docs)
+        tp=next(d for d in docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
+        next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_MODE')['value']='core'
+        with self.assertRaises(AssertionError): module.validate(docs)
+        docs=copy.deepcopy(self.docs)
+        nats=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='nats')
+        next(v for v in module.podspec(nats)['volumes'] if v['name']=='data').pop('persistentVolumeClaim')
+        with self.assertRaises(AssertionError): module.validate(docs)
+
     def test_all_workloads_have_complete_scheduler_requests(self):
         for doc in self.docs:
             pod=module.podspec(doc)

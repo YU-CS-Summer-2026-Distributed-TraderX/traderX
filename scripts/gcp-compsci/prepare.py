@@ -68,6 +68,11 @@ def configure_private_runtime(docs):
             if name == 'grafana':
                 secret_env(c, 'GF_SECURITY_ADMIN_PASSWORD', 'grafana-credentials', 'admin-password')
         for c in pod.get('containers', []):
+            if name == 'trade-processor':
+                # FR-DRS-25: the projection pulls a durable JetStream consumer, so sides booked while it is
+                # down are replayed on restart instead of lost. Row projection: SQL keeps every trade.
+                c['env'] = [e for e in c.get('env', []) if e['name'] != 'PROJECTION_FEED_MODE']
+                c['env'].append({'name': 'PROJECTION_FEED_MODE', 'value': 'jetstream'})
             if name == 'web-front-end-angular':
                 # The inherited development image CMD names a removed script.
                 # This packaged script builds production assets and serves on WEB_SERVICE_PORT.
@@ -166,6 +171,14 @@ def validate(docs):
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
             env = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
             require(env.get('CONTROL_FEED_SUBSCRIBER') == '1', 'gateway does not subscribe to the control feed (YU04)')
+        # FR-DRS-25: the production projection replays an outage from the stream, and the stream outlives NATS.
+        if doc['metadata']['name'] == 'trade-processor' and pod:
+            env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}
+            require(env.get('PROJECTION_FEED_MODE') == 'jetstream',
+                    'trade-processor on the core feed loses every side booked while it is down (FR-DRS-25)')
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'nats':
+            data = next((v for v in pod['volumes'] if v['name'] == 'data'), {})
+            require('persistentVolumeClaim' in data, 'NATS JetStream store is not on a PVC (FR-DRS-25)')
         # FR-GMR-04: a member launched through a shell (kept off PID 1 for the crash harness) must forward
         # SIGTERM to the JVM and exit with its status, or every delete/roll ends in SIGKILL after the grace.
         if doc['kind'] == 'StatefulSet':

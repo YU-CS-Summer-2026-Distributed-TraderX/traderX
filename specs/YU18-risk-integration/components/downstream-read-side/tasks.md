@@ -15,9 +15,12 @@
 - [x] Bridge receipt publish: per-partition lanes, 429 counting, `/health` and `/metrics`, ALERT ids
       (48655be8, ADR-083).
 - [x] Core-mode recon holds an unprojected side for `RECON_PROJECTION_GRACE_MS` (FR-DRS-22).
+- [x] The production render pulls the durable feed with row projection, and refuses otherwise (FR-DRS-25).
+- [x] The `tradeSeq` watermark is committed with each batch and counts a lossy restart (FR-DRS-02). On the durable
+      feed the recon waits for the replay to catch up (FR-DRS-22).
 
 ## Still open
 
-- No deployed tier sets the opt-in env yet.
+- The production render sets `PROJECTION_FEED_MODE=jetstream`, but the next rollout has not deployed it yet.
 - In snapshot mode no consumer replays a rejected trade side from the archive yet. The recon reports it
   MISSING, and the bridge names it (FR-DRS-16, FR-DRS-18).

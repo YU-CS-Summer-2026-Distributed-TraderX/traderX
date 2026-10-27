@@ -1,7 +1,8 @@
 # Downstream read side
 
 Status: implemented and measured on a cloud VM, 2026-10-25 to 2026-10-27. Every new path is opt-in;
-defaults keep the pre-component behaviour. Decisions: [ADR-080](../../system/adr-080-downstream-read-side.md),
+defaults keep the pre-component behaviour. The production render (`scripts/gcp-compsci/prepare.py`) opts in to
+the durable feed with row projection (FR-DRS-25). Decisions: [ADR-080](../../system/adr-080-downstream-read-side.md),
 [ADR-083](../../system/adr-083-bridge-receipt-publish.md).
 
 Source ownership (all under the state's `generation/runtime-overrides/`, rendered last-wins over YU17):

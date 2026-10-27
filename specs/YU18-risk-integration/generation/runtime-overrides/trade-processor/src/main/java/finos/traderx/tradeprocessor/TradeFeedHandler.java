@@ -87,6 +87,9 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private final AtomicLong snapshots = new AtomicLong();
   private final AtomicLong snapshotRows = new AtomicLong();
   private final AtomicLong snapshotFailures = new AtomicLong();
+  // Row projection on the jetstream feed: per owned partition, the latest instant at which every side the
+  // stream held had committed to SQL. The recon needs it after an outage, while the replay is still running.
+  private final Map<Integer, Long> caughtUpAt = new ConcurrentHashMap<>();
   private volatile String snapshotScope;
 
   public TradeFeedHandler() {
@@ -101,6 +104,10 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private TradeSnapshotStore snapshotStore;
   @Autowired(required = false)
   private RunRegistry runRegistry;
+  @Autowired(required = false)
+  private org.springframework.jdbc.core.JdbcTemplate jdbc;
+  @Autowired(required = false)
+  private org.springframework.transaction.support.TransactionTemplate transactions;
 
   boolean jetstream() { return "jetstream".equalsIgnoreCase(feedMode); }
   boolean snapshotMode() { return "snapshot".equalsIgnoreCase(projectionMode); }
@@ -111,6 +118,16 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   @Override
   public void afterPropertiesSet() throws Exception {
     super.afterPropertiesSet();
+    // Row projection: the gap counter's watermark survives a restart (TradeSeqGaps). The snapshot
+    // projection replays from its own stream cursor instead.
+    if (jdbc != null && !snapshotMode() && partitionCount <= 1) {
+      gaps.persistIn(
+          epoch -> jdbc.query("SELECT stream_seq FROM projection_cursor WHERE projection_scope=? AND partition_id=0",
+              (rs, i) -> rs.getLong(1), TradeSeqGaps.SCOPE + epoch).stream().findFirst().orElse(null),
+          (epoch, seq) -> jdbc.update("INSERT INTO projection_cursor(projection_scope,partition_id,stream_seq,consensus_seq)"
+              + " VALUES (?,0,?,0) ON DUPLICATE KEY UPDATE stream_seq=GREATEST(stream_seq,VALUES(stream_seq))",
+              TradeSeqGaps.SCOPE + epoch, seq));
+    }
     if (jetstream()) {
       try {
         startJetStream();
@@ -140,9 +157,10 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     if (snapshotMode()) { startSnapshotMode(); return; }
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
+      caughtUpAt.put(p, 0L);
       feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), stream, subject,
           JetStreamFeed.durable("tp-trades-p" + p, subject), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
-          msgs -> onJetStreamBatch(p, msgs)));
+          msgs -> onJetStreamBatch(p, msgs), head -> caughtUpAt.put(p, System.currentTimeMillis())));
     }
     log.info("trade feed: jetstream mode, {} of {} partitions owned", feedThreads.size(), partitionCount);
   }
@@ -259,8 +277,20 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   public Map<Integer, TradeView> views() { return views; }
   public String projectionMode() { return snapshotMode() ? "snapshot" : "rows"; }
 
+  /**
+   * Row projection on the jetstream feed: the instant (epoch ms) by which every side the stream held had
+   * committed to SQL, on every owned partition; 0 until each has caught up once since start.
+   * ponytail: min over OWNED partitions; a replica owning a subset never vouches for the others.
+   */
+  public long caughtUpAt() {
+    return caughtUpAt.values().stream().mapToLong(Long::longValue).min().orElse(0L);
+  }
+  public boolean jetstreamRows() { return jetstream() && !snapshotMode(); }
+
   /** One fetched batch: decode on this partition's own thread, project, count. */
   void onJetStreamBatch(int partition, List<Message> msgs) {
+    // A short batch drained the consumer: everything stored before this fetch began is in it or before it.
+    long drainedAt = msgs.size() < BATCH_SIZE ? System.currentTimeMillis() - fetchWaitMillis : -1;
     ProjectionWriteLock.partition(partition);
     List<TradeOrder> batch = new ArrayList<>(msgs.size());
     for (Message m : msgs) {
@@ -275,6 +305,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     // The gap counter needs every tradeSeq in order; with partitions each thread sees a subsequence.
     if (partitionCount <= 1) { for (TradeOrder order : batch) { gaps.observe(order.getId()); } }
     processBatch(batch);
+    if (drainedAt > 0) { caughtUpAt.merge(partition, drainedAt, Math::max); }
   }
 
   @Override
@@ -324,7 +355,12 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
 
   private void processBatch(List<TradeOrder> batch) {
     try {
-      tradeService.processTrades(batch);
+      if (transactions != null && gaps.persisted()) {
+        // The watermark commits with the batch: a restart counts exactly the sides that never committed.
+        transactions.executeWithoutResult(s -> { tradeService.processTrades(batch); gaps.save(); });
+      } else {
+        tradeService.processTrades(batch);
+      }
       applied.addAndGet(batch.size());
     } catch (Exception x) {
       log.error("Batch trade processing failed for {} trades; retrying individually", batch.size(), x);
@@ -337,6 +373,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
           log.error("Error processing trade order {}", order, individualFailure);
         }
       }
+      gaps.save();   // these sides reached the projection; a failed one is logged above, not lost upstream
     }
   }
 
@@ -346,31 +383,70 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
    * them in that order, so a jump forward is exactly the number of trade sides lost upstream of
    * the flush thread: bridge queue drops, NATS slow-consumer cuts, a failover's unpublished tail,
    * this process's own queue drops. Ids are {@code [e1-<epoch>-]<tradeSeq>-B|S}.
-   * ponytail: in memory since process start - a gap that spans a restart shows as a fresh baseline;
-   * persist the watermark in the batch transaction to close that.
+   *
+   * <p>With {@link #persistIn} the watermark (last applied tradeSeq of the id's epoch) is saved with
+   * each batch, and the first side after a start is measured against it, so sides booked while the
+   * projection was down count as missing instead of becoming a fresh baseline. A new epoch restarts
+   * tradeSeq, so it has no watermark and starts one.
    */
   public static final class TradeSeqGaps {
+    /** projection_cursor row (partition 0) holding an epoch's watermark in stream_seq. */
+    static final String SCOPE = "trade-seq:";
     private long last = -1;
     private long missing;
     private long firstSeen = -1;
+    private String epoch = "";
+    private java.util.function.Function<String, Long> load = e -> null;
+    private java.util.function.BiConsumer<String, Long> store;
+
+    synchronized void persistIn(java.util.function.Function<String, Long> load, java.util.function.BiConsumer<String, Long> store) {
+      this.load = load;
+      this.store = store;
+    }
+
+    boolean persisted() { return store != null; }
+
+    /** Save the watermark; called inside the batch's transaction. A failure never fails the batch. */
+    synchronized void save() {
+      if (store == null || last <= 0) { return; }
+      try { store.accept(epoch, last); } catch (RuntimeException x) { storeFailed(x); }
+    }
+
+    private boolean warned;
+    private void storeFailed(RuntimeException x) {
+      if (!warned) { warned = true; log.error("trade-feed tradeSeq watermark unavailable; a restart gap will not be counted", x); }
+    }
 
     synchronized void observe(String id) {
       long seq = seqOf(id);
       if (seq <= 0) { return; }
-      if (last < 0) { firstSeen = seq; last = seq; return; }
+      boolean first = last < 0;
+      if (first) {
+        firstSeen = seq;
+        epoch = id.substring(0, start(id));
+        Long saved = null;
+        try { saved = load.apply(epoch); } catch (RuntimeException x) { storeFailed(x); }
+        last = saved == null ? seq - 1 : saved;   // nothing saved: this side is the baseline
+      }
       if (seq > last + 1) {
         missing += seq - last - 1;
-        log.warn("trade-feed GAP tradeSeq {} -> {}: {} trade sides never reached the projection (total missing={})",
-            last, seq, seq - last - 1, missing);
+        if (first) {
+          log.error("ALERT trade-feed restart GAP tradeSeq {} (last applied before this start) -> {}: {} trade sides were"
+              + " booked while the projection was down and never reached it (total missing={})", last, seq, seq - last - 1, missing);
+        } else {
+          log.warn("trade-feed GAP tradeSeq {} -> {}: {} trade sides never reached the projection (total missing={})",
+              last, seq, seq - last - 1, missing);
+        }
       }
       if (seq > last) { last = seq; }
     }
 
     static long seqOf(String id) {
       if (id == null || id.length() < 3 || id.charAt(id.length() - 2) != '-') { return -1; }
-      int start = id.lastIndexOf('-', id.length() - 3) + 1;
-      try { return Long.parseLong(id.substring(start, id.length() - 2)); } catch (NumberFormatException x) { return -1; }
+      try { return Long.parseLong(id.substring(start(id), id.length() - 2)); } catch (NumberFormatException x) { return -1; }
     }
+
+    private static int start(String id) { return id.lastIndexOf('-', id.length() - 3) + 1; }
 
     public synchronized long missing() { return missing; }
     public synchronized long last() { return last; }

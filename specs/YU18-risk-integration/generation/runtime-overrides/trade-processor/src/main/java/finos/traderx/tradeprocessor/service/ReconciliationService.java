@@ -115,7 +115,7 @@ public class ReconciliationService {
     private final String serviceAuthorization;
 
     private volatile long cursor = 0L;
-    // Core feed mode: how long after its fill a side may still be on its way into SQL (see classify).
+    // Row projection: how long after its fill a side may still be on its way into SQL (see classify).
     private long projectionGraceMs = 120_000L;
     private java.time.Clock clock = java.time.Clock.systemUTC();
     @Value("${recon.projection-grace-ms:120000}")
@@ -361,6 +361,10 @@ public class ReconciliationService {
         Optional<Trade> local = tradeRepository.findById(entry.id());
         if (local.isEmpty()) {
             if (clock.millis() - entry.execTimeMillis() < projectionGraceMs) return false;
+            // Durable feed: after an outage the replay may still be delivering it. MISSING only once the
+            // feed has caught up at least a grace after the fill.
+            if (ledgerFeed != null && ledgerFeed.jetstreamRows()
+                && ledgerFeed.caughtUpAt() < entry.execTimeMillis() + projectionGraceMs) return false;
             missingInProjection.increment();
             log.warn("recon MISSING_IN_PROJECTION id={} account={} security={}",
                 entry.id(), entry.accountId(), entry.security());

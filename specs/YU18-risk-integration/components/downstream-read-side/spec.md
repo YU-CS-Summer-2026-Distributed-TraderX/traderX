@@ -1,6 +1,6 @@
 # Downstream read side specification
 
-Status: implemented, 2026-10-27 (FR-DRS-11..24 added the same day). Dependencies: JetStream on the existing NATS server, the YU18 trade
+Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
 ## Requirements
@@ -10,7 +10,15 @@ and order bridges, MariaDB.
   the event, count it and log a WARN. It SHALL NOT grow the heap.
 - FR-DRS-02: The projection SHALL count trade sides that never reached it, from the contiguity of the
   engine's per-leg `tradeSeq` (`TradeSeqGaps`). `GET /v2/projection-feed` SHALL report backlog, dropped
-  and missing counts.
+  and missing counts. In row projection with one partition, on either feed, the count SHALL survive a
+  restart of trade-processor: after the restart, `trades.missingTradeSides` SHALL equal the number of
+  trade sides the engine booked in the current epoch that never committed to SQL `trades`, and SHALL NOT
+  read 0 while any such side exists. A restart that skipped n sides SHALL write one log line
+  `ALERT trade-feed restart GAP tradeSeq <last committed> (last applied before this start) -> <first after
+  the start>: <n> trade sides were booked while the projection was down and never reached it (total
+  missing=<m>)`. A side redelivered after it committed, and the first side of a new epoch, SHALL NOT count.
+  The last committed `tradeSeq` of each epoch is stored in `projection_cursor` (row `trade-seq:<id prefix>`,
+  partition 0, `stream_seq`), written in the same transaction as the batch that applied it.
 - FR-DRS-03: Trade and order writes SHALL be batched at 1000: one run-row read per scope, one counter
   UPDATE, one position prefetch and one multi-row position upsert per batch. Order updates SHALL use one
   transaction per batch, falling back to one per update on refusal.
@@ -90,8 +98,11 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   MATCHED (or FIELD_MISMATCH) only once its partition's committed cursor covers it, and MISSING only once
   its own partition's subject holds a later `tradeSeq` without it. Until then it is held, and later
   sides wait behind it.
-- FR-DRS-22: In core feed mode, a blotter side with no SQL row SHALL be held, not counted, while it is
+- FR-DRS-22: In row projection, a blotter side with no SQL row SHALL be held, not counted, while it is
   younger than `RECON_PROJECTION_GRACE_MS` (default 120000), measured from its engine `execTimeMillis`.
+  On the jetstream feed it SHALL also be held until the feed has caught up (no message pending on any owned
+  partition) at an instant at least one grace after that `execTimeMillis`, so a side still behind a replay
+  after an outage ends MATCHED, never MISSING.
   The recon cursor (`/recon/status` `cursor`) SHALL stay below it. If the row lands inside the grace,
   the side SHALL end MATCHED. Otherwise the first sweep after the grace SHALL count it
   MISSING_IN_PROJECTION. Every side already older than the grace is decided in that same sweep.
@@ -104,8 +115,16 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   `PROJECTION_FEED_STREAM_MAX_AGE_HOURS` (GKE tier: 20 GiB, 2 h, on a 32 Gi `nats-data` PVC). The NATS
   ingest queue SHALL be configured per tier: GKE 2,000,000 msgs / 1 GB, kind 500,000 / 256 MB, and the
   `kubernetes-runtime` base manifests 1,000,000 / 512 MB.
+- FR-DRS-25: The CompSci GKE render (`scripts/gcp-compsci/prepare.py`), the production tier, SHALL run
+  trade-processor with `PROJECTION_FEED_MODE=jetstream` and row projection, with the JetStream store on
+  the `nats-data` PVC. The render SHALL refuse a candidate without both. On that tier, a trade side the
+  engine books while trade-processor is down or restarting SHALL reach SQL `trades` exactly once after it
+  is back, and `positions` SHALL equal the signed sum of the `trades` rows, with `missingTradeSides` 0.
+  This holds for outages within the stream retention of FR-DRS-24. A side the stream discarded before the
+  consumer reached it SHALL count in `missingTradeSides` (FR-DRS-02). The bond rule, SQL settlement and
+  the recon of FR-DRS-22 SHALL behave as on the core feed.
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
-  the pre-component wire bytes and SQL behaviour.
+  the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark row.
 - NFR-DRS-02: No engine, ack, snapshot or wire format changes.
 
 ## Success Criteria
@@ -119,3 +138,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
 - SC-DRS-04: Live, with the default ingest queue and a 400K/s burst, the bridges' rejected ids equal
   the engine's fills minus the stream, which equal the recon's MISSING set. With the GKE queue, the
   same burst rejects 0.
+- SC-DRS-05: Live, `yu18-projection-effect-end.sh NEGATIVE=1` books a cross while trade-processor is scaled
+  to 0. On the core feed, after it returns, SQL holds 4 of 6 sides and `missingTradeSides` is 2. On the
+  production render (FR-DRS-25), SQL holds 6 of 6 sides, positions are +15/-15 and equal the rows, and
+  `missingTradeSides` is 0.

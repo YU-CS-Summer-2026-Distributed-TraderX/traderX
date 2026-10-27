@@ -33,3 +33,7 @@ snapshot_at DATETIME)`, primary key `(projection_scope, partition_id)`, created 
 each partition's last SQL snapshot sits in the JetStream capture stream. The snapshot writes it in the same
 transaction as the changed positions and blotter windows. A restart replays from `stream_seq + 1`
 ([ADR-080](system/adr-080-downstream-read-side.md)).
+In row projection with one partition it also holds one row per cluster epoch, `projection_scope =
+'trade-seq:<trade id prefix>'` (`e1-<epoch>-`, or empty for legacy ids), `partition_id = 0`, with the last
+`tradeSeq` committed to SQL in `stream_seq`. Each trade batch writes it in its own transaction. A restart
+counts the sides between it and the first `tradeSeq` it receives as missing (FR-DRS-02).
