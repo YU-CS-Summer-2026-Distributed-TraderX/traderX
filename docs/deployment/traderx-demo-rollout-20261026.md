@@ -328,3 +328,22 @@ The build host was deleted after the rollout, so the build records were reconstr
 plus the fresh derivation (`summary.json` says so); the payload comparison is what binds the images to the
 source. Next time pass `--build-records <build-images.py output>` while the build VM is still up. Evidence:
 the shared notes folder, `admission-9e0fd80b-20261027/`.
+
+**Sign-in checks with yaakov (11:05–11:23 am ET).** yaakov signed in himself; no production password was typed by
+the agent.
+
+| Check | Result |
+|---|---|
+| Console order, effect end | ticket in the browser pane: 42422 Sell 5 MSFT @393 (orderRef 5, 11:13:32) then 22214 Buy 5 @394 (orderRef 6, 11:14:22); crossed at 393; members applied 1300 / 4 trade sides on all three; SQL `3-S`, `4-B`; positions 22214 +10, 42422 −10; console blotter shows `4-B`; projection feed backlog 0, dropped 0, missing 0 |
+| Per-client sessions | pane `PPAlpildGx8m`, yaakov's Chrome `Y7AvjX`, both signed in at once; after Chrome signed out, the pane was still `PPAlpildGx8m` (11:23:26) |
+| Grafana | signed in through the console's `/grafana/`; Explore on Loki `{namespace="traderx"}`: 8,590 lines in 30 minutes, newest 11:18 |
+
+**Incident, cleaned up.** Filling the ticket with batched automation (a stale element reference after the
+form re-rendered) set the "Equity — buy 100 IBM @ 200" preset and submitted it: order `1-3`, 42422 Buy 100 IBM
+@200, rested at 11:09:50. A second stray submission, `1-4` (42422 Sell 5 IBM, STOP_LIMIT DAY), was rejected
+NO_TRADING_DAY at 11:10:38 and never rested. On yaakov's go, `1-3` was cancelled through the gateway at 11:11:29;
+open orders went 1 → 0 on all three members and the read model shows it CANCELED. Neither traded. The real order
+was then entered one field at a time, the ticket read back before each Submit.
+
+Further finding: the console's Grafana link is `/grafana`, which 301s to `http://demo.yaakovseif.dev:8080/grafana/`
+and fails behind the HTTPS load balancer; `/grafana/` works.
