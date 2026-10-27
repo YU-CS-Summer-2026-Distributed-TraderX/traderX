@@ -38,6 +38,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:?EXPECT=before|after}"
 ACCT="${ACCT:-22214}"; ACCT2="${ACCT2:-52355}"   # both accounts exist in reference data: a position on an unmapped account breaks the EOD risk extract
@@ -46,10 +47,10 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
-seed() { curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+seed() { curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":$1,\"tickers\":\"${TICKER}\",\"price\":$2}"; }
 order() { # account side price -> body
-  curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":10,\"limitPrice\":$3,\"clientOrderId\":\"${TICKER}-$2-$3\"}"; }
 # (the local trades()/metric() readers of traderx_cluster_trades and the band counters are gone:
 #  every counter reading now comes from lib-consensus-readings.sh, as a delta. See the header.)

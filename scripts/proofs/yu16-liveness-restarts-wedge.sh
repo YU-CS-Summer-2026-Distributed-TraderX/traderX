@@ -42,6 +42,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 ACCT="${ACCT:-42422}"
 TICKER="${TICKER:-LIV$(date +%H%M%S)}"
 PRICE="${PRICE:-100.00}"
@@ -130,7 +131,7 @@ seed() {
   # `&& rc=0 || rc=$?`, not a bare assignment then `rc=$?`: under `set -e` a failing command
   # substitution takes the whole script down on the assignment line, so the diagnostic below would
   # never print and the proof would die silently with curl's exit code.
-  out="$(curl -s -m 20 -w '\n%{http_code}' -X POST "${ORDER_URL}/seed" \
+  out="$(curl "${AUTH[@]}" -s -m 20 -w '\n%{http_code}' -X POST "${ORDER_URL}/seed" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" 2>&1)" && rc=0 || rc=$?
   code="$(printf '%s' "${out}" | tail -1)"
@@ -144,7 +145,7 @@ seed() {
   only cure, and every assertion below would otherwise run against an unregistered ticker."
 }
 
-order() { curl -s -m 20 "${ORDER_URL}/orders" -X POST -H 'Content-Type: application/json' \
+order() { curl "${AUTH[@]}" -s -m 20 "${ORDER_URL}/orders" -X POST -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${PRICE}${1:+,\"clientOrderId\":\"$1\"}}" 2>/dev/null; }
 drive() { # DRIVE orders at once; every one parks a gateway HTTP thread for the ack timeout
   local i pids=()

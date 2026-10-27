@@ -33,6 +33,7 @@ set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 RISK_CONTROL_TOKEN="${RISK_CONTROL_TOKEN:-dev-risk-control}"
 EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
@@ -66,7 +67,7 @@ fxrate() { # fxrate <currency> <rate> [token] -> http_code
 
 book() { # book <clientOrderId> [account] -> "<http_code> <body>" on stdout
   local body
-  body="$(curl -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
+  body="$(curl "${AUTH[@]}" -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
     -H 'Content-Type: application/json' \
     -d "{\"clientOrderId\":\"${1}\",\"accountId\":${2:-${ACCOUNT}},\"payReceive\":\"Receive\",
          \"notional\":${NOTIONAL},\"fixedRate\":${FIXED_RATE},\"effectiveDate\":\"${EFFECTIVE}\",
@@ -101,7 +102,7 @@ NOSUCH="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/ri
   -H 'Content-Type: application/json' \
   -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN}" -H 'X-Risk-Operator: yu17-fx-credit' -d '{}' || true)"
 [[ "${NOSUCH}" == "404" ]] || fail "an unknown control action returned HTTP ${NOSUCH}, not 404 — the build probe proves nothing"
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCOUNT},\"tickers\":\"AAPL\",\"price\":150.00}" >/dev/null \
   || fail "seed failed for account ${ACCOUNT} — every booking would be refused for the wrong reason"
 echo "[ok] gateway ready, 3 members, fxrate control present, account ${ACCOUNT} enabled"

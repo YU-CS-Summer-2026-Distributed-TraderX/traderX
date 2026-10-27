@@ -37,6 +37,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 # READ THE POD, NOT THE SERVICE. The whole point of this change is that a failing readiness probe
 # removes the pod from the Service — which kills a svc-based port-forward at exactly the moment the
 # measurement matters, and reports 000 instead of the 503 being asserted.
@@ -125,7 +126,7 @@ seed() {
   # substitution takes the whole script down on the assignment line, so the diagnostic below would
   # never print and the proof would die silently with curl's exit code — which is worse than the
   # bare "seed failed" this replaced.
-  out="$(curl -s -m 20 -w '\n%{http_code}' -X POST "${MATCHER_URL}/seed" \
+  out="$(curl "${AUTH[@]}" -s -m 20 -w '\n%{http_code}' -X POST "${MATCHER_URL}/seed" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" 2>&1)" && rc=0 || rc=$?
   code="$(printf '%s' "${out}" | tail -1)"
@@ -139,7 +140,7 @@ seed() {
   only cure, and every assertion below would otherwise run against an unregistered ticker."
 }
 
-order() { curl -s -m 20 "${MATCHER_URL}/orders" -X POST -H 'Content-Type: application/json' \
+order() { curl "${AUTH[@]}" -s -m 20 "${MATCHER_URL}/orders" -X POST -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${PRICE}${1:+,\"clientOrderId\":\"$1\"}}" 2>/dev/null; }
 # Bounded concurrency, deliberately well under the gateway's 64-thread HTTP pool. An unbounded
 # drive against a gateway that cannot commit parks a thread per request for the full ack timeout

@@ -30,6 +30,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 DESTRUCTIVE="${DESTRUCTIVE:-0}"          # opposite default to yu17-retick-determinism: EVERY step
@@ -59,11 +60,11 @@ snap_count() { metric "$1" traderx_cluster_snapshots; }
 leader() { for m in 0 1 2; do [[ "$(metric "${m}" traderx_cluster_role 2>/dev/null)" == "1" ]] && { echo "${m}"; return 0; }; done; return 1; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
-set_phase() { curl -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
+set_phase() { curl "${AUTH[@]}" -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
   -H 'Content-Type: application/json' -d "{\"phase\":\"$1\"}" 2>/dev/null | awk '{c=$NF; $NF=""; print c, $0}'; }
-order() { curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+order() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
   -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4,\"clientOrderId\":\"${TICKER}-$5-$$\"}"; }
-cancel() { curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
+cancel() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
 rm_status() { "${K[@]}" exec deploy/trade-processor -- sh -c "wget -qO- 'http://localhost:18091/accounts/$2/orders?status=all' 2>/dev/null" \
   | python3 -c "
 import sys,json
@@ -146,7 +147,7 @@ for m in 0 1 2; do "${K[@]}" get pod "order-matcher-cluster-${m}" -o jsonpath='{
 echo "--- 0. the venue is OPEN and the ticker is live"
 [[ "$(health_field 0 phase)" == "OPEN" ]] || fail "the venue reads phase='$(health_field 0 phase)', not OPEN (decision a)"
 for a in "${ACCT}" "${ACCT2}"; do
-  [[ "$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  [[ "$(curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${a},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")" == 2* ]] || fail "seed for ${a} did not take"
 done
 CTRL="$(order "${ACCT}" Buy 10 "${SEED_PX}" ctrl)"

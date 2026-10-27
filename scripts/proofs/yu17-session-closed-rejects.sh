@@ -31,6 +31,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 ACCT="${ACCT:-22214}"                       # exists in reference data (yu17-band-follows-market)
@@ -52,14 +53,14 @@ phase_of() { # phase_of <member-ordinal>
 # Issue the sequenced phase command through the gateway (scope §1.2: a human via POST /session).
 # Returns "<http-code> <body>". Absent on any pre-mint build; the caller decides what that means.
 set_phase() { # set_phase CLOSED|PRE_OPEN|OPEN
-  curl -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
+  curl "${AUTH[@]}" -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
     -H 'Content-Type: application/json' -d "{\"phase\":\"$1\"}" 2>/dev/null \
     | awk '{code=$NF; $NF=""; print code, $0}'
 }
 order() { # order <side> <price> <tag>
-  curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"$1\",\"quantity\":10,\"limitPrice\":$2,\"clientOrderId\":\"${TICKER}-$3-$$\"}"; }
-cancel() { curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
+cancel() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
 
@@ -100,7 +101,7 @@ esac
 # --- 1. the control: the identical probe RESTS while OPEN ---------------------------------------
 # Everything below discriminates only against this. A refusal in step 3 that this step could not
 # get accepted would be a dead ticker, not a session gate.
-SEEDED="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+SEEDED="$(curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
   -H 'Content-Type: application/json' -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")"
 [[ "${SEEDED}" == 2* ]] || fail "seed of ${TICKER} @${SEED_PX} did not take (HTTP ${SEEDED})"
 PROBE_PX="$(python3 -c "print(f'{${SEED_PX} + 1:.3f}')")"   # inside the band, above the (empty) book: cannot cross
@@ -179,7 +180,7 @@ if [[ "${EXPECT}" == "after" ]]; then
   # request is now the same shape yu17-swap-netting books with (that proof passes, which is what
   # identified the drift), and the failure text below distinguishes the two causes.
   BEFORE="$(quiesced_seq)"
-  SW="$(curl -s -m20 -X POST "${MATCHER_URL}/swaps" -H 'Content-Type: application/json' \
+  SW="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/swaps" -H 'Content-Type: application/json' \
     -d "{\"clientOrderId\":\"${TICKER}-SWAP\",\"accountId\":${ACCT},\"payReceive\":\"Pay\",\"notional\":1000000,\"fixedRate\":0.04,\"effectiveDate\":\"2026-08-17\",\"maturityDate\":\"2031-08-17\",\"conventions\":\"USD-SOFR-1Y-ACT360\"}")"
   AFTER="$(quiesced_seq)"
   CID="$(field "${SW}" contractId)"

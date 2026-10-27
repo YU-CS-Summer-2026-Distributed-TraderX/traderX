@@ -30,6 +30,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 READMODEL_URL="${READMODEL_URL:-http://localhost:18091}"
 
@@ -48,7 +49,7 @@ step() { echo; echo "=== $* ==="; }
 # post <path> <json> -> "<http_code> <body>"
 post() {
   local out
-  out="$(curl -s --max-time 25 -w '\n%{http_code}' -X POST "${MATCHER_URL}$1" \
+  out="$(curl "${AUTH[@]}" -s --max-time 25 -w '\n%{http_code}' -X POST "${MATCHER_URL}$1" \
         -H 'Content-Type: application/json' -d "$2" 2>/dev/null)" || true
   local code="${out##*$'\n'}" body="${out%$'\n'*}"
   vlog "      POST $1 $2 -> ${code} ${body}"

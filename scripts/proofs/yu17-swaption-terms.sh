@@ -34,6 +34,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
 
@@ -62,7 +63,7 @@ json_field() { python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('$
 # assignment, before the status guard runs. 000 means NO ANSWER, which is not a refusal.
 book_swaption() { # book_swaption <style> <clientOrderId> -> "<code> <body>"
   local body
-  body="$(curl -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaptions" \
+  body="$(curl "${AUTH[@]}" -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaptions" \
     -H 'Content-Type: application/json' \
     -d "{\"clientOrderId\":\"${2}\",\"accountId\":${ACCOUNT},\"payReceive\":\"Pay\",
          \"notional\":${NOTIONAL},\"fixedRate\":${STRIKE},\"effectiveDate\":\"${EFFECTIVE}\",
@@ -98,7 +99,7 @@ ${K} exec order-matcher-cluster-0 -- sh -c "grep -qa BERMUDAN ${MARKER}" \
 if ${K} exec order-matcher-cluster-0 -- sh -c "grep -qa NOTASTYLE ${MARKER}"; then
   fail "the phase-2 build check matches a string that cannot be there — it would pass against any image"
 fi
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCOUNT},\"tickers\":\"${SEED_TICKER}\",\"price\":150.00}" >/dev/null \
   || fail "seed failed — account ${ACCOUNT} would not be enabled and every booking would be refused"
 echo "[ok] gateway ready, 3 members, a phase-2 image, account ${ACCOUNT} enabled"
@@ -154,7 +155,7 @@ assert_sequenced_in_window "${SEQ_BEFORE}" "${SEQ_AFTER}" "the European swaption
 echo "[ok] ${EUR_ID} European and ${BER_ID} Bermudan, each sequenced through consensus inside (${SEQ_BEFORE}, ${SEQ_AFTER}]"
 
 step "3. book an ordinary swap too, so the artifact has to carry both products"
-SWAP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
+SWAP_CODE="$(curl "${AUTH[@]}" -s -o /dev/null -w '%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
   -H 'Content-Type: application/json' \
   -d "{\"clientOrderId\":\"yu17-plain-${RUN_ID}\",\"accountId\":${ACCOUNT},\"payReceive\":\"Receive\",
        \"notional\":${NOTIONAL},\"fixedRate\":${STRIKE},\"effectiveDate\":\"${EFFECTIVE}\",

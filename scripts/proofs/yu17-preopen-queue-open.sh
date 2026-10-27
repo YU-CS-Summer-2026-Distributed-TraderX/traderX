@@ -34,6 +34,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 ACCT="${ACCT:-22214}"; ACCT2="${ACCT2:-52355}"   # both in reference data (yu17-band-follows-market)
@@ -49,12 +50,12 @@ health_field() { # health_field <member-ordinal> <key>
   "${K[@]}" exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('$2',''))" 2>/dev/null || echo ""
 }
-set_phase() { curl -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
+set_phase() { curl "${AUTH[@]}" -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
   -H 'Content-Type: application/json' -d "{\"phase\":\"$1\"}" 2>/dev/null | awk '{c=$NF; $NF=""; print c, $0}'; }
 order() { # order <account> <side> <qty> <price> <tag>
-  curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4,\"clientOrderId\":\"${TICKER}-$5-$$\"}"; }
-cancel() { curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
+cancel() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
 # The read model's status for one orderRef. Row ids are "<epoch>-<orderRef>". This is the ONE place
@@ -102,10 +103,10 @@ fi
 # --- 1. the control: this ticker trades, at this price, before anything is halted ----------------
 # Without it, an "after" arm in which nothing trades is indistinguishable from a dead ticker, an
 # unseeded price or a collared limit — the vacuous form of "nothing traded while queued".
-SEEDED="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+SEEDED="$(curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
   -H 'Content-Type: application/json' -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")"
 [[ "${SEEDED}" == 2* ]] || fail "seed of ${TICKER} @${SEED_PX} did not take (HTTP ${SEEDED})"
-[[ "$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+[[ "$(curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
   -H 'Content-Type: application/json' -d "{\"accountId\":${ACCT2},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")" == 2* ]] \
   || fail "seed for ${ACCT2} did not take"
 CTRL="$(order "${ACCT}" Buy 10 "${SEED_PX}" ctrl)"

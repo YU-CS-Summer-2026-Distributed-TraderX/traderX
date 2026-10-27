@@ -35,6 +35,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 ACCT="${ACCT:-42422}"
 TICKER="${TICKER:-INV$(date +%H%M%S)}"
 PRICE="${PRICE:-100.00}"
@@ -152,7 +153,7 @@ OPEN_BEFORE="$(agreed_open)"
   cluster would be meaningless. A fresh epoch is the cure."
 echo "  gateway=${GW}  open orders (all three agree)=${OPEN_BEFORE}"
 
-SEED="$(curl -s -m 20 -X POST "http://localhost:${ORDER_PORT}/seed" -H 'Content-Type: application/json' \
+SEED="$(curl "${AUTH[@]}" -s -m 20 -X POST "http://localhost:${ORDER_PORT}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" 2>&1)"
 [[ "${SEED}" == *'"seeded":true'* ]] || die "seed failed (${SEED:-no answer}); {\"seeded\":false} is the
   engine's symbol table exhausted, which needs a fresh epoch"
@@ -185,7 +186,7 @@ step "2. ${DRIVE} orders, each answered by the gateway, each outcome recorded CL
 # the CLIENT was told, so the client's own answers are the only honest witness for that half.
 pids=()
 for i in $(seq 1 "${DRIVE}"); do
-  ( curl -s -m 25 "http://localhost:${ORDER_PORT}/orders" -X POST -H 'Content-Type: application/json' \
+  ( curl "${AUTH[@]}" -s -m 25 "http://localhost:${ORDER_PORT}/orders" -X POST -H 'Content-Type: application/json' \
       -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${PRICE},\"clientOrderId\":\"inv-$$-${i}\"}" \
       > "${OUTDIR}/${i}" 2>/dev/null ) &
   pids+=($!)

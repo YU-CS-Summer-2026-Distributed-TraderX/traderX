@@ -24,6 +24,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"   # the suite runs the post-mint claim; the mint chip runs before/after
 TICKER="${TICKER:-FNMA}"
@@ -45,11 +46,11 @@ for b in json.load(sys.stdin)['books']:
     if b['ticker']=='$1':
         print(b.get('bid',0), b.get('ask',0)); break
 "; }
-order() { curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+order() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
   -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":10,\"limitPrice\":$3,\"clientOrderId\":\"${TICKER}-collar-$2-$3-$$\"}"; }
 CLEANUP_REFS=()
 cleanup() { local r; for r in ${CLEANUP_REFS[@]+"${CLEANUP_REFS[@]}"}; do
-  curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
 done; }
 trap cleanup EXIT
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
@@ -114,7 +115,7 @@ esac
 
 # Cancel what rested (control, plus the before-arm probe), verifying each cancel took.
 for r in ${CLEANUP_REFS[@]+"${CLEANUP_REFS[@]}"}; do
-  C="$(curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}")"
+  C="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}")"
   [[ "$(field "${C}" canceled)" == "True" || "$(field "${C}" canceled)" == "true" ]] || fail "cleanup cancel of ${r} did not take: ${C}"
 done
 CLEANUP_REFS=()

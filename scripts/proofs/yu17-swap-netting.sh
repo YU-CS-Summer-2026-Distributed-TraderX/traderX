@@ -31,6 +31,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
 
@@ -69,7 +70,7 @@ here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 # 000 means NO ANSWER, and no answer is not a refusal.
 book() { # book <payReceive> <rate> <clientOrderId> [account] -> "<http_code> <body>" on stdout
   local body
-  body="$(curl -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
+  body="$(curl "${AUTH[@]}" -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
     -H 'Content-Type: application/json' \
     -d "{\"clientOrderId\":\"${3}\",\"accountId\":${4:-${ACCOUNT}},\"payReceive\":\"${1}\",
          \"notional\":${NOTIONAL},\"fixedRate\":${2},\"effectiveDate\":\"${EFFECTIVE}\",
@@ -137,7 +138,7 @@ BEFORE_SEQ="$(quiesced_seq)"
 [[ "${BEFORE_SEQ}" =~ ^[0-9]+$ && "${BEFORE_SEQ}" -ge 0 ]] \
   || fail "could not read the applied sequence from order-matcher-cluster-0 (got '${BEFORE_SEQ}')"
 for acct in "${ACCOUNT}" "${COUNTERPARTY}"; do
-  curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${acct},\"tickers\":\"${SEED_TICKER}\",\"price\":150.00}" >/dev/null \
     || fail "seed failed for account ${acct} — every booking would be refused for the wrong reason"
 done
@@ -149,7 +150,7 @@ step "0b. cross an ordinary equity trade, so step 7 has a real population to be 
 # the instrument class netting is correct for.
 for side_account in "Sell:${COUNTERPARTY}" "Buy:${ACCOUNT}"; do
   side="${side_account%%:*}"; acct="${side_account##*:}"
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
+  code="$(curl "${AUTH[@]}" -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${acct},\"ticker\":\"${SEED_TICKER}\",\"side\":\"${side}\",\"quantity\":10,\"limitPrice\":150.00}" || true)"
   [[ "${code}" == "000" ]] && fail "${side} ${SEED_TICKER} order got NO answer (curl 000) — the gateway or the forward is down; that is not a refusal"

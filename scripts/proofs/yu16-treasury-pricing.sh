@@ -110,7 +110,15 @@ import json, os, sys
 
 target = sys.argv[1]
 rows = {r["ticker"]: r for r in json.loads(os.environ["PRICES_JSON"])["prices"]}
-bonds = {k: v for k, v in rows.items() if k.startswith("UST-") or k.startswith("CORP-")}
+# A matured bond is published with matured=true and no yield (FR-CDM21: it must not be QUOTED), so it
+# has no place on the curve; without this filter the oldest bill in the universe fails (e) the day
+# after it matures (UST-BILL-20260910 did, on 2026-10-26) and (c) reads a dead bill as the near end.
+import datetime
+today = datetime.date.today().strftime("%Y%m%d")
+def live(k, v):
+    tail = k[-8:]
+    return not v.get("matured") and not (tail.isdigit() and tail < today)   # /prices rows carry no matured flag
+bonds = {k: v for k, v in rows.items() if (k.startswith("UST-") or k.startswith("CORP-")) and live(k, v)}
 if not bonds:
     print("no bond rows in /prices at all — this step would otherwise pass vacuously", file=sys.stderr)
     sys.exit(1)

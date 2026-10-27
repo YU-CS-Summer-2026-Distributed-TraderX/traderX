@@ -22,6 +22,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 
 UST="${UST:-UST-20310630}"     # the 5Y, deliberately NOT the one the pricing proof walks
@@ -45,7 +46,7 @@ sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} ex
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
 order() { # order <side> <account> <quantity> [ticker] [price] -> HTTP code on stdout
-  curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
+  curl "${AUTH[@]}" -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${2},\"ticker\":\"${4:-${UST}}\",\"side\":\"${1}\",\"quantity\":${3},\"limitPrice\":${5:-${FRACTION}}}"
 }
@@ -95,7 +96,7 @@ assert_no_orders_sequenced "${BEFORE_REFS}" "${AFTER_REFS}" "face 50 and face 15
 echo "[ok] face 50 and 150 both 422, and no order reached consensus (order refs still ${BEFORE_REFS})"
 
 step "2. cross ${FACE} face at ${FRACTION} of par through the real engine"
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${SELLER},\"tickers\":\"${UST}\",\"price\":${FRACTION}}" >/dev/null \
   || fail "seed failed for ${UST}"
 for side_account in "Sell:${SELLER}" "Buy:${BUYER}"; do
@@ -161,7 +162,7 @@ BILL_FRACTION="0.959560"          # 95.956% of par: a discount instrument, not a
 BILL_VALUE="95956.000000"         # face x fraction, again with no divisor
 
 sql "DELETE FROM trades WHERE security='${BILL}'; DELETE FROM positions WHERE security='${BILL}';"
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${SELLER},\"tickers\":\"${BILL}\",\"price\":${BILL_FRACTION}}" >/dev/null \
   || fail "seed failed for ${BILL}"
 for side_account in "Sell:${SELLER}" "Buy:${BUYER}"; do
@@ -200,7 +201,7 @@ CORP_VALUE="99123.000000"      # face x fraction, exactly
 EQUITY_GRID="GRDC$(date +%H%M%S)"   # fresh book: this proof owns its anchor
 
 sql "DELETE FROM trades WHERE security='${CORP}'; DELETE FROM positions WHERE security='${CORP}';"
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${SELLER},\"tickers\":\"${CORP}\",\"price\":${CORP_SIX_DP}}" >/dev/null \
   || fail "seed failed for ${CORP}"
 
@@ -231,7 +232,7 @@ echo "[ok] ${CORP} crossed at ${CORP_SIX_DP}: ${CORP_QTY} face @ ${CORP_BASIS} =
 #     The grid must still be 0.001 for a non-bond, so a six-decimal EQUITY limit must still be
 #     refused. Same pair-of-prices trick as yu16-book-grid: the accepted price anchors the book, so
 #     the refused one 0.000123 away cannot be out of band — the decimals are the only variable.
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${SELLER},\"tickers\":\"${EQUITY_GRID}\",\"price\":120.00}" >/dev/null \
   || fail "seed failed for ${EQUITY_GRID}"
 EQ_ON="$(order Buy ${BUYER} 10 "${EQUITY_GRID}" "120.001")"

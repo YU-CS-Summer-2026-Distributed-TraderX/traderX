@@ -30,6 +30,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 DESTRUCTIVE="${DESTRUCTIVE:-0}"
@@ -50,11 +51,11 @@ metric() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://
 snap_count() { metric "$1" traderx_cluster_snapshots; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
-set_phase() { curl -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
+set_phase() { curl "${AUTH[@]}" -s -m20 -w ' %{http_code}' -X POST "${MATCHER_URL}/session" \
   -H 'Content-Type: application/json' -d "{\"phase\":\"$1\"}" 2>/dev/null | awk '{c=$NF; $NF=""; print c, $0}'; }
-order() { curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+order() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"$1\",\"quantity\":10,\"limitPrice\":$2,\"clientOrderId\":\"${TICKER}-$3-$$\"}"; }
-cancel() { curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
+cancel() { curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}"; }
 agree() { local i D0 D1 D2
   for i in $(seq 1 60); do
     D0="$(digest 0)"; D1="$(digest 1)"; D2="$(digest 2)"
@@ -128,7 +129,7 @@ for m in 0 1 2; do "${K[@]}" get pod "order-matcher-cluster-${m}" -o jsonpath='{
 
 echo "--- 0. the venue is OPEN, and the probe RESTS while it is"
 [[ "$(health_field 0 phase)" == "OPEN" ]] || fail "the venue reads phase='$(health_field 0 phase)', not OPEN (decision a)"
-[[ "$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+[[ "$(curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")" == 2* ]] || fail "seed did not take"
 PROBE_PX="$(python3 -c "print(f'{${SEED_PX} + 1:.3f}')")"
 CTRL="$(order Sell "${PROBE_PX}" ctrl)"

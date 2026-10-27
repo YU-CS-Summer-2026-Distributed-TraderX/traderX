@@ -44,6 +44,7 @@ set -uo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 # Both exist in reference data: a position on an unmapped account breaks the EOD risk extract.
@@ -79,7 +80,7 @@ for k in sys.argv[1].split('.'):
 print('' if d is None else d)
 " "$1"; }
 order() { # order <account> <side> <price> <tag>
-  curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":10,\"limitPrice\":$3,\"clientOrderId\":\"${TICKER}-$4\"}"
 }
 field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''))" <<<"$1"; }
@@ -87,7 +88,7 @@ field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''
 RESTING=()
 cleanup() {
   for ref in "${RESTING[@]:-}"; do
-    [[ -n "${ref}" ]] && curl -s -m10 -o /dev/null -X POST "${MATCHER_URL}/cancel" \
+    [[ -n "${ref}" ]] && curl "${AUTH[@]}" -s -m10 -o /dev/null -X POST "${MATCHER_URL}/cancel" \
       -H 'Content-Type: application/json' -d "{\"orderRef\":${ref}}"
   done
 }
@@ -217,7 +218,7 @@ step "3. ...and they still move for US, inside the live replay (anti-vacuity)"
 # this arm is not optional decoration — it is the half that makes step 2 mean something.
 PX="${PX:-180}"
 for a in "${ACCT}" "${ACCT2}"; do
-  code="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+  code="$(curl "${AUTH[@]}" -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${a},\"tickers\":\"${TICKER}\",\"price\":${PX}}")"
   [[ "${code}" == 2* ]] || fail "seeding ${TICKER} for ${a} answered HTTP ${code}"

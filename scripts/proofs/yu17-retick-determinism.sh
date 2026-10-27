@@ -28,6 +28,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 DESTRUCTIVE="${DESTRUCTIVE:-1}"
@@ -63,11 +64,11 @@ digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://
 # exercised the post-failover re-anchor it exists to test. Found 2026-08-25, the first run that
 # ever reached step 6 (step 3's reticks assertion blocked it on every pre-mint build).
 order() { # account side price [tag]  -- tag disambiguates otherwise-identical submissions
-  curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":10,\"limitPrice\":$3,\"clientOrderId\":\"${TICKER}-$2-$3${4:+-$4}\"}"; }
 CLEANUP_REFS=()
 cleanup() { local r; for r in ${CLEANUP_REFS[@]+"${CLEANUP_REFS[@]}"}; do
-  curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
 done; }
 trap cleanup EXIT
 # Three members, one answer — retried, because followers apply the committed tail moments later.
@@ -103,7 +104,7 @@ echo "=== yu17-retick-determinism, EXPECT=${EXPECT}, DESTRUCTIVE=${DESTRUCTIVE},
 agree "baseline"
 
 echo "--- 1. create-before-tick: /resolve registers ${TICKER} (no enable, no tick); the order must be refused"
-RES="$(curl -s -m20 -X POST "${MATCHER_URL}/resolve" -H 'Content-Type: application/json' -d "{\"ticker\":\"${TICKER}\"}")"
+RES="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/resolve" -H 'Content-Type: application/json' -d "{\"ticker\":\"${TICKER}\"}")"
 [[ "${RES}" == *'"securityId"'* ]] || fail "/resolve did not register ${TICKER}: ${RES}"
 O1="$(order "${ACCT}" Buy 50.00)"
 [[ "$(field "${O1}" kind)" == "2" && "$(field "${O1}" reason)" == "UNKNOWN_SECURITY" ]] \
@@ -112,7 +113,7 @@ ok "the §1.1 window, recorded: book created-and-anchored, order refused UNKNOWN
 agree "the rejected create"
 
 echo "--- 2. tick: /seed ${TICKER} @${SEED_PX} (enable + reference)"
-SEEDED="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+SEEDED="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")"
 [[ "${SEEDED}" == *'"seeded":true'* ]] || fail "seed did not take: ${SEEDED}"
 
@@ -156,7 +157,7 @@ agree "the post-tick admission"
 
 if [[ "${DESTRUCTIVE}" != "1" ]]; then
   # Cancel the resting order so the prefix leaves nothing, then refuse to claim the full sequence.
-  curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' \
     -d "{\"orderRef\":${CLEANUP_REFS[0]}}" >/dev/null; CLEANUP_REFS=()
   agree "cleanup"
   echo "[SKIP] DESTRUCTIVE=0: the trade + snapshot barrier + leader-kill tail did not run, so the"
@@ -248,7 +249,7 @@ echo "--- 6. re-anchor after the failover: a far-but-market-backed order still a
 O4="$(order "${ACCT}" Buy "${IN_PX}" postfailover)"
 [[ "$(field "${O4}" kind)" == "1" ]] || fail "post-failover BUY @${IN_PX} did not rest: ${O4}"
 CLEANUP_REFS+=("$(field "${O4}" orderRef)")
-C="$(curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$(field "${O4}" orderRef)}")"
+C="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$(field "${O4}" orderRef)}")"
 [[ "$(field "${C}" canceled)" == "True" || "$(field "${C}" canceled)" == "true" ]] || fail "post-failover cancel did not take: ${C}"
 CLEANUP_REFS=()
 # Deliberately NO cross-member counter comparison here: counters are per-process observability,

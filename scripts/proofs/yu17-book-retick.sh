@@ -38,6 +38,7 @@
 set -euo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 REF_URL="${REF_URL:-http://localhost:18085}"
 EXPECT="${EXPECT:-after}"
@@ -64,14 +65,14 @@ for b in json.load(sys.stdin)['books']:
         print(json.dumps(b)); break
 "; }
 order() { # side price
-  curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"$1\",\"quantity\":10,\"limitPrice\":$2,\"clientOrderId\":\"${TICKER}-$1-$2\"}"; }
 CLEANUP_REFS=()
 cleanup() { local r; for r in ${CLEANUP_REFS[@]+"${CLEANUP_REFS[@]}"}; do
-  curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
+  curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
 done; }
 trap cleanup EXIT
-cancel_ok() { local C; C="$(curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}")"
+cancel_ok() { local C; C="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}")"
   [[ "$(field "${C}" canceled)" == "True" || "$(field "${C}" canceled)" == "true" ]] || fail "cancel of $1 did not take: ${C}"; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
@@ -84,7 +85,7 @@ CREATED="$(curl -s -m8 -o /dev/null -w '%{http_code}' -X POST "${REF_URL}/stocks
 [[ "${CREATED}" == 2* ]] || fail "reference-data POST /stocks answered ${CREATED} — is the 18085 forward up?"
 APPLIED=0
 for i in $(seq 1 30); do
-  SNAP="$(curl -s -m8 "${MATCHER_URL}/risk/control/snapshot" 2>/dev/null)"
+  SNAP="$(curl "${AUTH[@]}" -s -m8 "${MATCHER_URL}/risk/control/snapshot" 2>/dev/null)"
   [[ "${SNAP}" == *"${TICKER}"* ]] && { APPLIED=1; break; }
   sleep 2
 done
@@ -117,7 +118,7 @@ echo "--- 3. cancel (the book empties)"
 cancel_ok "${REF1}"; CLEANUP_REFS=()
 
 echo "--- 4. seed a tick at ${SEED_PX} (the reference crosses decades)"
-SEEDED="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+SEEDED="$(curl "${AUTH[@]}" -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")"
 [[ "${SEEDED}" == *'"seeded":true'* ]] || fail "seed @${SEED_PX} did not take: ${SEEDED}"
 

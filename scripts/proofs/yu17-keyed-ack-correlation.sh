@@ -35,6 +35,7 @@ set -uo pipefail
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 ACCT="${ACCT:-42422}"
@@ -86,7 +87,7 @@ trap stop_pf EXIT
 
 send_order() { # send_order <cid> -> "HTTPCODE BODY" (single send, no retry: the raw answer)
   local out code body
-  out="$(curl -s --max-time 15 -w '\n%{http_code}' -X POST "${MATCHER_URL}/orders" \
+  out="$(curl "${AUTH[@]}" -s --max-time 15 -w '\n%{http_code}' -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${BUY_PX},\"clientOrderId\":\"$1\"}" 2>/dev/null)"
   code="${out##*$'\n'}"; body="${out%$'\n'*}"
@@ -108,7 +109,7 @@ for i in $(seq 1 60); do
   sleep 5
 done
 start_pf
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null || fail "seed failed"
 # QUIET MEANS "NO OTHER OPERATOR WORKLOAD", which is what this precondition always meant and what
 # it can still measure. It used to read the GLOBAL ref generator and the venue-wide open-order

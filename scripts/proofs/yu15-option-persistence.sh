@@ -26,6 +26,7 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 
 # Two distinct contracts so the before/after crosses can never be confused for each other.
@@ -64,12 +65,12 @@ cross() { # cross <ticker> <price> — seed then trade both sides; returns after
   # demonstrates, so print it rather than leaving the reader to count characters.
   vlog "      cross ${1} @ ${2}   (symbol length ${#1})"
   vlog "      POST ${MATCHER_URL}/seed  {\"accountId\":${SELLER},\"tickers\":\"${1}\",\"price\":${2}}"
-  curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${SELLER},\"tickers\":\"${1}\",\"price\":${2}}" >/dev/null \
     || fail "seed failed for ${1}"
   for side_account in "Sell:${SELLER}" "Buy:${BUYER}"; do
     local side="${side_account%%:*}" acct="${side_account##*:}" code
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
+    code="$(curl "${AUTH[@]}" -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
       -H 'Content-Type: application/json' \
       -d "{\"accountId\":${acct},\"ticker\":\"${1}\",\"side\":\"${side}\",\"quantity\":5,\"limitPrice\":${2}}")"
     vlog "      POST /orders ${side} acct=${acct} qty=5 px=${2} -> HTTP ${code}"
@@ -101,7 +102,14 @@ step "1. narrow the columns back to an older state's widths"
 # repairs in one day and failed yu16-bond-position LATER IN THE SAME SUITE, two proofs away from
 # the cause. Two columns rather than CONCAT(ticker, 0x09, name): mariadb batch mode escapes a
 # tab INSIDE a value as backslash-t, so only the real inter-column separator is a genuine tab.
-DOOMED="$(sql "SELECT ticker, company_name FROM stocks WHERE CHAR_LENGTH(ticker) > 16;")"
+# PARKED IN A TABLE, not only in this shell: a run that dies between the DELETE below and step 3b
+# (2026-10-26: step 2 failed on a 401 after ENGINE-REVIEW S1) used to take the ten long catalog
+# rows with it, and every later run read an empty DOOMED and "restored 0". The bills then 404'd at
+# reference-data, trade-processor failed every bill booking closed, and yu16-bond-position failed
+# two proofs away. INSERT IGNORE carries an earlier run's parked rows forward; DROP only after 3b.
+sql "CREATE TABLE IF NOT EXISTS yu15_parked_stocks (ticker VARCHAR(64) PRIMARY KEY, company_name VARCHAR(255));
+     INSERT IGNORE INTO yu15_parked_stocks SELECT ticker, company_name FROM stocks WHERE CHAR_LENGTH(ticker) > 16;"
+DOOMED="$(sql "SELECT ticker, company_name FROM yu15_parked_stocks;")"
 
 # PARK THE OPTION BLOTTER TOO -- the trade and position rows, not just the stocks catalog.
 #
@@ -206,6 +214,7 @@ if [[ -n "${DOOMED}" ]]; then
 fi
 LEFT="$(sql "SELECT COUNT(*) FROM stocks WHERE CHAR_LENGTH(ticker) > 16;")"
 [[ "${LEFT}" == "${RESTORED}" ]] || fail "restored ${RESTORED} long-ticker rows but the table holds ${LEFT}"
+sql "DROP TABLE yu15_parked_stocks;"
 
 # Do not exit while our own writes are still in flight: each POST above queued a control-outbox
 # row that the gateway later applies INTO CONSENSUS, and that tail moves the cluster's applied
