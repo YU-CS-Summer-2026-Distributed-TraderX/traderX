@@ -161,6 +161,34 @@ class Rendering(unittest.TestCase):
         edge=next(d for d in self.docs if d['kind']=='ConfigMap' and d['metadata']['name']=='edge-proxy-config')
         self.assertIn('absolute_redirect off;',edge['data']['default.conf'])
 
+    def member_script(self, docs=None):
+        engine=next(d for d in (docs or self.docs) if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+        return module.podspec(engine)['containers'][0]['command']
+
+    def test_member_shell_forwards_sigterm(self):
+        # FR-GMR-04, run for real: the rendered wrapper with a stand-in JVM that exits 143 on TERM, as the JVM does.
+        import signal, time
+        command=self.member_script()
+        self.assertEqual(command[:2],['/bin/sh','-c'])
+        stub="sh -c 'trap \"exit 143\" TERM; while :; do sleep 0.1; done'"
+        script=command[2].replace('java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain',stub)
+        self.assertNotEqual(script,command[2],'the JVM launch line moved; update the stand-in')
+        def run(action):
+            p=subprocess.Popen(['/bin/sh','-c',script]); time.sleep(0.5)
+            child=subprocess.run(['pgrep','-P',str(p.pid)],capture_output=True,text=True).stdout.split()
+            action(p,child); t=time.time(); rc=p.wait(timeout=5); return rc,time.time()-t
+        rc,took=run(lambda p,child:p.send_signal(signal.SIGTERM))
+        self.assertEqual(rc,143); self.assertLess(took,3)
+        rc,_=run(lambda p,child:os.kill(int(child[0]),signal.SIGKILL))   # the crash harness's kill of the JVM
+        self.assertEqual(rc,137)
+
+    def test_member_shell_without_forwarding_is_refused(self):
+        docs=copy.deepcopy(self.docs)
+        engine=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+        module.podspec(engine)['containers'][0]['command']=['/bin/sh','-c',
+            'java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!']
+        with self.assertRaises(AssertionError): module.validate(docs)
+
     def test_all_workloads_have_complete_scheduler_requests(self):
         for doc in self.docs:
             pod=module.podspec(doc)

@@ -161,6 +161,15 @@ def validate(docs):
                         and 'FIX_SESSION_PASSWORD' in names
                         and names.index('FIX_SESSION_PASSWORD') < names.index('FIX_SESSION_AUTH'),
                         'FIX acceptor without Secret-backed session credentials')
+        # FR-GMR-04: a member launched through a shell (kept off PID 1 for the crash harness) must forward
+        # SIGTERM to the JVM and exit with its status, or every delete/roll ends in SIGKILL after the grace.
+        if doc['kind'] == 'StatefulSet':
+            for c in (pod or {}).get('containers', []):
+                if 'ClusterNodeMain' in ' '.join(c.get('command', [])):
+                    script = c['command'][2] if c['command'][:2] == ['/bin/sh', '-c'] else ''
+                    require(re.search(r"trap '[^']*kill -TERM \"\$pid\"[^']*' TERM", script) is not None
+                            and 'exit "$status"' in script,
+                            'member shell does not forward SIGTERM to the JVM (FR-GMR-04)')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')

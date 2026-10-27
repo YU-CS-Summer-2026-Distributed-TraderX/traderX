@@ -109,7 +109,23 @@ spec:
           # sh wrapper keeps the JVM off PID 1 so a crash harness can SIGKILL it from a
           # kubectl exec (Linux blocks signals to PID 1 from inside the namespace) — a true
           # crash with a node-clock timestamp, no pod-delete API latency in the measurement.
-          command: ["/bin/sh", "-c", "java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!"]
+          # FR-GMR-04: SIGTERM must reach the JVM, so the shell forwards TERM/INT to it. Without the
+          # trap, sh is PID 1 with no handler, the kernel drops the TERM, and every delete or roll
+          # waits out the grace period and SIGKILLs the member (measured exit 137). A trapped signal
+          # interrupts `wait` while the JVM is still shutting down, so the loop waits again until the
+          # pid is gone and exits with the JVM's own status: 143 after TERM, 137 after a crash
+          # harness's SIGKILL, the JVM's code otherwise. (A plain second `wait` would turn every
+          # status it did not interrupt into 127, because the first `wait` already reaped the pid.)
+          command:
+            - /bin/sh
+            - -c
+            - |
+              java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain &
+              pid=$!
+              trap 'kill -TERM "$pid" 2>/dev/null' TERM INT
+              wait "$pid"; status=$?
+              while kill -0 "$pid" 2>/dev/null; do wait "$pid"; status=$?; done
+              exit "$status"
           env:
             # LEADER-SIDE KDB TAP. Off by default on this tier, and that is exactly why the
             # console's Kdb page reads empty on GKE while working on kind — nothing is broken, the

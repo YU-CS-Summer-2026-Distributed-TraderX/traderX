@@ -48,11 +48,14 @@ class ClusterNodeShutdownTest {
             while (!snapshot(out).contains("Cluster node up") && node.isAlive() && System.nanoTime() < deadline) Thread.sleep(100);
             assertTrue(snapshot(out).contains("Cluster node up"), () -> "node never came up:\n" + snapshot(out));
 
-            node.destroy();   // SIGTERM, as the kubelet sends
+            // SIGTERM, as the kubelet sends. Through the handle: Process.destroy() also closes our end of the
+            // child's stdout, which drops every line the shutdown path prints after the signal.
+            node.toHandle().destroy();
             assertTrue(node.waitFor(30, TimeUnit.SECONDS), () -> "node ignored SIGTERM:\n" + snapshot(out));
             reader.join(5_000);
             assertFalse(snapshot(out).contains("hasn't terminated"), () -> snapshot(out));
             assertEquals(143, node.exitValue(), () -> "not a clean SIGTERM exit:\n" + snapshot(out));
+            assertTrue(snapshot(out).contains("Cluster node down"), () -> "container/archive/driver not closed:\n" + snapshot(out));
         } finally {
             node.destroyForcibly();
         }

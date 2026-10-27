@@ -10,7 +10,12 @@
 - FR-GMR-03: Members SHALL run `-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50` on G1, at a 16Gi memory
   request equal to the limit. `statefulset.yaml` SHALL carry the same JVM flags as `statefulset-emptydir.yaml`.
 - FR-GMR-04: A member SHALL exit with status 143 within the grace period on SIGTERM, after closing its
-  `ShutdownSignalBarrier`, archive and media driver.
+  `ShutdownSignalBarrier`, archive and media driver, and SHALL log `Cluster node down` once they are
+  closed. SIGTERM is delivered to the container's PID 1. Where a shell launches the JVM (kept off PID 1
+  so a crash harness can SIGKILL it from `kubectl exec`), that shell SHALL forward TERM and INT to the
+  JVM and SHALL exit with the JVM's status. The CompSci render (`prepare.py`) SHALL refuse a member shell
+  that does not. Without forwarding, `sh` as PID 1 has no handler, and every delete or roll ends in
+  SIGKILL (137) after the grace period.
 - FR-GMR-05: The CompSci render SHALL include promtail (ConfigMap, ServiceAccount, ClusterRole,
   ClusterRoleBinding, DaemonSet). It SHALL name the cluster-scoped pair `promtail-<namespace>`, scrape
   `/var/log/pods/<namespace>_*`, and tolerate the `traderx-engine` taint.

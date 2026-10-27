@@ -129,16 +129,20 @@ public final class ClusterNodeMain {
         startSnapshotTrigger(aeronDir, service);
         startElectionPhaseWatcher(aeronDir);
 
-        System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
-            + " portBase=" + portBase + " baseDir=" + baseDir);
-
         // Agrona 2.x: the barrier's own shutdown hook blocks until close(), so SIGTERM never ended
         // the JVM (it logged "ShutdownSignalBarrier hasn't terminated" until the pod's SIGKILL, and the
         // archive and driver were never closed). Clean up on the main thread, then close the barrier.
         try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier()) {
+            // Printed once the barrier is armed: a SIGTERM before this line takes the JVM's default exit
+            // (143, nothing closed), so "up" is the point from which a TERM closes the member cleanly.
+            System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
+                + " portBase=" + portBase + " baseDir=" + baseDir);
             barrier.await();
+            System.out.println("Cluster node stopping: shutdown signal received");
             health.stop(0);
             CloseHelper.quietCloseAll(container, driver);
+            // FR-GMR-04's evidence: printed only after the container, archive and media driver closed.
+            System.out.println("Cluster node down: service container, archive and media driver closed");
         }
     }
 
