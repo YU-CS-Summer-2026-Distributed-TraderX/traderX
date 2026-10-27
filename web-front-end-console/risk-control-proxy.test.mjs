@@ -28,11 +28,13 @@ test('missing private control credential fails closed',()=>{
 test('account creation is server-gated while trading directory reads remain available',async()=>{
   const {edgePath}=await import('./request-path.mjs');
   const context={edgePath};
-  vm.runInNewContext(source.slice(source.indexOf('const ADMIN_MUTATIONS ='),source.indexOf('// Paths the edge proxy'))+'\nglobalThis.needsAuth=needsAuth;',context);
+  vm.runInNewContext(source.slice(source.indexOf('const GATEWAY_ORDER_ROUTE ='),source.indexOf('// Paths the edge proxy'))+'\nglobalThis.needsAuth=needsAuth;',context);
   assert.equal(context.needsAuth('POST','/account-service/account/'),true);
   assert.equal(context.needsAuth('POST','/legacy/account-service/account/'),true);
   assert.equal(context.needsAuth('GET','/account-service/account/'),false);
   assert.equal(context.needsAuth('POST','/order-matcher/risk/control/account'),true);
+  assert.equal(context.needsAuth('POST','/order-matcher/orders'),true);   // ENGINE-REVIEW S1
+  assert.equal(context.needsAuth('GET','/order-matcher/orders'),false);
 });
 
 test('same-origin hosted POST omits Origin on internal hop',()=>{

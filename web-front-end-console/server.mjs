@@ -124,7 +124,14 @@ function readToken(req) {
 // reconciliation state. Cancelling your own order and scheduling a TWAP are ordinary trading, and
 // the trading page offers both to anyone — so gating them there would be a fence with no field
 // behind it, which is the same reason order entry was never on this list.
+//
+// ENGINE-REVIEW S1 moved that line: the gateway now refuses every order route without a bearer JWT
+// bound to the account. The console's only JWT is its own admin token, so spending it for a
+// signed-out visitor would hand anyone every account (the confused deputy below). Order entry is
+// therefore behind sign-in, and the token is attached for a signed-in operator only.
+const GATEWAY_ORDER_ROUTE = /^\/order-matcher\/(?:orders(?:\/batch)?|cancel|replace|trades|swaps|swaptions)\/?$/;
 const ADMIN_MUTATIONS = [
+  { method: 'POST', re: GATEWAY_ORDER_ROUTE },
   { method: 'POST', re: /^\/account-service\/account(?:\/|$)/ },
   { method: null, re: /^\/order-matcher\/risk\/control(?:\/|$)/ },
   { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
@@ -853,7 +860,10 @@ const internalToken = MASTER_SECRET ? createInternalToken({mint: async () => {
   if (response.status !== 200) throw Error(`HTTP ${response.status}`);
   return (await response.text()).trim();
 }}) : {get: () => ''};
-const NEEDS_INTERNAL_JWT = p => p.startsWith('/trade-processor/') || p.startsWith('/order-matcher/regulatory');
+// Gateway order routes only for a signed-in operator: needsAuth refused a signed-out POST already,
+// and a signed-out read must not borrow an admin credential either.
+const NEEDS_INTERNAL_JWT = (p, req) => p.startsWith('/trade-processor/') || p.startsWith('/order-matcher/regulatory')
+  || (GATEWAY_ORDER_ROUTE.test(p.toLowerCase()) && !!readToken(req));
 
 // ---- ADR-073: the sandbox --------------------------------------------------------------------
 // A SEPARATE proxy, not three more PROXY_PREFIXES entries, because those all resolve to edge-proxy
@@ -1059,7 +1069,7 @@ function proxyToEdge(req, res, rewrite) {
   // a stale or forged Authorization header from the page must not decide what the upstream sees, and
   // a client whose own token expired must not lose a read it is entitled to.
   const reqPath = edgePath((req.url ?? '').split('?')[0]);
-  if (NEEDS_INTERNAL_JWT(reqPath)) {
+  if (NEEDS_INTERNAL_JWT(reqPath, req)) {
     const token = internalToken.get();
     if (!token) return json(res, 503, {code: 'internal_auth_unavailable', error: 'Service authentication is recovering. Try again shortly.'});
     headers['authorization'] = `Bearer ${token}`;
