@@ -32,7 +32,7 @@ def package(measured, published_path, upstream_path, build_dir, derivation_path,
     architecture={x['image']:x for file in ['runtime-architecture.json','remaining-runtime-architecture.json']
                   for x in read(build_dir.parent/file)}
     architecture['web-front-end-console']=read(build_dir.parent/'console-native-proof.json')
-    admit.require(published['sourceCommit']==original['sourceCommit']=='6156ad222b3445cb12d58e9c4905c7dcd68c2222','wrong image dependency')
+    admit.require(published['sourceCommit']==original['sourceCommit']==admit.REVIEWED_IMAGE_COMMIT,'wrong image dependency')
     admit.require(fresh['contexts']==original_receipt['contexts'],'current full-ancestry contexts differ from original image inputs')
     admit.require(len(published['images'])==len(original['images'])==admit.PRIVATE_IMAGES and len(upstream)==admit.UPSTREAM_IMAGES,'incomplete input image population')
     plan={'schema':'traderx-compsci-intended-deployment-v1','target':admit.TARGET,'state':'YU18-risk-integration',

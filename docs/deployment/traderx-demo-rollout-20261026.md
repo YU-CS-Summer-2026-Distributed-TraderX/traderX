@@ -306,3 +306,25 @@ Findings, not fixed: the bare `yaakovseif.dev` has no certificate (the load bala
 certificate, so TLS fails); `grafana.yaakovseif.dev` is not part of this plan; the gateway logs `FIX acceptor
 INSECURE: FIX_SESSION_AUTH unset` (ENGINE-REVIEW S3 credentials are not configured in this profile).
 Rollback: the recorded objects (shared notes, `prod-rollback-20261027T0908/`) plus the DB snapshot.
+
+**Retroactive admission (10:39–10:59 am ET, yaakov's Option B).** `admit.py`'s reviewed image dependency is now
+one constant, `REVIEWED_IMAGE_COMMIT = 9e0fd80b`, and `scripts/gcp-compsci/measure-admission.py` produces the
+measured evidence the October 11 pack had only as hand-run helpers. Run on a throwaway VM, on a checkout of
+exactly `9e0fd80b` (the generated contexts record HEAD; the new scripts uncommitted there), against the
+applied candidate (sha256 `811901026c48…`, identical to the file applied):
+
+| Check | Result |
+|---|---|
+| Population read from the candidate | 12 private + 9 upstream images, 24 slots |
+| Image identity | every private image pulled by digest is linux/amd64 and labelled source commit `9e0fd80b`, one derivation input hash |
+| Independent derivation | full ancestry, 11 contexts; `web-front-end` differs from the first build only by the GitHub origin, as expected |
+| Payloads vs independent reference builds | 12/12 byte-identical (cluster-node 457 files, reference-data 22,173, web-front-end-angular 36,885, …) |
+| OCI | registry manifests hash to the pins; configs, layers and labels equal the pulled images; 9 upstream pins complete linux/amd64 |
+| Runtime | every image's own executable reports amd64/x64 (`os.arch`, `dotnet --info`, `process.arch`, the nginx ELF header) |
+| `admit.py` | **admitted-offline**, 21 artifacts / 24 slots |
+| `admission-controls.py` | 19/19 refusals still fire against this real population |
+
+The build host was deleted after the rollout, so the build records were reconstructed from the image labels
+plus the fresh derivation (`summary.json` says so); the payload comparison is what binds the images to the
+source. Next time pass `--build-records <build-images.py output>` while the build VM is still up. Evidence:
+the shared notes folder, `admission-9e0fd80b-20261027/`.

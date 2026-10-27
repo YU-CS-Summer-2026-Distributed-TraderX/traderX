@@ -17,6 +17,10 @@ ROOT = Path(__file__).resolve().parents[2]
 # The admitted CompSci population, defined once (prepare-admission.py and admission-controls.py read it).
 # Promtail (c8c8ac31) is the ninth upstream image and the 24th container slot.
 PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 12, 9, 24
+# The reviewed image dependency: the source commit the admitted private images were built from, defined once
+# (prepare-admission.py reads it). 6156ad22 (the October 11 pack) until 2026-10-27, when traderx was rolled to
+# the YU18 tip built from 9e0fd80b; measure-admission.py produces the evidence for exactly those digests.
+REVIEWED_IMAGE_COMMIT = '9e0fd80b5459f41d3f3abb30ced641c55c2bea80'
 TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
           'project':'project-compsci-484414','location':'us-east1-b',
           'cluster':'traderx-demo','namespace':'traderx'}
@@ -80,7 +84,7 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
     require(receipt.get('sourceInputsSha256')==current_source_hash,'current source differs from independent derivation')
     require(receipt.get('contexts')==plan.get('contexts') and receipt['contexts'],'missing/different intended contexts')
     require(len(receipt['contexts'])==11,'incomplete selected build-context population')
-    require(plan.get('imageSourceCommit')=='6156ad222b3445cb12d58e9c4905c7dcd68c2222','unreviewed image dependency')
+    require(plan.get('imageSourceCommit')==REVIEWED_IMAGE_COMMIT,'unreviewed image dependency')
     require(ri20.sha(plan.get('imageSourceInputsSha256')),'missing original image build-input identity')
     builds=plan.get('buildSources')
     require(isinstance(builds,dict) and builds and

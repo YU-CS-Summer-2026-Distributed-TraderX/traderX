@@ -79,6 +79,19 @@ The inherited fixed-path RI20 GKE entrypoint does not consume this custom profil
 Use the explicit `scripts/gcp-compsci/admit.py` companion below; the inherited
 admission path and its refusal rules remain unchanged.
 
+`admit.py` admits only images built from `REVIEWED_IMAGE_COMMIT` (one constant in `admit.py`; `9e0fd80b` since
+2026-10-27). Its measured evidence is produced by `measure-admission.py`: on a checkout of exactly that commit,
+rendered with that commit's `SOURCE_DATE_EPOCH` and its GitHub origin, run
+
+```bash
+python3 scripts/gcp-compsci/measure-admission.py --rendered <candidate.yaml> --work <new folder> --build-records <build-images.py output>
+```
+
+It reads the population from the candidate, derives the contexts independently, compares every image payload
+with an independent reference build, records OCI and runtime-architecture evidence, then runs
+`prepare-admission.py`, `admit.py` and `admission-controls.py`. Moving to a new image commit means changing the
+constant and rerunning it.
+
 The candidate adds opt-in `SOURCE_DATE_EPOCH` for reproducible UI timestamps and
 preserves a credential-free origin URL in the isolated derivation repository.
 This fixes independently measured metadata-only differences; exact context hashing
