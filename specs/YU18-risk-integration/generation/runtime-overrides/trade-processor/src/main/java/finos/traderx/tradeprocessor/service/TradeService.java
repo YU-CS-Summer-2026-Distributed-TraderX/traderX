@@ -173,16 +173,20 @@ public class TradeService {
       }
     }
 
-    return inTransaction(() -> {
+    final long tBatch = System.nanoTime();
+    final long[] tBody = new long[1];
+    List<TradeBookingResult> booked = inTransaction(() -> {
       // Validate the whole batch BEFORE any write or position mutation, including duplicate
       // keys within the same delivery. Rejected trades obey the same identity rule.
       // One projection_runs read per scope per batch (was ~3 per row: validate + requireWritable).
+      long t0 = System.nanoTime();
       Map<String, Map<String, Object>> runs = new HashMap<>();
       for (TradeOrder order : orders) { validateScope(order, runs); }
       Map<String, Trade> existingById = new HashMap<>();
       for (Trade existing : tradeRepository.findAllById(orders.stream().map(TradeOrder::getId).toList())) {
         existingById.put(existing.getId(), existing);
       }
+      long t1 = System.nanoTime(); phase(0, t0, t1);
       Map<String, Trade> firstById = new HashMap<>(existingById);
       for (TradeOrder order : orders) {
         Trade prior = firstById.putIfAbsent(order.getId(), newTradeFrom(order));
@@ -194,6 +198,7 @@ public class TradeService {
       Set<String> alreadyBooked = new HashSet<>(existingById.keySet());
 
       Map<String, Position> positionsByKey = prefetchPositions(orders, alreadyBooked);
+      long t2 = System.nanoTime(); phase(1, t1, t2);
       Map<String, long[]> appliedByScope = new HashMap<>();
       List<Trade> trades = new ArrayList<>(orders.size());
       List<TradeBookingResult> results = new ArrayList<>(orders.size());
@@ -232,10 +237,15 @@ public class TradeService {
         results.add(new TradeBookingResult(trade, position));
       }
 
+      long t3 = System.nanoTime(); phase(2, t2, t3);
+      long t4 = t3, t5 = t3;
       if (entityManager != null) {
         // Every trade here was absent from findAllById above, so persist() (no merge SELECT).
         for (Trade trade : trades) { entityManager.persist(trade); }
+        entityManager.flush();
+        t4 = System.nanoTime(); phase(3, t3, t4);
         upsertPositions(positionsByKey.values());
+        t5 = System.nanoTime(); phase(4, t4, t5);
       } else {
         tradeRepository.saveAll(trades);
         positionRepository.saveAll(positionsByKey.values());
@@ -251,6 +261,7 @@ public class TradeService {
           runRegistry.appliedBatch(a.getKey(), true, a.getValue()[0], a.getValue()[1]);
         }
       }
+      phase(5, t5, System.nanoTime());
 
       for (TradeBookingResult result : results) {
         if (recovery || rejectedResults.contains(result)) {
@@ -261,8 +272,12 @@ public class TradeService {
       }
 
       log.debug("Batch trade processing complete: {} trades, {} positions", trades.size(), positionsByKey.size());
+      tBody[0] = System.nanoTime();
       return results;
     });
+    phase(6, tBody[0] == 0 ? tBatch : tBody[0], System.nanoTime());
+    batchTimed(orders.size());
+    return booked;
   }
 
   /** Computes the booked (not-yet-settled) trade and mutates {@code position} in place. Does not persist. */
@@ -515,7 +530,33 @@ public class TradeService {
     return Date.from(date.atStartOfDay(ZoneOffset.UTC).toInstant());
   }
 
+  // YU18 (downstream redesign): the per-trade UI fan-out (two core NATS messages per booked trade
+  // side, serialized on the flush thread after commit). Off for the 400K tier, where it is
+  // 800K publishes/s that nothing subscribes to; the console reads the per-account subjects at
+  // human rates. Default on: every existing tier keeps its live blotter.
+  @Value("${traderx.projection.fanout:true}") private boolean fanout = true;
+
+  /** Bench-only: where a batch's wall time goes, logged every 50 batches. Measured 2026-10-27
+   *  (docs/engineering/downstream-at-400k.md §4.4): ~33 ms of SQL per 1000-row batch, of which the
+   *  bulk trade INSERT is 11-18 ms; the cap is the database instance, not any phase here.
+   *  ponytail: nanoTime buckets, no histogram. */
+  @Value("${traderx.projection.batch-timing:false}") private boolean batchTiming = false;
+  private static final String[] PHASES = {"lookup", "prefetch", "book", "flush", "positions", "counter", "commit+fanout"};
+  private final long[] phaseNanos = new long[PHASES.length];
+  private int timedBatches;
+  private void phase(int i, long from, long to) {
+    if (batchTiming) { phaseNanos[i] += to - from; }
+  }
+  private void batchTimed(int rows) {
+    if (!batchTiming || ++timedBatches % 50 != 0) { return; }
+    StringBuilder sb = new StringBuilder("batch-timing over 50 batches, ms per batch:");
+    for (int i = 0; i < PHASES.length; i++) { sb.append(' ').append(PHASES[i]).append('=').append(phaseNanos[i] / 50_000_000L); }
+    log.info(sb.append(" (last batch ").append(rows).append(" rows)").toString());
+    java.util.Arrays.fill(phaseNanos, 0L);
+  }
+
   private void publish(Integer accountId, TradeBookingResult result) {
+    if (!fanout) { return; }
     afterCommit(() -> publishCommitted(accountId, result));
   }
 
@@ -530,6 +571,7 @@ public class TradeService {
 
   /** YU16 (FR-CDM23): a rejected trade is published; a position message never follows it. */
   private void publishTradeOnly(Integer accountId, TradeBookingResult result) {
+    if (!fanout) { return; }
     afterCommit(() -> publishTradeOnlyCommitted(accountId, result));
   }
 

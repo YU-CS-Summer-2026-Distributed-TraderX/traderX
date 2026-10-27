@@ -75,6 +75,7 @@ from cuts would move cost onto the apply thread of all three members.
 | `OrderController` | with persistence off, `GET /accounts/{id}/orders` (and `?status=all`) answers from the view as the same `OrderRow` JSON; the scoped `/v2/projections/{scope}/…` route stays SQL. The gateway's FIX status source is unchanged. | — |
 | `ProjectionWriteLock` | one lock row per partition (`1 + p`), bound per feed thread; partitions are disjoint by account, so they commit in parallel. Every existing caller still takes row 1. | partition 0 |
 | `TradeService.processTrades`, `OrderProjectionService.persistAll` | `entityManager.flush()` before the shared `projection_runs` counter UPDATE, so that row's lock spans the commit instead of the bulk INSERT. Without it a second partition waited for the first's whole insert. | — |
+| `TradeService` | `traderx.projection.fanout=false` skips the per-trade after-commit UI fan-out (two core publishes per trade side); `traderx.projection.batch-timing=true` logs where a batch's time goes, every 50 batches (bench only). | on / off |
 | `JetStreamFeed` pull wait | `traderx.feed.fetch-wait-ms` (200) bounds how long a pull waits to fill a batch. | 200 ms |
 | `ProjectionFeedController` | `/v2/projection-feed` adds `mode`, `persist`, `applied` (both feeds), `ignoredStale`, `viewSize`. | — |
 
@@ -185,20 +186,30 @@ The baseline's equivalent (DOWNSTREAM.md §3) lost 131,886 of 202,000.
   ~4× the baseline's best order rate, and it takes the order rows off the database entirely. Removing them roughly
   doubles what the database can give trades: with orders persisted through the same stream, the "both" arm drained
   at 22.6K rows/s, against 47.6K with the view.
-- **The trade projection is still one MariaDB's worth, ~25–34K rows/s.** It does not run faster through the stream, and
-  it does not scale with partitions on one database. The prototype found and fixed one serialization point: Hibernate
-  flushed the batch INSERT at commit, after the shared `projection_runs` counter UPDATE had taken its row lock, so a
-  second partition waited for the whole bulk insert. After the fix the samples show both partitions inside `INSERT
-  INTO TRADES` at once and no lock waits, but scaling stays at 1.2–1.4×. MariaDB ran at ~21% CPU and each replica at
-  35–40%, so neither is saturated. The remaining limit is **not identified**. There are three candidates:
-  - Each partition's serial commit latency: one connection, one transaction per 1000 rows.
-  - The per-batch position prefetch, a row-constructor `IN` over up to 1000 `(account, security)` pairs. All
-    partitions were seen inside it at once, and it may scan the table rather than use the key.
-  - The NATS container's 2-CPU cap, which sat at ~100% while serving the pulls and the file store.
+- **The trade projection is one MariaDB instance's worth, ~25–36K rows/s, and that is the database, not the
+  consumer.** Found on 2026-10-27 (early morning ET) with one-variable experiments on the same rig shape, after the
+  neighbour's kind cluster had gone and the laptop reproduced the VM's control number (24.4K rows/s):
+
+  | Experiment | Result | Verdict |
+  |---|---|---|
+  | `EXPLAIN` the position prefetch | primary-key `range`, 989 rows; but the row-constructor `IN` is superlinear in pairs (100 → 3 ms, 300 → 16 ms, 1000 → 189 ms with `count(*)`), ten chunks of 100 → 23 ms | not the live cost: the in-batch timer shows it at ~4 ms |
+  | Per-phase timer in `processTrades` (bench flag `traderx.projection.batch-timing`) | per 1000-row batch: lookup 4, prefetch 4, bulk trade INSERT 11–18, position upsert 6, counter 0, commit + fan-out 3 ms; ~33 ms of SQL plus ~20 ms in the pull loop | the SQL half alone would allow ~30K rows/s per partition |
+  | UI fan-out off (`traderx.projection.fanout=false`) | 24.4K → 28.6K rows/s; CPU per row 34 → 25 µs | +17%, a cost but not the cap |
+  | NATS container at 4 CPUs instead of 2 | 24.4K → 25.1K rows/s | no effect |
+  | **DB only: N concurrent bulk writers** (`BulkT`, 1000-row batches, distinct ids) | 1 writer, one table: **98K** inserts/s. 4 writers, one shared `trades` table: **66K** aggregate (20K + 13K + 19K + 14K). 2 writers, own tables: 84K. 4 writers, own tables: **149K** (43K + 36K + 34K + 36K) | **this is the cap**: four writers into one table do less than one writer, and even on separate tables the instance reaches 1.5× one writer |
+
+  So partitions scale the consumer but not the store. The `trades` primary key is a near-monotonic VARCHAR
+  (`e1-<epoch>-<tradeSeq>-B/S`), so every partition's bulk insert lands on the same right-hand B-tree pages; giving each
+  partition its own table lifts that to ~150K/s on one instance, and the instance is the next wall. "Two connections per
+  partition" would be the same thing as two partitions on one table and was not run: the DB-only test already shows what
+  concurrent writers into one table do. MariaDB sat at ~1–20% CPU in every arm; the limit is InnoDB's concurrent-write
+  path, not CPU.
 - **Against 400K orders/s** (~400K trade sides and ~600K order updates per second): the order side is covered by
-  ~4 view partitions. The trade side is ~12–16× short of what this prototype measured on one database. Closing it
-  needs either shards (separate databases per partition, so the per-partition rate adds up, which this rig did not
-  test) or §5 item 7 of DOWNSTREAM.md: an append-only trade store, with SQL keeping only what the UI and EOD read.
+  ~4 view partitions. The trade side needs the store to scale with the partitions, which one MariaDB instance does
+  not: it needs either one database instance per partition (~4 instances at 98K each, if the per-instance rate holds
+  with the full per-batch work, which measured at ~30K rows/s per partition here; so more like 8–12 instances), or
+  §5 item 7 of DOWNSTREAM.md, an append-only trade store, with SQL keeping only what the UI and EOD read. Per-partition
+  tables on one instance are a 1.5× stopgap, not a path to 400K.
 - **What the earlier quoted numbers were.** The dddcdc86 commit measured 30–35K trade sides/s as the peak per-second
   counter delta during a flood, and that matches the 25–27K average here. An earlier version of this ladder divided
   booked rows by the 20 s no-progress timeout too, which understated every fell-behind baseline step by up to 2×.
@@ -258,9 +269,10 @@ is no longer needed for the managed path and can be set to 0 on the 400K tier.
    (the cluster's own wire is untouched) and must be called out as such.
 4. **Run transitions vs partitions.** `ProjectionTransitionService` takes lock row 1 only; before running partitions
    alongside a transition it must take rows 1..P.
-5. **Find the per-partition trade limit** before choosing between shards and an append-only store. Run an `EXPLAIN` on
-   the position prefetch, then give the NATS container 4 CPUs, then try 2 connections per partition. Each is a
-   one-variable rerun of the P=1/P=4 trade rows above.
+5. **Choose the trade store.** The cap is the single MariaDB instance (§4.4). Two candidates, both a design decision:
+   one database instance per partition (`PROJECTION_FEED_OWNED` already maps a replica to its partitions; each would
+   get its own datasource), or an append-only store for trades with SQL keeping the per-account blotter window and the
+   EOD inputs. Measure the per-instance rate with the full per-batch work before sizing the shard count.
 6. **Live cluster.** The prototype was measured with the bridges' exact wire from a load generator, not from a running
    leader. A run on the hxb rig with `BRIDGE_PARTITIONS=4` on the members would confirm that the leader's apply thread is
    unaffected (the bridges' offer path is unchanged, so no effect is expected).
