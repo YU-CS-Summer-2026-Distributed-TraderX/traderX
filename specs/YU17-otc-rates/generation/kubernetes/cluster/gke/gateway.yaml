@@ -192,7 +192,7 @@ spec:
               value: "0"
             # GENERATIONAL ZGC, NOT G1. Under FIX, QuickFIX/J allocates ~11 KB per order, so a G1
             # gateway young-collects ~1.2/s at a ~5.6 ms pause, and each pause is a gateway-local
-            # latency spike (hxb rig: 18 gateways of 7 CPUs at 400K orders/s; this tier's limit is 2
+            # latency spike (hxb rig: 18 gateways of 7 CPUs at 400K orders/s; this tier's limit is 4
             # CPUs, so the numbers below are per-gateway shape, not this tier's). On a pre-touched 768m heap,
             # gateway safepoints over 1 ms go from ~5,000 per 3 minutes to 0 with the same body:
             #   FIX (CLOUD-QUEUE rows 11, 13): p99 6.19/9.65/11.12 -> 4.85/5.77/3.81 ms, gateway-local
@@ -262,7 +262,12 @@ spec:
               # limit is the hxb rig's 2Gi gateway limit, where a ZGC gateway used ~1.2 GB.
               memory: 1Gi
             limits:
-              cpu: "2"
+              # 4, not 2: under FIX a gateway at the rig's per-gateway rate used ~2.1 cores (QuickFIX/J
+              # session threads plus ZGC's concurrent workers, ~0.15 of it), so a 2-CPU limit throttles it
+              # at full load. The JVM also sizes its thread pools from this limit. The request is
+              # unchanged, so scheduling is unchanged; on an e2-standard-4 node (3.92 allocatable) 4
+              # means "up to the whole node", shared with the pods beside it.
+              cpu: "4"
               memory: 2Gi
           volumeMounts:
             - name: shm
