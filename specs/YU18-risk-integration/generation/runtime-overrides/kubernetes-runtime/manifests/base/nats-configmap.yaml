@@ -1,0 +1,25 @@
+# YU18 copy of YU02's nats-configmap.yaml (shadows it from YU18): adds the JetStream ingest queue.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  namespace: traderx
+data:
+  nats.conf: |
+    port: 4222
+    http: 8222
+
+    websocket {
+      port: 8081
+      no_tls: true
+    }
+
+    jetstream {
+      store_dir: /data/jetstream
+      max_memory_store: 512MB
+      max_file_store: 4GB
+      # YU18 (downstream-at-400k.md §7.8): the bridges core-publish, and NATS silently DROPS what overflows a
+      # stream's ingest queue ("IPQ len limit reached"). Sized under nats-broker's 1Gi memory limit.
+      max_buffered_msgs: 1000000
+      max_buffered_size: 512MB
+    }

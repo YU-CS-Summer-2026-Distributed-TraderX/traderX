@@ -406,37 +406,66 @@ more sides moved the first sequence to 300,003 above a cursor of 300,000, and th
 
 ### 7.8 Live: `BRIDGE_PARTITIONS=4` on a real three-member cluster
 
-Namespace `traderx-dsq` on `traderx-demo`, 2026-10-27 10:08–10:54 am ET. The three members ran on their own tainted
-pool (3× c4d-standard-8) and the support pods on a second one (2× e2-standard-4), so production's pools were untouched.
-Images: `cluster-node` and `trade-processor` built from this branch on an empty-root render; the rest at the rollout plan's
-digests. Members `BRIDGE_PARTITIONS=4`; trade-processor `PROJECTION_FEED_MODE=jetstream`, `PROJECTION_FEED_PARTITIONS=4`,
-`TRADE_PROJECTION_MODE=snapshot`. Load: crossing AAPL limit orders between the 11 seeded accounts through the gateway's
-`/orders/batch`, 8 in flight. The independent check nets every fill in the ENGINE's own blotter (`/recon/trades/blotter`,
-the members' committed log) and compares that with SQL `positions`, per run as deltas. The live blotter holds the
-last 500,000 fills, so each run's engine side is the fills above the previous run's last tradeSeq.
+`traderx-demo`, 2026-10-27, three members on their own tainted pool (3× c4d-standard-8) and the support pods on a second
+one (2× e2-standard-4), so production's pools were untouched. Members `BRIDGE_PARTITIONS=4`; trade-processor
+`PROJECTION_FEED_MODE=jetstream`, `PROJECTION_FEED_PARTITIONS=4`, `TRADE_PROJECTION_MODE=snapshot`; `cluster-node` and
+`trade-processor` built from this branch on an empty-root render, the other images at the rollout plan's digests. Load:
+crossing AAPL limit orders between the 11 seeded accounts through the gateway's `/orders/batch`, 8 in flight. The
+independent check nets the fills in the ENGINE's own blotter (`/recon/trades/blotter`, the members' committed log) and
+compares them with SQL `positions` as per-run deltas.
 
-| | Run 1 (10:22 am) | Run 2 (10:40 am) | Run 3 (10:51 am) |
+**Final run, one build, clean namespace** (`traderx-dsq2`, 11:32 am ET; both fixes below):
+
+| Check | Result |
+|---|---|
+| Orders | 200,000 at 37.5K/s, all accepted |
+| Engine fills (trade sides), p0 / p1 / p2 / p3 | 9,091 / 54,546 / 72,727 / 63,636 = 200,000 |
+| Projected sides, p0 / p1 / p2 / p3 | 9,091 / 54,546 / 72,727 / 63,636 = **200,000** |
+| Drops | **0**: no bridge drop line on any member, no NATS ingest warning, trade-processor `dropped` 0 |
+| Per-partition lag, max pending messages | 6,437 / 49,263 / 65,675 / 57,458; all partitions back to 0 within 12 s |
+| Positions vs the engine | 24 (account, security) keys, **0 wrong** |
+| Snapshot writes | 23, **0 failed** |
+| Ledger recon (§7.6) | **matched 200,000, missing 0, field mismatch 0** |
+
+**How we got there** (`traderx-dsq`, 10:08–10:54 am ET). Run 1, the same burst at 38K/s on the manifests as they
+were, found silent loss. The bridges core-publish; NATS dropped what overflowed the stream's ingest queue ("excessive
+stream ingest rate ... IPQ len limit reached"). The order bridge's queue also filled (≥30,000 order updates dropped,
+counted in its log). Only 104,281 of 200,400 trade sides reached the projection. The ledger recon named every lost
+side by id; after two further runs it stood at **matched 504,281, missing 96,119, field mismatch 0**, exactly
+104,281 + 200,000 + 200,000 and 200,400 − 104,281. With the ingest queue raised, runs 2 and 3 (29K/s and 75K/s)
+projected 200,000 of 200,000 each with 0 wrong positions.
+
+Two fixes, both in the repo:
+- **NATS ingest queue** sized per tier under its memory limit: GKE `max_buffered_msgs` 2,000,000 / `max_buffered_size`
+  1GB with 1 CPU and 2 Gi (`cluster/gke/nats.yaml`); kind 500,000 / 256MB at 768 Mi; base tier 1,000,000 / 512MB.
+  The stream survived the NATS restart on its PVC and trade-processor resumed every partition at its cursor.
+- **One lock row for every partition's snapshot write.** Partitions own disjoint accounts, yet their window writes
+  deadlocked (8 in run 1's first minute; each retried at the next tick, so nothing was lost).
+  `TradeSnapshotStoreConcurrencyIT` reproduces it on the shipped schema under REPEATABLE READ and READ COMMITTED
+  alike, and passes 3 of 3 with the shared row. READ COMMITTED alone did not fix it; run 3's zero was load, not the fix.
+
+### 7.9 Making the bridge's publish loss-detecting
+
+A bigger ingest queue moves the cliff; it does not remove it. Measured on a dedicated VM (`dsq-build2`, 2026-10-27
+~11:10 am ET; NATS 2.14 with 4 CPUs, file stream, one publisher thread, 450-byte messages over 4 partition subjects,
+2,000,000 messages offered at full speed):
+
+| NATS ingest queue | Core publish (today's bridge) | JetStream publish, acked, window 1K / 8K / 32K |
+|---|---|---|
+| default | 1.28M msgs/s, **849,126 lost**, publisher told nothing | 366K / 352K / 336K msgs/s, 0 lost, every message acked |
+| `max_buffered_msgs` 2M, `max_buffered_size` 1GB | 1.51M msgs/s, 0 lost | 363K / 351K / 333K msgs/s, 0 lost |
+
+Options, cheapest first:
+
+| | What it gives | Cost at 400K orders/s (~400K trade sides + ~600K order updates/s) | Size |
 |---|---|---|---|
-| Orders | 200,000 at 38K/s | 200,000 at 29K/s | 200,000 at 75K/s |
-| NATS | as rendered | ingest queue raised (below) | same |
-| Engine fills (trade sides) | 200,400 | 200,000 | 200,000 (tradeSeq 400,401–600,400) |
-| Projected sides, p0/p1/p2/p3 | 4,740 / 28,439 / 37,920 / 33,182 = **104,281** | 9,091 / 54,546 / 72,727 / 63,636 = **200,000** (equal to the engine's per-partition fills) | 9,091 / 54,546 / 72,727 / 63,636 = **200,000** |
-| Drops | NATS: "excessive stream ingest rate ... IPQ len limit reached" ×2; order bridge queue full ≥30,000 | **0** (trade-processor, both bridges, NATS) | **0** |
-| Per-partition lag (max pending messages; drained) | 2,250 / 24,241 / 33,322 / 28,781; drained in 11 s | 9,091 / 54,546 / 72,727 / 63,636; drained in 13 s | 9,091 / 54,546 / 72,727 / 63,636; drained in 13 s |
-| Positions vs the engine | not equal (the lost sides) | 24 keys, **0 wrong** | 24 keys, **0 wrong** |
-| Snapshot write failures | 8 deadlocks, each retried next tick | 1 | **0** of 17 (READ COMMITTED) |
+| Raised ingest queue (done, every tier) | absorbs bursts up to the queue (2M msgs ≈ 2 s at 1M/s) | memory: up to the queue size in the NATS pod | config |
+| **Trade-side contiguity alarm** | tradeSeq is contiguous per leg across the whole stream, so one reader of `/trades.*` sees any hole within seconds, from the stream itself | one extra consumer: ~0.4 core of JSON parse at 400K sides/s; covers trades only (order updates carry no contiguous sequence) | small: the ledger recon's reader already parses tradeSeq |
+| **JetStream-acked publish from the bridge thread** | every message acked or counted: a full ack window stalls the bridge thread, its queue fills, and the drop is COUNTED where it happens (the bridge's existing `dropped`), never silent | one thread does ~350K msgs/s acked vs ~1.3–1.5M core, so ~1M msgs/s needs one publisher per partition (P=4 → ~1.4M/s headroom) on the leader; an ack message back per message; no apply-thread change (the bridge offer stays non-blocking) | medium: a member-process change in `TradeNatsPublisher`/`OrderNatsPublisher` (publish path and per-partition threads), not the cluster wire |
 
-Run 1 is the finding: the bridges core-publish, so when the burst outran the stream's ingest queue NATS dropped the
-overflow and nobody upstream knew. The ledger recon (§7.6) named it: after runs 1 and 2 it reported **matched 304,281,
-missing 96,119, field mismatch 0**, which is exactly 104,281 + 200,000 matched and 200,400 − 104,281 missing; after
-run 3, matched 504,281 and missing still 96,119. Fixes, both in the repo: `max_buffered_msgs: 2000000` / `max_buffered_size: 1GB` with 1 CPU and 2 Gi for NATS
-(`cluster/gke/nats.yaml`), and READ COMMITTED for the snapshot transaction (under REPEATABLE READ the window's
-`DELETE ... NOT IN` took gap locks a neighbouring partition's insert crossed). The stream survived the NATS restart on
-its PVC and trade-processor resumed at cursor 304,568 on every partition.
-
-The bridges remain core publishers: a burst longer than the ingest queue still drops, now visibly (NATS log, recon
-MISSING by id, positions ≠ engine). A JetStream-acked publish from the bridge thread would turn that into counted
-back-pressure; it belongs with the archive-reader bridge of §8 item 1.
+Recommendation: the acked publish, one publisher thread per partition, is the class-closing fix and it belongs with the
+archive-reader bridge of §8 item 1 (both replace the bridge's publish path). The contiguity alarm is the cheap guard to
+run until then, and stays useful afterwards as an end-to-end check.
 
 ## 8. Open items and next steps
 

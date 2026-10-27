@@ -18,7 +18,6 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -40,12 +39,7 @@ public final class TradeSnapshotStore {
 
   public TradeSnapshotStore(JdbcTemplate jdbc, TransactionTemplate transactions, ProjectionWriteLock lock) {
     this.jdbc = jdbc;
-    // READ COMMITTED: partitions own disjoint accounts, but under REPEATABLE READ the window's
-    // "DELETE ... id NOT IN" takes gap locks on (projectionscope, accountid) that a neighbouring
-    // partition's INSERT crosses. Measured live at P=4: 8 deadlocks in the first minute (each snapshot
-    // retried at the next tick, so no loss, but the cursor stalled an interval each time).
-    this.transactions = new TransactionTemplate(transactions.getTransactionManager());
-    this.transactions.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+    this.transactions = transactions;
     this.lock = lock;
   }
 
@@ -162,7 +156,14 @@ public final class TradeSnapshotStore {
   /** Write one cut atomically. Returns the number of SQL rows written. */
   public int write(String scope, int partition, TradeView.Cut cut) {
     return transactions.execute(status -> {
-      ProjectionWriteLock.partition(partition);
+      // ONE lock row for every partition's snapshot (and the settlement sweep, which takes the same row).
+      // Partitions own disjoint accounts, yet their window DELETEs deadlock: the range scan on
+      // (projectionscope, accountid) must lock the first record past its range - the neighbouring
+      // account's, i.e. another partition's - even under READ COMMITTED (TradeSnapshotStoreConcurrencyIT;
+      // measured live at P=4: 8 deadlocks in a minute). A snapshot is milliseconds every few seconds, so
+      // serializing them costs nothing measurable. ponytail: global row; per-account deletes by primary
+      // key if snapshot writes ever become the bottleneck.
+      ProjectionWriteLock.partition(0);
       lock.acquire();
       int rows = 0;
       if (!cut.positions().isEmpty()) {

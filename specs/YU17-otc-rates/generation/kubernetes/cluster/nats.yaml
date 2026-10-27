@@ -29,6 +29,11 @@ data:
   nats.conf: |
     jetstream {
       store_dir: /data
+      # YU18 (downstream-at-400k.md §7.8): the bridges core-publish, and NATS silently DROPS what overflows a
+      # stream's ingest queue ("IPQ len limit reached"; 96,119 of 200,400 trade sides lost on GKE at the
+      # default). Sized under this pod's memory limit; YU18's kind tier renders this file (no YU18 cluster layer).
+      max_buffered_msgs: 500000
+      max_buffered_size: 256MB
     }
     http: 8222
     websocket {
@@ -84,9 +89,9 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
             limits:
-              memory: 256Mi
+              memory: 768Mi      # holds the 256MB ingest queue above
       volumes:
         - name: data
           emptyDir: {}
