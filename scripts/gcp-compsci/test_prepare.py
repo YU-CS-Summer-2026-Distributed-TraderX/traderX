@@ -155,6 +155,12 @@ class Rendering(unittest.TestCase):
             if mutate=='dev-opt-out': env.append({'name':'ALLOW_DEV_SECRETS','value':'true'})
             with self.assertRaises(AssertionError,msg=mutate): module.validate(docs)
 
+    def test_edge_redirects_stay_relative(self):
+        # Behind the HTTPS load balancer the edge proxy sees http on :8080; an absolute redirect would send
+        # /grafana to http://<host>:8080/grafana/ (reproduced 2026-10-27 with this line removed).
+        edge=next(d for d in self.docs if d['kind']=='ConfigMap' and d['metadata']['name']=='edge-proxy-config')
+        self.assertIn('absolute_redirect off;',edge['data']['default.conf'])
+
     def test_all_workloads_have_complete_scheduler_requests(self):
         for doc in self.docs:
             pod=module.podspec(doc)
