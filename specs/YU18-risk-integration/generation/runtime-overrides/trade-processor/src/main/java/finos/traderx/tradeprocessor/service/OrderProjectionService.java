@@ -48,6 +48,8 @@ public final class OrderProjectionService {
         OrderRow saved=apply(u,runs.computeIfAbsent(u.getProjectionScope(),registry::scope),current.get(u.getId()),applied);
         if (saved!=null) {current.put(saved.getId(),saved);}
       }
+      // Flush before the shared counter row's UPDATE, for the reason in TradeService.processTrades.
+      if (entityManager!=null) {entityManager.flush();}
       for (var a:applied.entrySet()) {registry.appliedBatch(a.getKey(),false,a.getValue()[0],a.getValue()[1]);}
       return null;
     });

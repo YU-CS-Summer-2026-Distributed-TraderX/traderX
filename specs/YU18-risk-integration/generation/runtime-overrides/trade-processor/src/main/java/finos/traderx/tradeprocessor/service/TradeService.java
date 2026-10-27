@@ -241,6 +241,12 @@ public class TradeService {
         positionRepository.saveAll(positionsByKey.values());
       }
       if (runRegistry != null) {
+        // YU18 (downstream redesign): flush the batch's INSERTs BEFORE touching the shared
+        // projection_runs row. Hibernate otherwise flushes them at commit, after the UPDATE has
+        // taken that row's lock, so a second partition sat behind this one's whole bulk insert
+        // (measured: P=2 gave 1.2x, with "LOCK WAIT UPDATE projection_runs" on one partition
+        // while the other was inside "insert into TRADES"). Now the lock spans only the commit.
+        if (entityManager != null) { entityManager.flush(); }
         for (Map.Entry<String, long[]> a : appliedByScope.entrySet()) {
           runRegistry.appliedBatch(a.getKey(), true, a.getValue()[0], a.getValue()[1]);
         }

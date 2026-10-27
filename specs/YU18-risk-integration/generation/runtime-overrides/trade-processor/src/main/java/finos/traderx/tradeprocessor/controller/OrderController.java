@@ -1,7 +1,11 @@
 package finos.traderx.tradeprocessor.controller;
 
+import finos.traderx.messaging.Subscriber;
+import finos.traderx.tradeprocessor.OrderFeedHandler;
 import finos.traderx.tradeprocessor.model.OrderRow;
+import finos.traderx.tradeprocessor.model.OrderUpdate;
 import finos.traderx.tradeprocessor.repository.OrderRepository;
+import java.util.ArrayList;
 import java.util.List;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,6 +20,12 @@ import org.springframework.web.bind.annotation.RestController;
  * cancel what it left resting (the gap that stranded the 107k book). {@code ?status=all} returns
  * every terminal state too, so a cancel/replace/STP proof can assert the row went CANCELED rather
  * than merely vanishing from the open list.
+ *
+ * <p>YU18 downstream redesign: when the order feed does not persist ({@code
+ * traderx.order-feed.persist=false}) the same route answers from the in-memory
+ * {@link finos.traderx.tradeprocessor.OrderView}, rendered as the same {@link OrderRow} shape, so
+ * the gateway's FIX status source and the console see no difference. The explicit scoped route is
+ * SQL-only: it is the historical namespace.
  */
 @RestController
 public class OrderController {
@@ -31,15 +41,33 @@ public class OrderController {
   private final OrderRepository orderRepository;
   @org.springframework.beans.factory.annotation.Autowired
   private finos.traderx.tradeprocessor.service.RunRegistry runRegistry;
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private List<Subscriber<?>> subscribers;
 
   public OrderController(OrderRepository orderRepository) {
     this.orderRepository = orderRepository;
+  }
+
+  private OrderFeedHandler memoryOnlyFeed() {
+    if (subscribers == null) { return null; }
+    for (Subscriber<?> s : subscribers) {
+      if (s instanceof OrderFeedHandler o && !o.persists()) { return o; }
+    }
+    return null;
   }
 
   @GetMapping("/accounts/{accountId}/orders")
   public ResponseEntity<List<OrderRow>> ordersForAccount(
       @PathVariable Integer accountId,
       @RequestParam(name = "status", required = false) String status) {
+    OrderFeedHandler memory = memoryOnlyFeed();
+    if (memory != null) {
+      boolean all = "all".equalsIgnoreCase(status);
+      List<OrderUpdate> found = all ? memory.view().all(accountId) : memory.view().open(accountId);
+      List<OrderRow> rows = new ArrayList<>(found.size());
+      for (OrderUpdate u : found) { rows.add(OrderFeedHandler.toRow(u)); }
+      return ResponseEntity.ok(rows);
+    }
     if (runRegistry!=null) {return scopedOrders(runRegistry.activeScope(),accountId,status);}
     List<OrderRow> orders = "all".equalsIgnoreCase(status)
         ? orderRepository.findByAccountId(accountId)

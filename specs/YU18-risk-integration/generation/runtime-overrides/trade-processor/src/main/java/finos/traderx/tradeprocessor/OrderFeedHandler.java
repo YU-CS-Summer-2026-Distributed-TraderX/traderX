@@ -5,13 +5,19 @@ import finos.traderx.messaging.nats.NatsJSONSubscriber;
 import finos.traderx.tradeprocessor.model.OrderRow;
 import finos.traderx.tradeprocessor.model.OrderUpdate;
 import finos.traderx.tradeprocessor.repository.OrderRepository;
+import finos.traderx.tradeprocessor.service.ProjectionWriteLock;
+import io.nats.client.Message;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Consumes order-lifecycle updates off the cluster's leader-side {@code /orders} bridge (YU13) and
@@ -30,6 +36,13 @@ import org.springframework.beans.factory.annotation.Autowired;
  * synthetic account with no FK parent, and epoch-id collision — is counted in {@link #rejected} and
  * logged at WARN with the offending id, so a cluster-accepts / read-model-rejects divergence is
  * visible instead of a phantom missing order.
+ *
+ * <p><b>YU18 downstream redesign.</b> Every update is also applied to the in-memory {@link OrderView}.
+ * With {@code traderx.order-feed.persist=false} the SQL {@code orderbook} rows are not written at
+ * all and {@code GET /accounts/{id}/orders} answers from the view (direction a: no row per order
+ * event); with {@code traderx.feed.mode=jetstream} the updates are pulled from the capture stream,
+ * one thread per owned partition (direction c). A memory-only view re-fills itself on restart from
+ * the last {@code traderx.order-view.replay-seconds} of the stream.
  */
 public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements DisposableBean {
   static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(OrderFeedHandler.class);
@@ -46,7 +59,27 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private final AtomicLong rejected = new AtomicLong();
   private final AtomicLong dropped = new AtomicLong();
   private volatile Thread flushThread;
+  private final List<Thread> feedThreads = new ArrayList<>();
   private volatile boolean running = true;
+
+  @Value("${traderx.feed.mode:core}") String feedMode = "core";
+  @Value("${traderx.feed.partition-count:1}") int partitionCount = 1;
+  @Value("${traderx.feed.owned:all}") String ownedPartitions = "all";
+  @Value("${traderx.feed.stream:TRADERX_FEED}") String stream = "TRADERX_FEED";
+  @Value("${traderx.feed.stream-max-bytes:8589934592}") long streamMaxBytes = 8L << 30;
+  @Value("${traderx.feed.stream-max-age-hours:24}") long streamMaxAgeHours = 24;
+  // How long a pull waits for a FULL batch. Measured: at 10 ms the fetch returned partial batches
+  // and the per-batch SQL costs (lock, prefetch, counter) amortized over ~200 rows instead of 1000,
+  // tripling CPU per trade row. Latency under low load is bounded by this value.
+  @Value("${traderx.feed.fetch-wait-ms:200}") long fetchWaitMillis = 200;
+  /** false = the view is the read model and no orderbook row is written. */
+  @Value("${traderx.order-feed.persist:true}") boolean persist = true;
+  // Measured: a retained OrderUpdate costs ~850 B (strings, BigDecimals); 200K of them filled the
+  // 256 MB default heap and the trade path thrashed in full GC. 50K = ~42 MB.
+  @Value("${traderx.order-view.terminal-capacity:50000}") int terminalCapacity = 50_000;
+  @Value("${traderx.order-view.replay-seconds:300}") long replaySeconds = 300;
+
+  private volatile OrderView view = new OrderView(50_000);
 
   public OrderFeedHandler() {
     super(OrderUpdate.class);
@@ -56,13 +89,55 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private OrderRepository orderRepository;
   @Autowired
   private finos.traderx.tradeprocessor.service.OrderProjectionService projectionService;
+  @Autowired(required = false)
+  private ProjectionWriteLock writeLock;
+
+  boolean jetstream() { return "jetstream".equalsIgnoreCase(feedMode); }
+
+  @Override
+  protected boolean autoSubscribe() { return !jetstream(); }
 
   @Override
   public void afterPropertiesSet() throws Exception {
+    view = new OrderView(terminalCapacity);
     super.afterPropertiesSet();
+    if (jetstream()) {
+      startJetStream();
+      return;
+    }
     flushThread = new Thread(this::flushLoop, "order-feed-flush");
     flushThread.setDaemon(true);
     flushThread.start();
+  }
+
+  private void startJetStream() throws Exception {
+    JetStreamFeed.ensureStream(connection(), stream, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
+    if (persist && writeLock != null) { writeLock.ensurePartitions(partitionCount); }
+    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
+      String subject = JetStreamFeed.subject("/orders", p, partitionCount);
+      // A persisted projection resumes at its durable cursor; a memory-only view has nothing to
+      // resume from, so it replays the recent window and rebuilds itself.
+      var consumer = persist
+          ? JetStreamFeed.durable("tp-orders-p" + p, subject)
+          : JetStreamFeed.replayWindow(subject, Duration.ofSeconds(replaySeconds));
+      feedThreads.add(JetStreamFeed.start("order-feed-p" + p, connection(), stream, subject, consumer,
+          BATCH_SIZE, Duration.ofMillis(fetchWaitMillis), msgs -> onJetStreamBatch(p, msgs)));
+    }
+    log.info("order feed: jetstream mode, {} of {} partitions owned, persist={}", feedThreads.size(), partitionCount, persist);
+  }
+
+  void onJetStreamBatch(int partition, List<Message> msgs) {
+    ProjectionWriteLock.partition(partition);
+    List<OrderUpdate> batch = new ArrayList<>(msgs.size());
+    for (Message m : msgs) {
+      try {
+        OrderUpdate u = decode(m.getData());
+        if (u != null) { batch.add(u); }
+      } catch (Exception x) {
+        log.error("undecodable /orders message skipped: {}", x.toString());
+      }
+    }
+    if (!batch.isEmpty()) { persistBatch(batch); }
   }
 
   @Override
@@ -71,6 +146,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     if (flushThread != null) {
       flushThread.interrupt();
     }
+    for (Thread t : feedThreads) { t.interrupt(); }
   }
 
   @Override
@@ -85,6 +161,9 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
 
   public long dropped() { return dropped.get(); }
   public int backlog() { return pending.size(); }
+  public OrderView view() { return view; }
+  public boolean persists() { return persist; }
+  public String feedMode() { return jetstream() ? "jetstream" : "core"; }
 
   public long rejected() {
     return rejected.get();
@@ -109,11 +188,14 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   }
 
   /**
-   * One transaction for the batch; if any update in it is refused, the batch rolls back and every
-   * update is retried on its own, so a single conflict still costs only that update (and is still
-   * counted in {@link #rejected}).
+   * The view first (it is what a reader sees when persistence is off), then one transaction for
+   * the batch; if any update in it is refused, the batch rolls back and every update is retried
+   * on its own, so a single conflict still costs only that update (and is still counted in
+   * {@link #rejected}).
    */
   void persistBatch(java.util.List<OrderUpdate> batch) {
+    for (OrderUpdate u : batch) { view.apply(u); }
+    if (!persist) { return; }
     if (projectionService != null && batch.size() > 1) {
       try {
         projectionService.persistAll(batch);

@@ -71,6 +71,8 @@ final class OrderNatsPublisher {
 
     private final String url;
     private final String subject;
+    // YU18: per-account partition subjects (BridgePartitions); one entry = the bare subject.
+    private final String[] subjects;
     private final String epoch;
     private final RunDescriptor descriptor;
     private final OneToOneConcurrentArrayQueue<Rec> queue;
@@ -88,6 +90,7 @@ final class OrderNatsPublisher {
         this.descriptor=descriptor;
         this.url = url;
         this.subject = subject;
+        this.subjects = BridgePartitions.subjects(subject, BridgePartitions.count());
         this.epoch = descriptor==null ? epoch : descriptor.epoch();
         this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
     }
@@ -219,7 +222,7 @@ final class OrderNatsPublisher {
                 continue;
             }
             try {
-                nats.publish(subject, encode(sb, r));
+                nats.publish(BridgePartitions.subjectFor(subjects, r.accountId), encode(sb, r));
                 published.incrementAndGet();
             } catch (final Exception e) {
                 // best-effort; the NATS client reconnects on its own. YU18: count the loss - it

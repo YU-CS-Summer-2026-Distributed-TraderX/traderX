@@ -43,6 +43,8 @@ final class TradeNatsPublisher {
 
     private final String url;
     private final String subject;
+    // YU18: per-account partition subjects (BridgePartitions); one entry = the bare subject.
+    private final String[] subjects;
     // Epoch, for the same reason OrderNatsPublisher carries one: an orderRef is unique only WITHIN
     // an epoch, so a bare ref would collide across incarnations and silently join a trade to some
     // previous epoch's order. `<epoch>-<orderRef>` is exactly the open-order read-model key, which
@@ -81,6 +83,7 @@ final class TradeNatsPublisher {
         this.descriptor=descriptor;
         this.url = url;
         this.subject = subject;
+        this.subjects = BridgePartitions.subjects(subject, BridgePartitions.count());
         this.epoch = descriptor!=null ? descriptor.epoch() : epoch == null || epoch.isBlank() ? "0" : epoch;
         this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
     }
@@ -160,7 +163,7 @@ final class TradeNatsPublisher {
                 continue;
             }
             try {
-                nats.publish(subject, encode(sb, r));
+                nats.publish(BridgePartitions.subjectFor(subjects, r.accountId), encode(sb, r));
                 published.incrementAndGet();
             } catch (final Exception e) {
                 // best-effort; the NATS client reconnects on its own. YU18: a failed publish is a

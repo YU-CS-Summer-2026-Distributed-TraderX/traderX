@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.RestController;
  * YU18: read-only health of the two live projection feeds - how far behind (backlog), what this
  * process dropped (queue full), and how many trade sides never arrived at all (tradeSeq gaps).
  * A projection that silently falls behind the cluster is the failure this exists to make visible.
+ * {@code applied} counts what reached the projection (trades) or the view (orders) in either feed
+ * mode, so a rate can be read without SQL.
  */
 @RestController
 public final class ProjectionFeedController {
@@ -25,11 +27,26 @@ public final class ProjectionFeedController {
     Map<String, Object> out = new LinkedHashMap<>();
     for (Subscriber<?> s : subscribers) {
       if (s instanceof TradeFeedHandler t) {
-        out.put("trades", Map.of("backlog", t.backlog(), "dropped", t.dropped(),
-            "missingTradeSides", t.gaps().missing(), "lastTradeSeq", t.gaps().last(),
-            "firstTradeSeqSinceStart", t.gaps().firstSeen()));
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("mode", t.feedMode());
+        m.put("backlog", t.backlog());
+        m.put("dropped", t.dropped());
+        m.put("applied", t.applied());
+        m.put("missingTradeSides", t.gaps().missing());
+        m.put("lastTradeSeq", t.gaps().last());
+        m.put("firstTradeSeqSinceStart", t.gaps().firstSeen());
+        out.put("trades", m);
       } else if (s instanceof OrderFeedHandler o) {
-        out.put("orders", Map.of("backlog", o.backlog(), "dropped", o.dropped(), "rejected", o.rejected()));
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("mode", o.feedMode());
+        m.put("persist", o.persists());
+        m.put("backlog", o.backlog());
+        m.put("dropped", o.dropped());
+        m.put("rejected", o.rejected());
+        m.put("applied", o.view().applied());
+        m.put("ignoredStale", o.view().ignored());
+        m.put("viewSize", o.view().size());
+        out.put("orders", m);
       }
     }
     return out;
