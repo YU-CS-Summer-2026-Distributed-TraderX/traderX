@@ -16,3 +16,18 @@ test('queued reads cannot grow without a bound',async()=>{
  const a=r.shell('a',{}),b=r.shell('b',{});await assert.rejects(r.shell('overflow',{}),/queue is full/);
  callbacks.shift()(null,'a');await a;callbacks.shift()(null,'b');await b;
 });
+test('background reads never take the last slot nor overtake a waiting foreground read',async()=>{
+ const running=[];const r=createCliRunner({limit:2,execImpl:(cmd,_o,cb)=>running.push({cmd,cb})});
+ const bg=['g1','g2','g3'].map(c=>r.background(c,{}));
+ assert.deepEqual(running.map(j=>j.cmd),['g1']);                 // one slot left for the operator
+ const chain=r.shell('chain',{});
+ assert.deepEqual(running.map(j=>j.cmd),['g1','chain']);         // starts at once, not after g2/g3
+ const next=r.shell('chain-2',{});
+ running.shift().cb(null,'g1');                                   // freed slot goes to the foreground read
+ assert.deepEqual(running.map(j=>j.cmd),['chain','chain-2']);
+ running.shift().cb(null,'chain');running.shift().cb(null,'chain-2');
+ assert.equal(await chain,'chain');assert.equal(await next,'chain-2');
+ assert.deepEqual(running.map(j=>j.cmd),['g2']);
+ running.shift().cb(null,'g2');running.shift().cb(null,'g3');await Promise.all(bg);
+ assert.equal(r.stats().active,0);
+});

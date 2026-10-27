@@ -174,7 +174,8 @@ const cliReads=createCliRunner({limit:Number(process.env.CONSOLE_CLI_CONCURRENCY
 const execShell=cliReads.shell, execArgs=cliReads.args;
 console.log(`[console] CLI read processes capped at ${cliReads.stats().limit}; shared shell/argv queue bounded at64 to protect the demo memory budget.`);
 const gcsCache = new Map();
-const gcs = async (cmd) => (await execShell(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 })).toString();
+// Background lane: these only enrich the provenance panel, and must never delay an operator's read.
+const gcs = async (cmd) => (await cliReads.background(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 })).toString();
 
 async function gcsBypass(req, res, url) {
   try {
