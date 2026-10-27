@@ -396,3 +396,10 @@ Finding: a cold first visit to the EOD tab can leave "Today's end of day" on "re
 reads (one `gcloud storage cat` per archived cut) and the chain read share the console's two CLI slots, which
 pushed the chain past the load balancer's 60 s timeout (502). With the provenance cache warm the chain reads in
 about 10 s; pressing Refresh recovers.
+
+Fixed in `5f3aed8d` (rolled 1:34 pm ET): the console's CLI runner gives background reads (the provenance panel's
+GCS listing and per-cut `cat`) their own lane, started only when no foreground read waits and capped at limit−1
+slots. On a restarted, cold console with the per-cut reads in flight, Refresh returned the chain in 16 s (200);
+the background reads queued behind it. Images `tip-5f3aed8d`: console `sha256:18e2da3d…8e5d`, risk runtime
+(deployed, tools `671029d1`) `sha256:2512ffb8…c887`, desk `sha256:5691aec0…db3f`; batch custody re-verified.
+Build VM `yu18-demofix2-20261027` deleted at 1:37 pm ET (≈ $0.25).
