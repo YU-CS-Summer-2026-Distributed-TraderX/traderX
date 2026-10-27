@@ -115,6 +115,12 @@ public class ReconciliationService {
     private final String serviceAuthorization;
 
     private volatile long cursor = 0L;
+    // Core feed mode: how long after its fill a side may still be on its way into SQL (see classify).
+    private long projectionGraceMs = 120_000L;
+    private java.time.Clock clock = java.time.Clock.systemUTC();
+    @Value("${recon.projection-grace-ms:120000}")
+    void projectionGraceMs(long ms) { this.projectionGraceMs = ms; }
+    void clock(java.time.Clock clock) { this.clock = clock; }
     private volatile Instant lastSweepAt;
     private final LongAdder matched = new LongAdder();
     private final LongAdder missingInProjection = new LongAdder();
@@ -177,7 +183,7 @@ public class ReconciliationService {
             if (entry.tradeSeq() <= cursor) {
                 continue; // the epoch-check entry; already classified on the cycle that advanced past it
             }
-            classify(entry);
+            if (!classify(entry)) break; // held: the cursor stays below the oldest side SQL may still insert
             cursor = entry.tradeSeq();
         }
         if(runRegistry!=null) runRegistry.saveRecon(projectionScope,cursor,matched.sum(),missingInProjection.sum(),fieldMismatch.sum());
@@ -345,13 +351,20 @@ public class ReconciliationService {
         }
     }
 
-    private void classify(BlotterEntry entry) {
+    /**
+     * The engine fills before trade-processor inserts the row, so a side absent from SQL is only
+     * MISSING once it is older than the projection grace; younger, it is held (returns false) and the
+     * cursor stops below it, so the next sweep looks again. Age is the fill's engine exec time, not
+     * when a sweep first saw it: a run of genuine misses resolves in one sweep, not one grace each.
+     */
+    private boolean classify(BlotterEntry entry) {
         Optional<Trade> local = tradeRepository.findById(entry.id());
         if (local.isEmpty()) {
+            if (clock.millis() - entry.execTimeMillis() < projectionGraceMs) return false;
             missingInProjection.increment();
             log.warn("recon MISSING_IN_PROJECTION id={} account={} security={}",
                 entry.id(), entry.accountId(), entry.security());
-            return;
+            return true;
         }
         Trade trade = local.get();
         boolean matches = (runRegistry==null || projectionScope.equals(trade.getProjectionScope()))
@@ -366,6 +379,7 @@ public class ReconciliationService {
             fieldMismatch.increment();
             log.warn("recon FIELD_MISMATCH id={}", entry.id());
         }
+        return true;
     }
 
     private List<BlotterEntry> fetchBlotterPage(long sinceSeq) throws IOException, InterruptedException {

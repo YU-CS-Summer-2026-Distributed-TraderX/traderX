@@ -9,7 +9,15 @@
       in `ri06.sql` and both init-configmap keys.
 - [x] Crash-replay and rate-ladder measurements on a cloud VM.
 
+- [x] Bond fail-closed on the snapshot path; settlement and recon on the ledger; stream retention and
+      the `STREAM_RESET` / `RETENTION_GAP` refusals; one global snapshot write lock (0e624848, 1bfe65f9).
+- [x] NATS ingest queue sized on every tier (1bfe65f9).
+- [x] Bridge receipt publish: per-partition lanes, 429 counting, `/health` and `/metrics`, ALERT ids
+      (48655be8, ADR-083).
+- [x] Core-mode recon holds an unprojected side for `RECON_PROJECTION_GRACE_MS` (FR-DRS-22).
+
 ## Still open
 
-- The YU16 bond fail-closed rejection is not on the snapshot path.
 - No deployed tier sets the opt-in env yet.
+- In snapshot mode no consumer replays a rejected trade side from the archive yet. The recon reports it
+  MISSING, and the bridge names it (FR-DRS-16, FR-DRS-18).

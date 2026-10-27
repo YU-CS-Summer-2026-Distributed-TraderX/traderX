@@ -41,7 +41,8 @@ pre-ADR wire and behaviour.
 
 - Readers are unchanged. Positions and the per-account trades window stay in SQL, at most one snapshot
   interval stale in snapshot mode.
-- Settlement and the live-blotter recon do not run on a snapshot-mode tier.
+- On a snapshot-mode tier, settlement and the live-blotter recon read the stream and the committed cursor
+  (FR-DRS-20, FR-DRS-21). The bridges count every ingest drop ([ADR-083](adr-083-bridge-receipt-publish.md)).
 - Measured on a c4d-standard-16: the stream dropped nothing at any offered rate up to 640K msgs/s, and a
   `kill -9` mid-drain booked 600,000 of 600,000 trade sides. In snapshot mode one partition booked 72K
   trade sides/s and four booked 159K/s. The row path is capped by the MariaDB instance at ~25–36K rows/s,

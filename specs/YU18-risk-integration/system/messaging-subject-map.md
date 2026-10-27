@@ -202,3 +202,7 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   durable pull consumer per owned partition when `PROJECTION_FEED_MODE=jetstream`.
 - `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and
   `/accounts/{id}/positions` publishes.
+- Bridge receipts (ADR-083): every `/trades[.<p>]` and `/orders[.<p>]` message carries a reply subject
+  on its lane's own inbox. The trade bridge uses `_INBOX.<lane id>.<trade id>` and the order bridge
+  uses the bare inbox. Only the stream answers: a PubAck when it stored the message, a 429 when ingest
+  dropped it. Core subscribers ignore the reply subject.
