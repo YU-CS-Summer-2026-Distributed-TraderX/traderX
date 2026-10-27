@@ -54,3 +54,25 @@ Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-i
 ## Local Batch result ingestion, October 15
 
 FR-RP-BATCH-IMPORT: admit only a fully verified copied Batch result, bound to trusted package/build/job/control/account/run/cut. Explicit operator selection and an independently retained inventory digest are required; exact replay is idempotent and conflicting replay is refused. Reads revalidate offline and never submit work. UI displays synthetic NPV with unavailable scenario/general financial measures and clears failed refreshes.
+
+## VaR and ES end to end, October 26
+
+Owner: `generation/runtime-overrides/order-matcher/.../cluster/VarEsEndToEndTest.java` (TraderX half) and
+`generation/runtime-overrides/risk-portfolio-tools/var_es_e2e.py` (engine half, wrapped by
+`scripts/risk-var-es-e2e.py`); `scripts/proofs/yu18-var-es-e2e.sh` runs both, back to back, with no rig.
+Report to the engine owner: `docs/risk-integration/alex-var-es-e2e-report.md`.
+
+- FR-RP-VARES-01: The TraderX half SHALL book every instrument class through real ingress against three
+  in-process members and a child-JVM `ClusterGatewayMain`: listed equity over JWT-bound REST `/orders`,
+  a listed option over FIX 4.4, a Treasury bill over the binary path, and two OTC swaps over `/swaps`
+  (USD-SOFR and, after a sequenced FX rate, GBP-SONIA). It SHALL then close the venue, sequence the EOD
+  marker, require a byte-identical cut on all three members equal to the announced hash and the N+1
+  quiescence witness, and write the production exporters' `positions.csv`, `contracts.csv` and the
+  write-once ready receipt to `TRADERX_VAR_ES_E2E_OUTPUT`. A counterparties table missing one trading
+  account SHALL make the extract refuse.
+- FR-RP-VARES-02: The engine half SHALL package the receipt with eod-risk-bundles and map each row to a
+  `POST /runs` trade of the engine, or refuse it by name. It SHALL never substitute a term. One run with
+  analytics `npv` and `market_risk` SHALL produce VaR and ES at 99 and 97.5 that are finite and non-zero
+  for the portfolio and attributed to every priced trade.
+- SC-RP-VARES-01: `VarEsEndToEndTest` passes in the order-matcher suite on an empty-root render, and
+  `test_var_es_e2e.py` passes in the risk-portfolio-tools render.

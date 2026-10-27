@@ -26,6 +26,10 @@ flowchart LR
   archive["Verified archive: not ready work"]
   httpmock["Loopback HTTP mock adapter"]
   fakeworker["Local fake worker"]
+  bridges["Leader trade and order bridges"]
+  feed["JetStream TRADERX_FEED"]
+  projector["trade-processor OrderView and TradeView"]
+  sqlsnap["SQL positions, blotter window, projection_cursor"]
   exports -->|"same-cut files"| builder
   builder -->|"manifest and original bytes"| bundle
   bundle -->|"validate hashes and identities"| validator
@@ -44,6 +48,9 @@ flowchart LR
   coordinator -->|"explicit HTTP mock profile"| httpmock
   httpmock -->|"submit or lookup by workload"| fakeworker
   fakeworker -->|"identified mock result and hash"| httpmock
+  bridges -->|"/trades and /orders, per-account partition"| feed
+  feed -->|"durable pull, ack after commit"| projector
+  projector -->|"snapshot every interval"| sqlsnap
 ```
 
 ## Node Catalog
@@ -66,4 +73,8 @@ flowchart LR
 | `archive` | store | Verified archive: not ready work | No inferred completion receipt or epoch |
 | `httpmock` | service | Loopback HTTP mock adapter | Provisional non-pricing protocol and pending recovery |
 | `fakeworker` | service | Local fake worker | Durable request/result artifacts; no pricing |
+| `bridges` | service | Leader trade and order bridges | Leader trade and order bridges |
+| `feed` | queue | JetStream TRADERX_FEED | JetStream TRADERX_FEED |
+| `projector` | service | trade-processor OrderView and TradeView | trade-processor OrderView and TradeView |
+| `sqlsnap` | store | SQL positions, blotter window, projection_cursor | SQL positions, blotter window, projection_cursor |
 

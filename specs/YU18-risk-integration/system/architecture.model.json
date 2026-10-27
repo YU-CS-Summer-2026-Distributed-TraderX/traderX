@@ -102,6 +102,30 @@
       "label": "Local fake worker",
       "kind": "service",
       "description": "Durable request/result artifacts; no pricing"
+    },
+    {
+      "id": "bridges",
+      "label": "Leader trade and order bridges",
+      "kind": "service",
+      "description": "Leader trade and order bridges"
+    },
+    {
+      "id": "feed",
+      "label": "JetStream TRADERX_FEED",
+      "kind": "queue",
+      "description": "JetStream TRADERX_FEED"
+    },
+    {
+      "id": "projector",
+      "label": "trade-processor OrderView and TradeView",
+      "kind": "service",
+      "description": "trade-processor OrderView and TradeView"
+    },
+    {
+      "id": "sqlsnap",
+      "label": "SQL positions, blotter window, projection_cursor",
+      "kind": "store",
+      "description": "SQL positions, blotter window, projection_cursor"
     }
   ],
   "edges": [
@@ -194,6 +218,21 @@
       "from": "fakeworker",
       "to": "httpmock",
       "label": "identified mock result and hash"
+    },
+    {
+      "from": "bridges",
+      "to": "feed",
+      "label": "/trades and /orders, per-account partition"
+    },
+    {
+      "from": "feed",
+      "to": "projector",
+      "label": "durable pull, ack after commit"
+    },
+    {
+      "from": "projector",
+      "to": "sqlsnap",
+      "label": "snapshot every interval"
     }
   ]
 }

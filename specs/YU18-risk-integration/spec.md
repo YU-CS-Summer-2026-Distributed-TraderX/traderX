@@ -25,6 +25,7 @@ YU18 groups related integration and trading capabilities as separately specified
 - [Order types](components/order-types/spec.md): new stop/stop-limit and staged order-lifecycle work.
 - [Risk service packaging](components/risk-service/spec.md): local engine container and its integration boundary.
 - [Risk pipeline](components/risk-pipeline/spec.md): service submission, recovery and later parallel portfolio execution.
+- [Downstream read side](components/downstream-read-side/spec.md): bounded projection, replayable partitioned feed, in-memory order view and the append-only trade store.
 
 ## Acceptance
 

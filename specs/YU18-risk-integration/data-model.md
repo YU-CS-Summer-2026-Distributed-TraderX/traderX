@@ -24,3 +24,12 @@ Status derives selection from the largest numeric cut sequence/version per epoch
 It retains all history and refuses to pick among conflicting bundles with equal cut order.
 
 Completed-export receipts carry the existing readiness payload: individual CSV hashes and counts, schemas, cut metadata, file URIs and adjacent quiescence witness. They are stored independently of bundles and identify when the pair is ready for packaging; they do not supply epoch or market/reference-data versions.
+
+## Projection cursor (downstream read side)
+
+`projection_cursor(projection_scope VARCHAR(64), partition_id INTEGER, stream_seq BIGINT, consensus_seq BIGINT,
+snapshot_at DATETIME)`, primary key `(projection_scope, partition_id)`, created by `ri06.sql` and by both keys
+(`001-initialSchema.sql`, `900-migrations.sql`) of the YU18 `kubernetes-runtime/manifests/base/database-init-configmap.yaml`. In `TRADE_PROJECTION_MODE=snapshot` it records where
+each partition's last SQL snapshot sits in the JetStream capture stream. The snapshot writes it in the same
+transaction as the changed positions and blotter windows. A restart replays from `stream_seq + 1`
+([ADR-080](system/adr-080-downstream-read-side.md)).

@@ -29,5 +29,8 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Tape status, universe and identity diagnostics](tape-status/README.md) | See pack tasks and linked RI/LR evidence |
 
 | [Bounded settlement](settlement-memory/README.md) | Source and isolated retained-data proof accepted; original delivery acceptance remains separate |
+| [Engine-review hardening](engine-review-hardening/README.md) | Integrated 2026-10-27: S1–S6 (ADR-082), F1–F11 |
+| [Console sessions](console-sessions/README.md) | Integrated 2026-10-26 |
+| [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081) |
 
 Future fixes, including feed reconnect, belong here. Update the parent RI issue, bounded task record and live-rig queue as appropriate. A directory is not a service or deployment; follow [state pack layout](../../../docs/spec-kit/state-components.md) and the project task lifecycle.

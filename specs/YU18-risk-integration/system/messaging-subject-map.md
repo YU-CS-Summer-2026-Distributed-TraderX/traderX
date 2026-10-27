@@ -190,3 +190,15 @@ The optional local .ready.json receipt contains the unchanged risk.extract.ready
 
 Optional GCS staging adds no messaging subject. It accepts a locally captured completion event or
 explicitly selected archive URI. Archive mode never emits a ready receipt from object presence alone.
+
+## YU18 downstream read side (ADR-080)
+
+- `/trades.<p>` and `/orders.<p>`, `p = accountId mod BRIDGE_PARTITIONS`: published by the leader-side
+  `TradeNatsPublisher` and `OrderNatsPublisher` only when `BRIDGE_PARTITIONS>1`. Payload bytes, including
+  the envelope `topic`, equal the bare-subject message. Unset or 1 publishes the bare `/trades` and
+  `/orders` as before.
+- JetStream stream `TRADERX_FEED` (`PROJECTION_FEED_STREAM`), file storage, subjects `/trades`,
+  `/trades.*`, `/orders`, `/orders.*`. trade-processor creates it idempotently and consumes it with one
+  durable pull consumer per owned partition when `PROJECTION_FEED_MODE=jetstream`.
+- `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and
+  `/accounts/{id}/positions` publishes.

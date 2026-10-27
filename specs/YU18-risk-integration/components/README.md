@@ -11,6 +11,7 @@
 | [Event recovery](event-recovery/README.md) | Integrated locally; retained/live acceptance open | YU18 archive replay, trade-processor recovery service and additive SQL checkpoint |
 | [Automatic projection recovery](automatic-projection-recovery/README.md) | Integrated locally; retained/live acceptance open | YU18 member catch-up page, trade-processor fenced worker, additive SQL cursor; disposable profile only |
 | [Managed-run UI](managed-run-ui/README.md) | Review needed; local fixture and real-transition proofs 2026-09-24 | `web-front-end-console` (standalone, not generated): blotter, Admin trade list, console proxies |
+| [Downstream read side](downstream-read-side/README.md) | Implemented and measured 2026-10-27; every path opt-in | YU18 trade-processor and order-matcher bridges, `projection_cursor` (ADR-080) |
 
 | [Combined trader workspace](trader-workspace-combined/README.md) | Connected local UI; production auth and remaining migration open | Standalone combined desk and existing console API/server |
 

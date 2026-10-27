@@ -1,0 +1,99 @@
+# YU18 component coverage
+
+Every component that runs or ships in `YU18-risk-integration`, the spec that describes it, where its
+source lives, and where an empty-root render emits it. `scripts/check-state-render-coverage.py` reads
+this table and fails on any row whose spec or source is missing, or whose render path is absent from a
+render.
+
+Render column forms:
+
+- `tg:<path>`: under `${TRADERX_GENERATED_ROOT}/code/target-generated/`, written by
+  `bash pipeline/generate-state.sh YU18-risk-integration`.
+- `cand:<Kind>/<name>`: in the CompSci candidate written by `scripts/gcp-compsci/prepare.py` from that
+  render (the profile `traderx-demo` runs).
+- `root:<path>`: root-owned by design and built from the checkout, not rendered. The reason is in the
+  Notes column.
+
+Verified 2026-10-27 against an empty-root render of `traderX-risk-integration` on a cloud VM (see the
+last section).
+
+## Services and workloads
+
+| Component | Spec | Source | Render | Notes |
+|---|---|---|---|---|
+| Cluster member (engine) | `specs/YU12-aeron-cluster/spec.md`, `specs/YU18-risk-integration/components/order-types/spec.md`, `specs/YU18-risk-integration/system/adr-081-gke-member-runtime.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher` | `tg:order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ClusterNodeMain.java`, `cand:StatefulSet/order-matcher-cluster` | Image `cluster-node` |
+| MAX_ACTIVE_BOOKS guard | `specs/YU18-risk-integration/system/adr-079-eod-extract-at-scale.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java` | `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/BookCapacityTest.java` | ADR-079 §6 |
+| Member SIGTERM exit | `specs/YU18-risk-integration/maintenance/gke-member-runtime/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/ClusterNodeShutdownTest.java` | `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/ClusterNodeShutdownTest.java` | FR-GMR-04 |
+| Cluster gateway (REST, FIX, binary) | `specs/YU12-aeron-cluster/spec.md`, `specs/YU18-risk-integration/system/adr-082-authenticated-boundary.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java` | `tg:order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java`, `cand:Deployment/cluster-gateway` | Same image as the member |
+| Security S1–S6, F1–F11 | `specs/YU18-risk-integration/maintenance/engine-review-hardening/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/GatewayAccess.java` | `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/GatewayAccessTest.java`, `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/BoundedBodyTest.java` | |
+| Cluster ingress authentication | `specs/YU18-risk-integration/system/adr-079-eod-extract-at-scale.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ClusterClientAuth.java` | `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/ClusterIngressAuthTest.java` | ADR-079 §4 |
+| FIX ClOrdID ledger (F11) | `specs/YU18-risk-integration/maintenance/engine-review-hardening/spec.md` | `specs/YU10-fix-ingress/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/fix/ClOrdIdLedger.java` | `tg:order-matcher/src/main/java/finos/traderx/ordermatcher/fix/ClOrdIdLedger.java` | YU10 is its highest layer |
+| Partitioned trade/order bridges | `specs/YU18-risk-integration/components/downstream-read-side/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/BridgePartitions.java` | `tg:order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/BridgePartitions.java` | FR-DRS-06 |
+| Risk extract (EOD cut) | `specs/YU15-eod-risk-extract/spec.md`, `specs/YU18-risk-integration/system/adr-079-eod-extract-at-scale.md` | `specs/YU18-risk-integration/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractMain.java` | `tg:order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractMain.java`, `cand:Deployment/risk-extract` | |
+| Archive purge and offload | `specs/YU18-risk-integration/system/adr-079-eod-extract-at-scale.md` | `specs/YU17-otc-rates/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ArchivePurgeMain.java` | `tg:order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ArchivePurgeMain.java` | Shipped in the image; not wired into GKE (ADR-079 §6) |
+| Trade processor (projection) | `specs/YU18-risk-integration/components/downstream-read-side/spec.md`, `specs/YU18-risk-integration/system/adr-080-downstream-read-side.md` | `specs/YU18-risk-integration/generation/runtime-overrides/trade-processor` | `tg:trade-processor/src/main/java/finos/traderx/tradeprocessor/JetStreamFeed.java`, `tg:trade-processor/src/main/java/finos/traderx/tradeprocessor/TradeView.java`, `tg:trade-processor/src/main/java/finos/traderx/tradeprocessor/OrderView.java`, `cand:Deployment/trade-processor` | |
+| Trade store snapshot + `projection_cursor` | `specs/YU18-risk-integration/data-model.md` | `specs/YU18-risk-integration/generation/runtime-overrides/postgres-database-replacement/mariadb-migrations/ri06.sql` | `tg:trade-processor/src/main/java/finos/traderx/tradeprocessor/service/TradeSnapshotStore.java`, `tg:postgres-database-replacement/mariadb-migrations/ri06.sql`, `tg:kubernetes-runtime/manifests/base/database-init-configmap.yaml` | |
+| Position service | `specs/YU06-eod-price-production/spec.md`, `specs/YU16-cdm-instruments/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/position-service` | `tg:position-service`, `cand:Deployment/position-service` | |
+| Trade service (legacy `/trades`) | `specs/YU18-risk-integration/maintenance/engine-review-hardening/spec.md` | `specs/YU16-cdm-instruments/generation/runtime-overrides/trade-service/src/main/java/finos/traderx/tradeservice/auth/GatewayBearer.java` | `tg:trade-service/src/main/java/finos/traderx/tradeservice/auth/GatewayBearer.java`, `tg:kubernetes-runtime/manifests/base/trade-service-deployment.yaml`, `cand:Deployment/trade-service` | FR-ERH-C2 |
+| Account service | `specs/001-baseline-uncontainerized-parity/spec.md`, `specs/YU04-durable-control-feeds/spec.md` | `specs/YU04-durable-control-feeds/generation/runtime-overrides/account-service` | `tg:account-service`, `cand:Deployment/account-service` | |
+| People service | `specs/001-baseline-uncontainerized-parity/spec.md` | `templates/people-service-specfirst` | `tg:people-service`, `cand:Deployment/people-service` | Base TraderX component |
+| Price publisher | `specs/YU16-cdm-instruments/spec.md` | `specs/YU16-cdm-instruments/generation/runtime-overrides/price-publisher` | `tg:price-publisher/src/treasury-pricing.js`, `cand:Deployment/price-publisher` | Bill accretion, 951ed3c9 |
+| Reference data | `specs/YU16-cdm-instruments/spec.md` | `specs/YU16-cdm-instruments/generation/runtime-overrides/reference-data` | `tg:reference-data`, `cand:Deployment/reference-data` | |
+| Execution algo engine | `specs/YU08-execution-algo-engine/spec.md` | `specs/YU08-execution-algo-engine/generation/runtime-overrides/execution-algo-engine` | `tg:execution-algo-engine`, `cand:Deployment/execution-algo-engine` | |
+| Legacy Angular UI | `specs/001-baseline-uncontainerized-parity/spec.md`, `specs/YU17-otc-rates/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/web-front-end` | `tg:web-front-end/angular`, `cand:Deployment/web-front-end-angular` | |
+| API explorer | `specs/008-pricing-awareness-market-data/spec.md` | `pipeline/install-generated-api-explorer.sh` | `tg:api-explorer`, `cand:Deployment/api-explorer` | |
+| Edge proxy | `specs/002-edge-proxy-uncontainerized/spec.md` | `pipeline/generate-state-002-edge-proxy-uncontainerized.sh` | `tg:kubernetes-runtime/manifests/base/edge-proxy-deployment.yaml`, `cand:Deployment/edge-proxy` | |
+| Operator console | `specs/YU18-risk-integration/components/managed-run-ui/spec.md`, `specs/YU18-risk-integration/maintenance/console-sessions/spec.md` | `web-front-end-console/server.mjs` | `root:web-front-end-console`, `cand:Deployment/web-front-end-console` | Root-owned (see Gaps) |
+| Hosted Desk | `specs/YU18-risk-integration/components/trader-workspace-combined/spec.md`, `specs/YU18-risk-integration/maintenance/compsci-gke-admission/spec.md` | `scripts/gcp-compsci/render-desk-deployment.py` | `root:web-front-end-console-combined-prototype`, `root:scripts/gcp-compsci/Dockerfile.desk` | Derived from the admitted console Deployment |
+
+## Stores, messaging and observability
+
+| Component | Spec | Source | Render | Notes |
+|---|---|---|---|---|
+| MariaDB (`eod-price-db`) and schema | `specs/YU06-eod-price-production/spec.md`, `specs/YU18-risk-integration/data-model.md` | `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/eod-price-db.yaml` | `cand:Deployment/eod-price-db`, `cand:ConfigMap/database-init-sql` | |
+| NATS + JetStream `TRADERX_FEED` | `specs/YU18-risk-integration/system/messaging-subject-map.md` | `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/nats.yaml` | `cand:Deployment/nats`, `cand:ConfigMap/nats-server-config` | |
+| Member archive volume | `specs/YU18-risk-integration/maintenance/gke-member-runtime/spec.md` | `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/storageclass.yaml` | `cand:StorageClass/order-matcher-archive` | FR-GMR-01/02 |
+| Member heap and pause goal | `specs/YU18-risk-integration/system/adr-081-gke-member-runtime.md` | `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/statefulset-emptydir.yaml` | `cand:StatefulSet/order-matcher-cluster` | FR-GMR-03 |
+| Promtail | `specs/YU18-risk-integration/maintenance/gke-member-runtime/spec.md` | `scripts/gcp-compsci/prepare.py` | `tg:kubernetes-runtime/manifests/base/promtail-daemonset.yaml`, `cand:DaemonSet/promtail`, `cand:ClusterRole/promtail-traderx` | FR-GMR-05 |
+| Loki, Tempo, Prometheus, Grafana, OTel collector | `specs/007-observability-lgtm-compose/spec.md`, `specs/YU13-limit-order-book/system/adr-060-derived-trace-context-across-consensus.md` | `specs/010-kubernetes-runtime/generation/patches/0001-state-overlay.patch` | `cand:Deployment/loki`, `cand:Deployment/tempo`, `cand:Deployment/prometheus`, `cand:Deployment/grafana`, `cand:Deployment/otel-collector` | |
+
+## Tools and offline components
+
+| Component | Spec | Source | Render | Notes |
+|---|---|---|---|---|
+| EOD risk bundles | `specs/YU18-risk-integration/components/eod-integration/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles` | `tg:eod-risk-bundles` | |
+| Risk portfolio tools | `specs/YU18-risk-integration/components/portfolio-generator/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/risk-portfolio-tools` | `tg:risk-portfolio-tools` | |
+| VaR/ES end to end | `specs/YU18-risk-integration/components/risk-pipeline/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/risk-portfolio-tools/var_es_e2e.py` | `tg:risk-portfolio-tools/var_es_e2e.py`, `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/VarEsEndToEndTest.java` | FR-RP-VARES-01/02 |
+| Recovery identity | `specs/YU18-risk-integration/components/recovery-identity/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/recovery-identity` | `tg:recovery-identity` | |
+| CompSci render and admission | `specs/YU18-risk-integration/maintenance/compsci-gke-admission/spec.md` | `scripts/gcp-compsci/admit.py` | `root:scripts/gcp-compsci/prepare.py` | Writes the `cand:` rows above |
+| State spec source | `specs/YU18-risk-integration/spec.md` | `specs/YU18-risk-integration/README.md` | `tg:YU18-risk-integration/spec-source/components/downstream-read-side/spec.md`, `tg:YU18-risk-integration/spec-source/maintenance/gke-member-runtime/spec.md` | |
+
+## Gaps
+
+- **The console and the Desk are root-owned, not rendered.** `web-front-end-console/` and
+  `web-front-end-console-combined-prototype/` are tracked at the repository root. The generator does not
+  emit them. Their specs exist (rows above), and `build-images.py` and `admit.py` bind the console's
+  source tree hash into its image admission instead. Moving them under `generation/runtime-overrides/`
+  is a structural change to two directories that several chats commit to concurrently. It is left for a
+  dedicated change.
+- **Kind-tier-only workloads** (`feed-adapter`, `sandbox`, backup CronJob, seed Job) are in the YU17
+  `cluster/` kustomization and are not part of the CompSci profile. They carry their YU17/YU12 specs and
+  are outside this YU18 table.
+
+## Verification, 2026-10-27
+
+On a c4d-standard-16 VM, into an empty `TRADERX_GENERATED_ROOT`:
+
+- `bash pipeline/generate-state.sh YU18-risk-integration`: exit 0. The layout check reported 15 feature packs
+  and 28 maintenance packs.
+- `prepare.py` from that root: 21 distinct images in 24 container slots, the `order-matcher-archive`
+  StorageClass, and the promtail DaemonSet.
+- `check-state-render-coverage.py`: PASS for 36 components. Negative control: against an empty
+  root and an empty candidate, all 64 render references are reported missing.
+- order-matcher `:test`: 796 tests, 0 failures, 6 skipped (reference 795–796 / 6). The three
+  allocation-gate tasks: 1 each, all pass.
+- trade-processor: 121 unit tests, plus 80 integration tests with 4 live-cluster skips; 0 failures.
+- trade-service: 21 tests, 0 failures. eod-risk-bundles (`scripts/test-state-YU18-risk-integration.sh`):
+  167 OK. risk-portfolio-tools: 69 OK, including `test_var_es_e2e.py`.
+- `scripts/gcp-compsci` `test_prepare`: 25/25, including the new population check (negative control:
+  the old 12/8/23 constants fail it).
