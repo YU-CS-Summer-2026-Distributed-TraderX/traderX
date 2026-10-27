@@ -244,3 +244,65 @@ trade: INVALID"}`; `yu16-treasury-pricing` PASS (13-week bill 16 days out at 0.9
 `CLUSTER_SNAPSHOT_INTERVAL_MS` (300 s here, 60 s on kind), and the retick proof stages the scale-drift
 re-derivation (ENGINE-REVIEW F4 closed "create-before-tick" by construction). TAQ replay proofs skipped:
 TAQ path retired (yaakov 2026-10-27). Teardown: namespace deleted, pools 0/1, VM deleted.
+
+## 9. Production rollout of `traderx` to the tip (2026-10-27, 9:08–10:35 am ET)
+
+yaakov's go (relayed by the coordinator): roll `traderx` to the proven tip images with this plan and
+promtail in `--public-lock`. Source `9e0fd80b`; images built on a throwaway VM by `build-images.py`
+(its derivation guard admitted all 11 contexts, `SOURCE_DATE_EPOCH` set, BuildKit on), tag
+`tip-9e0fd80b`, pushed and checked one by one with `docker buildx imagetools inspect` (single linux/amd64
+manifest, label `dev.traderx.source.commit=9e0fd80b`). Running digests:
+
+| Image | Digest |
+|---|---|
+| cluster-node | `sha256:eefcbfe4aa2525be7f4903075ff1d3c8544749694c1da0c7e32cec84b037ca43` |
+| trade-processor | `sha256:cc5e5119970b6d9a5cea3b09d8056e16372269a5e72fa7799dd4ccf7c3befa72` |
+| position-service | `sha256:d39c4139dbe8c82ee7a4e007e68108ca05c3025e94fe222d0197f91753f46ac3` |
+| execution-algo-engine | `sha256:13bbf19cec744009bbaffd5b8f181d2d7fce4b1a2532b137b8e719b74e72e79b` |
+| trade-service | `sha256:dc1aa3817389e1e05c30abc9f7f5742cc52506083c4b5bd005f76a47769162c3` |
+| account-service | `sha256:ee6ccae0af457e68fae6817d4c30c694f522d103a9a06ffa9478deffdb2fb619` |
+| people-service | `sha256:fd790b6290f8a69b9a0fc23968cfc8f528035f3906e74eb0a884876fb9c70956` |
+| price-publisher | `sha256:6006dcee6b218c20e295a0b6be3a1921dade0a3e2d6e81464b6ed1b82f6c2910` |
+| reference-data | `sha256:69ad487b183348890f078d157d0726ecdc2d07f79407e1c59ae68234209706fb` |
+| web-front-end-angular | `sha256:e6db5f7311d8a16a37c3878c76b53951be9f8ac42f54fde4b3781c81185977cf` |
+| api-explorer | `sha256:c60f0c1bf6d78a77d406bb7f9272c8aa4de03beae07c8a51b7883c845a714832` |
+| web-front-end-console | `sha256:52db8220f891c198f8d489f3c6163df258241e6f829fadfd56ec43b70e2ea4a6` |
+| web-front-end-desk | `sha256:4451f06f0902bf99a9fc86427e69b590367c64470796215580452426b93978c6` |
+
+Public images: `scripts/gcp-compsci/public-image-lock.json` (`1fdc1440`; the October 11 lock plus promtail).
+
+**`admit.py` was not run for this rollout.** It pins the reviewed image dependency to the October 11 commit
+`6156ad22` and requires an image built from it, so it refuses any tip population by construction; its
+payload/executable evidence also existed only as hand-made October 11 artifacts. yaakov chose to gate this
+rollout on the checks below and to fix the admission afterwards (moving the dependency to the deployed
+commit and scripting the evidence). Gates used: the tip rebuild by `build-images.py`; digest pins plus
+`imagetools inspect`; the public lock including promtail; `prepare.py` validate (24/24 slots pinned) and
+`test_prepare` 25/25; `kubectl apply --dry-run=server` (68 objects); the post-apply stale-image check.
+
+Order of operations: rollback record of every `traderx` object (9:08 am); DB disk snapshot
+`traderx-eod-price-db-pre-tip-20261027` (9:55 am); `cluster-client-secret` added to `auth-secrets` (now six
+keys); engine-pool 3, default-pool 2; DB init ConfigMap; `eod-price-db-data` deleted for the fresh epoch
+(10:14 am); `kubectl replace` of order-matcher-cluster, nats, trade-processor and web-front-end-console,
+`kubectl apply` of the other 63 objects (10:18 am); desk via `render-desk-deployment.py` (10:18 am).
+**Why replace for four workloads:** those objects were never created with `kubectl apply`, so apply would
+have kept eight hand additions from October 11–23 that are in no pack. One was a `restore-before-start` init
+container on the members and nats that waits for an uploaded archive, so every new pod would have hung in
+Init. The others (`batch-custody` on the console, `RISK_BATCH_*`, `EOD_PYTHON`, `CONSOLE_CLI_CONCURRENCY`,
+trade-processor `PROJECTION_DELIVERY_*`) are no longer read by the tip.
+
+Verified (10:28–10:35 am ET):
+
+| Check | Result |
+|---|---|
+| Pods | 30/30 Running and ready |
+| Stale-image check | 31 containers, 22 admitted references, 0 mismatches |
+| Members | fresh epoch, one leader; 11 accounts and the reference catalog applied at 1291 on all three |
+| TLS | demo.yaakovseif.dev and desk.yaakovseif.dev: 200, Google Trust Services cert valid to Jan 9 2027 |
+| Gateway auth | `/orders` without a bearer: 401 |
+| Order at the effect end | MSFT Sell 5 @393 (42422) x Buy 5 @394 (22214): applied 1291 to 1293 and 2 trade sides on all three members; SQL `1-S`, `2-B` at 393; positions 42422 -5, 22214 +5 @393; console blotter read shows both; projection feed backlog 0, dropped 0, missing 0 |
+| Loki | `{namespace="traderx"}` streams from 25 services; Grafana healthy, its Loki datasource is `loki:3100` and reachable from the Grafana pod |
+
+Findings, not fixed: the bare `yaakovseif.dev` has no certificate (the load balancer presents the demo
+certificate, so TLS fails); `grafana.yaakovseif.dev` is not part of this plan; the gateway logs `FIX acceptor
+INSECURE: FIX_SESSION_AUTH unset` (ENGINE-REVIEW S3 credentials are not configured in this profile).
+Rollback: the recorded objects (shared notes, `prod-rollback-20261027T0908/`) plus the DB snapshot.
