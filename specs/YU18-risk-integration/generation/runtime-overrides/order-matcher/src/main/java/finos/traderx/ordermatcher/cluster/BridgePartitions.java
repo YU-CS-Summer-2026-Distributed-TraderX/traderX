@@ -35,6 +35,11 @@ final class BridgePartitions {
     }
 
     static String subjectFor(final String[] subjects, final int accountId) {
-        return subjects.length == 1 ? subjects[0] : subjects[Math.floorMod(accountId, subjects.length)];
+        return subjects[index(accountId, subjects.length)];
+    }
+
+    /** The partition (lane) of an account: {@code accountId mod count}, non-negative. */
+    static int index(final int accountId, final int count) {
+        return count <= 1 ? 0 : Math.floorMod(accountId, count);
     }
 }

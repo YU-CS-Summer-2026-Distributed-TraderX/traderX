@@ -477,12 +477,56 @@ Cost at 400K orders/s (~400K trade sides + ~600K order updates = ~1M msgs/s), fr
 | JetStream acked, bounded window | yes | **yes**: a full window stalls the bridge thread, its queue fills, and drops move into the bridge's own counted queue | 3 (one per partition) | ~4.4 cores (+2.3–3) | medium |
 | Trade-side contiguity alarm in trade-processor | yes for trades (tradeSeq holes), not order updates | no | 0 | 0 (~0.4 core in trade-processor) | small |
 
-Recommendation: the **receipt publish**, one publisher per partition. It gives an exact drop count at the source for
+Recommendation (built, §7.10): the **receipt publish**, one publisher per partition. It gives an exact drop count at the source for
 ~1 extra NATS core and no wait on the bridge thread, and its count is the trigger for a replay from the archive once
 the archive-reader bridge of §8 item 1 exists. Move to the JetStream-acked publish only if back-pressure is wanted over
-counting (it costs ~2.5 more NATS cores and three times the publisher threads). Not built here: it changes the members'
-image (`cluster-node`), so it needs the order-matcher suite and a live rollout of its own; the reply handler must count
-only 429s (a reply-subject publish can also draw a `503 no responders` status when nothing subscribes).
+counting (it costs ~2.5 more NATS cores and three times the publisher threads).
+
+### 7.10 Receipt publish (built)
+
+`ReceiptLanes` (order-matcher, `cluster/`) replaces both bridges' single publish thread. The apply thread still only
+offers to a lock-free queue, now the queue of the record's partition (`accountId mod BRIDGE_PARTITIONS`). Each partition
+has its own queue, publisher thread and NATS connection, so a partition's messages leave in the order the engine produced
+them. Every message carries a reply subject (the trade bridge uses `<inbox>.<trade id>`, so a reply names its side; the
+order bridge one inbox per lane), and one async subscription per lane counts the stream's replies: PubAck = stored,
+429 = dropped at ingest. Connections use `noNoResponders`, so a core-feed tier with nothing captured draws no 503s.
+
+| Signal | Where |
+|---|---|
+| `traderx_bridge_ingest_rejected{member,bridge}` (+ `_published`, `_dropped`) | member `/metrics` |
+| `"bridges":{"trades":{"published","acked","rejected","rejectedByPartition":[...]},"orders":{...}}` | member `/health` |
+| `ALERT trade-nats-bridge partition 2 (/trades.2): NATS dropped N message(s) ...` (first, then every 10,000) | member log |
+| `ALERT trade-nats-bridge partition 2 (/trades.2) NATS-rejected ids: 183750-S 183752-S ...` (batches of 500) | member log |
+
+**Alarm, not retry.** A 429'd message is not resent. By the time its reply arrives the partition's later messages may
+already be stored, so a resend lands after them: the projection would book that partition out of engine order, and
+average cost is order-dependent. Resending in order needs a stop-and-wait per message (the acked publish's throughput,
+§7.9) or a replay from a source that can resume at a position, which is the Aeron archive (§8 item 1). So the lane makes
+the loss exact and loud, with the id, and the repair is a replay.
+
+Tests: `ReceiptLanesIT` runs a real NATS 2.14 with a 64-message ingest queue and pushes 60,000 trade sides through the
+trade bridge on two partitions. It requires stored + rejected = published exactly, at least one forced drop, and
+strictly increasing tradeSeq per partition in the stream. With the 429 counting disabled it fails ("a drop went
+uncounted ... expected 60000 but was 4330x"); as shipped it passes 3 of 3.
+
+**Live** (`traderx-dsq3` on `traderx-demo`, own tainted pools, 2026-10-27 12:47 pm–1:09 pm ET; members on the receipt
+build, `BRIDGE_PARTITIONS=4`, trade store P=4):
+
+| | Burst A: default ingest queue (12:48 pm) | Burst B: 2M queue (1:06 pm) |
+|---|---|---|
+| Orders | 200,000 at 17K/s | 200,000 at 78K/s |
+| Engine fills, p0 / p1 / p2 / p3 | 9,091 / 54,546 / 72,727 / 63,636 | same |
+| Stored and projected | 8,364 / 50,113 / 66,855 / 58,476 = 183,808 | 9,091 / 54,546 / 72,727 / 63,636 = 200,000 |
+| **Bridge 429s (trades), by partition** | **727 / 4,433 / 5,872 / 5,160 = 16,192** = fills − stored, per partition | **0** |
+| Bridge 429s (orders) | 32,308 of 400,000 | 0 of 400,000 |
+| Ids the bridge named | 16,192, **identical** to (engine blotter ids − stream ids) | — |
+| Ledger recon | matched 383,808 (183,808 + 200,000), **missing 16,192, the same id set**, mismatch 0 | |
+| Positions vs the engine | 6 keys wrong (the lost sides) | 24 keys, 0 wrong |
+
+A's losses were all in the burst's tail, past each partition's last stored side, so the recon held them as WAIT until
+burst B moved every partition on, then named exactly those ids. The receipt work also exposed a recon assumption: with
+one lane per partition the stream interleaves partitions, so "the stream has moved past this side" must be judged per
+partition subject (`PartitionHeads`); against a global head the recon had called 897 still-arriving sides MISSING.
 
 ## 8. Open items and next steps
 

@@ -1,17 +1,14 @@
 package finos.traderx.ordermatcher.cluster;
 
-import io.nats.client.Connection;
-import io.nats.client.Nats;
-import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
-
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Leader-side trade → NATS bridge (cluster-egress → NATS, YU12).
  *
- * <p>The deterministic service (apply) thread offers each booked trade (KIND_TRADE_BOOKED) to a
- * lock-free SPSC queue; a daemon thread drains it and publishes a {@code NatsEnvelope<TradeOrder>}
+ * <p>The deterministic service (apply) thread offers each booked trade (KIND_TRADE_BOOKED) to its
+ * partition's lock-free SPSC queue; that partition's lane (YU18 {@link ReceiptLanes}: one thread and
+ * connection per partition, 429 receipts counted) drains it and publishes a {@code NatsEnvelope<TradeOrder>}
  * JSON onto the {@code /trades} subject that {@code trade-processor} already consumes. From there
  * trade-processor persists the Trade + updated Position to the SQL database and republishes
  * {@code /accounts/{id}/trades} and {@code /accounts/{id}/positions}, which the Angular UI is
@@ -51,12 +48,9 @@ final class TradeNatsPublisher {
     // is what makes the trade row joinable to the order row without a lookup table.
     private final String epoch;
     private final RunDescriptor descriptor;
-    private final OneToOneConcurrentArrayQueue<Rec> queue;
-    private final AtomicLong published = new AtomicLong();
+    // YU18 (§7.9): one loss-counting publish lane per partition; see ReceiptLanes.
+    private final ReceiptLanes<Rec> lanes;
     private final AtomicLong dropped = new AtomicLong();
-    private volatile boolean running = true;
-    private Thread thread;
-    private volatile Connection nats;
 
     /**
      * Pre-epoch form, kept so the ANCESTOR STATES still compile.
@@ -80,18 +74,21 @@ final class TradeNatsPublisher {
     }
     TradeNatsPublisher(final String url, final String subject, final String epoch,
                        final RunDescriptor descriptor, final int capacity) {
+        this(url, subject, epoch, descriptor, capacity, BridgePartitions.count());
+    }
+
+    TradeNatsPublisher(final String url, final String subject, final String epoch,
+                       final RunDescriptor descriptor, final int capacity, final int partitions) {
         this.descriptor=descriptor;
         this.url = url;
         this.subject = subject;
-        this.subjects = BridgePartitions.subjects(subject, BridgePartitions.count());
+        this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor!=null ? descriptor.epoch() : epoch == null || epoch.isBlank() ? "0" : epoch;
-        this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
+        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf);
     }
 
     void start() {
-        thread = new Thread(this::run, "trade-nats-bridge");
-        thread.setDaemon(true);
-        thread.start();
+        lanes.start();
     }
 
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
@@ -121,7 +118,7 @@ final class TradeNatsPublisher {
         r.side = side;
         r.qty = qty;
         r.tradePx = tradePx;
-        if (!queue.offer(r)) {
+        if (!lanes.offer(r)) {
             final long n = dropped.incrementAndGet();
             // YU18: was a bare counter nobody read - same throttled WARN as the order bridge.
             if (n == 1 || n % 10_000 == 0) {
@@ -134,51 +131,19 @@ final class TradeNatsPublisher {
     /** Cold replay verifier uses the identical packing and serializer as live publication. */
     static byte[] projectionEvent(finos.traderx.ordermatcher.lmax.OutputEvent out,String ticker,RunDescriptor descriptor) {
         if(ticker==null || descriptor==null) {throw new IllegalArgumentException("RUN_REPLAY_IDENTITY_REQUIRED");}
-        var publisher=new TradeNatsPublisher("", "/trades",descriptor.epoch(),descriptor,2);
+        var publisher=new TradeNatsPublisher("", "/trades",descriptor.epoch(),descriptor,2,1);
         publisher.offer(out.tradeSeq,out.accountId,ticker,out.side,out.tradeQty,out.tradePx,out.orderRef,out.inputSeq);
-        return publisher.encode(new StringBuilder(512),publisher.queue.poll());
+        return publisher.encode(new StringBuilder(512),publisher.lanes.poll());
     }
 
-    private void run() {
-        while (running && nats == null) {
-            try {
-                nats = Nats.connect(url); // reconnect/buffering is handled by the client thereafter
-            } catch (final Exception e) {
-                try {
-                    Thread.sleep(1000);
-                } catch (final InterruptedException ie) {
-                    return;
-                }
-            }
-        }
-        final StringBuilder sb = new StringBuilder(256);
-        while (running) {
-            final Rec r = queue.poll();
-            if (r == null) {
-                try {
-                    Thread.sleep(1);
-                } catch (final InterruptedException e) {
-                    return;
-                }
-                continue;
-            }
-            try {
-                nats.publish(BridgePartitions.subjectFor(subjects, r.accountId), encode(sb, r));
-                published.incrementAndGet();
-            } catch (final Exception e) {
-                // best-effort; the NATS client reconnects on its own. YU18: a failed publish is a
-                // lost trade side too - it used to count as neither published nor dropped.
-                final long n = dropped.incrementAndGet();
-                if (n == 1 || n % 10_000 == 0) {
-                    System.out.println("WARN trade-nats-bridge publish failed: dropped=" + n + " " + e);
-                }
-            }
-        }
+    /** The trade side's id exactly as encode() publishes it (and as the projection's recon reports it). */
+    String idOf(final Rec r) {
+        return descriptor==null ? r.tradeSeq+(r.side == 0 ? "-B" : "-S") : descriptor.tradeId(r.tradeSeq,r.side);
     }
 
     /** {@code NatsEnvelope<TradeOrder>} JSON — trade-processor ignores any envelope whose type is
      *  not exactly "TradeOrder" (payload class simple name). Price ticks: 1 unit == 1_000_000. */
-    private byte[] encode(final StringBuilder sb, final Rec r) {
+    byte[] encode(final StringBuilder sb, final Rec r) {
         final boolean buy = r.side == 0; // finos.traderx.ordermatcher.lmax.InputEvent.SIDE_BUY
         final long px = r.tradePx < 0 ? 0 : r.tradePx;
         final long whole = px / 1_000_000L;
@@ -187,7 +152,7 @@ final class TradeNatsPublisher {
         sb.append("{\"topic\":\"").append(subject)
           .append("\",\"from\":\"cluster-bridge\",\"type\":\"TradeOrder\",\"date\":")
           .append(System.currentTimeMillis())
-          .append(",\"payload\":{\"id\":\"").append(descriptor==null ? r.tradeSeq+(buy ? "-B" : "-S") : descriptor.tradeId(r.tradeSeq,r.side))
+          .append(",\"payload\":{\"id\":\"").append(idOf(r))
           .append("\",\"state\":\"New\",\"security\":\"").append(r.security)
           .append("\",\"quantity\":").append(r.qty)
           .append(",\"price\":").append(whole).append('.');
@@ -208,25 +173,33 @@ final class TradeNatsPublisher {
     }
 
     long published() {
-        return published.get();
+        return lanes.published();
     }
 
+    /** Lost before NATS: the lane's queue was full, or the publish call failed. */
     long dropped() {
-        return dropped.get();
+        return dropped.get() + lanes.failed();
+    }
+
+    /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
+    long rejected() {
+        return lanes.rejected();
+    }
+
+    /** Stored by the stream (PubAck receipts). */
+    long acked() {
+        return lanes.acked();
+    }
+
+    long rejected(final int partition) {
+        return lanes.rejected(partition);
+    }
+
+    String json() {
+        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + dropped.get() + ",");
     }
 
     void stop() {
-        running = false;
-        if (thread != null) {
-            thread.interrupt();
-        }
-        final Connection c = nats;
-        if (c != null) {
-            try {
-                c.close();
-            } catch (final Exception ignore) {
-                // shutting down
-            }
-        }
+        lanes.stop();
     }
 }

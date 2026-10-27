@@ -741,6 +741,21 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     }
     public RunDescriptor runDescriptor() {return runDescriptor;}
     public int runPhase() {return runPhase;}
+    /** YU18 (§7.9): the bridges' publish counters - published, queue drops, and NATS ingest drops (429
+     *  receipts) per partition. Per-process and off-consensus: only the leader publishes, so followers read 0. */
+    public String bridgeJson() {
+        return "{\"trades\":" + (tradeBridge == null ? "null" : tradeBridge.json())
+            + ",\"orders\":" + (orderBridge == null ? "null" : orderBridge.json()) + "}";
+    }
+    public long bridgeIngestRejected(final boolean trades) {
+        return trades ? (tradeBridge == null ? 0 : tradeBridge.rejected()) : (orderBridge == null ? 0 : orderBridge.rejected());
+    }
+    public long bridgeDropped(final boolean trades) {
+        return trades ? (tradeBridge == null ? 0 : tradeBridge.dropped()) : (orderBridge == null ? 0 : orderBridge.dropped());
+    }
+    public long bridgePublished(final boolean trades) {
+        return trades ? (tradeBridge == null ? 0 : tradeBridge.published()) : (orderBridge == null ? 0 : orderBridge.published());
+    }
     public long frozenRunSequence() {return frozenRunSequence;}
     private TradeNatsPublisher tradeBridge;
     // Leader-side order-lifecycle → NATS /orders bridge (YU13): the order-state sibling of the trade

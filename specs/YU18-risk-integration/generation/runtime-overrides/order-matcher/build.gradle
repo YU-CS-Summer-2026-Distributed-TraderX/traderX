@@ -89,6 +89,9 @@ dependencies {
 
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
   testImplementation "io.aeron:aeron-driver:${aeronVersion}"
+  // YU18 (§7.9): ReceiptLanesIT runs a real NATS with a tiny stream ingest queue; skipped without Docker.
+  testImplementation 'org.testcontainers:testcontainers:1.20.4'
+  testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
   testRuntimeOnly 'com.h2database:h2'
 }
 

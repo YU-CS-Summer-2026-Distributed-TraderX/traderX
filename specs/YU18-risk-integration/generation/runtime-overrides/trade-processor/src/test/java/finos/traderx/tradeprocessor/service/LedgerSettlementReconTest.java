@@ -43,6 +43,20 @@ class LedgerSettlementReconTest {
     assertEquals(Verdict.MISSING, ReconciliationService.classifyOnLedger(E, null, 42, 10_000, "run-1"));
   }
 
+  /** Live 2026-10-27: the bridges publish one lane per partition, so the stream interleaves partitions. A side
+   *  of a lagging partition is not MISSING just because another partition's head passed its tradeSeq. */
+  @Test void missingIsJudgedAgainstTheSidesOwnPartitionHead() {
+    ReconciliationService.PartitionHeads heads = new ReconciliationService.PartitionHeads();
+    heads.observe("/trades.0", 200);
+    heads.observe("/trades.1", 50);
+    BlotterEntry lagging = new BlotterEntry("e1-b1-60-B", 60, 1, "AAPL", "Buy", 100, new BigDecimal("10.5"), 0);
+    assertEquals(Verdict.WAIT, ReconciliationService.classifyOnLedger(lagging, null, heads.headOf("/trades.1"), 10_000, "run-1"));
+    heads.observe("/trades.1", 61);
+    assertEquals(Verdict.MISSING, ReconciliationService.classifyOnLedger(lagging, null, heads.headOf("/trades.1"), 10_000, "run-1"));
+    assertEquals(61, heads.min(new String[] {"/trades.0", "/trades.1"}));
+    assertEquals(0, heads.min(new String[] {"/trades.0", "/trades.2"}));   // a partition never seen holds the read open
+  }
+
   @Test void tradeSeqIsReadFromEitherIdScheme() {
     assertEquals(41, ReconciliationService.tradeSeqOf("e1-b1-41-B"));
     assertEquals(7, ReconciliationService.tradeSeqOf("7-S"));

@@ -311,7 +311,9 @@ public final class ClusterNodeMain {
                 // per-browser and wrong for anyone who did not issue it.
                 + ",\"lastResetSeq\":" + service.lastResetSeq()
                 + ",\"phase\":\"" + service.phaseName() + "\""
-                + ",\"queueDepth\":" + service.queueDepth() + "}";
+                + ",\"queueDepth\":" + service.queueDepth()
+                // YU18 (§7.9): non-zero "rejected" = NATS dropped published messages at stream ingest.
+                + ",\"bridges\":" + service.bridgeJson() + "}";
             respond(exchange, 200, body);
         });
         // Routing readiness retains its lag tolerance and no-observed-peer arm. These do not
@@ -461,6 +463,17 @@ public final class ClusterNodeMain {
                 + "# TYPE traderx_book_order_hash gauge\ntraderx_book_order_hash" + m + (d == null ? 0L : d.orderHash()) + "\n"
                 + "# TYPE traderx_book_position_hash gauge\ntraderx_book_position_hash" + m + (d == null ? 0L : d.positionHash()) + "\n"
                 + "# TYPE traderx_cluster_next_order_ref gauge\ntraderx_cluster_next_order_ref" + m + service.nextOrderRef() + "\n"
+                // YU18 (§7.9): bridge publish accounting. ingest_rejected > 0 = NATS dropped messages the
+                // bridge published (429 receipts); dropped = lost before NATS (full lane queue / publish error).
+                + "# TYPE traderx_bridge_published counter\n"
+                + "traderx_bridge_published{member=\"" + memberId + "\",bridge=\"trades\"} " + service.bridgePublished(true) + "\n"
+                + "traderx_bridge_published{member=\"" + memberId + "\",bridge=\"orders\"} " + service.bridgePublished(false) + "\n"
+                + "# TYPE traderx_bridge_dropped counter\n"
+                + "traderx_bridge_dropped{member=\"" + memberId + "\",bridge=\"trades\"} " + service.bridgeDropped(true) + "\n"
+                + "traderx_bridge_dropped{member=\"" + memberId + "\",bridge=\"orders\"} " + service.bridgeDropped(false) + "\n"
+                + "# TYPE traderx_bridge_ingest_rejected counter\n"
+                + "traderx_bridge_ingest_rejected{member=\"" + memberId + "\",bridge=\"trades\"} " + service.bridgeIngestRejected(true) + "\n"
+                + "traderx_bridge_ingest_rejected{member=\"" + memberId + "\",bridge=\"orders\"} " + service.bridgeIngestRejected(false) + "\n"
                 // YU17 (ADR-072): the OPERATOR-ONLY halves of the four counters a proof brackets
                 // its own work with. Replayed tape flow is order-shaped and continuous, so it
                 // moves every global counter below; these four exclude it at the writer.

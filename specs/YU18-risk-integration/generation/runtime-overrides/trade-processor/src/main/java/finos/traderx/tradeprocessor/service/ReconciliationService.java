@@ -229,12 +229,19 @@ public class ReconciliationService {
             ledger = new LedgerReader(ledgerFeed.natsConnection(), ledgerFeed.streamName(), ledgerFeed.partitionCount(),
                 fresh.get(0).execTimeMillis() - LEDGER_START_SLACK.toMillis());
         }
-        ledger.readThrough(fresh.get(fresh.size() - 1).tradeSeq(), cursor);
+        int partitions = ledgerFeed.partitionCount();
+        String[] subjects = new String[partitions];
+        for (int p = 0; p < partitions; p++) { subjects[p] = finos.traderx.tradeprocessor.JetStreamFeed.subject("/trades", p, partitions); }
+        ledger.readThrough(fresh.get(fresh.size() - 1).tradeSeq(), cursor, subjects);
         Map<Integer, Long> committed = snapshotStore.cursors(scopeForLedger());
         for (BlotterEntry e : fresh) {
             LedgerSide side = ledger.pending.get(e.id());
-            long partitionCursor = committed.getOrDefault(Math.floorMod(e.accountId(), ledgerFeed.partitionCount()), 0L);
-            Verdict v = classifyOnLedger(e, side, ledger.maxTradeSeq, partitionCursor, runRegistry == null ? null : projectionScope);
+            int partition = Math.floorMod(e.accountId(), partitions);
+            long partitionCursor = committed.getOrDefault(partition, 0L);
+            // The head of THIS side's partition: the bridges publish one lane per partition, so the
+            // stream is in tradeSeq order within a partition subject but interleaved across them.
+            Verdict v = classifyOnLedger(e, side, ledger.headOf(subjects[partition]), partitionCursor,
+                runRegistry == null ? null : projectionScope);
             if (v == Verdict.WAIT) break;
             switch (v) {
                 case MATCHED -> matched.increment();
@@ -262,11 +269,12 @@ public class ReconciliationService {
 
     /**
      * A side is MATCHED only when the stream holds it with the engine's fields AND the partition's
-     * committed snapshot cursor has passed it (it has reached SQL positions); MISSING only when the
-     * stream has moved past its tradeSeq without it. Anything else is WAIT: lag is not a verdict.
+     * committed snapshot cursor has passed it (it has reached SQL positions); MISSING only when ITS
+     * PARTITION's subject has moved past its tradeSeq without it. Anything else is WAIT: lag is not a
+     * verdict. (A global head is wrong: partitions publish on separate lanes and interleave.)
      */
-    static Verdict classifyOnLedger(BlotterEntry e, LedgerSide side, long ledgerMaxTradeSeq, long committedCursor, String scope) {
-        if (side == null) return e.tradeSeq() < ledgerMaxTradeSeq ? Verdict.MISSING : Verdict.WAIT;
+    static Verdict classifyOnLedger(BlotterEntry e, LedgerSide side, long partitionHeadTradeSeq, long committedCursor, String scope) {
+        if (side == null) return e.tradeSeq() < partitionHeadTradeSeq ? Verdict.MISSING : Verdict.WAIT;
         if (side.streamSeq() > committedCursor) return Verdict.WAIT;
         boolean same = (scope == null || scope.equals(side.projectionScope()))
             && side.accountId() == e.accountId() && e.security().equals(side.security()) && e.side().equals(side.side())
@@ -280,6 +288,18 @@ public class ReconciliationService {
         return Long.parseLong(id.substring(start + 1, end));
     }
 
+    /** Highest tradeSeq read so far per partition subject: the stream is ordered within a subject only. */
+    static final class PartitionHeads {
+        private final Map<String, Long> head = new java.util.HashMap<>();
+        void observe(String subject, long tradeSeq) { head.merge(subject, tradeSeq, Math::max); }
+        long headOf(String subject) { return head.getOrDefault(subject, 0L); }
+        long min(String[] subjects) {
+            long min = Long.MAX_VALUE;
+            for (String s : subjects) { min = Math.min(min, headOf(s)); }
+            return min;
+        }
+    }
+
     /**
      * Reads the capture stream forward (all trade partitions) only as far as the recon has reached in the
      * engine's blotter, keeping the sides it has not classified yet. ponytail: in-memory, rebuilt from the
@@ -287,7 +307,8 @@ public class ReconciliationService {
      */
     static final class LedgerReader {
         final Map<String, LedgerSide> pending = new java.util.HashMap<>();
-        long maxTradeSeq;
+        final PartitionHeads heads = new PartitionHeads();
+        long headOf(String subject) { return heads.headOf(subject); }
         private final io.nats.client.JetStreamSubscription sub;
         private final ObjectMapper json = new ObjectMapper();
 
@@ -301,15 +322,16 @@ public class ReconciliationService {
             sub = nc.jetStream().subscribe(filter, io.nats.client.PullSubscribeOptions.builder().stream(stream).configuration(config).build());
         }
 
-        void readThrough(long targetTradeSeq, long classifiedThrough) throws Exception {
-            while (maxTradeSeq < targetTradeSeq) {
+        /** Read until EVERY partition subject has passed the target, or the stream has nothing more. */
+        void readThrough(long targetTradeSeq, long classifiedThrough, String[] subjects) throws Exception {
+            while (heads.min(subjects) < targetTradeSeq) {
                 List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(500));
                 if (msgs.isEmpty()) return;
                 for (var m : msgs) {
                     var p = json.readTree(m.getData()).path("payload");
                     String id = p.path("id").asText();
                     long ts = tradeSeqOf(id);
-                    maxTradeSeq = Math.max(maxTradeSeq, ts);
+                    heads.observe(m.getSubject(), ts);
                     if (ts <= classifiedThrough) continue;
                     pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
                         p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it

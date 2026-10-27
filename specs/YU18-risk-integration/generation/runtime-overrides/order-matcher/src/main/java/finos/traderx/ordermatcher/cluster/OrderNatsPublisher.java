@@ -1,8 +1,5 @@
 package finos.traderx.ordermatcher.cluster;
 
-import io.nats.client.Connection;
-import io.nats.client.Nats;
-import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicLong;
@@ -75,30 +72,30 @@ final class OrderNatsPublisher {
     private final String[] subjects;
     private final String epoch;
     private final RunDescriptor descriptor;
-    private final OneToOneConcurrentArrayQueue<Rec> queue;
-    private final AtomicLong published = new AtomicLong();
+    // YU18 (§7.9): one loss-counting publish lane per partition; see ReceiptLanes.
+    private final ReceiptLanes<Rec> lanes;
     private final AtomicLong dropped = new AtomicLong();
-    private volatile boolean running = true;
-    private Thread thread;
-    private volatile Connection nats;
 
     OrderNatsPublisher(final String url, final String subject, final String epoch, final int capacity) {
         this(url,subject,epoch,null,capacity);
     }
     OrderNatsPublisher(final String url, final String subject, final String epoch,
                       final RunDescriptor descriptor, final int capacity) {
+        this(url, subject, epoch, descriptor, capacity, BridgePartitions.count());
+    }
+
+    OrderNatsPublisher(final String url, final String subject, final String epoch,
+                      final RunDescriptor descriptor, final int capacity, final int partitions) {
         this.descriptor=descriptor;
         this.url = url;
         this.subject = subject;
-        this.subjects = BridgePartitions.subjects(subject, BridgePartitions.count());
+        this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor==null ? epoch : descriptor.epoch();
-        this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
+        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId);
     }
 
     void start() {
-        thread = new Thread(this::run, "order-nats-bridge");
-        thread.setDaemon(true);
-        thread.start();
+        lanes.start();
     }
 
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
@@ -133,7 +130,7 @@ final class OrderNatsPublisher {
         r.createdAtMillis = createdAtMillis;
         r.updatedAtMillis = updatedAtMillis;
         r.traceKey = traceKey;
-        if (!queue.offer(r)) {
+        if (!lanes.offer(r)) {
             final long n = dropped.incrementAndGet();
             // Rejection signal (brief 05 item 3): never a silent drop. Throttled so a flood WARNs
             // at bounded rate, but the very first drop is always visible.
@@ -181,7 +178,7 @@ final class OrderNatsPublisher {
         r.suspendReason = o.typed.suspendReason;
         r.triggered = o.typed.triggered;
         r.riskReason = o.riskReason;
-        if (!queue.offer(r)) {
+        if (!lanes.offer(r)) {
             final long n = dropped.incrementAndGet();
             if (n == 1 || n % 10_000 == 0) {
                 System.out.println("WARN order-nats-bridge queue full: dropped=" + n
@@ -193,46 +190,9 @@ final class OrderNatsPublisher {
     /** Cold replay verifier uses the identical packing and serializer as live publication. */
     static byte[] projectionEvent(finos.traderx.ordermatcher.lmax.OutputEvent out,String ticker,RunDescriptor descriptor,int ordinal) {
         if(ticker==null || descriptor==null) {throw new IllegalArgumentException("RUN_REPLAY_IDENTITY_REQUIRED");}
-        var publisher=new OrderNatsPublisher("", "/orders",descriptor.epoch(),descriptor,2);
+        var publisher=new OrderNatsPublisher("", "/orders",descriptor.epoch(),descriptor,2,1);
         publisher.offer(out,ticker,0,ordinal);
-        return publisher.encode(new StringBuilder(1024),publisher.queue.poll());
-    }
-
-    private void run() {
-        while (running && nats == null) {
-            try {
-                nats = Nats.connect(url);
-            } catch (final Exception e) {
-                try {
-                    Thread.sleep(1000);
-                } catch (final InterruptedException ie) {
-                    return;
-                }
-            }
-        }
-        final StringBuilder sb = new StringBuilder(320);
-        while (running) {
-            final Rec r = queue.poll();
-            if (r == null) {
-                try {
-                    Thread.sleep(1);
-                } catch (final InterruptedException e) {
-                    return;
-                }
-                continue;
-            }
-            try {
-                nats.publish(BridgePartitions.subjectFor(subjects, r.accountId), encode(sb, r));
-                published.incrementAndGet();
-            } catch (final Exception e) {
-                // best-effort; the NATS client reconnects on its own. YU18: count the loss - it
-                // used to be neither published nor dropped.
-                final long n = dropped.incrementAndGet();
-                if (n == 1 || n % 10_000 == 0) {
-                    System.out.println("WARN order-nats-bridge publish failed: dropped=" + n + " " + e);
-                }
-            }
-        }
+        return publisher.encode(new StringBuilder(1024),publisher.lanes.poll());
     }
 
     /** {@code NatsEnvelope<OrderUpdate>} JSON — the read model ignores any envelope whose type is
@@ -350,25 +310,24 @@ final class OrderNatsPublisher {
     }
 
     long published() {
-        return published.get();
+        return lanes.published();
     }
 
+    /** Lost before NATS: the lane's queue was full, or the publish call failed. */
     long dropped() {
-        return dropped.get();
+        return dropped.get() + lanes.failed();
+    }
+
+    /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
+    long rejected() {
+        return lanes.rejected();
+    }
+
+    String json() {
+        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + dropped.get() + ",");
     }
 
     void stop() {
-        running = false;
-        if (thread != null) {
-            thread.interrupt();
-        }
-        final Connection c = nats;
-        if (c != null) {
-            try {
-                c.close();
-            } catch (final Exception ignore) {
-                // shutting down
-            }
-        }
+        lanes.stop();
     }
 }
