@@ -152,6 +152,13 @@ spec:
             # paying for. Pinned for the same reason GATEWAY_HTTP_PORT above is.
             - name: GATEWAY_PROBE_PORT
               value: "18111"
+            # YU04 durable control feed (FR-IMRG32/33): consume reference-data's security deltas from
+            # TRADERX_CONTROL_SECURITY and sequence them through consensus, replaying the stream from
+            # its start on every connect (the offline catch-up). Without it a security added in
+            # reference-data reaches this tier only when the gateway restarts and re-bootstraps.
+            # Until the first delta creates the stream the subscriber retries; it never blocks readiness.
+            - name: CONTROL_FEED_SUBSCRIBER
+              value: "1"
             - name: FIX_ACCEPTOR_PORT
               value: "18130"
             - name: FIX_SESSION_COMPIDS

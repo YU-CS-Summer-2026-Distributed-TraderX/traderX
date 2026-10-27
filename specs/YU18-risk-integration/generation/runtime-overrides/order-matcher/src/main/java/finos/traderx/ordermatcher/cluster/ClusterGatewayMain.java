@@ -2542,6 +2542,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     private void runControlFeed(final String natsUrl) {
+        String lastFailure = null;
         while (true) {
             // Do not subscribe until the cluster session can actually take an offer. Consuming
             // earlier makes the whole replay burst fail unacked while the session dials, and an
@@ -2574,6 +2575,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 final io.nats.client.JetStreamSubscription sub =
                     js.subscribe(CONTROL_FEED_SUBJECT, opts);
                 System.out.println("CONTROL-FEED subscribed subject=" + CONTROL_FEED_SUBJECT);
+                lastFailure = null;
                 while (true) {
                     final io.nats.client.Message msg =
                         sub.nextMessage(java.time.Duration.ofSeconds(5));
@@ -2594,7 +2596,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 Thread.currentThread().interrupt();
                 return;
             } catch (final Exception e) {
-                System.out.println("CONTROL-FEED connect/subscribe failed, retrying: " + e);
+                // Logged when the reason changes, not every 2 s: until reference-data's first delta
+                // creates TRADERX_CONTROL_SECURITY (an empty NATS store, a quiet tier) "no stream
+                // matches subject" is the expected state, and it can last indefinitely.
+                if (!String.valueOf(e).equals(lastFailure)) {
+                    System.out.println("CONTROL-FEED connect/subscribe failed, retrying every 2s: " + e);
+                    lastFailure = String.valueOf(e);
+                }
                 try {
                     Thread.sleep(2000);
                 } catch (final InterruptedException ie) {

@@ -21,6 +21,12 @@
   `/var/log/pods/<namespace>_*`, and tolerate the `traderx-engine` taint.
 - FR-GMR-06: CompSci admission SHALL expect the rendered population: 12 private images, 9 upstream
   images (21 in all) in 24 container slots. The counts SHALL be defined once, in `admit.py`.
+- FR-GMR-07: The GKE cluster gateway SHALL consume the YU04 security control feed
+  (`CONTROL_FEED_SUBSCRIBER=1`), as the kind gateway does, so a security added in reference-data reaches
+  the gateway's replica without a restart, and one published while the gateway is down is applied when it
+  returns (FR-IMRG32/33). Until reference-data's first delta creates `TRADERX_CONTROL_SECURITY` the
+  subscriber SHALL retry without blocking readiness, logging each distinct failure once. The CompSci render
+  (`prepare.py`) SHALL refuse a gateway without it.
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the emptyDir tier.
 

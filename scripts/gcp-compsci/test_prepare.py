@@ -161,6 +161,14 @@ class Rendering(unittest.TestCase):
         edge=next(d for d in self.docs if d['kind']=='ConfigMap' and d['metadata']['name']=='edge-proxy-config')
         self.assertIn('absolute_redirect off;',edge['data']['default.conf'])
 
+    def test_gateway_subscribes_to_the_control_feed(self):
+        gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        self.assertIn({'name':'CONTROL_FEED_SUBSCRIBER','value':'1'},module.podspec(gw)['containers'][0]['env'])
+        docs=copy.deepcopy(self.docs)
+        gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        env=module.podspec(gw)['containers'][0]['env']; env[:]=[e for e in env if e['name']!='CONTROL_FEED_SUBSCRIBER']
+        with self.assertRaises(AssertionError): module.validate(docs)
+
     def member_script(self, docs=None):
         engine=next(d for d in (docs or self.docs) if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
         return module.podspec(engine)['containers'][0]['command']
