@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
 # OM_DIR names an explicit copy; OM_ROLE=fix/pre must select current source or
 # the known STP transform. Independent full generation validates it before build.
-OM="${OM_DIR:-${ROOT}/generated/code/target-generated/order-matcher}"
+OM="${OM_DIR:-${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated/order-matcher}"
 BUILD_STATE="${BUILD_STATE:-$(state_pack "${ROOT}")}"
 ROLE="${OM_ROLE:-fix}"
 if [[ -n "${OM_DIR:-}" && -z "${OM_ROLE:-}" ]]; then

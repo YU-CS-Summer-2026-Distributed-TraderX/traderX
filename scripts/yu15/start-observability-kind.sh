@@ -25,7 +25,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BASE="${ROOT}/generated/code/target-generated/kubernetes-runtime/manifests/base"
+BASE="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated/kubernetes-runtime/manifests/base"
 CTX="${CTX:-kind-${KIND_CLUSTER_NAME:-traderx-yu12-cluster}}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"

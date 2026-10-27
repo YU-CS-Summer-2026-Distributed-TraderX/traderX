@@ -117,7 +117,18 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   echo "       then name each with its YU15_*_IMAGE variable"
   exit 1
 fi
+# SKIP_KIND_LOAD=1 when the images were already loaded by `docker save` + `kind load image-archive`
+# (the docker-format round-trip the CRI indexes; a bare `kind load docker-image` of an OCI manifest
+# can land in containerd without crictl seeing it, and a re-load would replace the good copy).
 for img in "${IMAGES[@]}"; do
+  if [[ "${SKIP_KIND_LOAD:-0}" == "1" ]]; then
+    for n in $(kind get nodes --name "${CLUSTER}"); do
+      docker exec "${n}" crictl images 2>/dev/null | grep -q "${img%%:*} .*${img##*:}" \
+        || { echo "[fail] SKIP_KIND_LOAD=1 but ${img} is not in the CRI on ${n}"; exit 1; }
+    done
+    echo "[kind] ${img} already on every node (SKIP_KIND_LOAD=1)"
+    continue
+  fi
   echo "[kind] loading ${img}"
   kind load docker-image "${img}" --name "${CLUSTER}"
 done

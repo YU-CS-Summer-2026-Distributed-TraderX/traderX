@@ -110,7 +110,8 @@ def validated(root, components, *, state=None, candidate=None, role='fix'):
         raise ValueError('invalid selected component')
     if role not in ('fix', 'pre') or (candidate is not None and components != ['order-matcher']) or (role == 'pre' and components != ['order-matcher']):
         raise ValueError('custom context/transform is supported only for explicit order-matcher fix/pre')
-    actual = {name: Path(candidate).resolve() if candidate is not None else root / 'generated/code/target-generated' / name for name in components}
+    generated_root = Path(os.environ.get('TRADERX_GENERATED_ROOT') or root / 'generated').resolve()
+    actual = {name: Path(candidate).resolve() if candidate is not None else generated_root / 'code/target-generated' / name for name in components}
     for name, path in actual.items():
         if not path.is_dir():
             raise ValueError(f'missing generated build context {name}: generate the full selected state first')

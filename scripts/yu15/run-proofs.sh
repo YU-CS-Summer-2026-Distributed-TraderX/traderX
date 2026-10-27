@@ -956,7 +956,11 @@ if [[ "${NEED_FRESH}" == "0" ]]; then
     # safe in direction, but it buries the real signal. Unreachable and exhausted are different
     # verdicts; establish the forward first so a refusal can only mean the table.
     start_forwards || { echo "[fail] could not establish forwards for the symbol-table probe"; exit 1; }
-    probe="$(curl -s -m20 -X POST http://localhost:18110/seed -H 'Content-Type: application/json' -d '{"accountId":42422,"tickers":"ZZPROBE9","price":100}' 2>/dev/null)"
+    # ENGINE-REVIEW S2: /seed takes the operator credential pair (the same one seed-proof-fixtures sends);
+    # a bare /seed is 401 "operator credentials required", which this probe used to read as "no usable answer".
+    probe="$(curl -s -m20 -X POST http://localhost:18110/seed -H 'Content-Type: application/json' \
+      -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" -H 'X-Risk-Operator: run-proofs' \
+      -d '{"accountId":42422,"tickers":"ZZPROBE9","price":100}' 2>/dev/null)"
     if [[ "${probe}" == *'"seeded":false'* ]]; then
       echo "[epoch] engine refuses to register a fresh ticker: symbol table exhausted; rebuilding"
       rebuild_fresh_epoch

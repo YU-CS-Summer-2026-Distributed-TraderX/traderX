@@ -19,7 +19,7 @@ CTX="${CTX:-kind-${KIND_CLUSTER_NAME:-traderx-yu12-cluster}}"
 NS="${NS:-traderx}"
 CLUSTER="${CLUSTER:-${KIND_CLUSTER_NAME:-traderx-yu12-cluster}}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-GEN="${ROOT}/generated/code/target-generated/tilt-kubernetes-dev-loop/manifests/base"
+GEN="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated/tilt-kubernetes-dev-loop/manifests/base"
 K="kubectl --context ${CTX} -n ${NS}"
 
 [[ -d "${GEN}" ]] || { echo "[fail] generated manifests missing; run: bash pipeline/generate-state.sh YU15-eod-risk-extract"; exit 1; }
@@ -37,7 +37,7 @@ if [[ ${#missing_svc[@]} -gt 0 ]]; then
   echo "       run scripts/yu15/start-observability-kind.sh first (same KIND_CLUSTER_NAME)"
   exit 1
 fi
-RUNTIME_BASE="${ROOT}/generated/code/target-generated/kubernetes-runtime/manifests/base"
+RUNTIME_BASE="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated/kubernetes-runtime/manifests/base"
 EXPLORER_IMAGE="traderx-api-explorer:local"
 docker image inspect "${EXPLORER_IMAGE}" >/dev/null 2>&1 || {
   echo "[fail] ${EXPLORER_IMAGE} not in the local Docker daemon (edge-proxy routes /api/docs to it)"
