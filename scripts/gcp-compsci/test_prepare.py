@@ -31,6 +31,20 @@ class Rendering(unittest.TestCase):
         self.assertEqual(engine['spec']['template']['spec']['nodeSelector'],
                          {'cloud.google.com/gke-nodepool':'engine-pool'})
 
+    def test_promtail_ships_this_namespace_from_every_node(self):
+        ds=next(d for d in self.docs if d['kind']=='DaemonSet' and d['metadata']['name']=='promtail')
+        pod=ds['spec']['template']['spec']
+        self.assertNotIn('nodeSelector',pod)
+        self.assertIn('traderx-engine',[t['key'] for t in pod['tolerations']])
+        for kind in ('ClusterRole','ClusterRoleBinding'):
+            d=next(d for d in self.docs if d['kind']==kind)
+            self.assertNotIn('namespace',d['metadata'])
+            self.assertEqual(d['metadata']['name'],f'promtail-{module.NAMESPACE}')
+        binding=next(d for d in self.docs if d['kind']=='ClusterRoleBinding')
+        self.assertEqual(binding['subjects'][0]['namespace'],module.NAMESPACE)
+        config=next(d for d in self.docs if d['metadata']['name']=='observability-promtail-config')
+        self.assertIn(f'/var/log/pods/{module.NAMESPACE}_*',config['data']['config.yaml'])
+
     def test_wrong_project_image(self):
         docs=copy.deepcopy(self.docs)
         pod=next(module.podspec(d) for d in docs if module.podspec(d))

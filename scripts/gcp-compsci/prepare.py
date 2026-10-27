@@ -112,7 +112,7 @@ def read(path):
 
 
 def podspec(doc):
-    if doc['kind'] in ('Deployment', 'StatefulSet', 'Job'):
+    if doc['kind'] in ('Deployment', 'StatefulSet', 'Job', 'DaemonSet'):
         return doc['spec']['template']['spec']
     return None
 
@@ -177,10 +177,14 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
     for svc in ['web-front-end-angular', 'api-explorer', 'tempo', 'prometheus', 'loki', 'grafana', 'otel-collector']:
         for kind in ['deployment','service']: include(base / f'{svc}-{kind}.yaml')
     for name in ['observability-otel', 'observability-tempo', 'observability-prometheus',
-                 'observability-loki', 'observability-grafana-datasources',
+                 'observability-loki', 'observability-promtail', 'observability-grafana-datasources',
                  'observability-grafana-dashboard-providers','observability-grafana-dashboards']:
         include(base / f'{name}-configmap.yaml')
     include(base / 'edge-proxy-configmap.yaml')
+    # Pod logs -> Loki. The collector has no logs pipeline, so without promtail Loki stays empty.
+    for name in ['promtail-serviceaccount', 'promtail-clusterrole', 'promtail-clusterrolebinding',
+                 'promtail-daemonset']:
+        include(base / f'{name}.yaml')
     include(ROOT / 'specs/YU17-otc-rates/generation/kubernetes/frontend-gke/console.yaml')
     schema = read(base / 'database-init-configmap.yaml')
     inputs.append({'path':str((base/'database-init-configmap.yaml').relative_to(ROOT)),
@@ -197,6 +201,14 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
                          {'name':n,'port':p,'targetPort':t} for n,p,t in ports]}})
     docs.append({'apiVersion':'v1','kind':'ServiceAccount','metadata':{'name':'taq-reader'}})
     for doc in docs:
+        if doc['kind'] in ('ClusterRole', 'ClusterRoleBinding'):
+            # Cluster-scoped: one per namespace, so a side namespace never rebinds the live one's.
+            doc['metadata'].pop('namespace', None)
+            doc['metadata']['name'] = f'promtail-{NAMESPACE}'
+            if doc['kind'] == 'ClusterRoleBinding':
+                doc['roleRef']['name'] = f'promtail-{NAMESPACE}'
+                for s in doc.get('subjects', []): s['namespace'] = NAMESPACE
+            continue
         doc['metadata']['namespace'] = NAMESPACE
         doc['metadata'].get('annotations', {}).pop('cloud.google.com/neg', None)
         if doc['kind'] == 'RoleBinding':
@@ -208,6 +220,13 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
             for port in doc['spec'].get('ports', []): port.pop('nodePort', None)
         pod = podspec(doc)
         if not pod: continue
+        if doc['kind'] == 'DaemonSet':
+            # Every node, engine nodes included: the members' logs are the ones worth shipping.
+            pod['tolerations'] = [{'key':'traderx-engine','operator':'Exists','effect':'NoSchedule'}]
+            for c in pod['containers']:
+                c['resources'] = {'requests': {'cpu': '25m', 'memory': '64Mi'},
+                                  'limits': {'cpu': '250m', 'memory': '128Mi'}}
+            continue
         engine = doc['metadata']['name'] == 'order-matcher-cluster'
         pod['nodeSelector'] = {'cloud.google.com/gke-nodepool': 'engine-pool' if engine else 'default-pool'}
         if engine:
@@ -248,6 +267,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
     raw = yaml.safe_dump_all(docs, sort_keys=False)
     for old,new in BUCKETS.items(): raw = raw.replace(old,new)
     raw = re.sub(r'resolver [0-9.]+ ', f'resolver {dns} ', raw)
+    raw = raw.replace('/var/log/pods/traderx_*', f'/var/log/pods/{NAMESPACE}_*')  # promtail scrape scope
     raw = raw.replace('.traderx.svc.', f'.{NAMESPACE}.svc.')  # member/ingress FQDNs follow the namespace
     docs = list(yaml.safe_load_all(raw))
     configure_private_runtime(docs)

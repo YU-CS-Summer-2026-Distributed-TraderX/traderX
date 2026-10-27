@@ -134,9 +134,14 @@ Found, not fixed:
 
 - **The `order-matcher-archive` StorageClass is not emitted by the renderer.** Members stay Pending until it
   exists. It was applied once by hand (cluster-scoped, harmless to `traderx`) and is still on the cluster.
-- **Loki gets no logs in this profile.** The collector has no logs pipeline and the profile ships no promtail.
-  Applying the rendered promtail, which needs a ClusterRole and a node DaemonSet, was refused by the
-  session's permission classifier, so logs-in-Loki is proven on kind only.
+- **Loki got no logs in this profile** (the collector has no logs pipeline, and no promtail shipped).
+  **Fixed afterwards** (11:45 pm ET, yaakov approved the cluster-wide apply): `prepare.py` now renders
+  promtail, with a per-namespace ClusterRole/Binding (`promtail-<namespace>`), a scrape glob of
+  `/var/log/pods/<namespace>_*`, and an engine-taint toleration so it also runs on member nodes. Proven on
+  `traderx-demo`'s default node, with only Loki and promtail in a fresh `traderx-tip`: a marker pod's line came
+  back from Loki under `{namespace="traderx-tip"}`, and Loki held zero `traderx`-namespace streams. Only the
+  default node was up, so shipping from an engine node is covered by `test_prepare.py`, not seen live.
+  The proof objects were removed, including both cluster-scoped ones.
 - **NetworkPolicy cannot be enforced here.** `traderx-demo` has no Dataplane V2 and the CompSci render ships
   no NetworkPolicy, so `yu18-networkpolicy-enforced.sh` does not apply.
 - **The derivation guard needs `SOURCE_DATE_EPOCH`** (as `docs/deployment/compsci-gke.md` says). Without it
