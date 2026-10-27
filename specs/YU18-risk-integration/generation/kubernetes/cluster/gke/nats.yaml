@@ -39,6 +39,11 @@ data:
     jetstream {
       store_dir: /data
       max_file_store: 24G
+      # The bridges core-publish; above the stream's ingest queue NATS DROPS silently ("excessive stream
+      # ingest rate ... IPQ len limit reached"). Measured on traderx-dsq 2026-10-27: a 38K orders/s burst lost
+      # 96,119 of 200,400 trade sides at the default queue; with this queue the same burst lost none.
+      max_buffered_msgs: 2000000
+      max_buffered_size: 1GB
     }
     http: 8222
     websocket {
@@ -92,10 +97,10 @@ spec:
               mountPath: /etc/nats
           resources:
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: "1"
+              memory: 512Mi
             limits:
-              memory: 1Gi
+              memory: 2Gi        # holds the 1GB ingest queue above
       volumes:
         - name: data
           persistentVolumeClaim:

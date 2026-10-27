@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -39,7 +40,12 @@ public final class TradeSnapshotStore {
 
   public TradeSnapshotStore(JdbcTemplate jdbc, TransactionTemplate transactions, ProjectionWriteLock lock) {
     this.jdbc = jdbc;
-    this.transactions = transactions;
+    // READ COMMITTED: partitions own disjoint accounts, but under REPEATABLE READ the window's
+    // "DELETE ... id NOT IN" takes gap locks on (projectionscope, accountid) that a neighbouring
+    // partition's INSERT crosses. Measured live at P=4: 8 deadlocks in the first minute (each snapshot
+    // retried at the next tick, so no loss, but the cursor stalled an interval each time).
+    this.transactions = new TransactionTemplate(transactions.getTransactionManager());
+    this.transactions.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     this.lock = lock;
   }
 

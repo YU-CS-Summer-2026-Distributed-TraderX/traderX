@@ -404,6 +404,40 @@ more sides moved the first sequence to 300,003 above a cursor of 300,000, and th
 `RETENTION_GAP ... sequences 300001..300002 were discarded`. Recreating the stream under the cursor refused with
 `STREAM_RESET`.
 
+### 7.8 Live: `BRIDGE_PARTITIONS=4` on a real three-member cluster
+
+Namespace `traderx-dsq` on `traderx-demo`, 2026-10-27 10:08–10:54 am ET. The three members ran on their own tainted
+pool (3× c4d-standard-8) and the support pods on a second one (2× e2-standard-4), so production's pools were untouched.
+Images: `cluster-node` and `trade-processor` built from this branch on an empty-root render; the rest at the rollout plan's
+digests. Members `BRIDGE_PARTITIONS=4`; trade-processor `PROJECTION_FEED_MODE=jetstream`, `PROJECTION_FEED_PARTITIONS=4`,
+`TRADE_PROJECTION_MODE=snapshot`. Load: crossing AAPL limit orders between the 11 seeded accounts through the gateway's
+`/orders/batch`, 8 in flight. The independent check nets every fill in the ENGINE's own blotter (`/recon/trades/blotter`,
+the members' committed log) and compares that with SQL `positions`, per run as deltas. The live blotter holds the
+last 500,000 fills, so each run's engine side is the fills above the previous run's last tradeSeq.
+
+| | Run 1 (10:22 am) | Run 2 (10:40 am) | Run 3 (10:51 am) |
+|---|---|---|---|
+| Orders | 200,000 at 38K/s | 200,000 at 29K/s | 200,000 at 75K/s |
+| NATS | as rendered | ingest queue raised (below) | same |
+| Engine fills (trade sides) | 200,400 | 200,000 | 200,000 (tradeSeq 400,401–600,400) |
+| Projected sides, p0/p1/p2/p3 | 4,740 / 28,439 / 37,920 / 33,182 = **104,281** | 9,091 / 54,546 / 72,727 / 63,636 = **200,000** (equal to the engine's per-partition fills) | 9,091 / 54,546 / 72,727 / 63,636 = **200,000** |
+| Drops | NATS: "excessive stream ingest rate ... IPQ len limit reached" ×2; order bridge queue full ≥30,000 | **0** (trade-processor, both bridges, NATS) | **0** |
+| Per-partition lag (max pending messages; drained) | 2,250 / 24,241 / 33,322 / 28,781; drained in 11 s | 9,091 / 54,546 / 72,727 / 63,636; drained in 13 s | 9,091 / 54,546 / 72,727 / 63,636; drained in 13 s |
+| Positions vs the engine | not equal (the lost sides) | 24 keys, **0 wrong** | 24 keys, **0 wrong** |
+| Snapshot write failures | 8 deadlocks, each retried next tick | 1 | **0** of 17 (READ COMMITTED) |
+
+Run 1 is the finding: the bridges core-publish, so when the burst outran the stream's ingest queue NATS dropped the
+overflow and nobody upstream knew. The ledger recon (§7.6) named it: after runs 1 and 2 it reported **matched 304,281,
+missing 96,119, field mismatch 0**, which is exactly 104,281 + 200,000 matched and 200,400 − 104,281 missing; after
+run 3, matched 504,281 and missing still 96,119. Fixes, both in the repo: `max_buffered_msgs: 2000000` / `max_buffered_size: 1GB` with 1 CPU and 2 Gi for NATS
+(`cluster/gke/nats.yaml`), and READ COMMITTED for the snapshot transaction (under REPEATABLE READ the window's
+`DELETE ... NOT IN` took gap locks a neighbouring partition's insert crossed). The stream survived the NATS restart on
+its PVC and trade-processor resumed at cursor 304,568 on every partition.
+
+The bridges remain core publishers: a burst longer than the ingest queue still drops, now visibly (NATS log, recon
+MISSING by id, positions ≠ engine). A JetStream-acked publish from the bridge thread would turn that into counted
+back-pressure; it belongs with the archive-reader bridge of §8 item 1.
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K
@@ -425,6 +459,4 @@ more sides moved the first sequence to 300,003 above a cursor of 300,000, and th
 5. **Trade store: decided and prototyped (§7).** The append-only log is the JetStream capture stream; SQL holds
    snapshots. Bond fail-closed, settlement and recon on the ledger, and retention sizing are done (§7.3, §7.6, §7.7).
    A forced settlement (`POST /trades/{id}/settlement/force`) reaches only rows still in the window.
-6. **Live cluster.** The prototype was measured with the bridges' exact wire from a load generator, not from a running
-   leader. A run on the hxb rig with `BRIDGE_PARTITIONS=4` on the members would confirm that the leader's apply thread is
-   unaffected (the bridges' offer path is unchanged, so no effect is expected).
+6. **Live cluster.** Done on a real three-member cluster (§7.8).
