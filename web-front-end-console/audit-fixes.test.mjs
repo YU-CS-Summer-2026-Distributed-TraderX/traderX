@@ -72,3 +72,28 @@ test('actual HTTP server blocks bypasses, retries initial mint, and retains auth
   assert.equal(upstreamRequests.filter(r=>r.url.includes('%')).length,0);
  } finally {child.kill();await once(child,'exit');edge.closeAllConnections();await new Promise(r=>edge.close(r));await new Promise(r=>fix.close(r));}
 });
+test('demo-profile FIX ticket: signed-out is refused, signed-in logs on with Password(554) the panel never sees',async()=>{
+ const logons=[];
+ const fix=net.createServer(s=>{let buf='';s.on('data',d=>{buf+=d.toString('latin1');
+  if(buf.includes('\x0135=A\x01')){logons.push(buf);s.end('8=FIX.4.4\x019=5\x0135=5\x0110=000\x01');}});});
+ const probe=net.createServer();const port=await listen(probe);await new Promise(r=>probe.close(r));
+ const fixPort=await listen(fix);
+ const salt='fix-test-salt',password='fix-only',fixPassword='synthetic-fix-session-password';
+ const child=spawn(process.execPath,['server.mjs'],{cwd:new URL('.',import.meta.url),env:{...process.env,LOCAL_ONLY:'',DESK_DEMO_PROFILE:'',PORT:String(port),EDGE_PROXY:'127.0.0.1:9',FIX_HOST:'127.0.0.1',FIX_PORT:String(fixPort),FIX_SESSION_PASSWORD:fixPassword,AUTH_SESSION_SECRET:'synthetic-session',ADMIN_PASSWORD_HASH:`scrypt$${salt}$${scryptSync(password,salt,64).toString('hex')}`},stdio:['ignore','pipe','pipe']});
+ let logs='';child.stdout.on('data',x=>logs+=x);child.stderr.on('data',x=>logs+=x);
+ try {
+  let ready=false;for(let i=0;i<100;i++){try{await request(port,'/healthz');ready=true;break;}catch{await sleep(20);}}
+  assert.ok(ready,logs);
+  const order={clOrdId:'t1',accountId:22214,symbol:'MSFT',side:'Buy',quantity:1,limitPrice:1};
+  assert.equal((await request(port,'/fixorder','POST',order)).status,401);
+  assert.equal(logons.length,0,'a signed-out request reached the FIX acceptor');
+  const login=await request(port,'/auth/login','POST',{user:'admin',password});assert.equal(login.status,200);
+  const cookie=login.headers['set-cookie'][0].split(';')[0];
+  const r=await request(port,'/fixorder','POST',order,{Cookie:cookie});
+  assert.equal(r.status,200);
+  assert.equal(logons.length,1);
+  assert.ok(logons[0].includes(`\x01554=${fixPassword}\x01`),'Logon carries Password(554)');
+  assert.ok(!JSON.stringify(r.body).includes(fixPassword),'the credential reached the browser');
+  assert.ok(r.body.sent[0].includes('\x01554=********'),r.body.sent[0]);
+ } finally {child.kill();await once(child,'exit');await new Promise(r=>fix.close(r));}
+});

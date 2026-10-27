@@ -20,9 +20,16 @@ bands, or exhaust the 1,024 replicated symbol slots for an entire epoch.
 - **S2. Operator routes need the operator pair.** `/session`, the business-day roll and `/seed` require
   `X-Risk-Control-Token` (compared in constant time) plus a non-blank `X-Risk-Operator`, or an admin JWT.
 - **S3. FIX logons carry credentials.** `FIX_SESSION_AUTH="COMPID:password:acct1|acct2,..."` binds each
-  CompID to a `Password(554)` and to the accounts it may name. A request outside the binding is rejected,
-  never ignored. `FIX_SSL_KEYSTORE` turns on QuickFIX/J TLS. If it is unconfigured, the acceptor logs
-  INSECURE and keeps the CompID-only behaviour.
+  CompID to a `Password(554)` and to the accounts it may name; `*` names every account. A request outside
+  the binding is rejected, never ignored. `FIX_SSL_KEYSTORE` turns on QuickFIX/J TLS. Authentication is the
+  default: a gateway with `FIX_ACCEPTOR_PORT` set and `FIX_SESSION_AUTH` unset refuses to start, under the
+  same contract as S5, and `ALLOW_DEV_SECRETS=true` is the only opt-out (kind sets it; the acceptor then
+  logs INSECURE and keeps the CompID-only behaviour). On GKE the gateway builds
+  `FIX_SESSION_AUTH=CLIENT1:$(FIX_SESSION_PASSWORD):*` from `auth-secrets/fix-session-password`, a
+  required key, and `prepare.py` refuses a CompSci candidate whose FIX acceptor lacks that wiring or
+  whose workloads carry `ALLOW_DEV_SECRETS`. CLIENT1's one client there is the console's FIX ticket. It
+  presents the same key, only for a signed-in operator, and the panel's copy of the Logon masks
+  `554` (2026-10-27).
 - **S4. Only trusted paths register symbols.** Order entry, `/trades` and `/resolve` only look tickers
   up, through the owner-thread cache refreshed from the member's read-only `/symbols`. Three paths
   register: `/seed`, the reference-data control feed (bbe9b040), and operator `/risk/control action=security`
@@ -34,7 +41,7 @@ bands, or exhaust the 1,024 replicated symbol slots for an entire epoch.
   `GATEWAY_MAX_BODY_BYTES` (8 MiB), and batches are capped at `GATEWAY_MAX_BATCH_ORDERS` (100,000).
   Either limit answers 413.
 - **Callers sign.** The console attaches its admin JWT to the S1 routes only for a signed-in operator
-  (12a0a21b). trade-service mints a 60 s, one-account, non-admin bearer over `AUTH_JWT_SECRET` for the
+  (12a0a21b), and its `/fixorder` ticket is likewise behind operator sign-in. trade-service mints a 60 s, one-account, non-admin bearer over `AUTH_JWT_SECRET` for the
   legacy UI's `/trades` and propagates the gateway's 4xx (951ed3c9).
 
 **Rejected:** in-process TLS on the gateway. TLS terminates at the ingress in front of the LoadBalancer.
@@ -42,5 +49,6 @@ bands, or exhaust the 1,024 replicated symbol slots for an entire epoch.
 ## Consequences
 
 The startup contract changes on every tier: a rig without real secrets, or without the explicit dev
-opt-in, does not come up. Every S item is gateway-only and rolls with a gateway restart. No engine,
+opt-in, does not come up. That includes a FIX acceptor without session credentials, and on GKE an
+`auth-secrets` without `fix-session-password`. Every S item is gateway-only and rolls with a gateway restart. No engine,
 wire or snapshot change.

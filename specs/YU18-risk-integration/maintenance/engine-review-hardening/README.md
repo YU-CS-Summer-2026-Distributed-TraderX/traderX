@@ -12,6 +12,8 @@ Sources (the highest carrying layer of each file, checked for shadowing on 2026-
 - YU16 `generation/runtime-overrides/trade-service/.../auth/GatewayBearer.java` and
   `controller/TradeOrderController.java`; YU18 `kubernetes-runtime/manifests/base/trade-service-deployment.yaml`.
 - `web-front-end-console/server.mjs` (root-owned console; see [console sessions](../console-sessions/README.md)).
-- `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/kustomization.yaml` and `secrets/*.env.example`.
+- `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/kustomization.yaml`, `gateway.yaml` (S3's
+  `FIX_SESSION_AUTH` from `auth-secrets/fix-session-password`) and `secrets/*.env.example`;
+  `frontend-gke/console.yaml`; `scripts/gcp-compsci/prepare.py` (refuses an unauthenticated FIX acceptor).
 
 See [spec](spec.md), [plan](plan.md) and [tasks](tasks.md).

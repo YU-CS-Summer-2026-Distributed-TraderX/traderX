@@ -130,6 +130,31 @@ class Rendering(unittest.TestCase):
         module.podspec(db)['containers'][0]['env'].append({'name':'MARIADB_PASSWORD','value':'public-default'})
         with self.assertRaises(AssertionError):module.validate(docs)
 
+    def test_fix_acceptor_authenticates_from_the_secret(self):
+        # ADR-082: the gateway's FIX sessions need CLIENT1's password, built from auth-secrets, and nothing
+        # carries the development opt-out; the console's FIX ticket presents the same key.
+        gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        env=module.podspec(gw)['containers'][0]['env']; names=[e['name'] for e in env]
+        self.assertEqual(env[names.index('FIX_SESSION_PASSWORD')]['valueFrom']['secretKeyRef'],
+                         {'name':'auth-secrets','key':'fix-session-password'})
+        self.assertEqual(env[names.index('FIX_SESSION_AUTH')]['value'],'CLIENT1:$(FIX_SESSION_PASSWORD):*')
+        self.assertLess(names.index('FIX_SESSION_PASSWORD'),names.index('FIX_SESSION_AUTH'))
+        console=next(d for d in self.docs if d['metadata']['name']=='web-front-end-console' and module.podspec(d))
+        self.assertIn({'name':'FIX_SESSION_PASSWORD','valueFrom':{'secretKeyRef':{'name':'auth-secrets','key':'fix-session-password'}}},
+                      module.podspec(console)['containers'][0]['env'])
+        plan=__import__('json').loads((self.output/'plan.json').read_text())
+        self.assertIn('fix-session-password',plan['requiredSecretKeys']['auth-secrets'])
+
+    def test_unauthenticated_fix_acceptor_is_refused(self):
+        for mutate in ('drop-auth','literal-auth','dev-opt-out'):
+            docs=copy.deepcopy(self.docs)
+            gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+            env=module.podspec(gw)['containers'][0]['env']
+            if mutate=='drop-auth': env[:]=[e for e in env if e['name']!='FIX_SESSION_AUTH']
+            if mutate=='literal-auth': next(e for e in env if e['name']=='FIX_SESSION_AUTH')['value']='CLIENT1:guessable:*'
+            if mutate=='dev-opt-out': env.append({'name':'ALLOW_DEV_SECRETS','value':'true'})
+            with self.assertRaises(AssertionError,msg=mutate): module.validate(docs)
+
     def test_all_workloads_have_complete_scheduler_requests(self):
         for doc in self.docs:
             pod=module.podspec(doc)

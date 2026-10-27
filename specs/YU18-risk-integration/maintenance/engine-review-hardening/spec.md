@@ -7,8 +7,11 @@
   entitled to. Every element of a batch SHALL be checked.
 - FR-ERH-S2: `/session`, the business-day roll and `/seed` SHALL require `X-Risk-Control-Token`
   (constant-time compare) with a non-blank `X-Risk-Operator`, or an admin JWT.
-- FR-ERH-S3: The FIX acceptor SHALL bind each CompID to a `Password(554)` and an account list from
-  `FIX_SESSION_AUTH`, and SHALL reject requests outside the binding. `FIX_SSL_KEYSTORE` SHALL enable TLS.
+- FR-ERH-S3: The FIX acceptor SHALL bind each CompID to a `Password(554)` and an account list (`*` for
+  every account) from `FIX_SESSION_AUTH`, and SHALL reject requests outside the binding. `FIX_SSL_KEYSTORE`
+  SHALL enable TLS. A gateway with `FIX_ACCEPTOR_PORT` set SHALL refuse to start without `FIX_SESSION_AUTH`
+  unless `ALLOW_DEV_SECRETS=true`. GKE SHALL source the password from `auth-secrets/fix-session-password`.
+  The console SHALL spend it only for a signed-in operator and SHALL NOT return it to the browser.
 - FR-ERH-S4: Order entry, `/trades` and `/resolve` SHALL only look tickers up. `/seed`, the
   reference-data control feed and operator `/risk/control action=security` SHALL register. The member
   SHALL serve its registered table read-only on `/symbols`.

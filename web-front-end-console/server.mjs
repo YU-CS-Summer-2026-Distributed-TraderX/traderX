@@ -35,6 +35,9 @@ const NS = process.env.NAMESPACE ?? 'traderx';
 const EDGE = process.env.EDGE_PROXY ?? 'edge-proxy:8080';
 const FIX_HOST = process.env.FIX_HOST ?? 'order-matcher-gw-fix';
 const FIX_PORT = Number(process.env.FIX_PORT ?? 18130);
+// ENGINE-REVIEW S3 (ADR-082): the gateway refuses a Logon without the CompID's Password(554) unless the rig
+// opted out (ALLOW_DEV_SECRETS). From auth-secrets/fix-session-password; unset on kind, where none is asked.
+const FIX_SESSION_PASSWORD = process.env.FIX_SESSION_PASSWORD ?? '';
 const BUCKET = process.env.EXTRACT_BUCKET ?? 'gs://traderx-505400-risk-extracts';
 const ROOT = path.resolve(process.env.STATIC_ROOT ?? './dist/web-front-end-console/browser');
 // The dev proxy reads this off the rig with kubectl and injects it on /trade-processor so the EOD
@@ -440,9 +443,11 @@ function fixOrder(o) {
     const timer = setTimeout(() => finish('no ExecutionReport within 8s'), 8000);
     const send = (f) => {
       const msg = fixFrame([['35', f.type], ['49', 'CLIENT1'], ['56', 'TRADERX'], ['34', seq++], ['52', fixTime()], ...f.body]);
-      sent.push(msg); sock.write(msg);
+      // The panel shows what was sent; never the credential (554), which stays in this process.
+      sent.push(msg.replace(/\x01554=[^\x01]*/, '\x01554=********')); sock.write(msg);
     };
-    sock.on('connect', () => send({ type: 'A', body: [['98', 0], ['108', 30], ['141', 'Y']] }));
+    sock.on('connect', () => send({ type: 'A', body: [['98', 0], ['108', 30], ['141', 'Y'],
+      ...(FIX_SESSION_PASSWORD ? [['554', FIX_SESSION_PASSWORD]] : [])] }));
     sock.on('data', (chunk) => {
       buf += chunk.toString('latin1');
       for (let end; (end = buf.indexOf(`${SOH}10=`)) >= 0;) {
@@ -1170,6 +1175,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/fixorder') {
     if (req.method !== 'POST') return json(res, 405, {});
+    // This process holds the FIX session credential (CLIENT1, every account): only a signed-in operator spends it.
+    if (!readToken(req)) return json(res, 401, { code: 'signed_out', error: 'the FIX ticket is behind sign-in' });
     try { return json(res, 200, await fixOrder(JSON.parse(await readBody(req)))); }
     catch (e) { return json(res, 502, { error: String(e) }); }
   }

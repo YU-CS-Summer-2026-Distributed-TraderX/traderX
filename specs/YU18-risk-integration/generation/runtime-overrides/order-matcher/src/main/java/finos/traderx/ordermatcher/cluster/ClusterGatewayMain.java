@@ -375,6 +375,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final boolean allowDev = finos.traderx.ordermatcher.auth.DevSecrets.allowDevFromEnv();
         finos.traderx.ordermatcher.auth.DevSecrets.refuse("RISK_CONTROL_TOKEN", riskControlToken, allowDev);
         finos.traderx.ordermatcher.auth.DevSecrets.refuse("AUTH_JWT_SECRET", env("AUTH_JWT_SECRET", ""), allowDev);
+        // ENGINE-REVIEW S3 (ADR-082): a FIX acceptor without session credentials accepts any logon that
+        // names a configured CompID. Same contract: refuse unless the rig opted in explicitly.
+        if (!env("FIX_ACCEPTOR_PORT", "").isEmpty()) {
+            finos.traderx.ordermatcher.auth.DevSecrets.refuse("FIX_SESSION_AUTH", env("FIX_SESSION_AUTH", ""), allowDev);
+        }
 
         final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
             .aeronDirectoryName(aeronDir)

@@ -77,6 +77,13 @@ spec:
               value: "edge-proxy:8080"
             - name: FIX_HOST
               value: "order-matcher-gw-fix"
+            # ADR-082: the FIX ticket's Logon carries CLIENT1's Password(554); the gateway refuses it
+            # otherwise. Same Secret key the gateway's FIX_SESSION_AUTH is built from.
+            - name: FIX_SESSION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: fix-session-password
             - name: EXTRACT_BUCKET
               value: "gs://traderx-505400-risk-extracts"
             # Injected on /trade-processor so the EOD panel mints its own admin token, exactly as

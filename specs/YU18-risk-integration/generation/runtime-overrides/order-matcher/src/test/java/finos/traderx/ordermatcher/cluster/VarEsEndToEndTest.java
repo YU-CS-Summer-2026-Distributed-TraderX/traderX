@@ -61,6 +61,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -166,9 +167,21 @@ class VarEsEndToEndTest {
         assertTrue(sell.contains("\"orderRef\":") && buy.contains("\"orderRef\":"), sell + " / " + buy);
 
         // 2. listed option over FIX 4.4 (OCC symbol): one session, two accounts it is bound to (S3).
-        final FixClient client = new FixClient();
+        //    A wrong Password(554) and a missing one are refused at logon before the good session.
+        for (final String bad : new String[] {"not-the-password", null}) {
+            final FixClient refused = new FixClient(bad);
+            final SocketInitiator attempt = startInitiator(refused);
+            try {
+                assertFalse(refused.loggedOn.await(4, TimeUnit.SECONDS), "FIX logon with password " + bad);
+            } finally {
+                attempt.stop(true);
+            }
+        }
+        assertFalse(gatewayLog().contains("FIX logon: CLIENT1"), "the acceptor established a session for a bad credential");
+        final FixClient client = new FixClient(FIX_PASSWORD);
         fix = startInitiator(client);
         assertTrue(client.loggedOn.await(30, TimeUnit.SECONDS), "FIX logon with session credentials");
+        await(() -> gatewayLog().contains("FIX logon: CLIENT1"), "the gateway logs the good session (control for the check above)");
         sendFixOrder(client.sid, "e2e-opt-s", SELLER, Side.SELL, OPTION, 1, 5.0);
         sendFixOrder(client.sid, "e2e-opt-b", BUYER, Side.BUY, OPTION, 1, 5.0);
         await(() -> client.reports.containsKey("e2e-opt-s") && client.reports.containsKey("e2e-opt-b"),
@@ -270,6 +283,43 @@ class VarEsEndToEndTest {
     }
 
     // ---- members, gateway, marker client -----------------------------------------------------
+
+    /** ADR-082: an acceptor without FIX_SESSION_AUTH does not start unless the rig opted in (ALLOW_DEV_SECRETS). */
+    @Test
+    void gatewayRefusesAnUnauthenticatedFixAcceptor() throws Exception {
+        final Map<String, String> base = Map.of("FIX_ACCEPTOR_PORT", String.valueOf(freePort()),
+            "AUTH_JWT_SECRET", "e2e-not-a-dev-secret-jwt", "RISK_CONTROL_TOKEN", "e2e-not-a-dev-secret-risk",
+            "GATEWAY_AERON_DIR", root.resolve("refusal-aeron").toString(),
+            "GATEWAY_INGRESS_ENDPOINTS", "0=localhost:" + freePort(),
+            "GATEWAY_HTTP_PORT", String.valueOf(freePort()), "GATEWAY_PROBE_PORT", String.valueOf(freePort()));
+        final Process refused = startGatewayProcess(base);
+        assertTrue(refused.waitFor(60, TimeUnit.SECONDS), "the gateway kept running without FIX_SESSION_AUTH");
+        final String out = new String(refused.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertNotEquals(0, refused.exitValue(), out);
+        assertTrue(out.contains("FIX_SESSION_AUTH is unset or a development default"), out);
+
+        // Control: the same environment with session credentials gets past the check (it then waits for a cluster).
+        final Map<String, String> configured = new java.util.HashMap<>(base);
+        configured.put("FIX_SESSION_AUTH", "CLIENT1:" + FIX_PASSWORD + ":" + BUYER);
+        configured.put("GATEWAY_AERON_DIR", root.resolve("control-aeron").toString());
+        final Process control = startGatewayProcess(configured);
+        try {
+            assertFalse(control.waitFor(10, TimeUnit.SECONDS), "the configured gateway exited");
+        } finally {
+            control.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
+        }
+    }
+
+    private static Process startGatewayProcess(final Map<String, String> env) throws Exception {
+        final ProcessBuilder pb = new ProcessBuilder(
+            Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+            "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+            "-Xmx256m", "-cp", System.getProperty("java.class.path"), ClusterGatewayMain.class.getName())
+            .redirectErrorStream(true);
+        pb.environment().keySet().removeIf(k -> k.startsWith("FIX_") || k.equals("ALLOW_DEV_SECRETS"));
+        pb.environment().putAll(env);
+        return pb.start();
+    }
 
     private void launchMembers() {
         for (int id = 0; id < 3; id++) {
@@ -456,14 +506,19 @@ class VarEsEndToEndTest {
         final SessionID sid = new SessionID("FIX.4.4", "CLIENT1", "TRADERX");
         final CountDownLatch loggedOn = new CountDownLatch(1);
         final Map<String, Character> reports = new ConcurrentHashMap<>();
+        private final String password;   // null = Logon without Password(554)
+
+        FixClient(final String password) {
+            this.password = password;
+        }
 
         @Override public void onCreate(final SessionID sessionId) { }
         @Override public void onLogon(final SessionID sessionId) { loggedOn.countDown(); }
         @Override public void onLogout(final SessionID sessionId) { }
         @Override public void toAdmin(final Message message, final SessionID sessionId) {
             try {
-                if ("A".equals(message.getHeader().getString(35))) {
-                    message.setString(quickfix.field.Password.FIELD, FIX_PASSWORD);
+                if ("A".equals(message.getHeader().getString(35)) && password != null) {
+                    message.setString(quickfix.field.Password.FIELD, password);
                 }
             } catch (final quickfix.FieldNotFound ignored) { }
         }

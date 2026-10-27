@@ -146,9 +146,21 @@ def validate(docs):
                 for entry in c.get('env', []):
                     if entry['name'] in ('MARIADB_PASSWORD','MARIADB_ROOT_PASSWORD','DATABASE_DBPASS',
                         'RISK_EXTRACT_JDBC_PASSWORD','GF_SECURITY_ADMIN_PASSWORD','RISK_CONTROL_TOKEN',
-                        'ADMIN_PASSWORD_HASH','AUTH_SESSION_SECRET','AUTH_JWT_SECRET','AUTH_MASTER_SECRET'):
+                        'ADMIN_PASSWORD_HASH','AUTH_SESSION_SECRET','AUTH_JWT_SECRET','AUTH_MASTER_SECRET',
+                        'FIX_SESSION_PASSWORD'):
                         require('value' not in entry and 'secretKeyRef' in entry.get('valueFrom', {}),
                                 'private credential must use a Secret reference')
+        # ADR-082: a FIX acceptor on this profile authenticates its sessions. ALLOW_DEV_SECRETS is the only
+        # opt-out and no workload here may carry it; FIX_SESSION_AUTH names the Secret-backed password.
+        for c in (pod or {}).get('containers', []):
+            env = {e['name']: e for e in c.get('env', [])}
+            require('ALLOW_DEV_SECRETS' not in env, 'development-secret opt-out on the CompSci profile')
+            if 'FIX_ACCEPTOR_PORT' in env:
+                names = [e['name'] for e in c['env']]
+                require('FIX_SESSION_AUTH' in env and '$(FIX_SESSION_PASSWORD)' in env['FIX_SESSION_AUTH'].get('value', '')
+                        and 'FIX_SESSION_PASSWORD' in names
+                        and names.index('FIX_SESSION_PASSWORD') < names.index('FIX_SESSION_AUTH'),
+                        'FIX acceptor without Secret-backed session credentials')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')

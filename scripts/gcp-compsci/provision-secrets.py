@@ -45,7 +45,9 @@ def new_credentials():
             'grafana': {'username':'admin', 'password':secrets.token_urlsafe(24)},
             'secrets': {
                 'auth-secrets': {'console-admin-hash':f'scrypt${salt}${digest}',
-                    **{key:secrets.token_hex(32) for key in ['console-session-secret','dev-token-master-secret','jwt-secret','risk-control-token']}},
+                    **{key:secrets.token_hex(32) for key in ['console-session-secret','dev-token-master-secret','jwt-secret','risk-control-token']},
+                    # ADR-082: CLIENT1's FIX Password(554). Hex, so it never carries FIX_SESSION_AUTH's ':' or ','.
+                    'fix-session-password':secrets.token_hex(32)},
                 'mariadb-credentials': {'username':'traderx','password':secrets.token_urlsafe(32),
                                        'root-password':secrets.token_urlsafe(32)},
             }}

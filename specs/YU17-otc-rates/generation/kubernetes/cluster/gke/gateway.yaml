@@ -156,6 +156,20 @@ spec:
               value: "18130"
             - name: FIX_SESSION_COMPIDS
               value: "CLIENT1"
+            # ENGINE-REVIEW S3 / ADR-082 (YU18's GKE gateway; prepare.py renders this file): Logon needs
+            # CLIENT1's Password(554), and the gateway refuses to start an acceptor without
+            # FIX_SESSION_AUTH unless ALLOW_DEV_SECRETS=true, which no GKE tier sets. The password is
+            # auth-secrets/fix-session-password, NOT optional: a tier without it does not start rather
+            # than run open. "*" binds the session to every account: its client is the console's FIX
+            # ticket, behind operator sign-in, and the risk gate still checks each account.
+            # FIX_SESSION_PASSWORD stays ABOVE FIX_SESSION_AUTH: $(VAR) expands only earlier entries.
+            - name: FIX_SESSION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: fix-session-password
+            - name: FIX_SESSION_AUTH
+              value: "CLIENT1:$(FIX_SESSION_PASSWORD):*"
             # OTEL-01: tracing knobs, present-but-off on GKE. The benchmark that proves this
             # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
             # deployed default and the "on" arm must be reachable without a rebuild. Flip

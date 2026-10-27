@@ -25,6 +25,15 @@ class FixSessionAuthTest {
         assertFalse(auth.accountAllowed("CLIENT9", 99, 99));
     }
 
+    @Test void starBindsEveryAccountButStillNeedsThePassword() {
+        final FixSessionAuth op = FixSessionAuth.fromEnv("CONSOLE:pw-op:*");
+        assertTrue(op.accountAllowed("CONSOLE", 42422, 11));
+        assertTrue(op.accountAllowed("CONSOLE", 22214, 11));
+        assertFalse(op.accountAllowed("CLIENT1", 22214, 11), "unknown CompID");
+        assertTrue(op.logonAllowed("CONSOLE", "pw-op"));
+        assertFalse(op.logonAllowed("CONSOLE", null));
+    }
+
     @Test void unconfiguredKeepsLegacyBehaviour() {
         final FixSessionAuth none = FixSessionAuth.fromEnv("");
         assertFalse(none.configured());

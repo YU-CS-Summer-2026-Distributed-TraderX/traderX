@@ -154,7 +154,8 @@ public final class FixGatewayAcceptor {
             defaults.setProperty("SocketKeyStorePassword", System.getenv().getOrDefault("FIX_SSL_KEYSTORE_PASSWORD", ""));
         }
         if (!auth.configured()) {
-            log.warn("FIX acceptor INSECURE: FIX_SESSION_AUTH unset — logon is CompID-only and Account(1) is unbound");
+            log.warn("FIX acceptor INSECURE (ALLOW_DEV_SECRETS=true): FIX_SESSION_AUTH unset — logon is CompID-only"
+                + " and Account(1) is unbound");
         }
         settings.set(defaults);
         for (final String compId : compIds) {
