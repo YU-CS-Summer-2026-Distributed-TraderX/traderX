@@ -280,10 +280,9 @@ cluster's own record, and the failover gap of §8 item 1 applies to every downst
 | Recon | "is the projection complete?" | `projection_cursor.stream_seq` against the stream's last sequence per partition; the bridge's published count against the stream's message count | continuous |
 | Repair | "rebuild from where?" | restart: snapshot + replay from `stream_seq + 1`. Destroyed SQL: replay the stream's retained window into an empty view, then snapshot. Beyond the window: the archive-replay tool, as today | — |
 
-What SQL no longer gets: one row per trade side. `trades` is a per-account window, so settlement sweeps and the
-live-blotter recon (`SettlementService`, `ReconciliationService`), which treat `trades` as the ledger, are off on this
-tier (they are already disabled by interval on the bench), and `TRADE_ID_CONFLICT` dedupe is replaced by the cursor:
-a seq at or below the cursor is a replay and is ignored.
+What SQL no longer gets: one row per trade side. `trades` is a per-account window, so settlement and the
+live-blotter recon read the ledger instead (§7.6), and `TRADE_ID_CONFLICT` dedupe is replaced by the cursor: a seq at
+or below the cursor is a replay and is ignored.
 
 ### 7.3 Write path (prototype, `traderx.trade-projection.mode=snapshot`)
 
@@ -295,8 +294,13 @@ a seq at or below the cursor is a replay and is ignored.
   positions (multi-row upsert), each changed account's window (insert the window's rows, delete the account's rows
   outside it), the cursor, and the scope's counters. A failed snapshot is re-marked and retried at the next tick.
 - Restart: load the scope's positions and windows, replay from the cursor. `TradeView.apply` ignores `seq ≤ cursor`.
-- Not in the prototype: the YU16 bond fail-closed rejection (`bondRejection`) is applied only on the row path; the
-  snapshot path books every side. Carry it over before using snapshot mode with bonds.
+- Bonds fail closed on this path too (2026-10-27): `TradeService.book(order, position, metadata, at)` runs the row
+  path's `bondRejection` first (metadata resolved once per bond per batch). A rejected side lands `Rejected` on the
+  blotter window and never reaches a position, not even a flat one, and never counts toward settlement.
+  `TradeViewTest.aBondWithoutReferenceDataIsRejectedAndNeverReachesAPosition` fails with the rejection removed
+  (A/B on the empty-root render) and passes with it.
+- Trade time is the ledger's: `created` and the settlement date come from the captured envelope's `date` (the
+  bridge's clock), so a replay books the same dates the first pass did.
 
 The SQL rate is bounded by the state, not the trade rate: per snapshot at most (dirty positions) + (dirty accounts ×
 blotter depth) rows, i.e. for 1,000 accounts × 50 symbols and depth 100 at most 150K rows per interval, however many
@@ -339,6 +343,67 @@ database is no longer in the equation; the order side was already covered (§4.4
 (1.34M msgs/s, 662 MB/s measured on one node; retention must span the longest outage plus the snapshot interval) and
 the consumer's parse cost, where the compact wire of §8 item 3 is the next lever.
 
+### 7.6 Settlement and recon on the ledger
+
+Both used to treat SQL `trades` as the ledger. With the trade store they read the system of record:
+
+| | Row path (`TRADE_PROJECTION_MODE=rows`) | Trade store (`snapshot`) |
+|---|---|---|
+| What is settled | `SettlementService` flips each `trades` row `Processing` → `Settled` at T+N | a side traded on UTC date D settles at D + N business days (the row path's own `plusBusinessDays`), so the settlement state of a partition is its **booked sides per trade date**: `projection_trade_days`, written in the same transaction as the cursor. `GET /v2/projection-feed/settlement?asOf=` sums them per partition. The window rows are still flipped by the same sweep, so the blotter shows `Settled` |
+| Recon "is this fill in the projection?" | `trades.findById(id)` | the engine's blotter page is matched against the **capture stream**, read forward only as far as the recon has reached; a side is MATCHED when the stream holds it with the engine's fields **and** its partition's committed `projection_cursor.stream_seq` covers it; MISSING only once the stream has moved past its tradeSeq without it; anything else waits (lag is not a verdict) |
+
+Proved on the rig (`dsq-ledger`, c4d-standard-16, 2026-10-27 9:31–9:33 am ET), P = 2, T+1, 220,000 sides with three
+trade dates (today, Thu 10/22, Fri 10/23), against `LedgerCheck`, which reads every message straight off the stream
+and applies its own business-day rule:
+
+| asOf (UTC) | Service settled (p0, p1) | Independent settled (p0, p1) |
+|---|---|---|
+| Fri 10/23 12:00 | 60,000 (30,000, 30,000) | 60,000 (30,000, 30,000) |
+| Sat 10/24 12:00 | 60,000 (30,000, 30,000) | 60,000 (30,000, 30,000) |
+| Mon 10/26 12:00 | 120,000 (60,000, 60,000) | 120,000 (60,000, 60,000) |
+| now, Tue 10/27 13:31 | 120,000 (60,000, 60,000) | 120,000 (60,000, 60,000) |
+| Wed 10/28 12:00 | 220,000 (110,000, 110,000) | 220,000 (110,000, 110,000) |
+
+The Friday trades settle Monday, not Saturday. The 100,000 window rows were all `Settled`, matching an independent
+per-row check (0 wrong). After `kill -9` and restart the endpoint returned the same counts, and all 1,960 positions
+matched `expect.py`. The recon side is proven live in §7.8.
+
+### 7.7 Stream retention
+
+The stream must hold everything from the oldest committed cursor forward, so its retention is sized to the longest
+outage the projection must replay from, not to a history requirement (the kdb capture is the history).
+
+| | 400K tier (hxb shape) | `traderx-demo` (the repo's manifests) |
+|---|---|---|
+| Stored bytes per trade side (measured, JSON wire) | 462 | 462 |
+| Stored bytes per order update (measured) | 588 | 588 |
+| Rate | 400K sides/s + 600K order updates/s = 537.6 MB/s | 10K + 10K msgs/s sized peak = 10.5 MB/s |
+| Longest outage replayed from | 30 min (a node replacement plus a database restart, back to back) | 30 min |
+| Bytes | 968 GB | 18.9 GB |
+| Stream limits | `max_bytes` 1 TiB, `max_age` 2 h | `PROJECTION_FEED_STREAM_MAX_BYTES` 20 GiB, `_MAX_AGE_HOURS` 2 |
+| NATS store | 1.2 TB local SSD/PD | `max_file_store` 24G on a 32 Gi `standard-rwo` PVC |
+
+Set in the manifests: the trade-processor deployment carries the two stream limits (applied to an existing stream
+too: `ensureStream` now updates limits that differ), and `cluster/gke/nats.yaml` gets a YU18 override that moves
+JetStream from `emptyDir` to a PVC with a store cap (`prepare.py` prefers the YU18 file). On `emptyDir` a NATS restart
+recreated the stream at sequence 1 under the cursor; replaying it would have ignored every sequence below the cursor.
+
+Two preconditions make a limit that was too small loud instead of silent. Both stop the process (exit 3) with the
+reason in the log:
+- `RETENTION_GAP`: the stream's first sequence is above `cursor + 1`, so something this partition needed was
+  discarded.
+- `STREAM_RESET`: the stream's last sequence is below the cursor, so it is a different stream.
+
+An idle partition does not trip `RETENTION_GAP`, because its cursor follows the stream head while it is caught up
+(empty fetch, nothing pending).
+
+Shown on the rig with the stream capped at 200,000 messages. The projection stopped at cursor 100,000, and 200,000
+sides arrived during the outage, so the stream held 100,001..300,000. The oldest retained message was exactly the next
+one needed. The restart replayed from it, and all 1,960 positions matched the recomputation over both batches. Two
+more sides moved the first sequence to 300,003 above a cursor of 300,000, and the restart refused with
+`RETENTION_GAP ... sequences 300001..300002 were discarded`. Recreating the stream under the cursor refused with
+`STREAM_RESET`.
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K
@@ -358,9 +423,8 @@ the consumer's parse cost, where the compact wire of §8 item 3 is the next leve
 4. **Run transitions vs partitions.** `ProjectionTransitionService` takes lock row 1 only; before running partitions
    alongside a transition it must take rows 1..P.
 5. **Trade store: decided and prototyped (§7).** The append-only log is the JetStream capture stream; SQL holds
-   snapshots. Before production: carry the bond fail-closed rejection onto the snapshot path, decide the stream's
-   retention against the snapshot interval (a restart needs the stream back to the last cursor, so retention must
-   exceed the longest outage), and move settlement off the `trades` window.
+   snapshots. Bond fail-closed, settlement and recon on the ledger, and retention sizing are done (§7.3, §7.6, §7.7).
+   A forced settlement (`POST /trades/{id}/settlement/force`) reaches only rows still in the window.
 6. **Live cluster.** The prototype was measured with the bridges' exact wire from a load generator, not from a running
    leader. A run on the hxb rig with `BRIDGE_PARTITIONS=4` on the members would confirm that the leader's apply thread is
    unaffected (the bridges' offer path is unchanged, so no effect is expected).

@@ -167,11 +167,17 @@ public abstract class NatsJSONSubscriber<T> implements Subscriber<T>, Initializi
   /** The raw-envelope decode the dispatcher applies, for a feed that fetches its own messages.
    *  Returns null for an empty payload or a foreign type; throws on malformed JSON. */
   protected T decode(byte[] data) throws java.io.IOException {
+    NatsEnvelope<T> envelope = envelope(data);
+    return envelope == null ? null : envelope.getPayload();
+  }
+
+  /** {@link #decode} keeping the envelope, whose {@code date} is the publisher's clock as captured. */
+  protected NatsEnvelope<T> envelope(byte[] data) throws java.io.IOException {
     NatsEnvelope<T> envelope = OBJECT_MAPPER.readValue(data, envelopeType);
     if (envelope.getPayload() == null || !objectType.getSimpleName().equals(envelope.getType())) {
       return null;
     }
-    return envelope.getPayload();
+    return envelope;
   }
 
   /** The live connection, for a subclass that runs a JetStream pull consumer on it. */

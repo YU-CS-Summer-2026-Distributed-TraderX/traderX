@@ -22,6 +22,28 @@ public final class ProjectionFeedController {
 
   public ProjectionFeedController(List<Subscriber<?>> subscribers) { this.subscribers = subscribers; }
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.TradeSnapshotStore snapshotStore;
+  @org.springframework.beans.factory.annotation.Value("${settlement.t-plus-days:1}")
+  private int settlementTPlusDays = 1;
+
+  /**
+   * YU18 trade store: settlement on the LEDGER (downstream-at-400k.md §7.6). With the snapshot projection,
+   * SQL `trades` is a window, so how many booked sides have settled is read from the per-trade-date side
+   * counts committed with each partition's cursor. {@code asOf} (ISO instant) defaults to now.
+   */
+  @GetMapping("/v2/projection-feed/settlement")
+  public Map<String, Object> settlement(@org.springframework.web.bind.annotation.RequestParam(required = false) String asOf) {
+    for (Subscriber<?> s : subscribers) {
+      if (s instanceof TradeFeedHandler t && t.ledgerMode() && snapshotStore != null) {
+        return snapshotStore.ledgerSettlement(t.snapshotScope(), settlementTPlusDays,
+            asOf == null ? java.time.Instant.now() : java.time.Instant.parse(asOf));
+      }
+    }
+    throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,
+        "settlement on the ledger needs TRADE_PROJECTION_MODE=snapshot with PROJECTION_FEED_MODE=jetstream");
+  }
+
   @GetMapping("/v2/projection-feed")
   public Map<String, Object> status() {
     Map<String, Object> out = new LinkedHashMap<>();

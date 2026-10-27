@@ -112,7 +112,21 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   public void afterPropertiesSet() throws Exception {
     super.afterPropertiesSet();
     if (jetstream()) {
-      startJetStream();
+      try {
+        startJetStream();
+      } catch (Exception refused) {
+        // A refusal (RETENTION_GAP, STREAM_RESET) must stop the process. Measured: after the context fails,
+        // the other beans' NATS connections (non-daemon threads) keep the JVM up as a never-ready zombie.
+        // Exit from a daemon thread once Spring has finished failing (System.exit inside refresh can deadlock).
+        Thread exit = new Thread(() -> {
+          try { Thread.sleep(5000); } catch (InterruptedException ignore) { }
+          log.error("trade feed refused to start ({}); exiting", refused.getMessage());
+          System.exit(3);
+        }, "trade-feed-refusal-exit");
+        exit.setDaemon(true);
+        exit.start();
+        throw refused;
+      }
       return;
     }
     flushThread = new Thread(this::flushLoop, "trade-feed-batch-flush");
@@ -139,7 +153,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
    * ephemeral: the cursor row IS the acknowledgement, so a crash before a snapshot replays from the
    * last one and books nothing twice (TradeView ignores seq <= cursor).
    */
-  private void startSnapshotMode() {
+  private void startSnapshotMode() throws Exception {
     final String scope = runRegistry == null ? RunRegistry.UNKNOWN : runRegistry.activeScope();
     snapshotScope = scope;
     List<Position> allPositions = snapshotStore.loadPositions(scope);
@@ -153,11 +167,13 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       List<Trade> myTrades = new ArrayList<>();
       for (Trade t : allTrades) { if (Math.floorMod(t.getAccountId(), partitionCount) == p) { myTrades.add(t); } }
       view.load(mine, myTrades, cursor == null ? 0 : cursor.streamSeq(), cursor == null ? 0 : cursor.consensusSeq());
+      view.loadDays(snapshotStore.loadDays(scope, p));
+      requireRetained(p, view.streamSeq());
       views.put(p, view);
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
       feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), stream, subject,
           JetStreamFeed.fromSequence(subject, view.streamSeq() + 1), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
-          msgs -> onSnapshotBatch(partition, msgs)));
+          msgs -> onSnapshotBatch(partition, msgs), view::idle));
       Thread snap = new Thread(() -> snapshotLoop(partition), "trade-snapshot-p" + p);
       snap.setDaemon(true);
       snap.start();
@@ -167,15 +183,49 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     }
   }
 
+  /**
+   * Precondition, not a measurement: replay starts at {@code cursor + 1}, so if the stream no longer
+   * holds that message the projection would silently skip whatever was discarded. Refuse to start
+   * instead, naming both sequences. The remedy is retention sized to the outage (manifests) or a
+   * rebuild from the archive; an idle partition does not trip this because its cursor follows the
+   * stream head while idle ({@link TradeView#idle}).
+   */
+  private void requireRetained(int partition, long cursor) throws Exception {
+    var state = connection().jetStreamManagement().getStreamInfo(stream).getStreamState();
+    long first = state.getFirstSequence();
+    if (state.getLastSequence() < cursor) {
+      // Sequences never go backwards in one stream: this is a different (recreated) stream, e.g. NATS
+      // restarted on an emptyDir. Replaying it would ignore every seq <= cursor, i.e. drop it silently.
+      throw new IllegalStateException("STREAM_RESET trade store partition " + partition + ": the snapshot cursor is at"
+          + " stream sequence " + cursor + " but " + stream + " ends at " + state.getLastSequence()
+          + "; the stream was recreated, so it is not the ledger this snapshot was taken from");
+    }
+    if (first > cursor + 1) {
+      throw new IllegalStateException("RETENTION_GAP trade store partition " + partition + ": the snapshot cursor is at"
+          + " stream sequence " + cursor + " but the oldest message " + stream + " retains is " + first + "; sequences "
+          + (cursor + 1) + ".." + (first - 1) + " were discarded before this partition applied them");
+    }
+  }
+
+  public String snapshotScope() { return snapshotScope; }
+  /** For the ledger recon: the stream, its partitioning and the connection the feed already holds. */
+  public io.nats.client.Connection natsConnection() { return connection(); }
+  public String streamName() { return stream; }
+  public int partitionCount() { return Math.max(1, partitionCount); }
+  public boolean ledgerMode() { return jetstream() && snapshotMode(); }
+
   void onSnapshotBatch(int partition, List<Message> msgs) {
     TradeView view = views.get(partition);
     Map<String, Map<String, Object>> runs = new java.util.HashMap<>();
+    Map<String, finos.traderx.tradeprocessor.model.InstrumentMetadata> bonds = new java.util.HashMap<>();
     for (Message m : msgs) {
       try {
-        TradeOrder t = decode(m.getData());
-        if (t == null) { continue; }
+        var envelope = envelope(m.getData());
+        if (envelope == null) { continue; }
+        TradeOrder t = envelope.getPayload();
+        java.util.Date at = envelope.getDate();     // trade time on the ledger: the bridge's clock, as captured
         if (runRegistry != null) { runRegistry.validate(t, runs.computeIfAbsent(t.getProjectionScope(), runRegistry::scope)); }
-        if (view.apply(t, m.metaData().streamSequence(), tradeService::book)) { applied.incrementAndGet(); }
+        if (view.apply(t, m.metaData().streamSequence(), (o, p) -> tradeService.book(o, p, bonds, at))) { applied.incrementAndGet(); }
       } catch (Exception x) {
         log.error("trade store: /trades message skipped: {}", x.toString());
       }
@@ -185,13 +235,15 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
 
   private void snapshotLoop(int partition) {
     TradeView view = views.get(partition);
+    long written = view.streamSeq();
     while (running) {
       try { Thread.sleep(snapshotMillis); } catch (InterruptedException x) { return; }
       TradeView.Cut cut = view.cut();
-      if (cut.isEmpty()) { continue; }
+      if (cut.isEmpty() && cut.streamSeq() == written) { continue; }   // an idle advance still moves the cursor
       try {
         snapshotRows.addAndGet(snapshotStore.write(snapshotScope, partition, cut));
         snapshots.incrementAndGet();
+        written = cut.streamSeq();
       } catch (Exception x) {
         snapshotFailures.incrementAndGet();
         view.remark(cut);

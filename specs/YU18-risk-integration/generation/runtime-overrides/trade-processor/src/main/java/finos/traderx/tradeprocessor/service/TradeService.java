@@ -282,12 +282,34 @@ public class TradeService {
 
   /** Computes the booked (not-yet-settled) trade and mutates {@code position} in place. Does not persist. */
   /** YU18 trade store: the in-memory projection books with exactly this math (TradeView). */
-  public Trade book(TradeOrder order, Position position) {
-    return bookTrade(order, position);
+  /**
+   * YU18 trade store: what the snapshot path books with. The row path's bond fail-closed rule runs
+   * first; a rejected order comes back as a {@code Rejected} trade and {@code position} is untouched.
+   * {@code metadata} is the caller's per-batch cache, so a batch resolves each bond once. {@code at}
+   * is the trade time ON THE LEDGER (the captured envelope's date), so a replay books the same
+   * created/settlement dates the first pass did.
+   */
+  public Trade book(TradeOrder order, Position position, Map<String, InstrumentMetadata> metadata, Date at) {
+    if (isBondKey(order.getSecurity()) && !metadata.containsKey(order.getSecurity())) {
+      metadata.put(order.getSecurity(), resolveIfBond(order.getSecurity()));
+    }
+    String rejection = bondRejection(order, metadata.get(order.getSecurity()));
+    if (rejection == null) {
+      return bookTrade(order, position, at);
+    }
+    Trade trade = newTradeFrom(order, at);
+    trade.setState(TradeState.Rejected);
+    trade.setRejectionReason(rejection);
+    log.warn("Bond booking rejected (fail closed): id={} security={} reason={}", order.getId(), order.getSecurity(), rejection);
+    return trade;
   }
 
   private Trade bookTrade(TradeOrder order, Position position) {
-    Trade trade = newTradeFrom(order);
+    return bookTrade(order, position, new Date());
+  }
+
+  private Trade bookTrade(TradeOrder order, Position position, Date at) {
+    Trade trade = newTradeFrom(order, at);
     // YU05 (post-trade-compliance, FR-PTC02): booking and settlement are no longer the same
     // instant — a trade is Processing until SettlementService's T+N sweep (or a manual force
     // override) advances it to Settled.
@@ -380,6 +402,10 @@ public class TradeService {
   }
 
   private Trade newTradeFrom(TradeOrder order) {
+    return newTradeFrom(order, new Date());
+  }
+
+  private Trade newTradeFrom(TradeOrder order, Date now) {
     Trade trade = new Trade();
     trade.setId(order.getId());
     trade.setProjectionScope(order.getProjectionScope());
@@ -394,7 +420,6 @@ public class TradeService {
     trade.setPrice((order.getPrice() == null ? BigDecimal.ZERO : order.getPrice())
         .setScale(PRICE_SCALE, RoundingMode.HALF_UP));
     trade.setSourceOrderId(order.getSourceOrderId());
-    Date now = new Date();
     trade.setCreated(now);
     trade.setUpdated(now);
     return trade;
@@ -523,7 +548,7 @@ public class TradeService {
   }
 
   /** Adds {@code days} business days (Mon-Fri) to {@code from}, skipping weekends. */
-  static Date plusBusinessDays(Date from, int days) {
+  public static Date plusBusinessDays(Date from, int days) {
     LocalDate date = Instant.ofEpochMilli(from.getTime()).atZone(ZoneOffset.UTC).toLocalDate();
     int added = 0;
     while (added < days) {

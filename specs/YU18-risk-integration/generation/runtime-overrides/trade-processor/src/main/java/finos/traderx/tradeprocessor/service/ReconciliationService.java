@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.LongAdder;
@@ -45,6 +46,22 @@ public class ReconciliationService {
     private String descriptorHash;
     @org.springframework.beans.factory.annotation.Autowired
     public void runRegistry(RunRegistry registry) {this.runRegistry=registry;}
+
+    // YU18 trade store (downstream-at-400k.md §7.6): with TRADE_PROJECTION_MODE=snapshot the SQL
+    // `trades` table is a per-account window, so the ledger the engine's blotter is reconciled against
+    // is the capture stream, and "in the projection" means a committed snapshot cursor covers it.
+    private finos.traderx.tradeprocessor.TradeFeedHandler ledgerFeed;
+    private TradeSnapshotStore snapshotStore;
+    private LedgerReader ledger;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void subscribers(List<finos.traderx.messaging.Subscriber<?>> subscribers) {
+        for (var s : subscribers) {
+            if (s instanceof finos.traderx.tradeprocessor.TradeFeedHandler t) { ledgerFeed = t; }
+        }
+    }
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void snapshotStore(TradeSnapshotStore store) { this.snapshotStore = store; }
+    private boolean onLedger() { return ledgerFeed != null && ledgerFeed.ledgerMode() && snapshotStore != null; }
 
     private void bindScope() throws IOException,InterruptedException {
         if(runRegistry==null) return; // standalone legacy test seam
@@ -153,7 +170,10 @@ public class ReconciliationService {
             resetForNewEpoch();
             return;
         }
-        for (BlotterEntry entry : page) {
+        if (onLedger()) {
+            try { sweepLedger(page); }
+            catch (Exception ex) { log.warn("Reconciliation ledger read failed this cycle: {}", ex.toString()); ledger = null; return; }
+        } else for (BlotterEntry entry : page) {
             if (entry.tradeSeq() <= cursor) {
                 continue; // the epoch-check entry; already classified on the cycle that advanced past it
             }
@@ -199,6 +219,108 @@ public class ReconciliationService {
         matched.reset();
         missingInProjection.reset();
         fieldMismatch.reset();
+    }
+
+    /** Classify the page against the stream; stop (and keep the cursor) at the first side not yet decidable. */
+    private void sweepLedger(List<BlotterEntry> page) throws Exception {
+        List<BlotterEntry> fresh = page.stream().filter(e -> e.tradeSeq() > cursor).toList();
+        if (fresh.isEmpty()) return;
+        if (ledger == null) {
+            ledger = new LedgerReader(ledgerFeed.natsConnection(), ledgerFeed.streamName(), ledgerFeed.partitionCount(),
+                fresh.get(0).execTimeMillis() - LEDGER_START_SLACK.toMillis());
+        }
+        ledger.readThrough(fresh.get(fresh.size() - 1).tradeSeq(), cursor);
+        Map<Integer, Long> committed = snapshotStore.cursors(scopeForLedger());
+        for (BlotterEntry e : fresh) {
+            LedgerSide side = ledger.pending.get(e.id());
+            long partitionCursor = committed.getOrDefault(Math.floorMod(e.accountId(), ledgerFeed.partitionCount()), 0L);
+            Verdict v = classifyOnLedger(e, side, ledger.maxTradeSeq, partitionCursor, runRegistry == null ? null : projectionScope);
+            if (v == Verdict.WAIT) break;
+            switch (v) {
+                case MATCHED -> matched.increment();
+                case FIELD_MISMATCH -> { fieldMismatch.increment(); log.warn("recon FIELD_MISMATCH (ledger) id={}", e.id()); }
+                case MISSING -> { missingInProjection.increment();
+                    log.warn("recon MISSING_IN_PROJECTION (ledger) id={} account={} security={}", e.id(), e.accountId(), e.security()); }
+                default -> { }
+            }
+            cursor = e.tradeSeq();
+        }
+        ledger.prune(cursor);
+    }
+
+    private String scopeForLedger() {
+        return runRegistry == null ? RunRegistry.UNKNOWN : projectionScope;
+    }
+
+    static final java.time.Duration LEDGER_START_SLACK = java.time.Duration.ofSeconds(60);
+
+    enum Verdict { MATCHED, FIELD_MISMATCH, MISSING, WAIT }
+
+    /** One trade side as the capture stream holds it, with its stream sequence. */
+    record LedgerSide(String id, int accountId, String security, String side, int quantity, BigDecimal price,
+                      String projectionScope, long streamSeq) { }
+
+    /**
+     * A side is MATCHED only when the stream holds it with the engine's fields AND the partition's
+     * committed snapshot cursor has passed it (it has reached SQL positions); MISSING only when the
+     * stream has moved past its tradeSeq without it. Anything else is WAIT: lag is not a verdict.
+     */
+    static Verdict classifyOnLedger(BlotterEntry e, LedgerSide side, long ledgerMaxTradeSeq, long committedCursor, String scope) {
+        if (side == null) return e.tradeSeq() < ledgerMaxTradeSeq ? Verdict.MISSING : Verdict.WAIT;
+        if (side.streamSeq() > committedCursor) return Verdict.WAIT;
+        boolean same = (scope == null || scope.equals(side.projectionScope()))
+            && side.accountId() == e.accountId() && e.security().equals(side.security()) && e.side().equals(side.side())
+            && side.quantity() == e.quantity() && side.price() != null && side.price().compareTo(e.price()) == 0;
+        return same ? Verdict.MATCHED : Verdict.FIELD_MISMATCH;
+    }
+
+    static long tradeSeqOf(String id) {
+        int end = id.lastIndexOf('-');
+        int start = id.lastIndexOf('-', end - 1);
+        return Long.parseLong(id.substring(start + 1, end));
+    }
+
+    /**
+     * Reads the capture stream forward (all trade partitions) only as far as the recon has reached in the
+     * engine's blotter, keeping the sides it has not classified yet. ponytail: in-memory, rebuilt from the
+     * first unclassified side's exec time after a restart or a read failure.
+     */
+    static final class LedgerReader {
+        final Map<String, LedgerSide> pending = new java.util.HashMap<>();
+        long maxTradeSeq;
+        private final io.nats.client.JetStreamSubscription sub;
+        private final ObjectMapper json = new ObjectMapper();
+
+        LedgerReader(io.nats.client.Connection nc, String stream, int partitions, long startMillis) throws Exception {
+            String filter = partitions <= 1 ? "/trades" : "/trades.*";
+            var config = io.nats.client.api.ConsumerConfiguration.builder().filterSubject(filter)
+                .ackPolicy(io.nats.client.api.AckPolicy.None)
+                .deliverPolicy(io.nats.client.api.DeliverPolicy.ByStartTime)
+                .startTime(java.time.ZonedDateTime.ofInstant(Instant.ofEpochMilli(Math.max(0, startMillis)), java.time.ZoneOffset.UTC))
+                .inactiveThreshold(java.time.Duration.ofMinutes(5)).build();
+            sub = nc.jetStream().subscribe(filter, io.nats.client.PullSubscribeOptions.builder().stream(stream).configuration(config).build());
+        }
+
+        void readThrough(long targetTradeSeq, long classifiedThrough) throws Exception {
+            while (maxTradeSeq < targetTradeSeq) {
+                List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(500));
+                if (msgs.isEmpty()) return;
+                for (var m : msgs) {
+                    var p = json.readTree(m.getData()).path("payload");
+                    String id = p.path("id").asText();
+                    long ts = tradeSeqOf(id);
+                    maxTradeSeq = Math.max(maxTradeSeq, ts);
+                    if (ts <= classifiedThrough) continue;
+                    pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
+                        p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it
+                        m.metaData().streamSequence()));
+                }
+            }
+        }
+
+        void prune(long classifiedThrough) {
+            pending.values().removeIf(s -> tradeSeqOf(s.id()) <= classifiedThrough);
+        }
     }
 
     private void classify(BlotterEntry entry) {

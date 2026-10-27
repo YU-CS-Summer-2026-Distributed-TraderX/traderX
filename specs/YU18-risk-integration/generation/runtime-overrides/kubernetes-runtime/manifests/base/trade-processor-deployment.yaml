@@ -67,12 +67,22 @@ spec:
                   key: dev-token-master-secret
             - name: NATS_BROKER_HOST
               value: "nats-broker"
-            # YU12: the reconciliation sweep's blotter endpoints live on the old order-matcher,
-            # which has no endpoints in this state — every 10s sweep was a ConnectException.
-            # Back it off to daily until the cluster gateway exposes a blotter surface
-            # (binds recon.poll.interval-ms via Spring relaxed env binding).
+            # YU18: back to YU05's 10 s. It was backed off to daily (YU12) while no blotter surface
+            # existed; the cluster gateway now forwards /recon/* to a member's committed-log blotter
+            # (as YU17's cluster tier already says), and with TRADE_PROJECTION_MODE=snapshot the sweep
+            # classifies against the capture stream, not the SQL trades window (§7.6).
             - name: RECON_POLL_INTERVAL_MS
-              value: "86400000"
+              value: "10000"
+            # YU18 trade store retention (docs/engineering/downstream-at-400k.md §7.7), applied to the
+            # TRADERX_FEED stream when PROJECTION_FEED_MODE=jetstream (an existing stream is updated):
+            #   462 B/trade side + 588 B/order update (stored, measured) x 10K + 10K msgs/s (this tier's
+            #   sized peak) = 10.5 MB/s; x 30 min (the longest outage replayed from) = 18.9 GB -> 20 GiB.
+            # Age bounds a quiet stream; the projection refuses to start (RETENTION_GAP) rather than skip
+            # anything a limit discarded. NATS's max_file_store/PVC (cluster/gke/nats.yaml) exceed these.
+            - name: PROJECTION_FEED_STREAM_MAX_BYTES
+              value: "21474836480"
+            - name: PROJECTION_FEED_STREAM_MAX_AGE_HOURS
+              value: "2"
             - name: CORS_ALLOWED_ORIGINS
               value: "http://localhost:8080,http://127.0.0.1:8080"
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE

@@ -66,11 +66,21 @@ public final class JetStreamFeed {
   /** Idempotently create the capture stream over both feeds' subjects (bare and partitioned). */
   public static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge) throws Exception {
     var jsm = nc.jetStreamManagement();
+    StreamConfiguration existing = null;
     try {
-      jsm.getStreamInfo(stream);
-      return;
+      existing = jsm.getStreamInfo(stream).getConfiguration();
     } catch (JetStreamApiException notFound) {
       // fall through and create
+    }
+    if (existing != null) {
+      // The retention limits are sized in the manifests (downstream-at-400k.md §7.5); a stream created
+      // under older limits is brought to them, so the configured outage window is the one in force.
+      if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())) {
+        jsm.updateStream(StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge).build());
+        log.info("JetStream stream {} limits updated: maxBytes {} -> {}, maxAge {} -> {}", stream,
+            existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge);
+      }
+      return;
     }
     jsm.addStream(StreamConfiguration.builder()
         .name(stream)
@@ -125,14 +135,26 @@ public final class JetStreamFeed {
   public static Thread start(String threadName, Connection nc, String stream, String filterSubject,
                              ConsumerConfiguration consumer, int batch, Duration maxWait,
                              Consumer<List<Message>> handler) {
-    Thread t = new Thread(() -> run(nc, stream, filterSubject, consumer, batch, maxWait, handler), threadName);
+    return start(threadName, nc, stream, filterSubject, consumer, batch, maxWait, handler, null);
+  }
+
+  /** As above; {@code idle}, if given, is told the stream's last sequence whenever this consumer is
+   *  caught up (empty fetch, nothing pending), at most every {@link #IDLE_EVERY}. */
+  public static Thread start(String threadName, Connection nc, String stream, String filterSubject,
+                             ConsumerConfiguration consumer, int batch, Duration maxWait,
+                             Consumer<List<Message>> handler, java.util.function.LongConsumer idle) {
+    Thread t = new Thread(() -> run(nc, stream, filterSubject, consumer, batch, maxWait, handler, idle), threadName);
     t.setDaemon(true);
     t.start();
     return t;
   }
 
+  static final Duration IDLE_EVERY = Duration.ofSeconds(5);
+
   private static void run(Connection nc, String stream, String filterSubject, ConsumerConfiguration consumer,
-                          int batch, Duration maxWait, Consumer<List<Message>> handler) {
+                          int batch, Duration maxWait, Consumer<List<Message>> handler,
+                          java.util.function.LongConsumer idle) {
+    long nextIdle = 0;
     JetStreamSubscription sub;
     try {
       sub = nc.jetStream().subscribe(filterSubject,
@@ -153,7 +175,20 @@ public final class JetStreamFeed {
         try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
         continue;
       }
-      if (msgs.isEmpty()) { continue; }
+      if (msgs.isEmpty()) {
+        if (idle != null && System.nanoTime() >= nextIdle) {
+          nextIdle = System.nanoTime() + IDLE_EVERY.toNanos();
+          try {
+            // Stream head FIRST, then pending: pending 0 afterwards means no message of this subject at or
+            // below that head is undelivered, and every delivered one was handled before this fetch.
+            long head = nc.jetStreamManagement().getStreamInfo(stream).getStreamState().getLastSequence();
+            if (sub.getConsumerInfo().getNumPending() == 0) { idle.accept(head); }
+          } catch (Exception x) {
+            log.debug("JetStream feed {} idle check failed: {}", filterSubject, x.toString());
+          }
+        }
+        continue;
+      }
       try {
         handler.accept(msgs);
         msgs.get(msgs.size() - 1).ack();

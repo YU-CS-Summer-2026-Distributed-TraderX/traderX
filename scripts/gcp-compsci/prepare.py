@@ -159,6 +159,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
     gke = ROOT / 'specs/YU17-otc-rates/generation/kubernetes/cluster/gke'
+    yu18 = ROOT / 'specs/YU18-risk-integration/generation/kubernetes/cluster/gke'
     docs = []
     inputs = []
     def rel(path):
@@ -179,7 +180,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
     for name in ['storageclass.yaml', 'statefulset-emptydir.yaml', 'gateway.yaml', 'nats.yaml',
                  'eod-price-db.yaml', 'eod-chain.yaml', 'risk-extract.yaml',
                  'reference-data.yaml', 'execution-algo-engine.yaml']:
-        include(gke / name)
+        # A YU18 override wins (nats.yaml: JetStream on a PVC, the trade store's ledger).
+        include(yu18 / name if (yu18 / name).exists() else gke / name)
     for svc in ['trade-processor', 'people-service', 'account-service', 'trade-service', 'edge-proxy']:
         for kind in ['deployment', 'service']:
             include(base / f'{svc}-{kind}.yaml')

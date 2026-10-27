@@ -6,7 +6,14 @@ import finos.traderx.tradeprocessor.model.Trade;
 import finos.traderx.tradeprocessor.model.TradeSide;
 import finos.traderx.tradeprocessor.model.TradeState;
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.TreeMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -55,6 +62,66 @@ public final class TradeSnapshotStore {
           p.setUpdated(rs.getTimestamp(6));
           return p;
         }, scope);
+  }
+
+  /** Booked sides per UTC trade date, as of the partition's cursor (written in the same transaction). */
+  public Map<LocalDate, Long> loadDays(String scope, int partition) {
+    Map<LocalDate, Long> days = new TreeMap<>();
+    jdbc.query("SELECT trade_date, sides FROM projection_trade_days WHERE projection_scope=? AND partition_id=?",
+        rs -> { days.put(rs.getDate(1).toLocalDate(), rs.getLong(2)); }, scope, partition);
+    return days;
+  }
+
+  /**
+   * Settlement on the ledger: per partition and trade date, how many booked sides have settled as of
+   * {@code asOf} under T+{@code tPlusDays} business days (the row path's own {@code plusBusinessDays}).
+   * Read from the committed counts, so it is exact at each partition's committed cursor.
+   */
+  public Map<String, Object> ledgerSettlement(String scope, int tPlusDays, Instant asOf) {
+    Map<Integer, Map<LocalDate, Long>> byPartition = new TreeMap<>();
+    jdbc.query("SELECT partition_id, trade_date, sides FROM projection_trade_days WHERE projection_scope=?",
+        rs -> { byPartition.computeIfAbsent(rs.getInt(1), k -> new TreeMap<>()).put(rs.getDate(2).toLocalDate(), rs.getLong(3)); },
+        scope);
+    Map<String, Object> partitions = new LinkedHashMap<>();
+    long settled = 0, total = 0;
+    for (var e : byPartition.entrySet()) {
+      long ps = 0, pt = 0;
+      Map<String, Object> days = new LinkedHashMap<>();
+      for (var d : e.getValue().entrySet()) {
+        Instant settles = settlesOn(d.getKey(), tPlusDays);
+        boolean done = !settles.isAfter(asOf);
+        days.put(d.getKey().toString(), Map.of("sides", d.getValue(), "settlesOn", settles.toString(), "settled", done));
+        pt += d.getValue();
+        if (done) { ps += d.getValue(); }
+      }
+      Cursor c = loadCursor(scope, e.getKey());
+      partitions.put(String.valueOf(e.getKey()), Map.of("sides", pt, "settled", ps, "unsettled", pt - ps,
+          "streamSeq", c == null ? 0 : c.streamSeq(), "days", days));
+      settled += ps;
+      total += pt;
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("scope", scope);
+    out.put("asOf", asOf.toString());
+    out.put("tPlusDays", tPlusDays);
+    out.put("sides", total);
+    out.put("settled", settled);
+    out.put("unsettled", total - settled);
+    out.put("partitions", partitions);
+    return out;
+  }
+
+  /** When a side traded on {@code tradeDate} settles: the row path's own T+N business-day rule. */
+  static Instant settlesOn(LocalDate tradeDate, int tPlusDays) {
+    return TradeService.plusBusinessDays(Date.from(tradeDate.atStartOfDay(ZoneOffset.UTC).toInstant()), tPlusDays).toInstant();
+  }
+
+  /** Committed cursor per partition: what recon requires before it calls a ledger side "projected". */
+  public Map<Integer, Long> cursors(String scope) {
+    Map<Integer, Long> out = new HashMap<>();
+    jdbc.query("SELECT partition_id, stream_seq FROM projection_cursor WHERE projection_scope=?",
+        rs -> { out.put(rs.getInt(1), rs.getLong(2)); }, scope);
+    return out;
   }
 
   /** The blotter windows, oldest first, so {@link TradeView#load} re-fills each ring in order. */
@@ -126,6 +193,13 @@ public final class TradeSnapshotStore {
             + "settlementdate,rejectionreason,sourceorderid,projectionscope,clusterepoch,eventidscheme,rundescriptorhash,"
             + "consensussequence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args);
         jdbc.update("DELETE FROM trades WHERE projectionscope=? AND accountid=? AND id NOT IN (" + ids + ")", delArgs.toArray());
+        rows += args.size();
+      }
+      if (!cut.days().isEmpty()) {
+        List<Object[]> args = new ArrayList<>(cut.days().size());
+        cut.days().forEach((day, sides) -> args.add(new Object[] {scope, partition, java.sql.Date.valueOf(day), sides}));
+        jdbc.batchUpdate("INSERT INTO projection_trade_days(projection_scope,partition_id,trade_date,sides) VALUES (?,?,?,?)"
+            + " ON DUPLICATE KEY UPDATE sides=VALUES(sides)", args);
         rows += args.size();
       }
       jdbc.update("INSERT INTO projection_cursor(projection_scope,partition_id,stream_seq,consensus_seq,snapshot_at)"

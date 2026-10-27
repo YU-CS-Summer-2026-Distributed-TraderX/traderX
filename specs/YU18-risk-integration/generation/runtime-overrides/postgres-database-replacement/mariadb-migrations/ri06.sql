@@ -68,3 +68,10 @@ CREATE TABLE IF NOT EXISTS projection_cursor (
  stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,
  snapshot_at DATETIME, PRIMARY KEY (projection_scope, partition_id)
 );
+-- YU18 trade store, settlement on the ledger (§7.6): booked sides per partition and UTC trade date,
+-- written in the same transaction as the cursor. A side settles when its trade date + T+N business
+-- days has passed, so these counts are the ledger's settlement state.
+CREATE TABLE IF NOT EXISTS projection_trade_days (
+ projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL, trade_date DATE NOT NULL,
+ sides BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (projection_scope, partition_id, trade_date)
+);
