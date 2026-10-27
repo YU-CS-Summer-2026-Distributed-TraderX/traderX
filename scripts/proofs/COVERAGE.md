@@ -49,7 +49,7 @@ multi-clause FR covers the row (the Note column says PARTIAL where that matters)
 | **all** | **304** | **172 (57%)** | **194 (64%)** | 41 | 317 |
 
 Coverage means a proof exists that asserts the row at the effect end; whether it passed on the tip is the
-run table below — three covered rows are covered by proofs that FAIL, and those failures are findings.
+run table below — three covered rows are covered by proofs that FAIL, and those failures are suspects.
 
 YU18 went from **4 of 106** live-provable requirements under a proof to **26**, and the whole carried
 lineage from **172 of 304 (57%)** to **194 of 304 (64%)**. The 41 order-type requirements (FR-OT) are
@@ -202,7 +202,15 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 
 ## Findings from the live run
 
-### Implementation gaps (the running system contradicts the spec)
+Measured on `b28fd9f3`. Since then the tip has moved (`334e9c45`), and three commits there claim to address
+findings below; **none of them is re-verified by this audit**: `334e9c45` (member SIGTERM forwarded through
+the launch shell: suspect 1), `6ef26b36` (receipt publish specified as ADR-083: spec gap 9; recon
+holds a core-mode side for the projection grace), `a961d89a` (FIX logon authenticated by default on GKE:
+FR-ERH-S3). Re-run `yu18-member-runtime.sh DESTRUCTIVE=1` on an image of `334e9c45` to close gap 1.
+
+### Suspects (the spec and the system disagree; cause not judged here)
+
+Classified blind: each names the spec, what the spec leads a tester to expect, what was observed, and the evidence. Code-aware triage is the coordinator's.
 
 1. **FR-GMR-04 / ADR-081 §3 — a member does not exit 143 on SIGTERM on the GKE tier.** The member
    container's PID 1 is `/bin/sh -c "java -cp … ClusterNodeMain & wait $!"`. `/proc/1/status` SigCgt is
@@ -211,7 +219,9 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
    digest `sha256:ed1e565f…`): `kubectl delete pod order-matcher-cluster-2` took 12 s and the watch saw
    `terminated.exitCode=137` (SIGKILL at the 10 s grace deadline), finishedAt 2026-10-27T19:37:28Z. A
    hand-sent `kill -TERM 1` was ignored for 120 s (restartCount stayed 0). SC-GMR-01's unit test runs the
-   JVM directly, so it passes while the deployed command defeats it. Proof: `yu18-member-runtime.sh` step 04.
+   JVM directly, so it passes while the deployed command defeats it. Proof: `yu18-member-runtime.sh` step 04
+   (run 4: exit 137 at exactly the 10 s grace). Interface evidence: the rendered StatefulSet's command is
+   `["/bin/sh","-c","java -cp … ClusterNodeMain & wait $!"]`.
 
 2. **YU04 durable control feeds are not wired on the CompSci GKE tier.** `yu04-live-delta`: a ticker POSTed
    to reference-data advances the source watermark (543 → 544, count 533 → 534) but the gateway replica never
@@ -220,7 +230,9 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
    feed" as a registration path, and FR-IMRG04/05 (YU04) are inherited. On this tier a security added to
    reference-data reaches the venue only when an operator re-runs `initialize-reference-data.py`. Either the
    tier must carry the feed or the spec must scope FR-IMRG04/05 out of it. Same root makes
-   `yu15-option-persistence` step 3b time out waiting for `CONTROL-FEED applied`.
+   `yu15-option-persistence` step 3b time out waiting for `CONTROL-FEED applied`. Interface evidence: the
+   kind gateway manifests (`specs/YU15…YU17/generation/kubernetes/cluster/gateway.yaml`) set
+   `CONTROL_FEED_SUBSCRIBER`; the GKE gateway the CompSci render uses carries no CONTROL_FEED* env.
 
 3. **FR-DRS-02 — trade sides lost across a projection outage are not counted.** Default tier (core feed,
    rows mode). `yu18-projection-effect-end.sh NEGATIVE=1`: trade-processor scaled to 0, a cross booked by
@@ -232,6 +244,20 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
    "within one process lifetime", the spec must say so, and then nothing on this tier reports the loss
    except recon (which needs a run descriptor on CompSci, spec gap 12). Either way it is money: positions
    are wrong with every health signal green.
+
+4. **Recon's exact-subject control on the CompSci profile (YU05 FR-PTC04/05; YU18 recovery-identity
+   FR-RI05/07).** Expected: `yu05-recon`'s scoped subject control runs on a YU18 tier. Observed: the gateway's
+   `GET /run/status` answers `409 {"error":"RUN_DESCRIPTOR_NOT_CONFIGURED"}`, so the control refuses. The spec
+   does not say whether the CompSci profile must carry a run descriptor; if it need not, this is a spec gap.
+5. **Trace identity (YU13 ADR-060, FR-TR01–03).** Expected: one trace per order, its id a pure function of the
+   order's idempotency key. Observed: three gateway-rooted `order` traces exist for the proof's three orders
+   (Tempo search, 20:19 UTC: `fcc936c9…`, `52af02c8…`, `5194932a…`), but none under the ids the proof derives
+   (404 for each, in Tempo and Loki). ADR-060 does not define the key, so whether the system or the proof
+   has drifted cannot be decided black-box (spec gap 11).
+6. **Leader election timing under a leader kill (YU12 FR-AC11, NFR-AC03).** Expected: a new leader within
+   the failover budget. Observed: `yu17-keyed-ack-correlation` round 3 found "no leader" after two leader kills
+   in a row; the cluster was healthy minutes later (one leader, applied 31454 on all three). Possibly the same
+   10 s SIGKILL window as suspect 1; not judged here.
 
 ### Spec gaps (the spec is silent or self-contradictory; the proof had to pick, and says so)
 
@@ -271,7 +297,7 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
     the three orders produced three gateway-rooted traces in Tempo, but under ids FNV-1a(ClOrdID) does not
     predict (404 for each). The rollout doc names an unspecced YU18 change, "G1: idempotency key scoped by
     account". The derivation is the contract a reader needs to find a trace; it belongs in the spec.
-12. **yu05-recon's exact-subject control needs a managed run descriptor.** Live: gateway `/run/status` answers
+12. **yu05-recon's exact-subject control needs a managed run descriptor** (also suspect 4). Live: gateway `/run/status` answers
     409 `RUN_DESCRIPTOR_NOT_CONFIGURED` on the CompSci profile, so the subject control refuses. Recon's own
     classification ran: 6,408 matched, 0 field mismatches, 5,608 "missing" — the trade sides
     `yu18-jetstream-feed` booked in snapshot mode, which by ADR-080 keeps only the last 100 fills per account
@@ -330,17 +356,17 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 |---|---|---|---|
 | `yu03-risk-proof` | PASS | run2 4s | PASS after a proof fix (bearer; error body no longer read as NEW). Run 1: 5/13 "failed" on 401s. |
 | `yu05-auth-entitlements` | PASS | run1 5s |  |
-| `yu15-option-persistence` | FAIL | run1 167s | TIER: step 3b waits for a gateway `CONTROL-FEED applied` line; the CompSci GKE profile has no control-feed subscriber (implementation gap 2). Kind-only as written. |
+| `yu15-option-persistence` | FAIL | run1 167s | SUSPECT 2: step 3b waits for a gateway `CONTROL-FEED applied` line; the CompSci GKE profile has no control-feed subscriber (suspect 2). Kind-only as written. |
 | `yu05-settlement` | PASS | run1 6s |  |
 | `yu13-clordid-suppression` | PASS | run1 23s | PASS after the bearer fix. |
 | `yu10-fix-session` | PASS | run1 18s |  |
-| `yu05-recon` | FAIL | run2 97s | TIER + RUN ORDER: classification ran (6,408 matched, 0 field mismatches); 5,608 "missing" are the snapshot-mode sides yu18-jetstream-feed booked earlier, out of recon scope by ADR-080; the exact-subject control refuses because `/run/status` is 409 `RUN_DESCRIPTOR_NOT_CONFIGURED` on this profile (spec gap 12). Run 1 also hit an audit-rig DB-login fault of mine (fixed). |
+| `yu05-recon` | FAIL | run2 97s | SUSPECT 4 + a run-order proof bug of mine: classification ran (6,408 matched, 0 field mismatches); 5,608 "missing" are the snapshot-mode sides yu18-jetstream-feed booked earlier, out of recon scope by ADR-080; the exact-subject control refuses because `/run/status` is 409 `RUN_DESCRIPTOR_NOT_CONFIGURED` on this profile (suspect 4). Run 1 also hit an audit-rig DB-login fault of mine (fixed). |
 | `yu13-readmodel-effect-end` | PASS | run3 21s | PASS after the bearer fix (run 2 failed on the audit rig's DB login, mine, fixed). |
 | `yu05-regulatory-reproducible` | PASS | run2 4s |  |
-| `yu04-live-delta` | FAIL | run2 19s | IMPLEMENTATION GAP 2: source watermark 543 -> 544, gateway replica never sees the ticker (YU04 feed not wired on the CompSci GKE tier). |
-| `yu04-offline-catchup` | FAIL | run2 154s | IMPLEMENTATION GAP 2 (same root): not seen 90 s after the replica is ready. |
-| `yu13-otel-trace-join` | FAIL | run2 28s | SPEC GAP 11 / STALE PROOF: three gateway-rooted traces exist for the three orders, under ids the proof's FNV-1a(ClOrdID) key does not predict; ADR-060 never defines the key and YU18 scoped it by account without a spec. |
-| `yu13-otel-reject-trace-log-join` | FAIL | run3 329s | Same as yu13-otel-trace-join (derived id 404 in Tempo and Loki), plus Grafana answers 401 to the proof's default credentials on this profile. Seed/order 401s fixed (proof bug). |
+| `yu04-live-delta` | FAIL | run2 19s | SUSPECT 2: source watermark 543 -> 544, gateway replica never sees the ticker (YU04 feed not wired on the CompSci GKE tier). |
+| `yu04-offline-catchup` | FAIL | run2 154s | SUSPECT 2 (same root): not seen 90 s after the replica is ready. |
+| `yu13-otel-trace-join` | FAIL | run2 28s | SUSPECT 5: three gateway-rooted traces exist for the three orders, under ids the proof's FNV-1a(ClOrdID) key does not predict; ADR-060 never defines the key and YU18 scoped it by account without a spec. |
+| `yu13-otel-reject-trace-log-join` | FAIL | run3 329s | SUSPECT 5 (derived id 404 in Tempo and Loki), plus a PROOF BUG not fixed (rig torn down): it signs in to Grafana with default credentials, 401 here. Seed/order 401s fixed (proof bug). |
 | `yu06-quality-gate` | PASS | run2 47s |  |
 | `yu06-consumer-halt` | PASS | run2 46s |  |
 | `yu16-treasury-pricing` | PASS | run3 2s |  |
@@ -352,11 +378,11 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 | `yu17-option-collar` | PASS | run3 4s |  |
 | `yu17-fnma-collar` | PASS | run3 3s |  |
 | `yu17-fine-grid` | PASS | run3 5s |  |
-| `yu17-book-retick` | FAIL | run3 65s | TIER: precondition is the control feed applying the minted ticker (same root as implementation gap 2). |
+| `yu17-book-retick` | FAIL | run3 65s | SUSPECT 2: its precondition is the control feed applying the minted ticker. |
 | `yu17-retick-determinism` | PASS | run3 205s |  |
 | `yu17-session-closed-rejects` | PASS | run3 6s |  |
 | `yu17-preopen-queue-open` | PASS | run3 23s |  |
-| `yu17-keyed-ack-correlation` | FAIL | run3 39s | INCONCLUSIVE: rounds 1-2 stranded nothing, then "no leader before round 3"; a deleted leader keeps running ~10 s until SIGKILL here (implementation gap 1), which this proof's leader wait does not budget for. Not attributed. |
+| `yu17-keyed-ack-correlation` | FAIL | run3 39s | SUSPECT 6: rounds 1-2 stranded nothing, then "no leader before round 3"; a deleted leader keeps running ~10 s until SIGKILL here (suspect 1), which this proof's leader wait does not budget for. Cause not judged here. |
 | `yu17-swap-netting` | PASS | run3 74s |  |
 | `yu17-swaption-terms` | PASS | run3 13s |  |
 | `yu17-fx-credit` | PASS | run3 57s |  |
@@ -366,16 +392,16 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 | `yu18-cluster-ingress-auth` | PASS | run3 112s | NEW. |
 | `yu18-console-sessions` | PASS | run3 9s | NEW. Desk arm SKIP (not deployed in the side namespace). |
 | `yu18-legacy-trade-bearer` | PASS | run3 15s | NEW. |
-| `yu18-projection-effect-end` | FAIL | run6 41s | NEW. Main arm PASS (run 3). `NEGATIVE=1` arm (run 6) FAILS = IMPLEMENTATION GAP 3: 2 of 6 sides never reached SQL and `missingTradeSides` stayed 0. |
+| `yu18-projection-effect-end` | FAIL | run6 41s | NEW. Main arm PASS (run 3). `NEGATIVE=1` arm (run 6) FAILS = SUSPECT 3: 2 of 6 sides never reached SQL and `missingTradeSides` stayed 0. |
 | `yu15-risk-extract` | PASS | run4 53s | PASS after the fixture sweep. Run 3 failed `halted=3`: FR-EOD32 working as specified on positions my own minted tickers had left (now PA<digits>, swept by seed-proof-fixtures). |
-| `yu13-cancel-ingress` | FAIL | run3 3s | TIER: needs the kind-local image `traderx/cluster-node:yu15-cancel`; kind-only. |
+| `yu13-cancel-ingress` | FAIL | run3 3s | PROOF BUG (not fixed, rig torn down): requires the kind-local image `traderx/cluster-node:yu15-cancel`, so it cannot run on GKE. |
 | `yu17-halt-survives-failover` | PASS | run4 348s |  |
 | `yu17-closed-survives-restart` | PASS | run4 167s |  |
 | `yu12-gke-recovery` | PASS | run5 114s | PASS after the credential fix, with REPLAY_RETIRED=1. |
 | `yu12-gke-failover-transparency` | PASS | run5 108s | PASS after the credential fix, with REPLAY_RETIRED=1. |
 | `yu12-gke-cross-epoch-idreuse` | PASS | run5 62s | PASS after the credential fix, with REPLAY_RETIRED=1. |
-| `yu13-gke-replace-proof` | FAIL | run5 2s | STALE (retired tape): after the credential fix it still reads `printReplay` from price-publisher /health outside the gates and refuses. |
-| `yu18-member-runtime` | FAIL | run4 22s | NEW. Step 04 is IMPLEMENTATION GAP 1. |
+| `yu13-gke-replace-proof` | FAIL | run5 2s | PROOF BUG (not fixed, rig torn down): after the credential fix it still reads `printReplay` from price-publisher /health outside the gates and refuses. |
+| `yu18-member-runtime` | FAIL | run4 22s | NEW. Step 04 is SUSPECT 1. |
 | `yu18-jetstream-feed` | PASS | run5 53s | NEW. Killed at 2,000 of 6,000 sides applied; positions exact after replay. Spec gap 2 (no durable consumer). |
 | `yu18-extract-off-projection` | PASS | run5 32s | NEW. |
 | `yu08-algo-slicing` | PASS | run6 53s | algo engine scaled to 1 for this proof only. |
@@ -431,10 +457,10 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 | YU03 | `FR-IMRG45` | CI |  |  | CI/static/offline |
 | YU04 | `FR-IMRG-OUTBOX-ORDER` | CI |  |  | epoch/version/gap quarantine: unit (ControlFeedBootstrapStateTest) |
 | YU04 | `FR-IMRG03` | CI |  |  | epoch/version/gap quarantine: unit (ControlFeedBootstrapStateTest) |
-| YU04 | `FR-IMRG04` | LIVE | yu04-live-delta yu04-offline-catchup |  | FAIL on the CompSci GKE tier: implementation gap 2 |
-| YU04 | `FR-IMRG05` | LIVE | yu04-live-delta yu04-offline-catchup |  | FAIL on the CompSci GKE tier: implementation gap 2 |
+| YU04 | `FR-IMRG04` | LIVE | yu04-live-delta yu04-offline-catchup |  | FAIL on the CompSci GKE tier: suspect 2 |
+| YU04 | `FR-IMRG05` | LIVE | yu04-live-delta yu04-offline-catchup |  | FAIL on the CompSci GKE tier: suspect 2 |
 | YU04 | `FR-IMRG32` | CI |  |  | epoch/version/gap quarantine: unit (ControlFeedBootstrapStateTest) |
-| YU04 | `FR-IMRG33` | LIVE | yu04-live-delta yu04-offline-catchup |  | FAIL on the CompSci GKE tier: implementation gap 2 |
+| YU04 | `FR-IMRG33` | LIVE | yu04-live-delta yu04-offline-catchup |  | FAIL on the CompSci GKE tier: suspect 2 |
 | YU04 | `FR-IMRG34` | CI |  |  | epoch/version/gap quarantine: unit (ControlFeedBootstrapStateTest) |
 | YU05 | `FR-IMRG41` | CI |  |  | CI/static/offline |
 | YU05 | `FR-PTC01` | LIVE | yu05-settlement |  |  |
@@ -786,7 +812,7 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 | YU18 | `FR-DA06` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA07` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DRS-01` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |
-| YU18 | `FR-DRS-02` | LIVE |  | yu18-projection-effect-end yu18-jetstream-feed | NEGATIVE arm FAILS: implementation gap 3 |
+| YU18 | `FR-DRS-02` | LIVE |  | yu18-projection-effect-end yu18-jetstream-feed | NEGATIVE arm FAILS: suspect 3 |
 | YU18 | `FR-DRS-03` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |
 | YU18 | `FR-DRS-04` | LIVE |  | yu18-projection-effect-end | indirect: tip bridge payload accepted end to end |
 | YU18 | `FR-DRS-05` | LIVE |  | yu18-jetstream-feed |  |
@@ -864,11 +890,11 @@ self-owned port-forwards). Each asserts at the effect end and carries a control 
 | YU18 | `FR-GD03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GD04` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GD05` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
-| YU18 | `FR-GMR-01` | LIVE |  | yu18-member-runtime | step 04 FAILS: implementation gap 1 |
+| YU18 | `FR-GMR-01` | LIVE |  | yu18-member-runtime | step 04 FAILS: suspect 1 |
 | YU18 | `FR-GMR-02` | CI |  |  | render/admission counts: test_prepare |
-| YU18 | `FR-GMR-03` | LIVE |  | yu18-member-runtime | step 04 FAILS: implementation gap 1 |
-| YU18 | `FR-GMR-04` | LIVE |  | yu18-member-runtime | step 04 FAILS: implementation gap 1 |
-| YU18 | `FR-GMR-05` | LIVE |  | yu18-member-runtime | step 04 FAILS: implementation gap 1 |
+| YU18 | `FR-GMR-03` | LIVE |  | yu18-member-runtime | step 04 FAILS: suspect 1 |
+| YU18 | `FR-GMR-04` | LIVE |  | yu18-member-runtime | step 04 FAILS: suspect 1 |
+| YU18 | `FR-GMR-05` | LIVE |  | yu18-member-runtime | step 04 FAILS: suspect 1 |
 | YU18 | `FR-GMR-06` | CI |  |  | render/admission counts: test_prepare |
 | YU18 | `FR-GP01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
