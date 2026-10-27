@@ -439,6 +439,9 @@ Two fixes, both in the repo:
 - **NATS ingest queue** sized per tier under its memory limit: GKE `max_buffered_msgs` 2,000,000 / `max_buffered_size`
   1GB with 1 CPU and 2 Gi (`cluster/gke/nats.yaml`); kind 500,000 / 256MB at 768 Mi; base tier 1,000,000 / 512MB.
   The stream survived the NATS restart on its PVC and trade-processor resumed every partition at its cursor.
+  The production `traderx` render (`scripts/gcp-compsci/prepare.py`) takes the GKE file, so it carries these limits;
+  production today runs the core feed with one partition and no stream captures `/trades` or `/orders`, so this drop
+  cannot occur there until it moves to `PROJECTION_FEED_MODE=jetstream`.
 - **One lock row for every partition's snapshot write.** Partitions own disjoint accounts, yet their window writes
   deadlocked (8 in run 1's first minute; each retried at the next tick, so nothing was lost).
   `TradeSnapshotStoreConcurrencyIT` reproduces it on the shipped schema under REPEATABLE READ and READ COMMITTED
@@ -446,26 +449,40 @@ Two fixes, both in the repo:
 
 ### 7.9 Making the bridge's publish loss-detecting
 
-A bigger ingest queue moves the cliff; it does not remove it. Measured on a dedicated VM (`dsq-build2`, 2026-10-27
-~11:10 am ET; NATS 2.14 with 4 CPUs, file stream, one publisher thread, 450-byte messages over 4 partition subjects,
-2,000,000 messages offered at full speed):
+A bigger ingest queue moves the cliff; it does not remove it. What NATS tells anyone when it drops, from the
+nats-server v2.14.8 source (`server/stream.go`, `queueInbound`): a `RateLimitWarnf` log line, deduplicated by its text,
+so it says "drops happened", not how many; and, **only if the message carried a reply subject**, a
+`429 Too Many Requests` reply (`JSStreamTooManyRequestsError`) for that message. There is no advisory and no counter
+for stream ingest drops (`jetstream_events.go`'s `api_limit_reached` advisory covers the JS API request queue, not
+stream ingest). A core publish, which is what the bridges do, gets nothing.
 
-| NATS ingest queue | Core publish (today's bridge) | JetStream publish, acked, window 1K / 8K / 32K |
-|---|---|---|
-| default | 1.28M msgs/s, **849,126 lost**, publisher told nothing | 366K / 352K / 336K msgs/s, 0 lost, every message acked |
-| `max_buffered_msgs` 2M, `max_buffered_size` 1GB | 1.51M msgs/s, 0 lost | 363K / 351K / 333K msgs/s, 0 lost |
+Measured on a dedicated VM (`dsq-bench`, c4d-standard-16, 2026-10-27 ~11:55 am ET): NATS 2.14 with 4 CPUs, a file
+stream, one publisher thread, 450-byte messages over 4 partition subjects, 2,000,000 offered at full speed. "Receipt"
+is a core publish with a reply subject: the publisher never waits, and one async subscription counts the stream's
+replies.
 
-Options, cheapest first:
-
-| | What it gives | Cost at 400K orders/s (~400K trade sides + ~600K order updates/s) | Size |
+| Publish | Default ingest queue | Raised queue (2M / 1GB) | NATS CPU per message |
 |---|---|---|---|
-| Raised ingest queue (done, every tier) | absorbs bursts up to the queue (2M msgs ≈ 2 s at 1M/s) | memory: up to the queue size in the NATS pod | config |
-| **Trade-side contiguity alarm** | tradeSeq is contiguous per leg across the whole stream, so one reader of `/trades.*` sees any hole within seconds, from the stream itself | one extra consumer: ~0.4 core of JSON parse at 400K sides/s; covers trades only (order updates carry no contiguous sequence) | small: the ledger recon's reader already parses tradeSeq |
-| **JetStream-acked publish from the bridge thread** | every message acked or counted: a full ack window stalls the bridge thread, its queue fills, and the drop is COUNTED where it happens (the bridge's existing `dropped`), never silent | one thread does ~350K msgs/s acked vs ~1.3–1.5M core, so ~1M msgs/s needs one publisher per partition (P=4 → ~1.4M/s headroom) on the leader; an ack message back per message; no apply-thread change (the bridge offer stays non-blocking) | medium: a member-process change in `TradeNatsPublisher`/`OrderNatsPublisher` (publish path and per-partition threads), not the cluster wire |
+| Core (today's bridge) | 1.35M msgs/s; **893,759 lost, publisher told nothing** | 1.68M msgs/s, 0 lost | 1.5–2.1 µs |
+| **Receipt** (reply subject, no wait) | 683K msgs/s; 727,058 lost and **727,058 counted as 429 by the publisher** | 506K msgs/s, 0 lost, 2,000,000 acks | 2.8 µs |
+| JetStream acked, window 1K / 8K | 363K / 344K msgs/s, 0 lost | 348K / 334K msgs/s, 0 lost | 4.3–4.6 µs |
 
-Recommendation: the acked publish, one publisher thread per partition, is the class-closing fix and it belongs with the
-archive-reader bridge of §8 item 1 (both replace the bridge's publish path). The contiguity alarm is the cheap guard to
-run until then, and stays useful afterwards as an end-to-end check.
+Cost at 400K orders/s (~400K trade sides + ~600K order updates = ~1M msgs/s), from those rates:
+
+| | Knows about every drop | Prevents the drop | Publisher threads on the leader | NATS CPU | Size |
+|---|---|---|---|---|---|
+| Core + raised queue (done) | no | bursts up to the queue (~2 s at 1M/s) | 1 | 1.5–2.1 cores | done |
+| Log alert on the warning (Loki/promtail are in the render) | yes/no only (deduplicated) | no | 1 | same | config |
+| **Receipt** | **yes, exact count** (bridge's `dropped`) | no; the side is still lost, but counted at its source and re-sendable | 2 (one per partition gives 4×) plus one reply-dispatcher thread taking ~1M acks/s | ~2.8 cores (+0.7–1.3) | small–medium: publish with a reply subject + one subscription in `TradeNatsPublisher`/`OrderNatsPublisher` |
+| JetStream acked, bounded window | yes | **yes**: a full window stalls the bridge thread, its queue fills, and drops move into the bridge's own counted queue | 3 (one per partition) | ~4.4 cores (+2.3–3) | medium |
+| Trade-side contiguity alarm in trade-processor | yes for trades (tradeSeq holes), not order updates | no | 0 | 0 (~0.4 core in trade-processor) | small |
+
+Recommendation: the **receipt publish**, one publisher per partition. It gives an exact drop count at the source for
+~1 extra NATS core and no wait on the bridge thread, and its count is the trigger for a replay from the archive once
+the archive-reader bridge of §8 item 1 exists. Move to the JetStream-acked publish only if back-pressure is wanted over
+counting (it costs ~2.5 more NATS cores and three times the publisher threads). Not built here: it changes the members'
+image (`cluster-node`), so it needs the order-matcher suite and a live rollout of its own; the reply handler must count
+only 429s (a reply-subject publish can also draw a `503 no responders` status when nothing subscribes).
 
 ## 8. Open items and next steps
 
