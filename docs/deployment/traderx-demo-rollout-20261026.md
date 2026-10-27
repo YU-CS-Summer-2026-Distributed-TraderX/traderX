@@ -190,3 +190,35 @@ account's actual SKU prices apply.
 - Alex's risk engine is not deployed or upgraded by this roll (compsci-gke.md scope).
 - The hxb bench nodes (`gke-hxb-bench-20261022-*`, 9 instances) were RUNNING at 8:00 pm ET tonight;
   they belong to another lane and bill independently of this plan.
+
+## 7. Update after the `traderx-tip` dry run (2026-10-26, 11:21 pm ET)
+
+The plan was exercised end to end in a side namespace (results:
+`docs/risk-integration/kind-full-stack-20261026.md`, GKE follow-up). Changes to the plan above:
+
+- **Build from `8ea15b88` or later.** Earlier tips cannot seed reference data on a fresh epoch
+  (`422 unknown instrument` from `/risk/control`).
+- **Build recipe:** `export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"`, render with
+  `TRADERX_SKIP_LOCKFILE_REFRESH=1`, then `build-images.py`. Run from a checkout no other chat commits to.
+- **Apply order gains a step before the engine:** `kubectl apply -f specs/YU17-otc-rates/generation/kubernetes/cluster/gke/storageclass.yaml`
+  (already present on `traderx-demo` since this run). Without it the members stay Pending.
+- **Secrets:** `auth-secrets` needs six keys including `cluster-client-secret`; `mariadb-credentials` and
+  `grafana-credentials` as before. Fresh random values worked first time; S5 never refused.
+- **Seeding:** `initialize-accounts.py --apply`, then `initialize-reference-data.py --apply`.
+
+Images proven in `traderx-tip` (`tip-8ea15b88`, linux/amd64, pinned by these digests):
+
+| Image | Digest |
+|---|---|
+| cluster-node | `sha256:2b419c433fd7c71e9268e725e947074ac415acc9eff0a4f43d700e9fbce7f598` |
+| trade-processor | `sha256:c781df34f3fda0b77e8f7100155a7b7d1e7ef6b1d5d47808ec0a5f6301eecd22` |
+| position-service | `sha256:06865f3ec40f6c46d379df8cc7405fb75965a2cb9332281a65ce15c040a74652` |
+| execution-algo-engine | `sha256:24b73a0b8ca3c768b065ba0be84b927f17b6e33807a5474840195b32e44d5c29` |
+| trade-service | `sha256:f82058208bc461553154087dee38de47fbe26482da5d8c5292768b64647de329` |
+| account-service | `sha256:ed504329afd075f46ea632074f915feefb7470111890ae26a5f93efc19b98bbc` |
+| people-service | `sha256:dfa37b4db5a34c2b89d9a50f023101825a615978de7bdfa38f5ff6f7fbfacfc9` |
+| price-publisher | `sha256:2dcd5e01bf62e9223ef1d2fd8378ffd465b755e550cc8e0aae0ca5632a4f10b6` |
+| reference-data | `sha256:cfa33155a0537331f3efae53046bac1cd115a83111ad8fa06fb517396f1bb2fa` |
+| web-front-end-angular | `sha256:ca5a9438185c03eaa39a907e16fb7c1f8ec2223e777fca2920bd2db60c8e535f` |
+| api-explorer | `sha256:9c045168704e2426073a643a6d88e74371a4ce5b25fc2bbc09fad7ab0100c9e9` |
+| web-front-end-console | `sha256:b705c6ff9e9749067212a6b422ae2126929fa8d1313764bcabe6bb3d9d25cb54` |

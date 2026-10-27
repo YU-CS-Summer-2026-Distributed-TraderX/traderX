@@ -94,3 +94,52 @@ not a crash, but it means no stock bring-up can trade from the Desk.
 
 Evidence (outside Git): `<scratchpad>/evidence/` — proof logs (`proofrun3`, `proofrun4`), VaR/ES output,
 bring-up logs, the final pod/image list and the order/trade rows above.
+
+## GKE follow-up: `traderx-demo`, namespace `traderx-tip` (2026-10-26, 10:23–11:21 pm ET)
+
+yaakov moved the rest of the proof to the cloud. The run used the `traderx-demo` cluster in a side namespace,
+`traderx-tip`; the October 11 deployment in `traderx` was not touched. The coordinator approved the nodes:
+engine-pool 3× c4d-standard-8 and default-pool 2× e2-standard-4, for about an hour (≈ $1.30). Both pools are
+back to 0 and 1, confirmed with `gcloud compute instances list`.
+
+Images: all 12 rebuilt from an empty-root render of `8ea15b88`, as `tip-8ea15b88`, linux/amd64. The derivation
+guard admitted every one, they were pushed to `us-east1-docker.pkg.dev/project-compsci-484414/traderx-demo/`,
+and the manifests pinned them by digest (the digests are in the rollout plan, §7).
+
+| Check | Result on GKE |
+|---|---|
+| Bring-up | 24 pods ready, leader and 2 followers on a fresh epoch, one member per engine node |
+| Reference data | 557 securities (544 enabled), fence at sequence 1291 applied on all three members, after the gateway fix below |
+| Console order, real entry point | signed out → `401 admin_auth_required`; signed in → Sell 5 MSFT @393 (42422) × Buy 5 @394 (22214), orderRefs 1/2 |
+| Effect end | members applied 1293 / trades 2 on all three; SQL `1-S`, `2-B` at 393; positions +5/−5 @393 |
+| Projection feed | trades backlog 0, dropped 0, missingTradeSides 0, applied 2; orders backlog 0, applied 4 |
+| Tempo | one 5-span order trace: gateway `order`, `gateway.queue`, `cluster.consensus` + member `cluster.commit`, `cluster.apply` |
+| `yu15-risk-extract.sh` | PASS: seq 1296 cut byte-identical on 3 members, witness 1297, rebuild identical, member 2 replays to the same cut |
+| Extract marks vs `eod_price_snapshot` | both rows (22214 +8, 42422 −8 MSFT) mark 392.68 `EOD_SNAPSHOT/OK` = snapshot 2026-10-27 v1 392.680000 OK; MV and P&L recompute exactly |
+| Both consoles | demo console and legacy Angular UI serve their pages (200) |
+
+Found and fixed (`8ea15b88`):
+
+1. **Operator security control could not register a ticker (S4 regression, second path).** On a fresh epoch
+   the CompSci reference initialization got `422 unknown instrument` for every catalog ticker, so the engine
+   had zero securities and no order could trade. This profile has no control-feed adapter, so `bbe9b040` did
+   not cover it. `/risk/control` `action=security` now registers; it is operator-only (S2), the same trust as
+   `/seed`. Restrictions stay lookup-only.
+2. **The CompSci renderer and init scripts were bound to `traderx`.** `TRADERX_NAMESPACE` now selects a side
+   namespace. In one, the member and ingress addresses follow the namespace: unchanged, they pointed the side
+   members at the live namespace's peers. risk-extract also writes the local file sink there instead of the
+   demo's write-once extract bucket.
+
+Found, not fixed:
+
+- **The `order-matcher-archive` StorageClass is not emitted by the renderer.** Members stay Pending until it
+  exists. It was applied once by hand (cluster-scoped, harmless to `traderx`) and is still on the cluster.
+- **Loki gets no logs in this profile.** The collector has no logs pipeline and the profile ships no promtail.
+  Applying the rendered promtail, which needs a ClusterRole and a node DaemonSet, was refused by the
+  session's permission classifier, so logs-in-Loki is proven on kind only.
+- **NetworkPolicy cannot be enforced here.** `traderx-demo` has no Dataplane V2 and the CompSci render ships
+  no NetworkPolicy, so `yu18-networkpolicy-enforced.sh` does not apply.
+- **The derivation guard needs `SOURCE_DATE_EPOCH`** (as `docs/deployment/compsci-gke.md` says). Without it
+  the UI metadata timestamp differs from the guard's own render and admission refuses. Running from a private
+  detached worktree avoided the concurrent-commit refusals.
+- VaR/ES was not re-run on GKE: its TraderX half is the extract proven above, and the engine half runs locally.
