@@ -42,6 +42,17 @@ class Rendering(unittest.TestCase):
         self.assertNotIn('namespace',sc[0]['metadata'])
         self.assertEqual(sc[0]['provisioner'],'pd.csi.storage.gke.io')
 
+    def test_admission_expects_the_rendered_population(self):
+        # A render that adds a workload (promtail did) must move admit.py's counts with it, or admission
+        # refuses the candidate the procedure of record just rendered.
+        spec=importlib.util.spec_from_file_location('population_admit',Path(__file__).with_name('admit.py'))
+        admit=importlib.util.module_from_spec(spec);spec.loader.exec_module(admit)
+        slots=[c['image'] for d in self.docs for pod in [module.podspec(d)] if pod
+               for c in pod.get('containers',[])+pod.get('initContainers',[])]
+        private={i for i in slots if i.startswith(module.REGISTRY)}
+        self.assertEqual((len(private),len(set(slots))-len(private),len(slots)),
+                         (admit.PRIVATE_IMAGES,admit.UPSTREAM_IMAGES,admit.SLOTS))
+
     def test_promtail_ships_this_namespace_from_every_node(self):
         ds=next(d for d in self.docs if d['kind']=='DaemonSet' and d['metadata']['name']=='promtail')
         pod=ds['spec']['template']['spec']

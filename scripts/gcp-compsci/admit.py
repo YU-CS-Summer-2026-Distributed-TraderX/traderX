@@ -14,6 +14,9 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
+# The admitted CompSci population, defined once (prepare-admission.py and admission-controls.py read it).
+# Promtail (c8c8ac31) is the ninth upstream image and the 24th container slot.
+PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 12, 9, 24
 TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
           'project':'project-compsci-484414','location':'us-east1-b',
           'cluster':'traderx-demo','namespace':'traderx'}
@@ -148,7 +151,7 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
             require(ref in plan.get('upstreamReferences',[]),'unreviewed upstream image')
             checked.append({'reference':ref,'provider':provider,'layers':len(layer_ids)})
         else:require(False,'unsupported artifact producer')
-    require(len(checked)==20 and len(actual_slots)==23,'unexpected CompSci image population')
+    require(len(checked)==PRIVATE_IMAGES+UPSTREAM_IMAGES and len(actual_slots)==SLOTS,'unexpected CompSci image population')
     return {'schema':'traderx-compsci-image-admission-v1','verdict':'admitted-offline',
             'target':TARGET,'state':plan['state'],'renderedSha256':plan['renderedSha256'],
             'sourceInputsSha256':current_source_hash,'imageSourceCommit':plan['imageSourceCommit'],

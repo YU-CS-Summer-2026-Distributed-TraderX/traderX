@@ -16,8 +16,9 @@ def controls(root, folder):
     inventory=admit.ri20.read(folder/'artifacts.json');receipt=admit.ri20.read(folder/'derivation.json')
     source=admit.derive.source_hash(admit.derive.inputs(root))
     def check(p=plan,i=inventory,r=receipt,s=source):return admit.validate(root,rendered,p,i,folder,r,s)
-    report=check();assert len(report['artifacts'])==20 and len(report['slots'])==23
-    print('PASS nonempty measured baseline: 20 images / 23 slots')
+    images=admit.PRIVATE_IMAGES+admit.UPSTREAM_IMAGES
+    report=check();assert len(report['artifacts'])==images and len(report['slots'])==admit.SLOTS
+    print(f'PASS nonempty measured baseline: {images} images / {admit.SLOTS} slots')
     count=1
     def refuses(label,action):
         nonlocal count

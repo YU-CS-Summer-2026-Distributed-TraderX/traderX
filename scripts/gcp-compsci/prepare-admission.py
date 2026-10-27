@@ -34,7 +34,7 @@ def package(measured, published_path, upstream_path, build_dir, derivation_path,
     architecture['web-front-end-console']=read(build_dir.parent/'console-native-proof.json')
     admit.require(published['sourceCommit']==original['sourceCommit']=='6156ad222b3445cb12d58e9c4905c7dcd68c2222','wrong image dependency')
     admit.require(fresh['contexts']==original_receipt['contexts'],'current full-ancestry contexts differ from original image inputs')
-    admit.require(len(published['images'])==len(original['images'])==12 and len(upstream)==8,'incomplete input image population')
+    admit.require(len(published['images'])==len(original['images'])==admit.PRIVATE_IMAGES and len(upstream)==admit.UPSTREAM_IMAGES,'incomplete input image population')
     plan={'schema':'traderx-compsci-intended-deployment-v1','target':admit.TARGET,'state':'YU18-risk-integration',
           'imageSourceCommit':published['sourceCommit'],'imageSourceInputsSha256':original_receipt['sourceInputsSha256'],
           'buildSources':{},
@@ -88,7 +88,7 @@ def package(measured, published_path, upstream_path, build_dir, derivation_path,
     (output/'expected.json').write_text(json.dumps(plan,indent=2)+'\n')
     (output/'artifacts.json').write_text(json.dumps(inventory,indent=2)+'\n')
     shutil.copy2(derivation_path,output/'derivation.json');shutil.copy2(rendered_path,output/'candidate.yaml')
-    print('Packaged 12 independently compared application payloads + 8 upstream images; admission still required.')
+    print(f'Packaged {admit.PRIVATE_IMAGES} independently compared application payloads + {admit.UPSTREAM_IMAGES} upstream images; admission still required.')
 
 
 if __name__=='__main__':
