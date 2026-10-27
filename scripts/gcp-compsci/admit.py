@@ -19,8 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 12, 9, 24
 # The reviewed image dependency: the source commit the admitted private images were built from, defined once
 # (prepare-admission.py reads it). 6156ad22 (the October 11 pack) until 2026-10-27, when traderx was rolled to
-# the YU18 tip built from 9e0fd80b; measure-admission.py produces the evidence for exactly those digests.
-REVIEWED_IMAGE_COMMIT = '9e0fd80b5459f41d3f3abb30ced641c55c2bea80'
+# the YU18 tip built from 9e0fd80b, then (same day, roll 2) b28fd9f3; measure-admission.py produces the
+# evidence for exactly those digests.
+REVIEWED_IMAGE_COMMIT = 'b28fd9f3057a2878a45c9a40dec1ba6e61b8b513'
 TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
           'project':'project-compsci-484414','location':'us-east1-b',
           'cluster':'traderx-demo','namespace':'traderx'}

@@ -403,3 +403,45 @@ slots. On a restarted, cold console with the per-cut reads in flight, Refresh re
 the background reads queued behind it. Images `tip-5f3aed8d`: console `sha256:18e2da3d…8e5d`, risk runtime
 (deployed, tools `671029d1`) `sha256:2512ffb8…c887`, desk `sha256:5691aec0…db3f`; batch custody re-verified.
 Build VM `yu18-demofix2-20261027` deleted at 1:37 pm ET (≈ $0.25).
+
+## 11. Second production roll of `traderx`, to `b28fd9f3` (2026-10-27, 3:13–3:41 pm ET)
+
+What it carries since `9e0fd80b`: generational-ZGC gateways with a 4-CPU limit (`e201a1bc`, `b28fd9f3`); the
+cluster bridges' receipt publish (`48655be8`, member image); NATS on a 32 GiB PVC with the 2M / 1 GB ingest queue,
+trade-processor snapshot locking and settlement/recon on the ledger (`0e624848`, `9f7fe45d`, `1bfe65f9`); the
+afternoon's console and algo fixes (already live, relabelled). Approved by yaakov.
+
+**No fresh epoch.** `48655be8` changes no apply-path or snapshot code (four read-only accessors; the bridges stay
+leader-side, off consensus), so the log replays to the same book under the new build. Members rolled one at a
+time on their pod-lifetime volumes: each rejoined empty and replayed from position 0 (one TERM entry on every
+recording log, ~175 KB of log), gated by `/ready` catch-up, after a snapshot barrier (62 → 63 on all three).
+
+| Step | Result |
+|---|---|
+| Build (VM `yu18-roll2-20261027`, 3:14–3:21 pm) | 12 private images + desk + `tip-b28fd9f3-risk` console, all linux/amd64, label `b28fd9f3` |
+| `measure-admission.py --build-records` | **admitted-offline**, 21 artifacts / 24 slots; 12/12 payloads byte-identical to independent reference builds; 19/19 refusal controls; `admitted.yaml` = candidate (sha256 `5102b55d…`) |
+| Server-side dry run | 69/69 objects across the seven phases |
+| Apply (`roll.sh`, 3:30:35–3:37:49 pm) | DB ConfigMap + `projection_trade_days` → NATS on PVC (3:30:57) → trade-processor → barrier (3:33:31) → members (3:35:16, agree 1321 / 12) → rest → console + desk |
+| Running images | 17 containers on exactly the pushed digests, 0 stale; console runs the `-risk` layer |
+| Book + positions | before = after: members 1321 / 12 trades / same book hashes; SQL 25 trades, 18 positions, same fingerprints |
+| Effect end (3:40 pm) | Buy 1 then Sell 1 MSFT, account 22214, through the demo ticket (trade-service → gateway `/trades`): applied 1323 / 14 trades on all three; SQL `13-B`, `14-S` at 393; MSFT position 10 @ 393 unchanged; leader bridge published 2, rejected 0, dropped 0; projection feed backlog 0 / dropped 0 / missing 0 |
+| Recon | startup sweep matched 12/12, 0 missing, 0 mismatch |
+| Gateway | ZGC flags and cgroup 4 CPU / 2 GiB on the serving pod; `/orders` without a bearer: 401 |
+| Console | cold EOD chain 200 in 11.7 s; Risk batch result AVAILABLE / VERIFIED; demo and desk hosts 200 |
+
+Two differences from the admitted candidate, both deliberate: the console carries batch custody (the tip
+console's `/risk/batch-result` reads `RISK_BATCH_*`; without it the Risk tab says NOT_CONFIGURED), and
+trade-processor keeps `RECON_POLL_INTERVAL_MS=86400000` on this tier. In core feed mode `classify()` checks SQL
+with no grace and the cursor moves past, so a sweep landing between an engine fill and its SQL insert would count
+a permanent false MISSING; the 10 s schedule belongs to snapshot mode.
+
+NATS restarted once with an empty store, as planned. The algo and EOD streams and their three consumers came
+back; `TRADERX_CONTROL_SECURITY` / `_ACCOUNT` are created on the next delta reference-data or account-service
+publishes (`connectAndEnsureStream`), as on any fresh store. After the restarts the EOD chain reads P&L as
+"unverified" and the extract as "remote": both come from the restarted pods' logs (position-service's `halted=`
+line, risk-extract's cut line), not from data. The 18 P&L rows are in SQL and the three 2026-10-27 v1 objects are
+in the bucket.
+
+Spend: build VM 3:13–3:26 pm ET, deleted (≈ $0.20). Ongoing: NATS's 32 GiB `standard-rwo` PVC (≈ $3.20/month)
+and its 1-CPU request on default-pool. Rollback record (68 objects + DB dump) and the admission evidence: shared
+notes `roll2-20261027/`, `admission-b28fd9f3-20261027/`.
