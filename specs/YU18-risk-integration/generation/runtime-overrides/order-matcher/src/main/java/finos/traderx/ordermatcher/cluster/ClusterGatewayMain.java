@@ -2609,7 +2609,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
         final long version = body.path("version").asLong(System.currentTimeMillis());
         final Boolean ok = onOwner(() -> {
-            final int id = resolveSecurityId(ticker);
+            // register=true: the control feed is reference-data's catalog outbox — the operator's
+            // instrument universe, trusted infrastructure in the same namespace — not a client order
+            // path. S4 (5ca69f3f) turned the one-arg form into a lookup, so every catalog ticker that
+            // had not been /seed-ed failed here, was NAK-redelivered once a second forever, and cost a
+            // member /symbols refresh per retry (measured on kind 2026-10-26: 276 distinct tickers,
+            // ~1 failure/s, steady). The catalog registering is the pre-S4 contract that
+            // yu17-book-retick asserts; the S4 hazard (junk tickers from anyone) does not reach this
+            // path because only reference-data writes the outbox.
+            final int id = resolveSecurityId(ticker, true);
             if (id < 0) {
                 return false;
             }
