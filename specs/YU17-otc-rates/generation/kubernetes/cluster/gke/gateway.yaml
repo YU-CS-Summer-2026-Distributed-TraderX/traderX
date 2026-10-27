@@ -190,8 +190,20 @@ spec:
             # segment rather than an error.
             - name: OTEL_SAMPLE_MASK
               value: "0"
+            # GENERATIONAL ZGC, NOT G1. Under FIX, QuickFIX/J allocates ~11 KB per order, so a G1
+            # gateway young-collects ~1.2/s at a ~5.6 ms pause, and each pause is a gateway-local
+            # latency spike (hxb rig: 18 gateways of 7 CPUs at 400K orders/s; this tier's limit is 2
+            # CPUs, so the numbers below are per-gateway shape, not this tier's). On a pre-touched 768m heap,
+            # gateway safepoints over 1 ms go from ~5,000 per 3 minutes to 0 with the same body:
+            #   FIX (CLOUD-QUEUE rows 11, 13): p99 6.19/9.65/11.12 -> 4.85/5.77/3.81 ms, gateway-local
+            #     >4 ms orders -97 to -98 %, p99.9 level (22.0 vs 22.8 ms once the rig's own CnC copy
+            #     was moved out of the window).
+            #   binary (row 14): p50/p95/p99 1.70/2.60/3.06 vs 1.72/2.60/3.26 ms, p99.9 19.6 vs 19.6 ms.
+            # Cost: +0.10-0.15 core per FIX gateway (2.1 vs 2.0), none measurable under binary (1.48).
+            # The heap is fixed and pre-touched so ZGC never grows it under load; the image is
+            # eclipse-temurin:21-jre, where -XX:+ZGenerational selects the generational collector.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Dsun.net.httpserver.nodelay=true -Xms256m -Xmx1g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              value: "-Dsun.net.httpserver.nodelay=true -XX:+UseZGC -XX:+ZGenerational -Xms768m -Xmx768m -XX:+AlwaysPreTouch --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: http
               containerPort: 18110
@@ -245,10 +257,13 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 640Mi
+              # The 768m heap is pre-touched at start (ZGC backs it with shared memory, ~0.82 GB in
+              # the memcg), so the request covers it plus metaspace, threads and direct buffers; the
+              # limit is the hxb rig's 2Gi gateway limit, where a ZGC gateway used ~1.2 GB.
+              memory: 1Gi
             limits:
               cpu: "2"
-              memory: 1536Mi
+              memory: 2Gi
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
