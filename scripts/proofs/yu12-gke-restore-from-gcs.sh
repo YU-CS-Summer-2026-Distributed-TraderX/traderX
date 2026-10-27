@@ -95,6 +95,8 @@ set -euo pipefail
 CTX="${CTX:-gke_traderx-505400_us-east1-b_traderx-bench}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+# ADR-082 S1/S2: the order routes need a bearer bound to the account, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 STS="order-matcher-cluster"
 IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110}"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
@@ -158,7 +160,7 @@ start_pf() {
 }
 trap stop_pf EXIT
 
-order() { curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+order() { curl "${AUTH[@]}" -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4}"; }
 
 if [[ "${SELFTEST:-0}" == "1" ]]; then gates_selftest; exit $?; fi
@@ -188,7 +190,7 @@ PRESSURE0="$(pressure_row)"
 RUN_T0=${SECONDS}
 start_pf
 for acct in "${ACCT}" "${OTHER}"; do
-  curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null \
     || fail "seed failed for ${acct}"
 done
@@ -199,7 +201,7 @@ order "${OTHER}" Sell 5 "$(python3 -c "print(${PRICE}+4)")" >/dev/null         #
 # fresh epoch's sparse log gzips to ~20KB. Rest FILLER non-crossing orders so the backup carries
 # real weight — measured: 5000 ≈ 2.2MB on member-0's disk, comfortably past the gate.
 FILLER="${FILLER:-5000}"
-seq 1 "${FILLER}" | xargs -P 8 -I{} curl -s -o /dev/null --max-time 10 -X POST "${MATCHER_URL}/orders" \
+seq 1 "${FILLER}" | xargs -P 8 -I{} curl "${AUTH[@]}" -s -o /dev/null --max-time 10 -X POST "${MATCHER_URL}/orders" \
   -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":$(python3 -c "print(${PRICE}-10)"),\"clientOrderId\":\"drfill-$$-{}\"}"
 echo "[ok] state built on ${TICKER} (resting orders + positions + trades + ${FILLER} filler orders)"
@@ -300,7 +302,7 @@ echo "  ✔ all three members agreed on the restored state (member-0 from the ta
 
 step "5. the restored cluster takes NEW business (a cross books on all three members)"
 start_pf   # new epoch: clients must reconnect — including this one
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null 2>&1 || true
 T_OPR0="$(quiesced_order_refs)"; T_OPT0="$(quiesced_trades)"
 order "${ACCT}" Buy 5 "$(python3 -c "print(${PRICE}+4)")" >/dev/null   # crosses the restored +4 sell

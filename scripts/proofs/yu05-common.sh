@@ -11,7 +11,7 @@ TP=${TRADE_PROCESSOR_URL:-http://localhost:18091}
 # fronts the cluster gateway; on the state-014 rig, set ORDER_MATCHER_URL to the edge-proxy path.
 OM=${ORDER_MATCHER_URL:-http://localhost:18110}
 CTX=${CTX:-kind-traderx-yu12-cluster}
-K="kubectl -n traderx --context $CTX"
+K="kubectl -n ${NS:-traderx} --context $CTX"   # NS: a side namespace must never fall back to the live one
 
 # The dev-token master secret is a Kubernetes Secret, and the two rigs hold different values, so
 # neither literal is safe to hardcode -- a wrong one fails as an opaque 401 from /auth/dev-token

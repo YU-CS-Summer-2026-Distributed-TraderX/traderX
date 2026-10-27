@@ -36,6 +36,8 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+# ADR-082 S1/S2: the order routes need a bearer bound to the account, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 SELLER="${SELLER:-42422}"
 BUYER="${BUYER:-22214}"
@@ -72,7 +74,7 @@ order() { # order <account> <side> <clientOrderId> -> "<http> <body>"
   # between the suppressed resend and the falsification order — everything else is identical by
   # design, and that is exactly what the proof asserts.
   vlog "      POST ${MATCHER_URL}/orders" "        ${body}" "        clientOrderId: $3"
-  out="$(curl -s --max-time 30 -o /tmp/yu13-dup-body -w '%{http_code}' \
+  out="$(curl "${AUTH[@]}" -s --max-time 30 -o /tmp/yu13-dup-body -w '%{http_code}' \
     -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${body}")"
   vlog "      <- ${out} $(cat /tmp/yu13-dup-body)"
   echo "${out} $(cat /tmp/yu13-dup-body)"
@@ -91,7 +93,7 @@ ${K} get deploy trade-processor >/dev/null 2>&1 || fail "trade-processor is not 
 [[ "$(${K} get deploy trade-processor -o jsonpath='{.status.readyReplicas}')" == "1" ]] \
   || fail "trade-processor is not READY — no fill can reach SQL, so this proof cannot run"
 for acct in "${SELLER}" "${BUYER}"; do
-  curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null \
     || fail "seed failed for ${acct}"
 done

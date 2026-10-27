@@ -99,7 +99,13 @@ print('' if d is None else d)" "$1"; }
 # still CLIMBS, so every field-based check and every "submitted went up" check passes on it. The
 # band is therefore asserted, not printed; and the OBSERVED rate is asserted separately at the end,
 # because a config field cannot be faked into a measured delta.
+# REPLAY_RETIRED=1: yaakov retired the TAQ replay path on 2026-10-27, so a current tier has no tape
+# and these gates can only refuse. The waiver is explicit and printed on every gate it passes: the
+# run then proves its claim WITHOUT foreign write pressure, which is weaker than the ADR-072 claim and
+# says so. It is not a default and it does not touch a rig that does run the tape.
+replay_retired() { [[ "${REPLAY_RETIRED:-0}" == 1 ]] && { echo "  [note] REPLAY_RETIRED=1 (TAQ path retired 2026-10-27): $1 — no foreign write pressure in this run"; }; }
 require_tape_live() {
+  replay_retired "tape-live gate waived" && return 0
   local h err
   h="$(_pub /health)"
   [[ -n "${h}" ]] || fail "price-publisher /health did not answer — cannot establish the tape is live"
@@ -127,6 +133,7 @@ in_rate_band() { # in_rate_band <rate> — separated out so the selftest can exe
 # MEASURE THE RATE, NEVER READ IT. submitted delta / elapsed. The reported field is a config-shaped
 # claim; this is the only reading that cannot be faked by a misconfigured sample.
 assert_observed_rate() { # assert_observed_rate <elapsed-seconds> <what>
+  replay_retired "observed-rate gate waived" && return 0
   local elapsed="${1:?elapsed}" what="${2:-this run}" s1 delta rate
   s1="$(_pub /health | _jget printReplay.submitted)" \
     || fail "could not re-read printReplay.submitted to measure the observed rate"

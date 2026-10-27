@@ -18,6 +18,8 @@
 set -euo pipefail
 
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
+# ADR-082 S1/S2: /orders needs a bearer, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 ACCOUNT_A="${ACCOUNT_A:-42422}"   # resting side
 ACCOUNT_B="${ACCOUNT_B:-22214}"   # aggressor side (distinct account, both sides real)
 
@@ -30,7 +32,7 @@ MSFT_STRIKES=(370 390 410)
 
 seed() { # seed <accountId> <tickers-csv> <price>
   local out
-  out="$(curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" \
+  out="$(curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${1},\"tickers\":\"${2}\",\"price\":${3}}")"
   [[ "${out}" == *'"seeded":true'* ]] || { echo "[seed] FAILED for ${2}: ${out}" >&2; exit 1; }
@@ -41,7 +43,7 @@ metric() { # metric <name-with-labels>
 }
 
 order() { # order <accountId> <ticker> <side> <qty> <limitPrice> -> HTTP code + body
-  curl -s --max-time 20 -o /tmp/yu14-order-body -w '%{http_code}' -X POST "${MATCHER_URL}/orders" \
+  curl "${AUTH[@]}" -s --max-time 20 -o /tmp/yu14-order-body -w '%{http_code}' -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${1},\"ticker\":\"${2}\",\"side\":\"${3}\",\"quantity\":${4},\"limitPrice\":${5}}"
 }

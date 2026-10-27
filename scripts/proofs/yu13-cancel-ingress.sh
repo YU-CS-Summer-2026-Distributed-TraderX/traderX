@@ -31,6 +31,8 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+# ADR-082 S1/S2: the order routes need a bearer bound to the account, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 # Sourced for quiesced_order_refs — the ONLY place a proof may get a consensus reading from, and
 # since ADR-072 the only kind that survives a live external order writer. Resolves `fail` and `K`
 # at call time.
@@ -339,7 +341,7 @@ place() { # place -> orderRef on stdout; fails the run if the order does not res
   local body code payload
   payload="{\"accountId\":${ACCOUNT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":${QTY},\"limitPrice\":${PRICE},\"clientOrderId\":\"cxl-$(date +%s%N)\"}"
   vlog "      POST ${MATCHER_URL}/orders" "        ${payload}"
-  body="$(curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  body="$(curl "${AUTH[@]}" -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "${payload}")"
   vlog "      <- ${body}"
   code="$(sed -n 's/.*"kind":\([0-9]*\).*/\1/p' <<<"${body}")"
@@ -350,7 +352,7 @@ place() { # place -> orderRef on stdout; fails the run if the order does not res
 cancel() { # cancel <ref> -> "<httpCode> <body>"
   local out
   vlog "      POST ${MATCHER_URL}/cancel  {\"orderRef\":$1}"
-  out="$(curl -s --max-time 30 -o /tmp/yu13-cxl-body -w '%{http_code}' \
+  out="$(curl "${AUTH[@]}" -s --max-time 30 -o /tmp/yu13-cxl-body -w '%{http_code}' \
     -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' \
     -d "{\"orderRef\":$1}")"
   vlog "      <- ${out} $(cat /tmp/yu13-cxl-body)"
@@ -414,7 +416,7 @@ START_LEADER="$(for m in 0 1 2; do
   ${K} exec "order-matcher-cluster-${m}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
     | awk -v m="${m}" '/^traderx_cluster_role/ && $2 == 1 {print m}'
 done)"
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null \
   || fail "seed failed"
 START_RESTARTS="$(${K} get pods -l app=order-matcher-cluster \

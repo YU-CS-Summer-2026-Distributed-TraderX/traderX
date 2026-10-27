@@ -12,6 +12,12 @@
 # Usage, after CTX/NS are set:   source "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 # then                           curl "${AUTH[@]}" -X POST "${MATCHER_URL}/orders" ...
 # PROOF_BEARER in the environment is reused as is (a runner can mint once for a whole suite).
+# The master secret is read from the rig's own auth-secrets first: the CompSci/GKE profile generates
+# it randomly, so the kind literal below is right only on kind (wrong there it fails as a bare 401).
+if [[ -z "${PROOF_BEARER:-}" && -z "${EOD_MASTER_SECRET:-}" ]]; then
+  EOD_MASTER_SECRET="$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" get secret auth-secrets \
+    -o 'go-template={{index .data "dev-token-master-secret"}}' 2>/dev/null | base64 -d 2>/dev/null)"
+fi
 if [[ -z "${PROOF_BEARER:-}" ]]; then
   PROOF_BEARER="$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" exec deploy/trade-processor -- \
     sh -c 'curl -fsS -X POST http://localhost:18091/auth/dev-token \

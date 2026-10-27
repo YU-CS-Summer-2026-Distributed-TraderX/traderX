@@ -32,6 +32,8 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+# ADR-082 S1/S2: the order routes need a bearer bound to the account, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 ACCT="${ACCT:-42422}"
 TICKER="${TICKER:-RM$(date +%H%M%S)}"
@@ -150,7 +152,7 @@ order() { # order <side> -> body (fails the run unless it RESTS: kind=1)
   local body kind
   local req="{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"$1\",\"quantity\":5,\"limitPrice\":${PRICE}}"
   vlog "      POST ${MATCHER_URL}/orders" "        ${req}"
-  body="$(curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${req}")"
+  body="$(curl "${AUTH[@]}" -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${req}")"
   vlog "      <- ${body}"
   kind="$(sed -n 's/.*"kind":\([0-9]*\).*/\1/p' <<<"${body}")"
   [[ "${kind}" == "1" ]] || fail "order did not rest (kind=${kind}, body=${body})"
@@ -160,7 +162,7 @@ ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 cancel() { # cancel <ref> -> "<http> <body>"
   local out
   vlog "      POST ${MATCHER_URL}/cancel" "        {\"orderRef\":$1}"
-  out="$(curl -s --max-time 30 -o /tmp/yu13-rme-body -w '%{http_code}' \
+  out="$(curl "${AUTH[@]}" -s --max-time 30 -o /tmp/yu13-rme-body -w '%{http_code}' \
     -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}")"
   vlog "      <- ${out} $(cat /tmp/yu13-rme-body)"
   echo "${out} $(cat /tmp/yu13-rme-body)"
@@ -213,7 +215,7 @@ RESTARTS0="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}')"
 TP_LOG_T0="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_pf
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null \
   || fail "seed failed for ${ACCT}"
 REF0="$(refs_agreed)"

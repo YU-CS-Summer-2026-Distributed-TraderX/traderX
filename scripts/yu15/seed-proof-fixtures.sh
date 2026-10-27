@@ -404,9 +404,9 @@ echo "   ${swept} resting order(s) cancelled — no demo account is holding a bo
 echo "[clean] positions in generated throwaway instruments"
 kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
   mariadb -utraderx -ptraderx traderx -N -B -e \
-  "DELETE FROM positions WHERE security REGEXP '^(ATT|DUP|RM|STP|Z|BND|CSR|GRD|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';
+  "DELETE FROM positions WHERE security REGEXP '^(ATT|DUP|RM|STP|Z|BND|CSR|GRD|HSF|KAC|PA|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
-     WHERE security REGEXP '^(ATT|DUP|RM|STP|Z|BND|CSR|GRD|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';" 2>/dev/null
+     WHERE security REGEXP '^(ATT|DUP|RM|STP|Z|BND|CSR|GRD|HSF|KAC|PA|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';" 2>/dev/null
 
 # YU17 FX-rate fix: the credit gate values swap notionals in USD off SEQUENCED rates, which are
 # replicated state and die with the epoch. Until rates are re-sequenced, every non-USD swap

@@ -51,6 +51,8 @@ GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-admin}"
 NS="${NS:-traderx}"
 KCTX="${KCTX:-${CTX:-kind-traderx-yu12-cluster}}"   # CTX accepted too, so one env var drives every proof
 K="kubectl --context ${KCTX} -n ${NS}"
+# ADR-082 S2: /seed needs the operator pair or an admin JWT; the orders need a bearer.
+CTX="${KCTX}"; . "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 MASK="${OTEL_SAMPLE_MASK:-127}"
 OWN_PORT="${OWN_PORT:-18111}"   # private gateway forward, so the operator's 18110 is not touched
 SEEDED_ACCOUNT="${SEEDED_ACCOUNT:-22214}"
@@ -218,7 +220,7 @@ echo "[seed] ${TICKER} @ ${PX} for account ${SEEDED_ACCOUNT} (fresh ticker: no t
 # no claim about how quickly a seed lands, and the hard failure below still stands if the cluster
 # never accepts it. The retry absorbs the measured window; it does not weaken anything.
 for _try in $(seq 1 15); do
-  SEED_CODE="$(curl -s -m20 -o /tmp/yu13-otel-seed -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+  SEED_CODE="$(curl "${AUTH[@]}" -s -m20 -o /tmp/yu13-otel-seed -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
     -H 'Content-Type: application/json' \
     -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PX}}" || echo 000)"
   [[ "${SEED_CODE}" == 2* ]] && break
@@ -235,7 +237,7 @@ if [[ "${SEED_CODE}" != 2* ]]; then
 fi
 
 submit() { # clOrdId account -> response body
-  curl -s --max-time 15 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s --max-time 15 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$2,\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":${PX},\"clientOrderId\":\"$1\"}"
 }
 

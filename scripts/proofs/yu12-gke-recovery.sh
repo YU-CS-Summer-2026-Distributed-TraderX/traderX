@@ -94,6 +94,8 @@ K="kubectl --context ${CTX} -n ${NS}"
 IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110}"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18310}"
+# ADR-082 S1/S2: the order routes need a bearer, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 ACCT="${ACCT:-42422}"
 OTHER="${OTHER:-22214}"
 # MINTED: the tape never trades this symbol, so nothing replayed can cross our orders and the
@@ -164,7 +166,7 @@ start_pf() {
 trap stop_pf EXIT
 
 order() { # order <account> <side> <qty> <price> -> body
-  curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4}"
 }
 ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
@@ -187,7 +189,7 @@ PRESSURE0="$(pressure_row)"
 RUN_T0=${SECONDS}
 start_pf
 for acct in "${ACCT}" "${OTHER}"; do
-  curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null \
     || fail "seed failed for ${acct}"
 done

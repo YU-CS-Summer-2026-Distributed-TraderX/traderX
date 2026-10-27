@@ -25,6 +25,11 @@
 set -uo pipefail
 U=${MATCHER_URL:-http://localhost:18110}
 TOK=${RISK_CONTROL_TOKEN:-dev-risk-control}
+# ADR-082 S1: /orders needs a bearer. Without one every order answers 401 {"error":...}, which the
+# reason-presence parser below used to read as NEW — five controls "failed" on a system that never
+# saw the orders. CTX/NS select the rig the bearer is minted on.
+CTX="${CTX:-kind-traderx-yu12-cluster}"; NS="${NS:-traderx}"
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 
 VERBOSE=0
 while [[ $# -gt 0 ]]; do
@@ -45,7 +50,7 @@ order(){ # $1=label  $2=expected ("NEW" | "REJECTED·REASON")  $3=json body
   local r rc st rs got
   CHECKS=$((CHECKS + 1))
   vlog "      → POST ${U}/orders" "        ${3}" "        expect: ${2//·/ · }"
-  r=$(curl -s -m8 "$U/orders" -H "Content-Type: application/json" -d "$3"); rc=$?
+  r=$(curl -s -m8 "${AUTH[@]}" "$U/orders" -H "Content-Type: application/json" -d "$3"); rc=$?
   vlog "      ← ${r:-<empty>}"
   # An empty body means nothing answered at $U at all, NOT a risk verdict. curl's rc says which
   # transport failure it was; what should be listening there is a fact about the rig, so this
@@ -61,8 +66,8 @@ order(){ # $1=label  $2=expected ("NEW" | "REJECTED·REASON")  $3=json body
   # {"orderRef":N,"kind":K,"reason":...} and carries a reason only when it rejected. Falling back
   # to reason-presence rather than decoding `kind` keeps this correct without pinning the numeric
   # kind values, which are an internal egress detail.
-  st=$(printf '%s' "$r" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status') or d.get('decision') or ('REJECTED' if d.get('reason') else 'NEW'))" 2>/dev/null)
-  rs=$(printf '%s' "$r" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('riskReason') or d.get('reason') or '')" 2>/dev/null)
+  st=$(printf '%s' "$r" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status') or d.get('decision') or ('ERROR' if 'error' in d else 'REJECTED' if d.get('reason') else 'NEW'))" 2>/dev/null)
+  rs=$(printf '%s' "$r" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('riskReason') or d.get('reason') or d.get('error') or '')" 2>/dev/null)
   got="${st}${rs:+·$rs}"
   if [[ "${got}" == "$2" ]]; then
     printf "   %-26s %s%s ✔\n" "$1" "$st" "${rs:+ · $rs}"
@@ -132,7 +137,7 @@ IBM='{"accountId":22214,"security":"IBM","side":"Buy","quantity":10,"limitPrice"
 # IBM at 200 survives because the mint leaves its ±$65.54 band alone and Δ ≤ 15.4 fits inside it.
 for acct in 52355 22214; do
   for pair in IBM:200 "BAC:${BAC_PX}"; do
-    curl -s -m8 -o /dev/null -X POST "$U/seed" -H "Content-Type: application/json" \
+    curl -s -m8 "${AUTH[@]}" -o /dev/null -X POST "$U/seed" -H "Content-Type: application/json" \
       -d "{\"accountId\":$acct,\"tickers\":\"${pair%%:*}\",\"price\":${pair##*:}}" || true
   done
 done

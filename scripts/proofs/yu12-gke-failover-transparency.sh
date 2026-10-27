@@ -85,6 +85,8 @@ K="kubectl --context ${CTX} -n ${NS}"
 IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110}"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18320}"
+# ADR-082 S1/S2: the order routes need a bearer, /seed the operator pair or an admin JWT.
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 ACCT="${ACCT:-42422}"
 # MINTED, and the identity claim in step 2 depends on it: the tape trades 23 real symbols and never
 # this one, so the open set on this ticker is exactly what this proof put there.
@@ -146,7 +148,7 @@ require_read_model "${ACCT}"
 PRESSURE0="$(pressure_row)"
 RUN_T0=${SECONDS}
 start_pf
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+curl "${AUTH[@]}" -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null || fail "seed failed"
 
 # THE OPERATOR-SCOPED QUIET GUARD, replacing the venue-wide one that ADR-072 made permanently red.
@@ -190,7 +192,7 @@ STREAM_LOG="$(mktemp)"
   while [[ "$(date +%s)" -lt "${end}" ]]; do
     n=$((n+1)); cid="fot-$$-${n}"
     tries=0
-    until out="$(curl -s --max-time 10 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+    until out="$(curl "${AUTH[@]}" -s --max-time 10 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
         -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${PRICE},\"clientOrderId\":\"${cid}\"}" \
         2>/dev/null)" && [[ "${out}" == *'"orderRef"'* ]]; do
       tries=$((tries+1))

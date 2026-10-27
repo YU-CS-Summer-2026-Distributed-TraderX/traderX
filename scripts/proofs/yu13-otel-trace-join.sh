@@ -49,6 +49,9 @@ if [ -z "${KCTX}" ]; then
   exit 1
 fi
 K="kubectl --context ${KCTX} -n ${NS}"
+# ADR-082 S1/S2: the order routes need a bearer bound to the account, /seed the operator pair or an admin JWT.
+CTX="${CTX:-${KCTX}}"   # lib-gateway-auth reads CTX; this proof names its context KCTX
+. "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"
 ORDERS="${ORDERS:-3}"
 TAG="otel-$$-$(date +%s)"
 
@@ -114,7 +117,7 @@ PX="${PX:-$(${K} exec deploy/price-publisher -- wget -qO- "http://localhost:1810
 PX="${PX:-150.0}"
 echo "[run] submitting ${ORDERS} orders tagged ${TAG} (${TICKER} @ ${PX})"
 for i in $(seq 1 "${ORDERS}"); do
-  code="$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+  code="$(curl "${AUTH[@]}" -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":22214,\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":${PX},\"clientOrderId\":\"${TAG}-${i}\"}")" \
     || fail "order ${i} was not acked"
   [[ "${code}" == 2* ]] || fail "order ${i} was refused (HTTP ${code}) — the join below would be over rejections, not orders"

@@ -60,11 +60,16 @@ fi
 
 # Both pods are the checked-in proof client with only the pod name and the app label changed.
 # The positive control keeps the label the policy lists; the negative control gets one it does not.
+# PROOF_INTERVAL_MS is raised to 10 min: the client sequences a REAL resting order every interval,
+# and at the manifest's 10 ms the positive control alone left 3,285 resting AAL buys (account 11) on
+# a side-namespace rig in 60 s (proof audit, 2026-10-27). One probe order is enough to show CONNECTED.
 render() { # render <pod-name> <app-label>
   sed -e "s/^  name: cluster-proof-client\$/  name: $1/" \
-      -e "s/^    app: cluster-proof-client\$/    app: $2/" "${PROOF_CLIENT}"
+      -e "s/^    app: cluster-proof-client\$/    app: $2/" \
+      -e '/name: PROOF_INTERVAL_MS/{n;s/value: "[0-9]*"/value: "600000"/;}' "${PROOF_CLIENT}"
 }
 grep -q '^  name: cluster-proof-client$' "${PROOF_CLIENT}" && grep -q '^    app: cluster-proof-client$' "${PROOF_CLIENT}" \
+  && grep -q 'name: PROOF_INTERVAL_MS' "${PROOF_CLIENT}" \
   || fail "proof-client.yaml no longer has the name/label lines this proof rewrites; update render()"
 
 step "1. launch both controls (same image, same secret, same endpoints; only the label differs)"
@@ -73,8 +78,9 @@ render netpol-positive cluster-proof-client | ${K} apply -f - >/dev/null
 render netpol-negative netpol-negative-control | ${K} apply -f - >/dev/null
 echo "[ok] netpol-positive (app=cluster-proof-client) and netpol-negative (app=netpol-negative-control) created"
 
-connected() { ${K} logs "$1" 2>/dev/null | grep -q '^CONNECTED'; }
-tried()     { ${K} logs "$1" 2>/dev/null | grep -q '^CONNECT-.*RETRY'; }
+# Read whole, then grep: `logs | grep -q` under pipefail fails on SIGPIPE once the log is long.
+connected() { local l; l="$(${K} logs "$1" 2>/dev/null)"; grep -q '^CONNECTED' <<<"${l}"; }
+tried()     { local l; l="$(${K} logs "$1" 2>/dev/null)"; grep -q '^CONNECT-.*RETRY' <<<"${l}"; }
 
 step "2. positive control: the allowed label must connect within ${DEADLINE_S}s"
 deadline=$((SECONDS + DEADLINE_S))

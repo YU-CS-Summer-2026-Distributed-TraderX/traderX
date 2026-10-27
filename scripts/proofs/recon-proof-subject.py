@@ -7,6 +7,7 @@ save/reset the selected checkpoint, then restore it and the subject in finally.
 """
 import argparse
 import json
+import os
 import re
 import shlex
 import signal
@@ -49,7 +50,7 @@ def safe(value, pattern):
 class Control:
     def __init__(self, args):
         self.a = args
-        self.k = ['kubectl', '-n', 'traderx', '--context', args.context]
+        self.k = ['kubectl', '-n', os.environ.get('NS') or 'traderx', '--context', args.context]  # NS: never fall back to the live namespace on a shared context
         self.token = sys.stdin.read().strip()
         require(bool(self.token), 'missing admin token')
         self.forward = None
