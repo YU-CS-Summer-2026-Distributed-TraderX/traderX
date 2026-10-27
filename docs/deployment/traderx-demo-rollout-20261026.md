@@ -384,3 +384,15 @@ shared notes `demo-fixes-20261027/`.
 
 Test orders placed and removed: 10, 11, 12, 13 cancelled through the Admin control; 14–17 traded. Open orders 0;
 members agree at sequence 1319, 12 trades.
+
+**EOD close and publish on `traderx`, yaakov's go (12:51–12:52 pm ET).** "Close session" in the console minted
+price version v1 for 2026-10-27 (67 instruments, 0 flagged), which published at 12:51:40. Position-service marked
+18 P&L rows, 0 halted. The extract cut at consensus sequence 1320 and wrote three objects to
+`gs://project-compsci-484414-traderx-risk-extracts/2026-10-27/v1/` (`.cut` generation 1793119904016740). The
+`.cut` object hashes to `3fe8a8c8…cf18`, the `cutSha256` both CSVs carry. 6 position rows (the day's IBM, MSFT
+and AAPL option trades, both sides) and 2 swap contracts (SW-1306, the SWPT-1308 swaption).
+
+Finding: a cold first visit to the EOD tab can leave "Today's end of day" on "reading…". The page's cut-provenance
+reads (one `gcloud storage cat` per archived cut) and the chain read share the console's two CLI slots, which
+pushed the chain past the load balancer's 60 s timeout (502). With the provenance cache warm the chain reads in
+about 10 s; pressing Refresh recovers.
