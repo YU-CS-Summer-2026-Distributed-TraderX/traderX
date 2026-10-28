@@ -1,6 +1,6 @@
 # ADR-087: A cluster member's log outlives its pod
 
-Status: accepted 2026-10-27 (yaakov), code only; production moves in a separate roll (§4). Pack:
+Status: accepted 2026-10-27 (yaakov), production moved in roll 4, 2026-10-28, by §4 (rollout record §13). Pack:
 [GKE member runtime](../maintenance/gke-member-runtime/spec.md) (FR-GMR-01, FR-GMR-09, and the invariant FR-GMR-10: two members without their logs never form a quorum). Supersedes the
 lifecycle half of [ADR-081](adr-081-gke-member-runtime.md) §1: the disk and its class are unchanged.
 

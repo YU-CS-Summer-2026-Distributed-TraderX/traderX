@@ -1,7 +1,7 @@
 # GKE member runtime
 
 Status: integrated, 2026-10-25 to 2026-10-27. Decisions: [ADR-081](../../system/adr-081-gke-member-runtime.md),
-[ADR-087](../../system/adr-087-member-persistent-volumes.md) (persistent member volumes; code only, not yet rolled).
+[ADR-087](../../system/adr-087-member-persistent-volumes.md) (persistent member volumes; on production since roll 4, 2026-10-28).
 The book-capacity guard sized against this heap is ADR-079 §6.
 
 Sources:

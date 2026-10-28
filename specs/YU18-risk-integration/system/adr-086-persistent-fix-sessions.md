@@ -1,6 +1,6 @@
 # ADR-086: FIX sessions persist in JetStream and resume on any gateway replica
 
-Status: implemented and proven on GKE (2026-10-28); ships with the next production rollout, which yaakov approves separately. Requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12(d) on the YU12+ gateway
+Status: implemented and proven on GKE (2026-10-28); on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13). Requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12(d) on the YU12+ gateway
 tier (ADR-047). Retires TD-AC01. Found by the spec-driven proof audit, round 2, suspects 7 and 9
 (`scripts/proofs/COVERAGE.md`). Seam with ADR-084 (FIX fill reports).
 

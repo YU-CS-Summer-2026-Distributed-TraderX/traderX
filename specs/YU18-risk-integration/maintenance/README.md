@@ -31,11 +31,11 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Bounded settlement](settlement-memory/README.md) | Source and isolated retained-data proof accepted; original delivery acceptance remains separate |
 | [Engine-review hardening](engine-review-hardening/README.md) | Integrated 2026-10-27: S1–S6 (ADR-082), F1–F11 |
 | [Console sessions](console-sessions/README.md) | Integrated 2026-10-26 |
-| [FIX fill reports](fix-fill-reports/README.md) | Code 2026-10-28 (`abc57a39`, `0326f733`), live on `traderx-fixf`, not deployed (ADR-084) |
-| [Control feed republish](control-feed-republish/README.md) | Code 2026-10-27 (`3b10e7e2`), not deployed; production repaired by hand (ADR-085) |
+| [FIX fill reports](fix-fill-reports/README.md) | Code 2026-10-28 (`abc57a39`, `0326f733`); on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-084) |
+| [Control feed republish](control-feed-republish/README.md) | Code 2026-10-27 (`3b10e7e2`); on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-085) |
 | [Exactly-once client](exactly-once-client/README.md) | Venue contract and FIX restatement integrated 2026-10-28; binary client proven locally (ADR-091) |
-| [FIX session persistence](fix-session-persistence/README.md) | Integrated 2026-10-28, proven on a GKE side namespace, not deployed (ADR-086) |
+| [FIX session persistence](fix-session-persistence/README.md) | Integrated 2026-10-28; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-086) |
 | [Exactly-once dedupe](exactly-once-dedupe/README.md) | Proposed 2026-10-28 (ADR-090), awaiting approval; not implemented |
-| [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, code only (ADR-087) |
+| [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, on production since roll 4 (ADR-087) |
 
 Future fixes, including feed reconnect, belong here. Update the parent RI issue, bounded task record and live-rig queue as appropriate. A directory is not a service or deployment; follow [state pack layout](../../../docs/spec-kit/state-components.md) and the project task lifecycle.

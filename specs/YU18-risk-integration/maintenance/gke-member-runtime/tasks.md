@@ -11,7 +11,7 @@
 - [x] Member `/data` on a retained per-member claim, and the render refuses an ephemeral one (FR-GMR-01, ADR-087).
 - [x] No negative DNS caching on member JVMs (FR-GMR-09); `MemberDnsCacheTest`.
 - [x] `yu18-minority-no-commit.sh` freezes the minority; `yu18-member-disk-survives.sh` for the disk-loss path.
-- [ ] Production moves from ephemeral to persistent claims: the roll plan in ADR-087 §4 (rollout chat).
+- [x] Production moves from ephemeral to persistent claims: the roll plan in ADR-087 §4, done in roll 4 (2026-10-28, 11:05–11:08 am ET; `docs/deployment/traderx-demo-rollout-20261026.md` §13).
 
 ## Still open
 

@@ -1,6 +1,6 @@
 # Control feed republish specification
 
-Status: implemented (`3b10e7e2`), unit-verified; not deployed. Scope: `reference-data`'s security control outbox
+Status: implemented (`3b10e7e2`), unit-verified; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13). Scope: `reference-data`'s security control outbox
 and the `TRADERX_CONTROL_SECURITY` stream it feeds. The account-service outbox is out of this change.
 
 - FR-CFR-01: `reference-data` SHALL compare its outbox's `published` flags with the stream on the first outbox

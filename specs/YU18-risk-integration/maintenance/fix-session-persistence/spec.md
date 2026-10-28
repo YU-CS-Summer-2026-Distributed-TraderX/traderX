@@ -1,6 +1,6 @@
 # FIX session persistence specification
 
-Status: implemented on `traderX-risk-integration`, proven on a GKE side namespace; not yet deployed to `traderx`.
+Status: implemented on `traderX-risk-integration`, proven on a GKE side namespace; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13).
 Scope: the cluster gateway's FIX acceptor (`FixGatewayAcceptor`, `FixSessionStore`) on the YU12+ gateway tier,
 its GKE manifest and the CompSci render. Decision: [ADR-086](../../system/adr-086-persistent-fix-sessions.md).
 Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where enabled.

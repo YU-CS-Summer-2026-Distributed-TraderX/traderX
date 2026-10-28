@@ -1,7 +1,7 @@
 # FIX fill reports
 
 Status: integrated in code 2026-10-27/28 (`abc57a39`, `0326f733`), live-verified on the side namespace
-`traderx-fixf`; not yet deployed to `traderx`. Decision: [ADR-084](../../system/adr-084-fix-fill-reports.md).
+`traderx-fixf`; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13). Decision: [ADR-084](../../system/adr-084-fix-fill-reports.md).
 Base requirement: YU10 FR-FIX05. Closes proof-audit round 2, suspect 8 (`scripts/proofs/COVERAGE.md`).
 Seam: persistent sessions, [ADR-086](../../system/adr-086-persistent-fix-sessions.md) §3.
 

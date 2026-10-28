@@ -1,7 +1,7 @@
 # FIX session persistence
 
 Status: integrated on `traderX-risk-integration` (`0e9ee1b3`, `d7a44f50`, and the fail-closed follow-up),
-proven on a GKE side namespace, not yet deployed to `traderx`. Decision:
+proven on a GKE side namespace; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13). Decision:
 [ADR-086](../../system/adr-086-persistent-fix-sessions.md). Base requirements: YU10 FR-FIX04, FR-FIX11,
 FR-FIX12; retires YU12 TD-AC01 where `FIX_SESSION_STORE=jetstream`.
 
