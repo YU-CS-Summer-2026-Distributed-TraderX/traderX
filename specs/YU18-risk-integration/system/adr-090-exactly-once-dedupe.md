@@ -5,7 +5,7 @@ as-built notes in §4 record where the implementation narrowed the proposal and 
 FIX order records are a ring per account, in the store and in the heap, and a resend the ring may have lost is
 refused, never booked (§4a, FR-XOD-13). At 400K/s (CLOUD-QUEUE row 17, arm `xs`, image `f815003d`), a key-level check
 of the full member log found 0 keys booked twice among 14,679,944 acceptances (Evidence).
-Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..13 and
+Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..14 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
 (`independent-baseline/results-20261025-open/STALLS.md` §4, the 1-hour 400K/s `xp` arm) and the

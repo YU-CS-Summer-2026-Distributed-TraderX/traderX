@@ -1610,6 +1610,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-XOD-10` | CI |  |  | ExactlyOnceStreamTest: flag and tail must agree; a reused slot keeps no tail |
 | YU18 | `FR-XOD-11` | CI |  |  | BinarySequencedFrameTest |
 | YU18 | `FR-XOD-12` | CI |  |  | FixExactlyOnceIT (3: resend on the other replica answered with the original, stored-never-submitted caught up in order, unsequenced control submits twice); NFR-XOD-03 A/B before enabling |
+| YU18 | `FR-XOD-14` | CI |  |  | FixExactlyOnceIT aResendPastTheEngineWindowIsNotAnsweredAsRejected: a ref-less DUPLICATE (past the engine ring) is answered 35=j EXACTLY_ONCE_COMMITTED_REF_UNKNOWN, booked once; fails on the gateway that sent 39=8 |
 | YU18 | `FR-XOD-13` | CI |  |  | FixExactlyOnceIT case 4: 30 orders through a ring of 8 leave 8 keys in FIX_ORDERS, none in FIX_SESSIONS, 8 ClOrdIDs, 0 requests; a PossResend inside the ring is the original, one past it is refused 35=j EXACTLY_ONCE_AGED_OUT and not booked, on the same replica and after adoption. Fails on the window+index store in FIX_SESSIONS (92 keys) and with the aged-out check off (booked again) |
 | YU18 | `NFR-XOD-01` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: leader snapshot halt |
 | YU18 | `NFR-XOD-02` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: p50/p99 |

@@ -618,6 +618,13 @@ public final class FixGatewayAcceptor {
                 sendRestatement(sessionId, clOrdId, accountId, ticker, side, qty, result.orderRef());
                 return;
             }
+            if (!result.accepted() && result.riskReason() == DUPLICATE) {
+                // ADR-090 FR-XOD-03/14: committed earlier, once, its ref past the stream's answer window. Not 39=8: that
+                // reads as "did not execute" (ADR-091 §3) for an order that did.
+                sendExactlyOnceReject(sessionId, clOrdId, "EXACTLY_ONCE_COMMITTED_REF_UNKNOWN: this ClOrdID executed"
+                    + " earlier, once; its order id is past the engine's answer window; not booked again; query its status");
+                return;
+            }
             if (result.accepted()) {
                 refByClOrdId.put(qualify(sessionId, clOrdId), result.orderRef());
             }
@@ -1169,11 +1176,17 @@ public final class FixGatewayAcceptor {
          * BusinessMessageReject with the reason, and the client reconciles by OrderStatusRequest/OrderMassStatusRequest.
          */
         private void sendAgedOut(final SessionID sessionId, final String clOrdId) {
+            sendExactlyOnceReject(sessionId, clOrdId, "EXACTLY_ONCE_AGED_OUT: ClOrdID is older than the last "
+                + sessionStore.orderWindow + " orders kept for this account today; not booked by this request; query its"
+                + " status");
+        }
+
+        /** A NewOrderSingle that may have executed and is not booked again: 35=j with the reason, never 39=8. */
+        private void sendExactlyOnceReject(final SessionID sessionId, final String clOrdId, final String text) {
             final quickfix.fix44.BusinessMessageReject reject = new quickfix.fix44.BusinessMessageReject(
                 new quickfix.field.RefMsgType("D"), new quickfix.field.BusinessRejectReason(0));
             reject.set(new quickfix.field.BusinessRejectRefID(clOrdId));
-            reject.set(new Text("EXACTLY_ONCE_AGED_OUT: ClOrdID is older than the last " + sessionStore.orderWindow
-                + " orders kept for this account today; not booked by this request; query its status"));
+            reject.set(new Text(text));
             send(reject, sessionId, clOrdId);
         }
 

@@ -80,6 +80,11 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
     NewOrderSingle with `PossResend=Y` or `PossDupFlag=Y` whose ClOrdID is not in the ring SHALL NOT be booked.
     It SHALL be answered with a BusinessMessageReject (`RefMsgType=D`, `BusinessRejectRefID` = the ClOrdID), with
     text beginning `EXACTLY_ONCE_AGED_OUT`.
+- FR-XOD-14: When the engine answers a FIX NewOrderSingle REJECTED/`DUPLICATE` with no ref (FR-XOD-03, a resend
+  more than W behind its stream's next), the FIX gateway SHALL answer it with a BusinessMessageReject
+  (`RefMsgType=D`, `BusinessRejectRefID` = the ClOrdID). The text SHALL begin
+  `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`. The gateway SHALL NOT send an ExecutionReport with `39=8`, which reads as
+  "did not execute" (ADR-091 §3), for an order that executed once.
 
 ## Non-functional
 
@@ -125,6 +130,10 @@ unflagged frame is unchanged, and seq 0 is a protocol error.
   once;
 - an order a replica stored and never submitted is answered first, in order, when the next order meets the gap;
 - negative control: unsequenced, the same resend reaches the venue twice.
+
+It covers FR-XOD-14: a resend whose original executed, answered as the engine answers past its ring
+(REJECTED/DUPLICATE, ref 0), gets `35=j EXACTLY_ONCE_COMMITTED_REF_UNKNOWN` and is booked once. The case fails on a
+gateway that answers it `39=8`.
 
 It also covers FR-XOD-13, with 30 orders through a ring of 8:
 

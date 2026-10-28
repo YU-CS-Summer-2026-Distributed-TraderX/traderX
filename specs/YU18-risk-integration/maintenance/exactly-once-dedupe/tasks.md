@@ -13,6 +13,8 @@
 - [x] FIX order records are a ring per account in the store and the heap, and an aged-out resend is refused
       (`EXACTLY_ONCE_AGED_OUT`), never booked (FR-XOD-13, ADR-090 §4a). `FixExactlyOnceIT` case 4 fails on the
       window-plus-index store and with the check off.
+- [x] FIX: a ref-less DUPLICATE is answered `35=j EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`, never `39=8` (FR-XOD-14).
+      `FixExactlyOnceIT` case 5 fails on the gateway that sent `39=8`.
 - [x] Loadgen `plan.sequenced` and HxNativeReplay `duplicateKeys`/`resendsOfCommitted`; arms `xs`/`xn`
       (`exactly-once-sequenced.patch`, the hxb harness, not this repo).
 - [x] Local triad `xs`: 400/s and 1,600/s valid, strict replay `duplicateKeys` 0, `resendsOfCommitted` 2,056 at

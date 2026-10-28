@@ -21,7 +21,8 @@ replicated state (FR-IMRG14), consulted before risk, identical on every member a
    the answer is REJECTED/DUPLICATE naming its ref; a client reads that as the receipt for that ref. On an
    ADR-090 sequenced stream, a resend more than W behind the stream's next is answered REJECTED/DUPLICATE with no
    ref. That is the receipt for its `seq`: the client reconciles the order by status and never resends it
-   (FR-XOD-03).
+   (FR-XOD-03). On FIX that answer is a BusinessMessageReject `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`, never `39=8`
+   (FR-XOD-14).
 3. **FIX speaks FIX.** That DUPLICATE answer reaches a FIX client as an Order Status report (`150=I`) for
    `ord-<ref>`, its state from the read model when there is one. Before this it was `39=8` with `OrderID NONE`,
    which a FIX client would book as a reject of an order that had executed.

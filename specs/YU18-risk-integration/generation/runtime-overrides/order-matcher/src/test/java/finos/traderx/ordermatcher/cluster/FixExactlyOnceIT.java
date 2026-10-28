@@ -73,6 +73,7 @@ class FixExactlyOnceIT {
         int nextRef = 1;
         int unsequenced;
         String ambiguous;
+        boolean pastWindow;   // answer a duplicate as the engine does past its ring: REJECTED/DUPLICATE, ref 0
 
         @Override
         public synchronized ExecResult submitSequencedOrder(final String clOrdId, final int accountId, final String ticker,
@@ -91,7 +92,9 @@ class FixExactlyOnceIT {
                     return new ExecResult(true, ref, OutputEvent.KIND_ORDER_ACCEPTED);
                 }
                 case StreamDedupe.DUPLICATE -> {
-                    return new ExecResult(true, refBySeq.get(k), OutputEvent.KIND_ORDER_ACCEPTED);
+                    return pastWindow
+                        ? new ExecResult(false, 0, OutputEvent.KIND_ORDER_REJECTED, (byte) RiskReason.DUPLICATE.ordinal())
+                        : new ExecResult(true, refBySeq.get(k), OutputEvent.KIND_ORDER_ACCEPTED);
                 }
                 default -> {
                     return new ExecResult(false, (int) streams.expected(), OutputEvent.KIND_ORDER_REJECTED,
@@ -163,6 +166,32 @@ class FixExactlyOnceIT {
         assertEquals("ord-2", er.get("37"), "the ORIGINAL order: " + er);
         assertEquals(1, venue.booked.get("CLIENT5\u0001s2"), "booked once");
         assertEquals(0, venue.unsequenced);
+    }
+
+    /**
+     * FR-XOD-14: a resend whose original executed but whose ref is past the engine's answer ring (REJECTED/DUPLICATE,
+     * ref 0) is answered 35=j EXACTLY_ONCE_COMMITTED_REF_UNKNOWN, never 39=8 (ADR-091 §3: "rejected" reads as "did not
+     * execute"). Fails on a gateway that sends the ExecutionReport.
+     */
+    @Test
+    void aResendPastTheEngineWindowIsNotAnsweredAsRejected() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a-C9", "CLIENT9", true);
+        final int b = startGateway(venue, "gw-b-C9", "CLIENT9", true);
+        final Client c1 = new Client(a, "CLIENT9");
+        assertEquals("A", c1.logon().get("35"));
+        venue.ambiguous = "s1";
+        c1.order("s1", "");
+        Thread.sleep(500);   // booked; the gateway logs it ambiguous and answers nothing
+        c1.rst();
+        venue.pastWindow = true;
+        final Client c2 = new Client(b, "CLIENT9");
+        c2.out = 3;          // Logon, s1 sent
+        assertEquals("A", c2.logon().get("35"));
+        c2.order("s1", "97=Y\u0001");
+        assertExactlyOnceReject(c2, "s1", "EXACTLY_ONCE_COMMITTED_REF_UNKNOWN");
+        assertEquals(1, venue.booked.get("CLIENT9\u0001s1"), "booked once");
+        c2.close();
     }
 
     @Test
@@ -257,13 +286,18 @@ class FixExactlyOnceIT {
     }
 
     private static void assertAgedOut(final Client c, final String clOrdId) throws IOException {
+        assertExactlyOnceReject(c, clOrdId, "EXACTLY_ONCE_AGED_OUT");
+    }
+
+    private static void assertExactlyOnceReject(final Client c, final String clOrdId, final String reason)
+            throws IOException {
         Map<String, String> m;
         do {
             m = c.read();
         } while ("0".equals(m.get("35")));
-        assertEquals("j", m.get("35"), "an aged-out resend is refused, not booked: " + m);
+        assertEquals("j", m.get("35"), "refused as possibly executed, never 39=8: " + m);
         assertEquals(clOrdId, m.get("379"));
-        assertTrue(m.get("58").startsWith("EXACTLY_ONCE_AGED_OUT"), m.get("58"));
+        assertTrue(m.get("58").startsWith(reason), m.get("58"));
     }
 
     private static String now() {
