@@ -1,6 +1,6 @@
 # Downstream read side specification
 
-Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day). Dependencies: JetStream on the existing NATS server, the YU18 trade
+Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 2026-10-28). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
 ## Requirements
@@ -19,6 +19,11 @@ and order bridges, MariaDB.
   missing=<m>)`. A side redelivered after it committed, and the first side of a new epoch, SHALL NOT count.
   The last committed `tradeSeq` of each epoch is stored in `projection_cursor` (row `trade-seq:<id prefix>`,
   partition 0, `stream_seq`), written in the same transaction as the batch that applied it.
+  A side that reaches the projection but that SQL refuses (it is acked and never commits) SHALL count as
+  missing when it is refused, with one log line `ALERT trade-feed REFUSED <n> trade side(s): SQL refused them
+  and they never committed (total missing=<m>)` per refused batch. The epoch's running count is stored beside
+  the watermark (row `trade-seq:missing:<id prefix>`, `stream_seq`) and carried into the next start
+  (proof-audit suspect 14: an option fill refused by narrowed symbol columns read 0 after a restart).
 - FR-DRS-03: Trade and order writes SHALL be batched at 1000: one run-row read per scope, one counter
   UPDATE, one position prefetch and one multi-row position upsert per batch. Order updates SHALL use one
   transaction per batch, falling back to one per update on refusal.
@@ -123,8 +128,14 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   This holds for outages within the stream retention of FR-DRS-24. A side the stream discarded before the
   consumer reached it SHALL count in `missingTradeSides` (FR-DRS-02). The bond rule, SQL settlement and
   the recon of FR-DRS-22 SHALL behave as on the core feed.
+- FR-DRS-26: The member's recon rows (`GET /recon/trades/blotter`, the full-history index and the regulatory
+  audit rows) SHALL carry each price at the engine's full tick precision (6 dp), never rounded, so a bond's
+  fraction of par (YU16 ADR-057) compares equal to the 6-dp `trades.price` the trade bridge wrote. A price
+  exact at 3 dp SHALL keep its 3-dp rendering. Before this, the member used the 009 equity edge rounding
+  (`Px.toDecimalOrZero`, 3 dp HALF_UP) and every bond side was FIELD_MISMATCH (proof-audit suspect 13:
+  `UST-20310630` blotter 0.997 vs SQL 0.996650).
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
-  the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark row.
+  the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
 - NFR-DRS-02: No engine, ack, snapshot or wire format changes.
 
 ## Success Criteria
@@ -134,7 +145,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   and every position equals an independent recomputation.
 - SC-DRS-03: `TradeSeqGapsTest`, `JetStreamFeedTest`, `OrderViewTest`, `TradeViewTest`,
   `BridgePartitionsTest`, `LedgerSettlementReconTest`, `ReconciliationProjectionGraceTest`,
-  `TradeSnapshotStoreConcurrencyIT` and `ReceiptLanesIT` pass in an empty-root render.
+  `TradeSnapshotStoreConcurrencyIT`, `ReceiptLanesIT`, `ClusterReconPriceTest` and `TradeFeedRefusalTest` pass in an empty-root render.
 - SC-DRS-04: Live, with the default ingest queue and a 400K/s burst, the bridges' rejected ids equal
   the engine's fills minus the stream, which equal the recon's MISSING set. With the GKE queue, the
   same burst rejects 0.

@@ -1,7 +1,6 @@
 package finos.traderx.ordermatcher.cluster;
 
 import finos.traderx.ordermatcher.lmax.OutputEvent;
-import finos.traderx.ordermatcher.lmax.Px;
 import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.lmax.TradeBlotter;
 import finos.traderx.ordermatcher.model.OrderSide;
@@ -694,8 +693,19 @@ final class ClusterRecon {
             ticker,
             OrderSide.values()[out.side].name(),
             out.tradeQty,
-            Px.toDecimalOrZero(out.tradePx),
+            exactPrice(out.tradePx),
             out.updatedAtMillis);
+    }
+
+    /**
+     * FR-DRS-26: the engine's tick at full precision. {@code Px.toDecimalOrZero} rounds to 3 dp for the
+     * 009 equity edge, which turned every bond fill (a 6-dp fraction of par, ADR-057) into a FIELD_MISMATCH
+     * against the 6-dp row the trade bridge wrote. Scale stays at least 3, so a price that was already
+     * exact at 3 dp renders exactly as before.
+     */
+    static BigDecimal exactPrice(final long ticks) {
+        final BigDecimal exact = BigDecimal.valueOf(ticks, 6).stripTrailingZeros();
+        return exact.scale() < 3 ? exact.setScale(3) : exact;
     }
 
     private AuditRow auditRow(final OutputEvent out, final String ticker) {
@@ -713,7 +723,7 @@ final class ClusterRecon {
             ticker,
             OrderSide.values()[out.side].name(),
             trade ? out.tradeQty : out.quantity,
-            Px.toDecimalOrZero(trade ? out.tradePx : out.limitPx),
+            exactPrice(trade ? out.tradePx : out.limitPx),
             out.updatedAtMillis,
             reasonName(out.riskReason));
     }

@@ -365,15 +365,19 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     } catch (Exception x) {
       log.error("Batch trade processing failed for {} trades; retrying individually", batch.size(), x);
       // Fall back to per-trade processing so one bad order doesn't silently drop the whole batch.
+      int refused = 0;
       for (TradeOrder order : batch) {
         try {
           tradeService.processTrade(order);
           applied.incrementAndGet();
         } catch (Exception individualFailure) {
+          refused++;
           log.error("Error processing trade order {}", order, individualFailure);
         }
       }
-      gaps.save();   // these sides reached the projection; a failed one is logged above, not lost upstream
+      // FR-DRS-02: a refused side is acked and never committed, so it is missing like a lost one.
+      gaps.refused(refused);
+      gaps.save();
     }
   }
 
@@ -392,6 +396,8 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   public static final class TradeSeqGaps {
     /** projection_cursor row (partition 0) holding an epoch's watermark in stream_seq. */
     static final String SCOPE = "trade-seq:";
+    /** Key prefix (under SCOPE) of the row holding the epoch's running missing count, so it survives a restart. */
+    static final String MISSING = "missing:";
     private long last = -1;
     private long missing;
     private long firstSeen = -1;
@@ -409,7 +415,15 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     /** Save the watermark; called inside the batch's transaction. A failure never fails the batch. */
     synchronized void save() {
       if (store == null || last <= 0) { return; }
-      try { store.accept(epoch, last); } catch (RuntimeException x) { storeFailed(x); }
+      try { store.accept(epoch, last); store.accept(MISSING + epoch, missing); } catch (RuntimeException x) { storeFailed(x); }
+    }
+
+    /** Sides that reached the projection but never committed (refused by SQL): missing, not applied. */
+    synchronized void refused(int n) {
+      if (n <= 0) { return; }
+      missing += n;
+      log.error("ALERT trade-feed REFUSED {} trade side(s): SQL refused them and they never committed (total missing={})",
+          n, missing);
     }
 
     private boolean warned;
@@ -427,6 +441,9 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
         Long saved = null;
         try { saved = load.apply(epoch); } catch (RuntimeException x) { storeFailed(x); }
         last = saved == null ? seq - 1 : saved;   // nothing saved: this side is the baseline
+        Long savedMissing = null;
+        if (saved != null) { try { savedMissing = load.apply(MISSING + epoch); } catch (RuntimeException x) { storeFailed(x); } }
+        if (savedMissing != null) { missing += savedMissing; }   // the count before this start carries over
       }
       if (seq > last + 1) {
         missing += seq - last - 1;
