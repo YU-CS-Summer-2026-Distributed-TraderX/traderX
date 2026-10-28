@@ -16,12 +16,13 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 - FR-GFS-02: No outbound message SHALL be transmitted unless its sequence number and body were stored first.
   A store write that fails SHALL prevent the send and SHALL end that session (TCP close).
 - FR-GFS-03: At most one gateway SHALL serve a session at a time, through the lease bucket `FIX_SESSION_LEASE`
-  (one key per session, value = owning gateway, max age 10 s, renewed every second while in use). A Logon on
-  a replica while another holds the session SHALL be answered, within 5 s plus one round trip, with Logout
-  `session is live on another gateway`, and the live session SHALL be unaffected.
-- FR-GFS-04: A gateway whose lease was last renewed more than 5 s ago SHALL re-confirm it with NATS before
-  acting on any application message. If it cannot, it SHALL close the connection without submitting the
-  message to the cluster and without writing the session. Every sequence-record write SHALL be a
+  (one key per session, value = owning gateway, max age 3 s, renewed every 500 ms while in use; FR-GFS-16). A
+  Logon on a replica while another serves the session SHALL be answered, within about one renewal (~0.5 s) plus
+  one round trip, with Logout `session is live on another gateway`, and the live session SHALL be unaffected.
+- FR-GFS-04: A gateway whose lease was last renewed more than half the TTL ago SHALL re-confirm it with NATS before
+  acting on any application message. If another gateway holds it, or NATS cannot answer, it SHALL close the
+  connection without submitting the message to the cluster and without writing the session. A lease that only
+  lapsed (nobody took it) SHALL be taken again (FR-GFS-16). Every sequence-record write SHALL be a
   compare-and-set on the revision the writer last read, so a gateway that lost the lease cannot write.
 - FR-GFS-05: A report generated while the counterparty is disconnected SHALL be stored under the session's
   lease and delivered by `ResendRequest`: the answer to a request in flight at the disconnect, and an
@@ -66,6 +67,11 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   entries instead of refusing writes, and SHALL ALERT once a minute's check finds it at 90 % of its byte cap. The
   oldest entries are ring slots and the sequence records of idle sessions (one rewritten on every send survives):
   the worst case is one idle session resuming at 1, never every gateway dropping every session.
+- FR-GFS-16: A dead gateway's sessions SHALL be resumable on another gateway about one lease TTL
+  (`FIX_SESSION_LEASE_MS`, default 3,000) after its last renewal, on the client's first Logon. The Logon is held
+  while the holder is not seen renewing as live, up to TTL + 1 s, and accepted as soon as the lease is free. A
+  live owner stalled past the TTL SHALL keep its sessions unless another gateway took one meanwhile. An existing
+  lease bucket SHALL be moved to the TTL when a gateway connects.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
@@ -89,5 +95,9 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | unknown symbol | 12 | `yu18-fix-session` step 5 | `OrdStatus=8 rejected: UNKNOWN_SECURITY` |
 | store off | 11 | `yu18-fix-resume NEGATIVE=1` | B answers the resumed Logon at MsgSeqNum 1 |
 | 3 × window messages through one session | 14 | `FixSessionStoreBoundIT.aLongSession…` | ≤ 2,048 message keys; a full ResendRequest returns the last 2,048 in order; 4,096 gap-filled, counted (before: 6,144 keys) |
+| owner dies (no renewals, client cut off); client's first Logon on B | 16 | `FixSessionPersistenceIT.aDeadOwners…` | accepted at 3,147 ms (TTL 3 s); before: refused after 5.2 s, TTL 10 s |
+| Logon on B while A serves the session | 03, 16 | `FixSessionPersistenceIT.aSecondReplicaRefuses…` | Logout `live on another gateway` in < 1.5 s (0.66 s); before: 5,167 ms |
+| A stalls 4 s, nobody takes over | 04, 16 | `FixSessionPersistenceIT.aStalledOwner…` | A keeps the session and answers; before: session closed |
+| A stalls, B takes over, A resumes | 04 | `FixSessionPersistenceIT.anExpiredOwnerIsFenced…` | unchanged: A answers nothing, submits nothing |
 | bucket created discard-new at 64 KiB, 2,000 messages | 15 | `FixSessionStoreBoundIT.aFullBucket…` | moved to discard-old; no write fails, session not lost (before: `maximum bytes exceeded [10077]`, the f15s cliff) |
 | f15s, 864 sessions at 20K/s, store on | 14, 15 | GKE arm (FIX-tail lane) | before: bucket full at 12 min (3,999,940 keys), every gateway dropped every session |

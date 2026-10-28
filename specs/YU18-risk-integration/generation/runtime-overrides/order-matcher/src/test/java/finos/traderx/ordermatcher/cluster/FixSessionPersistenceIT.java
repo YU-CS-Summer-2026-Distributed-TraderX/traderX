@@ -332,15 +332,66 @@ class FixSessionPersistenceIT {
 
         final Client c2 = new Client(b, "CLIENT2");
         c2.out = 2;   // a second instance of the counterparty, continuing its numbers: past the sequence check
+        final long asked = System.nanoTime();
         final Map<String, String> refused = c2.logon();
+        final long refusedMs = (System.nanoTime() - asked) / 1_000_000;
         assertEquals("5", refused.get("35"), "B answers the Logon with Logout: " + refused);
         assertTrue(refused.getOrDefault("58", "").contains("live on another gateway"), refused.toString());
+        // FR-GFS-16: A renews as live, so B refuses within a renewal or two, not after a 5 s wait.
+        assertTrue(refusedMs < 1_500, "refused after " + refusedMs + " ms");
 
         // The live session on A is untouched.
         c1.order("s1", '2', 10);
         assertEquals("s1", c1.awaitType("8").get("11"));
         c1.close();
         c2.close();
+    }
+
+    /**
+     * FR-GFS-16 (ADR-086 §6b): a gateway dies (no renewals, no release, its client cut off). The client's first Logon on
+     * another gateway is held until the lease lapses and accepted then, about one TTL after the last renewal. It was
+     * refused after 5 s, and accepted only on a retry after the 10 s TTL (xof: ~12 s for 48 sessions).
+     */
+    @Test
+    void aDeadOwnersSessionIsTakenOverOnTheFirstLogonWithinTheLease() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT5");
+        final int b = startGateway(venue, "gw-b", "CLIENT5");
+        final Client c1 = new Client(a, "CLIENT5");
+        assertEquals("A", c1.logon().get("35"));
+        c1.order("before", '2', 10);
+        assertEquals("before", c1.awaitType("8").get("11"));
+
+        final long died = System.nanoTime();
+        stores.get(0).renewalsStalled = true;   // SIGKILL: no renewal, no release
+        c1.rst();
+        final Client c2 = new Client(b, "CLIENT5");
+        c2.out = c1.out;
+        final Map<String, String> logon = c2.logon();
+        final long takeoverMs = (System.nanoTime() - died) / 1_000_000;
+        assertEquals("A", logon.get("35"), "the first Logon after the owner died: " + logon);
+        System.out.println("[takeover] " + takeoverMs + " ms (lease TTL " + FixSessionStore.LEASE_TTL.toMillis() + " ms)");
+        assertTrue(takeoverMs <= FixSessionStore.LEASE_TTL.toMillis() + 1_500,
+            "takeover took " + takeoverMs + " ms; the bound is the lease TTL plus a renewal");
+        c2.order("after", '2', 10);
+        assertEquals("after", c2.awaitType("8").get("11"));
+        c2.close();
+    }
+
+    /** FR-GFS-16: a live owner stalled past the TTL, with nobody taking the session meanwhile, keeps it. */
+    @Test
+    void aStalledOwnerThatNobodyReplacedKeepsItsSession() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT6");
+        startGateway(venue, "gw-b", "CLIENT6");
+        final Client c1 = new Client(a, "CLIENT6");
+        assertEquals("A", c1.logon().get("35"));
+        stores.get(0).renewalsStalled = true;   // a CPU- or NATS-starved gateway
+        Thread.sleep(FixSessionStore.LEASE_TTL.toMillis() + 1_000);
+        stores.get(0).renewalsStalled = false;
+        c1.order("still-mine", '2', 10);
+        assertEquals("still-mine", c1.awaitType("8").get("11"), "the stalled owner lost a session nobody took");
+        c1.close();
     }
 
     private static String now() {

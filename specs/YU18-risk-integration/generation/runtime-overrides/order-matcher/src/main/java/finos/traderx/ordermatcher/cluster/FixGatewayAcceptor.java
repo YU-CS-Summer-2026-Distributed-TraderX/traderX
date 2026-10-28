@@ -479,8 +479,8 @@ public final class FixGatewayAcceptor {
                     if (!auth.logonAllowed(compId, password)) {
                         throw new RejectLogon("invalid credentials");
                     }
-                    // ADR-086: one gateway per live session. Wait briefly for a previous owner (a
-                    // client that just dropped) to let go; the lease is taken only after the password.
+                    // ADR-086: one gateway per live session. A live owner refuses at once; a dead or draining
+                    // one is waited out (§6b). The lease is taken only after the password.
                     if (sessionStore != null && !sessionStore.available()) {
                         throw new RejectLogon("FIX session store unavailable; retry later");
                     }
@@ -504,7 +504,7 @@ public final class FixGatewayAcceptor {
 
         private boolean acquire(final SessionID sessionId) {
             try {
-                return sessionStore.acquireForLogon(sessionId, 5_000);
+                return sessionStore.acquireForLogon(sessionId, FixSessionStore.LOGON_WAIT_MILLIS);
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;

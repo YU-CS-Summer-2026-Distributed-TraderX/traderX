@@ -46,12 +46,13 @@ Settings when the store is on: `PersistMessages=Y`, `ResetOnLogon=N`, `RefreshOn
 
 ### 2. One live owner per session: a lease, and the seq record as fencing token
 
-Bucket `FIX_SESSION_LEASE` (history 1, max age 10 s) holds key `K` with the owning pod's name. A gateway
-takes it with `create` and renews it every second with `update` on its revision. Expiry is the bucket's max
+Bucket `FIX_SESSION_LEASE` (history 1, max age 3 s; 10 s before §6b) holds key `K` with the owning pod's name,
+suffixed ` draining` while no client is logged on. A gateway takes it with `create` and renews it every 500 ms
+with `update` on its revision. Expiry is the bucket's max
 age, which JetStream has had since 2.6 (the manifests run `nats:2.14`); per-key TTL (2.11+) is not used.
 
-- **Logon.** `fromAdmin(Logon)` takes the lease, waiting up to 5 s for a previous owner to let go, then
-  rereads the store. If another gateway still holds it, the Logon is refused with
+- **Logon.** `fromAdmin(Logon)` takes the lease, then rereads the store. A holder seen renewing as live refuses
+  the Logon at once; one that is draining or has stopped renewing is waited out, up to the TTL plus 1 s (§6b). If another gateway still holds it, the Logon is refused with
   `RejectLogon("session is live on another gateway")`, which QuickFIX/J answers with Logout. So two
   gateways never run the same session.
 - **Every shared write** needs the lease. Without it, a session that is logged on here has lost its
@@ -68,17 +69,18 @@ age, which JetStream has had since 2.6 (the manifests run `nats:2.14`); per-key 
 - **Release.** After Logout or disconnect, once no request from that session is still in flight and
   the lease has been idle 1 s, it is deleted with its revision, so a lapsed lease is never deleted out
   from under its new owner.
-- **Freshness.** A lease last renewed more than 5 s ago (half the TTL, on the monotonic clock) is
+- **Freshness.** A lease last renewed more than half the TTL ago (1.5 s, on the monotonic clock) is
   re-confirmed with NATS before the gateway acts on any application message or writes the store. A gateway
-  that was paused past the TTL (GC, SIGSTOP, a frozen node) and resumes finds the lease gone, closes the
-  connection, and never submits the message it was holding.
+  that was paused past the TTL (CPU starvation, SIGSTOP, a frozen node) and resumes finds the lease taken by
+  another gateway, closes the connection, and never submits the message it was holding. If the lease only
+  lapsed and nobody took it, the gateway takes it again and carries on (§6b).
 - **Fencing.** Every `K.seq` write is a compare-and-set on the revision this gateway last saw, so a write
   from a gateway that lost the session fails on the new owner's revision: nothing is stored, nothing sent,
   and the client is disconnected. Freshness keeps a resumed owner from acting; fencing keeps it from
   writing even if it did.
 
 A gateway that dies holding a lease blocks its session's Logon on other replicas until the lease ages
-out (at most 10 s); the client's normal logon retry covers it.
+out, at most one TTL after its last renewal; that Logon is held and accepted then (§6b).
 
 ### 3. Reports generated while the client is disconnected
 
@@ -130,7 +132,7 @@ refuses a render whose FIX gateway has no read model.
 - **Backstop.** `FIX_SESSIONS` has max age 7 days (a session idle a week starts fresh, as the daily reset
   would have made it anyway) and a 1 GiB cap, with discard-OLD since the amendment below. It was discard-new: a
   full bucket failed the write, and so every session's next send, on every gateway.
-- **Lease.** `FIX_SESSION_LEASE` keeps one revision per session for at most 10 s.
+- **Lease.** `FIX_SESSION_LEASE` keeps one revision per session for at most the lease TTL (3 s, §6b).
 
 ### 6a. Amendment 2026-10-28: the store is bounded by sessions, not traffic (FR-GFS-14/15)
 
@@ -168,6 +170,39 @@ gateway dropped every session at once. Production (roll 4) has the same cliff at
    since ADR-090 §4a (FR-XOD-13). They form a ring per account in their own bucket, `FIX_ORDERS` (discard-old),
    so they never evict this bucket's records. A resend whose record has aged out, whether overwritten by the ring
    or discarded from a full bucket, is refused with `EXACTLY_ONCE_AGED_OUT` and never booked as new.
+
+### 6b. Amendment 2026-10-28: takeover after a gateway dies is about one lease TTL (FR-GFS-16)
+
+xof (b3159bdf): after gateway-17 was killed, its 48 sessions were unavailable ~12 s. The client's resume on
+gateway-0 was refused at +5.2 s (the Logon waited 5 s, less than the 10 s TTL, so it could never succeed), and
+gateway-2 accepted it at +12.1 s, once the lease lapsed and a retry came.
+
+1. **TTL 3 s, renewed every 500 ms** (`FIX_SESSION_LEASE_MS`; six renewals per TTL), freshness half of it. The
+   store moves an existing lease bucket's max age to the TTL (and its duplicate window, which the server caps at
+   the max age), so rolling to it needs no manual step.
+2. **A Logon tells a live holder from a dead one.** The lease value is the owner, suffixed ` draining` while no
+   client is logged on there. The Logon watches the holder's revision: a renewal by a live holder means the
+   session is being served, and the Logon is refused at once (within ~0.5 s; it took 5 s). A dead holder never
+   renews, and a draining one releases within 1 s, so the Logon waits for that (up to TTL + 1 s) and takes the
+   lease the moment it is free: the client gets in on its first attempt, about one TTL after the last renewal.
+3. **A stalled owner nobody replaced keeps its sessions.** A renewal that fails because the lease lapsed
+   re-creates it if it is still free. The cost of a short TTL is therefore paid only when a client has actually
+   moved: a live gateway stalled past 3 s loses a session only to a Logon made elsewhere meanwhile.
+4. **Never two answering.** Unchanged: every `K.seq` write is a compare-and-set on the revision this gateway
+   last saw. A retake after someone else served the session fails on that write and drops the session; a stale
+   owner never stores or sends. The TTL bounds how fast a dead gateway's sessions move, not safety.
+5. **The bound.** Gen-ZGC pauses are sub-millisecond, so what stalls a gateway past 3 s is CPU starvation or a
+   NATS round trip that slow, and then only a session whose client has reconnected elsewhere moves. Measured
+   locally (`FixSessionPersistenceIT`): first Logon after the owner died accepted at 3,147 ms; a Logon against a
+   live owner refused in under 0.7 s; a 4 s stall with nobody taking over keeps the session.
+6. **Client.** No harness change is needed. The hxb loadgen retries a refused Logon after 200 ms on the next
+   gateway, and its 5 s logon timeout is longer than the 4 s the gateway may hold one.
+7. **Rolling to it.** The first new gateway shortens the TTL to 3 s. Old gateways renew every 1 s, still inside
+   it. Their freshness check (5 s) is longer than the TTL, but the fence still holds. Their lease values carry
+   no ` draining`, so a new gateway may refuse a Logon during an old one's 1 s drain, and the client's retry
+   covers it.
+8. **Not done: breaking the lease when the owner's TCP is known gone.** Only the owner learns that, and a dead
+   owner cannot act on it; a live one already releases 1 s after its client leaves.
 
 ### 7. NATS outage: no FIX without its store
 

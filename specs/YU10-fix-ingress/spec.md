@@ -85,7 +85,7 @@
   and a Logon on another replica while it is live is refused with Logout. Retention is the daily session
   (`FIX_SESSION_RESET_TIME`, 17:00 New York on GKE), each session keeping its last `FIX_RESEND_WINDOW` messages
   (older ones gap-filled), with a 7-day, 1 GiB backstop that discards the oldest; with NATS down no FIX session
-  is served. Testable form: YU18 FR-GFS-01..15
+  is served. Testable form: YU18 FR-GFS-01..16
   (`specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`).
 - FR-FIX12: Admission outcomes SHALL be distinguished: (a) pre-publish failure (ring claim
   timeout, ledger unavailable) → session-level reject, no order exists; (b) malformed or

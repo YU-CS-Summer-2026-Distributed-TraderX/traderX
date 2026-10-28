@@ -69,8 +69,20 @@ final class FixSessionStore implements MessageStoreFactory {
     static final String ORDER_BUCKET = "FIX_ORDERS";
     static final long ORDER_STORE_BYTES =
         Long.parseLong(System.getenv().getOrDefault("FIX_ORDER_STORE_BYTES", Long.toString(1L << 30)));
-    static final Duration LEASE_TTL = Duration.ofSeconds(10);
-    private static final long TICK_MILLIS = 1_000;   // renew/release cadence
+    /**
+     * ADR-086 §6b (FR-GFS-16): a dead gateway's sessions are free this long after its last renewal, so a client
+     * resuming elsewhere waits about this long. It was 10 s (f15s/xof: 48 sessions unavailable ~12 s). 3 s is 6
+     * renewals; a live owner stalled past it (gen-ZGC pauses are sub-millisecond, so a CPU-starved or NATS-starved
+     * gateway) loses a session only to a client that has already logged on elsewhere, and retakes it otherwise.
+     * Never two answering: every write is fenced by the K.seq revision, whatever the TTL.
+     */
+    static final Duration LEASE_TTL = Duration.ofMillis(Long.parseLong(
+        System.getenv().getOrDefault("FIX_SESSION_LEASE_MS", "3000")));
+    private static final long TICK_MILLIS = 500;   // renew/release cadence: six per TTL
+    /** A Logon waits this long for a holder that has stopped renewing (dead) to lapse; a renewing one is refused at once. */
+    static final long LOGON_WAIT_MILLIS = LEASE_TTL.toMillis() + 1_000;
+    /** The lease value of a holder whose client has gone (finishing answers, or a fill for a session live nowhere). */
+    private static final String DRAINING = " draining";
     private static final long HOLD_MILLIS = 1_000;   // keep a lease this long after its last use
     /** A lease not renewed for this long is re-confirmed with the server before it is used: a gateway
      *  that was paused (GC, SIGSTOP, a frozen node) past the TTL may have lost it to another replica. */
@@ -82,7 +94,7 @@ final class FixSessionStore implements MessageStoreFactory {
      * per message.
      */
     static final int RESEND_WINDOW = Integer.parseInt(System.getenv().getOrDefault("FIX_RESEND_WINDOW", "2048"));
-    private static final long CAPACITY_CHECK_TICKS = 60;
+    private static final long CAPACITY_CHECK_TICKS = 60_000 / TICK_MILLIS;   // once a minute
     private final AtomicLong gapFilled = new AtomicLong();
     private long ticks;
     private boolean nearlyFull;
@@ -154,6 +166,7 @@ final class FixSessionStore implements MessageStoreFactory {
             discardOldest(nats.jetStreamManagement());
             ensureBucket(LEASE_BUCKET, KeyValueConfiguration.builder().name(LEASE_BUCKET).maxHistoryPerKey(1)
                 .ttl(LEASE_TTL).storageType(StorageType.File).build());
+            leaseTtl(nats.jetStreamManagement());
             ensureBucket(ORDER_BUCKET, KeyValueConfiguration.builder().name(ORDER_BUCKET).maxHistoryPerKey(1)
                 .ttl(Duration.ofDays(1)).maxBucketSize(ORDER_STORE_BYTES).storageType(StorageType.File).build());
             ordersDiscardOldest(nats.jetStreamManagement());
@@ -190,6 +203,20 @@ final class FixSessionStore implements MessageStoreFactory {
         final StreamConfiguration sc = jsm.getStreamInfo("KV_" + ORDER_BUCKET).getConfiguration();
         if (sc.getDiscardPolicy() != DiscardPolicy.Old) {
             jsm.updateStream(StreamConfiguration.builder(sc).discardPolicy(DiscardPolicy.Old).build());
+        }
+    }
+
+    /**
+     * FR-GFS-16: the lease bucket's max age IS the lease TTL, so an existing bucket (created at 10 s) is moved to
+     * {@link #LEASE_TTL}, its duplicate window with it (the server refuses one longer than the max age).
+     */
+    private static void leaseTtl(final JetStreamManagement jsm) throws IOException, JetStreamApiException {
+        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + LEASE_BUCKET).getConfiguration();
+        if (!LEASE_TTL.equals(sc.getMaxAge())) {
+            final Duration dup = sc.getDuplicateWindow() == null || sc.getDuplicateWindow().compareTo(LEASE_TTL) > 0
+                ? LEASE_TTL : sc.getDuplicateWindow();
+            jsm.updateStream(StreamConfiguration.builder(sc).maxAge(LEASE_TTL).duplicateWindow(dup).build());
+            log.warn("FIX session store: {} lease TTL {} -> {} (ADR-086 §6b)", LEASE_BUCKET, sc.getMaxAge(), LEASE_TTL);
         }
     }
 
@@ -284,10 +311,16 @@ final class FixSessionStore implements MessageStoreFactory {
         return stores.computeIfAbsent(sessionID, Store::new);
     }
 
-    /** Logon: take the session's lease, waiting up to {@code waitMillis} for its last owner to let go. */
+    /**
+     * Logon: take the session's lease. FR-GFS-16: a holder seen renewing as live is serving the session, so the Logon
+     * is refused at once (within one renewal, ~0.5 s; it waited 5 s). A holder that has stopped renewing is dead, or
+     * draining a client that just left: wait up to {@code waitMillis} for it to lapse or let go, and take it then, so
+     * a client resuming after a gateway died gets in on its first Logon, about one TTL after the last renewal.
+     */
     boolean acquireForLogon(final SessionID sid, final long waitMillis) throws InterruptedException {
         final Store store = stores.get(sid);
         final long deadline = System.currentTimeMillis() + waitMillis;
+        long seen = -1;
         while (true) {
             final boolean got;
             synchronized (store) {
@@ -296,10 +329,18 @@ final class FixSessionStore implements MessageStoreFactory {
             if (got) {
                 return adopted(store);
             }
+            final KeyValueEntry holder = store.holder();
+            if (holder != null) {
+                if (seen < 0) {
+                    seen = holder.getRevision();
+                } else if (holder.getRevision() != seen && !holder.getValueAsString().endsWith(DRAINING)) {
+                    return false;   // renewed while we watched: live on another gateway
+                }
+            }
             if (System.currentTimeMillis() >= deadline) {
                 return false;
             }
-            Thread.sleep(200);
+            Thread.sleep(100);
         }
     }
 
@@ -487,6 +528,11 @@ final class FixSessionStore implements MessageStoreFactory {
         }
     }
 
+    /** The gateway named by a lease value ({@code <owner>} or {@code <owner> draining}). */
+    static String ownerOf(final String leaseValue) {
+        return leaseValue.endsWith(DRAINING) ? leaseValue.substring(0, leaseValue.length() - DRAINING.length()) : leaseValue;
+    }
+
     /** A KV key for any SessionID: [A-Za-z0-9-] kept, every other char as _XX, so keys never collide. */
     static String keyOf(final SessionID sid) {
         final StringBuilder b = new StringBuilder();
@@ -560,7 +606,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 return false;
             }
             try {
-                leaseRevision = leases.create(key, owner.getBytes(StandardCharsets.UTF_8));
+                leaseRevision = leases.create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
                 renewedAt = System.nanoTime();
             } catch (final JetStreamApiException taken) {
                 return reclaim();
@@ -585,10 +631,10 @@ final class FixSessionStore implements MessageStoreFactory {
         private boolean reclaim() {
             try {
                 final KeyValueEntry e = leases.get(key);
-                if (e == null || !owner.equals(e.getValueAsString())) {
+                if (e == null || !owner.equals(ownerOf(e.getValueAsString()))) {
                     return false;
                 }
-                leaseRevision = leases.update(key, owner, e.getRevision());
+                leaseRevision = leases.update(key, leaseValue(), e.getRevision());
                 renewedAt = System.nanoTime();
             } catch (final Exception e) {
                 return false;
@@ -605,18 +651,55 @@ final class FixSessionStore implements MessageStoreFactory {
             return true;
         }
 
-        /** Renew now; on failure the lease is gone (lapsed, taken, or NATS unreachable). */
+        /** Renew now; on failure the lease is gone (taken, or NATS unreachable), unless it only lapsed. */
         boolean renew() {
             try {
-                leaseRevision = leases.update(key, owner, leaseRevision);
+                leaseRevision = leases.update(key, leaseValue(), leaseRevision);
                 renewedAt = System.nanoTime();
                 return true;
             } catch (final Exception e) {
+                if (retake()) {
+                    return true;
+                }
                 log.warn("FIX session {} lease lost: {}", sid, e.toString());
                 leaseRevision = 0;
                 adoptPending = false;
                 return false;
             }
+        }
+
+        /**
+         * FR-GFS-16: this gateway was stalled past the TTL and its lease lapsed. If nobody has taken it since, take it
+         * again and keep serving: a short TTL must not cost a live session its gateway for a pause nobody acted on.
+         * Safe because writes are fenced by the K.seq revision: had another gateway served the session meanwhile,
+         * this one's next write fails and drops it.
+         */
+        private boolean retake() {
+            try {
+                if (leases.get(key) != null) {
+                    return false;   // someone else holds it
+                }
+                leaseRevision = leases.create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
+                renewedAt = System.nanoTime();
+                log.warn("FIX session {}: lease lapsed while {} was stalled and nobody took it; retaken", sid, owner);
+                return true;
+            } catch (final Exception e) {
+                return false;
+            }
+        }
+
+        /** The lease's current holder, or null when it is free (lapsed or released). */
+        KeyValueEntry holder() {
+            try {
+                return leases == null ? null : leases.get(key);
+            } catch (final Exception e) {
+                return null;
+            }
+        }
+
+        /** Live while a client is logged on here; draining while answers or a fill finish without one. */
+        private String leaseValue() {
+            return live ? owner : owner + DRAINING;
         }
 
         /** Held and known to be ours: renewed recently, or renewed successfully now. */

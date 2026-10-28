@@ -13,6 +13,9 @@
 - [x] Bounded by sessions, not traffic (FR-GFS-14/15, ADR-086 §6a): per-session ring of `FIX_RESEND_WINDOW`
       keys, discard-old with a 90 % ALERT; `FixSessionStoreBoundIT` fails on the previous store (6,144 keys;
       `maximum bytes exceeded`). Found by f15s on GKE.
+- [x] Takeover after a gateway dies ≈ one lease TTL (FR-GFS-16, ADR-086 §6b): TTL 3 s / 500 ms renew, a live holder
+      refuses at once, a dead one is waited out on the first Logon, a stalled owner nobody replaced retakes.
+      Measured 3,147 ms locally (was ~12 s on GKE, xof).
 - [x] Production before the next roll: `nats stream edit KV_FIX_SESSIONS --discard old` (yaakov approves; §6a.5).
       Applied on `traderx` 2026-10-28, 1:21 pm ET; rollout record §13a.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
