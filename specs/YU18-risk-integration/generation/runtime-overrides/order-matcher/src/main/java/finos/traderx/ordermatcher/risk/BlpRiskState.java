@@ -63,6 +63,11 @@ public final class BlpRiskState {
     private int idempotencyRetentionCursor;
     private int idempotencyRetentionSize;
     private long idempotencyInsertions;
+    // ADR-090: the sequenced NEW being applied. Its own key's answer lives in its stream's ring, not
+    // in the key table (FR-XOD-05); 0 = none. sequencedDuplicate: the ring holds its ACCEPTED answer.
+    private StreamDedupe streams;
+    private long sequencedKey;
+    private boolean sequencedDuplicate;
     private int maxPositionQuantity;
     private long maxConcentrationNotionalTicks;
 
@@ -414,6 +419,13 @@ public final class BlpRiskState {
 
     /** Original accepted orderRef for a retried key, or -1. Sets {@link #duplicateReplay}. */
     public int existingOrderRef(long clientOrderKey) {
+        if (sequencedKey != 0L && clientOrderKey == sequencedKey) {
+            if (!sequencedDuplicate) return -1;
+            metrics.duplicate();
+            duplicateReplay = true;
+            decision(RiskReason.ACCEPTED);
+            return streams.duplicateRef();
+        }
         int slot = idempotencySlot(clientOrderKey, false);
         if (slot < 0) return -1;
         if (idempotencyDecisions[slot] != (byte) RiskReason.ACCEPTED.ordinal()
@@ -647,6 +659,12 @@ public final class BlpRiskState {
     }
 
     private RiskReason previousDecision(long key) {
+        if (sequencedKey != 0L && key == sequencedKey) {
+            if (!sequencedDuplicate) return null;
+            metrics.duplicate();
+            duplicateReplay = true;
+            return decision(REASONS[streams.duplicateDecision()]);
+        }
         int slot = idempotencySlot(key, false);
         if (slot < 0) return null;
         metrics.duplicate();
@@ -655,6 +673,7 @@ public final class BlpRiskState {
     }
 
     private boolean canRemember(long key) {
+        if (sequencedKey != 0L && key == sequencedKey) return true;
         if (idempotencySlot(key, true) >= 0) return true;
         evictOldestIdempotencyKey();
         return idempotencySlot(key, true) >= 0;
@@ -663,6 +682,10 @@ public final class BlpRiskState {
     private RiskReason remember(long key, int orderRef, RiskReason reason) {
         if (key == 0L) {
             return decision(reason);   // key-less command: decided but not replay-mapped
+        }
+        if (key == sequencedKey) {
+            if (!sequencedDuplicate) streams.record(orderRef, (byte) reason.ordinal());
+            return decision(reason);
         }
         if (idempotencySlot(key, false) < 0 && idempotencyRetentionSize == idempotencyRetentionKeys.length) {
             evictOldestIdempotencyKey();
@@ -820,6 +843,24 @@ public final class BlpRiskState {
     public boolean killSwitch() { return killSwitch; }
 
     public boolean duplicateReplay() { return duplicateReplay; }
+
+    // ----- ADR-090 sequenced streams -------------------------------------------------------------
+
+    public void attachStreams(StreamDedupe streams) { this.streams = streams; }
+
+    public StreamDedupe streams() { return streams; }
+
+    /** Answer {@code key} from the stream ring instead of the key table until {@link #endSequenced}.
+     *  {@code duplicate}: the ring holds the original ACCEPTED answer (only then may the engine see it). */
+    public void beginSequenced(long key, boolean duplicate) {
+        sequencedKey = key;
+        sequencedDuplicate = duplicate;
+    }
+
+    public void endSequenced() { sequencedKey = 0L; }
+
+    /** True when the key table holds {@code key} (a sequenced duplicate the ring has no answer for). */
+    public boolean knowsKey(long key) { return key != 0L && idempotencySlot(key, false) >= 0; }
 
     public long idempotencyFrontier() { return Math.max(0L, idempotencyInsertions - idempotencyRetentionSize); }
 

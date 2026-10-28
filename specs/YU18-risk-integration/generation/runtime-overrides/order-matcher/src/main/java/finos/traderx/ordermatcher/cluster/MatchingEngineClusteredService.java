@@ -14,6 +14,7 @@ import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.risk.BlpRiskState;
 import finos.traderx.ordermatcher.risk.RiskMetrics;
 import finos.traderx.ordermatcher.risk.RiskReason;
+import finos.traderx.ordermatcher.risk.StreamDedupe;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
 import io.aeron.cluster.codecs.CloseReason;
@@ -143,6 +144,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * Presized at construction, so the 250x table never rehashes on the hot path (NGC-01).
      */
     static final int IDEMPOTENCY_CAPACITY = 256 * 1024;
+    /**
+     * ADR-090 (FR-XOD-06/07): a sequenced stream's answer ring (W), the stream table's size, and how
+     * long a stream must be idle, in cluster time, before a new stream may take its slot. Presized:
+     * MAX_STREAMS x W x 5 bytes of ring (8,192 x 256 = 10 MB) plus 24 bytes a stream.
+     */
+    static final int STREAM_WINDOW = (int) envLong("EXACTLY_ONCE_STREAM_WINDOW", 256);
+    static final int MAX_STREAMS = (int) envLong("EXACTLY_ONCE_MAX_STREAMS", 8192);
+    static final long STREAM_IDLE_MILLIS = envLong("EXACTLY_ONCE_STREAM_IDLE_MS", 3_600_000L);
+
+    private static long envLong(final String name, final long fallback) {
+        final String v = System.getenv(name);
+        return v == null || v.isBlank() ? fallback : Long.parseLong(v.trim());
+    }
     static final long CREDIT_LIMIT_TICKS = Long.MAX_VALUE / 4;
     static final int MAX_ORDER_QUANTITY = 1_000_000;
     static final long MAX_ORDER_NOTIONAL_TICKS = Long.MAX_VALUE / 4;
@@ -247,7 +261,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // book-append order, T_ORDER_TYPES (the business date and the consensus limits), per-security
     // T_OT_SECURITY (trade reference and peg reference), and a 17-column T_QUEUED_ORDER. Formats 9
     // and 10 still restore: every order comes back untyped, hasTraded false, businessDate 0.
-    static final int SNAPSHOT_FORMAT = 13; // account tuples append self-match group
+    // Format 14 (ADR-090): adds the OPTIONAL T_STREAM records. MIN_READABLE stays 9: an older snapshot
+    // restores with no streams, which is exactly the state before any sequenced order was sent.
+    static final int SNAPSHOT_FORMAT = 14; // account tuples append self-match group (13); T_STREAM (14)
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -320,6 +336,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     /** YU18 format 11: {businessDate, dayOpen, pendingCapacity, pegCapacity, roundLimit}. Always written. */
     static final int T_ORDER_TYPES = 19;
     static final int T_RUN_IDENTITY = 20;
+    /** Format 14 (ADR-090): one sequenced stream, {@link StreamDedupe#tuple}, in stream-index order. */
+    static final int T_STREAM = 21;
 
     /** {orderRef, accountId, securityId, side, qty, limitPx, clientOrderKey, eventTimeMillis} --
      *  the complete replicated content of a queued ORDER_NEW. {@code seq}, {@code ingressNanos} and
@@ -858,6 +876,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.risk = new BlpRiskState(MAX_ACCOUNTS, MAX_SECURITIES, POOL_SIZE, IDEMPOTENCY_CAPACITY,
             CREDIT_LIMIT_TICKS, MAX_ORDER_QUANTITY, MAX_ORDER_NOTIONAL_TICKS, PRICE_MAX_AGE_MILLIS,
             new RiskMetrics());
+        this.risk.attachStreams(new StreamDedupe(STREAM_WINDOW, MAX_STREAMS, STREAM_IDLE_MILLIS));
         // fillFullThreshold 0: the crossing book has no threshold-driven half-fill policy (YU13).
         this.outputs = new OutputPublisher(outputRing, this::drainOnBackpressure);
         this.engine = new MatchingEngine(outputs, new HotPathMetrics(),
@@ -987,6 +1006,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             onSwapBook(session, timestamp);
             return;
         }
+        // ADR-090: the stream gate, BEFORE the generator assigns a ref. A gap, a full stream table and a
+        // duplicate with no answer to give are refused here with no state change at all; an admitted
+        // NEW, and a duplicate whose original was accepted, continue — BlpRiskState then answers this
+        // key from the stream's ring, so the duplicate is answered exactly as FR-IMRG14 answers one.
+        if (event.type == InputEvent.TYPE_ORDER_NEW && event.streamSeq != 0L && !admitSequenced(session, timestamp)) {
+            return;
+        }
         // OTEL-01: derive this order's trace identity BEFORE the sequenced generator overwrites
         // orderRef below — at this instant the decoded event holds exactly the field values the
         // gateway held when it made its own sampling decision, so the two derivations agree without
@@ -1062,6 +1088,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (phaseAdmits()) {
             engine.onEvent(event, appliedSeq, true);
         }
+        risk.endSequenced();
         activeSession = null;
         drainOutputs(session);
         applyingMarketTrade = false;
@@ -1375,6 +1402,53 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putByte(12,KIND_RUN_CONTROL);ackBuffer.putLong(13,request);
         ackBuffer.putByte(21,(byte)outcome);ackBuffer.putByte(22,(byte)0);ackBuffer.putByte(23,(byte)0);
         ackBuffer.putLong(24,0);offerEgress(session);
+    }
+
+    /**
+     * ADR-090 stream gate (FR-XOD-01..07). Returns true to apply the NEW, with the risk state answering
+     * its key from the stream ring; false when it was answered here (no ref, no appliedSeq, nothing).
+     */
+    private boolean admitSequenced(final ClientSession session, final long timestamp) {
+        final StreamDedupe streams = risk.streams();
+        // cluster time only (FR-XOD-08), the same conversion the apply below stamps the event with
+        final long nowMillis = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS
+            ? timestamp / 1_000_000L : timestamp;
+        final long key = event.clientOrderKey();
+        switch (streams.admit(event.accountId, event.streamId, event.streamSeq, nowMillis)) {
+            case StreamDedupe.ADMIT -> {
+                risk.beginSequenced(key, false);
+                return true;
+            }
+            case StreamDedupe.GAP -> refuseSequenced(session, RiskReason.OUT_OF_SEQUENCE, (int) streams.expected());
+            case StreamDedupe.LIMIT -> refuseSequenced(session, RiskReason.STREAM_LIMIT, 0);
+            default -> {
+                final byte decision = streams.duplicateDecision();
+                if (decision == RiskReason.ACCEPTED.ordinal() && streams.duplicateRef() > 0) {
+                    risk.beginSequenced(key, true);
+                    return true;
+                }
+                if (decision >= 0) {
+                    refuseSequenced(session, RiskReason.values()[decision], 0);   // its original rejection
+                } else if (!streams.beyondWindow() && (risk.knowsKey(key) || queuedByClientKey.containsKey(key))) {
+                    return true;   // admitted but answered elsewhere (PRE_OPEN queue): the key table answers it
+                } else {
+                    refuseSequenced(session, RiskReason.DUPLICATE, 0);   // never executes twice
+                }
+            }
+        }
+        return false;
+    }
+
+    private void refuseSequenced(final ClientSession session, final RiskReason reason, final int orderRef) {
+        ackBuffer.putLong(0, appliedSeq);
+        ackBuffer.putInt(8, orderRef);
+        ackBuffer.putByte(12, OutputEvent.KIND_ORDER_REJECTED);
+        ackBuffer.putLong(13, 0L);
+        ackBuffer.putByte(21, (byte) 0);
+        ackBuffer.putByte(22, (byte) reason.ordinal());
+        ackBuffer.putByte(23, (byte) 0);
+        ackBuffer.putLong(24, applyRequestId);
+        offerEgress(session);
     }
 
     private void rejectRunInput(final ClientSession session) {
@@ -2056,6 +2130,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 writeTuple(writer, T_IDEMPOTENCY, entry);
             }
         }
+        // ADR-090: streams in index order; restore puts each back at its own index (eviction breaks ties by it).
+        for (int i = 0, n = risk.streams().size(); i < n; i++) {
+            writeTuple(writer, T_STREAM, risk.streams().tuple(i));
+        }
         // YU17 contracts in booking order. That order is load-bearing twice over: it is what the
         // rendered cut iterates (so restore must reproduce it exactly, byte for byte), and the
         // idempotency table remembers a contract by its INDEX in this list — restoring them in a
@@ -2430,6 +2508,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                         + mine[1] + "," + mine[2] + "}");
                 }
                 engine.bootstrapBusinessDay((int) buffer.getLong(offset + 4), buffer.getLong(offset + 12) != 0L);
+            }
+            case T_STREAM -> {
+                final long[] tuple = new long[(length - 4) / 8];
+                for (int i = 0; i < tuple.length; i++) {
+                    tuple[i] = buffer.getLong(offset + 4 + 8 * i);
+                }
+                risk.streams().restore(tuple);
             }
             case T_RUN_IDENTITY -> {
                 long present=buffer.getLong(offset+4);

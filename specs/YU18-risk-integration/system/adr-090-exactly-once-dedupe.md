@@ -1,6 +1,7 @@
 # ADR-090: Exactly-once order entry at 400K/s: per-stream contiguous sequences
 
-Status: proposed 2026-10-28; awaiting yaakov's approval. No engine change is made until it is approved.
+Status: approved by yaakov 2026-10-28 (option c) and implemented on `traderX-risk-integration`; not deployed. The
+as-built notes in §4 record where the implementation narrowed the proposal and why.
 Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..12 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
@@ -86,7 +87,7 @@ The only bound is depth: the original ref comes back for resends within W of `ne
 across all 1,152 streams. **W = 256** (`EXACTLY_ONCE_STREAM_WINDOW`) leaves two orders of magnitude of margin.
 W only limits which resends get their original ref back; no resend is ever booked twice, whatever W is.
 
-State is `MAX_STREAMS` × (24 B + W × 8 B). The default of 8,192 streams × 256 is about 16 MB presized. The rig
+State is `MAX_STREAMS` × (24 B + W × 5 B). The default of 8,192 streams × 256 is about 10 MB presized. The rig
 runs 1,152 binary and 864 FIX streams, 2,016 in all. A snapshot writes only filled ring entries: at most
 2,016 × 256 × 8 B ≈ 4.1 MB plus headers, smaller than today's 7.3 MB. Each ring is a contiguous array, so it is
 copied straight through without the per-entry hash probe that STALLS.md §2 measured. Sequenced requests do not
@@ -132,8 +133,10 @@ members are never rolled one at a time:
 
 1. Take a snapshot and confirm `traderx_cluster_snapshots` advanced on all three members.
 2. Stop all three members, deploy the new image to each, and start them; they load the format-13 snapshot.
-3. The members are upgraded first because the ingress message gains `(streamId, seq)` as a tail versioned by
-   block length. New members decode both lengths, and an old-length message counts as unsequenced.
+3. The members are upgraded first because the ingress message gains `(streamId, seq)`. As built, the pair is a
+   16-byte tail on templates 1 and 9, present exactly when the new input flag `INPUT_FLAG_SEQUENCED` is set. The
+   schema and its checksum are unchanged, and every unflagged message is byte-for-byte the same, so old logs
+   replay as they were. New members decode both shapes and refuse a message whose flag and length disagree.
 4. Then roll the gateways, one at a time, so that no gateway ever sends the new length to an old member.
 5. Rollback is a fresh epoch from the barrier snapshot. An old image is never started on a format-14 snapshot,
    or on a log that holds sequenced input, because it would replay that input under different rules.
@@ -141,10 +144,12 @@ members are never rolled one at a time:
 ### 4. Wire, gateway and FIX
 
 - **Binary.** Frame sizes do not change.
-  - Byte 2 of NEW, unused today, becomes a `flags` byte, and bit 0 means "sequenced". CANCEL and REPLACE carry
-    the same bit in byte 1.
+  - Byte 2 of NEW, unused today, becomes a `flags` byte, and bit 0 means "sequenced".
   - A sequenced frame's `u64 clOrdId` is read as `streamId:u32 (high) | seq:u32 (low)`, and `seq` starts at 1.
-  - Every request on a sequenced stream (NEW, CANCEL, REPLACE) consumes the next `seq`.
+    The idempotency key stays the client's u64.
+  - As built, only NEW is sequenced. The binary CANCEL and REPLACE frames carry no account, so they cannot name the
+    `(account, streamId)` a stream is keyed by. A cancel is idempotent by itself, and a replace keeps the key
+    table, as today.
   - The ack is unchanged apart from the new `OUT_OF_SEQUENCE` risk reason, which carries the expected `next` in
     `orderRef`.
   - A client that never sets the bit sees no change.
@@ -153,13 +158,18 @@ members are never rolled one at a time:
   reconnect; the order of the log decides between them.
 - **FIX** (opt-in, `FIX_EXACTLY_ONCE=jetstream`, on top of ADR-086). A `ClOrdID` is free-form, so the gateway
   assigns the sequence:
-  - Under the session lease, the gateway compare-and-sets a record `ClOrdID → (seq, request)` into the session's
-    ADR-086 bucket before it submits the request. This is FR-GFS-02's store-before-send rule, applied to inbound.
-  - The stream is the 64-bit FNV-1a hash of the session's CompID pair.
+  - Under the session lease, before submitting a request, the gateway creates the record
+    `K.o.<account>.<seq> = (ClOrdID, request)` in the session's ADR-086 bucket, create-if-absent. This is
+    FR-GFS-02's store-before-send rule, applied to inbound. The sequence counts per account, because the engine's
+    streams are per account.
+  - The stream is the 64-bit FNV-1a hash of the session key and its FIX-day creation time. The day's reset purges
+    `K.o.*`, so each FIX day starts new streams at 1.
   - A resend of that `ClOrdID`, on any replica and whether or not it carries `PossResend=Y`, resubmits the stored
     `(seq, request)`.
-  - A gateway that adopts a session resubmits every stored request that has no answer. This covers a gateway
-    that stored a request and died before submitting it.
+  - As built, a stored request that never reached the engine is caught by the engine itself. The next order's
+    `OUT_OF_SEQUENCE(e)` makes the gateway submit and answer the stored requests `e .. seq-1` in order, then
+    resubmit that order. This covers a gateway that stored a request and died before submitting it. Unlike a
+    resubmission on adoption, it needs no "has this been answered" bookkeeping.
   - `MsgSeqNum` keeps its role: QuickFIX/J drops transport retransmits below the persisted target sequence
     (ADR-086 §4). It cannot identify an application resend, because that resend carries a new `MsgSeqNum`.
   - Until this is enabled, FIX uses the key table as it does today. The extra JetStream write per order gets its
@@ -181,7 +191,7 @@ members are never rolled one at a time:
 ## Consequences
 
 - At 400K/s, a resend is caught for the life of its stream instead of for 0.66 s. The 45 s that a key window
-  would need is met with ≈ 16 MB presized instead of 0.6–1.1 GB, and the snapshot is smaller than today's.
+  would need is met with ≈ 10 MB presized instead of 0.6–1.1 GB, and the snapshot is smaller than today's.
 - The leader snapshot halt stays in the measured 14–18.5 ms class instead of growing to about 1 s.
 - Clients that want exactly-once number their requests per stream, which the loadgen already does. Unsequenced
   clients are unaffected.

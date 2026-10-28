@@ -242,6 +242,13 @@ public final class InputEvent {
      * the order was queued under, so orders released together keep their original order.
      */
     public long admissionSeq;
+    /**
+     * ADR-090: a sequenced ORDER_NEW's stream (raw, the engine scopes it by account) and its sequence
+     * on that stream, from the ingress tail behind {@code AeronReplicationCodec.INPUT_FLAG_SEQUENCED}.
+     * {@code streamSeq} 0 = unsequenced. Set by every decode, so a reused ring slot never leaks them.
+     */
+    public long streamId;
+    public long streamSeq;
 
     public static InputEvent newInstance() {
         return new InputEvent();

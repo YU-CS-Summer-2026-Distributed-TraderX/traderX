@@ -42,6 +42,11 @@ import java.util.function.Consumer;
  * message n. Bucket {@value #LEASE_BUCKET} holds {@code K} = the owning gateway while one holds the
  * session. Every write needs that lease; the seq revision fences a gateway that lost it.
  *
+ * <p>ADR-090 (FR-XOD-12, {@code FIX_EXACTLY_ONCE=jetstream}): {@code K.o.<account>.<seq>} = this FIX day's
+ * inbound NewOrderSingle {@code seq} for that account, stored (create-if-absent, under the lease) before it is
+ * submitted, so a resend of its ClOrdID on any replica is resubmitted at the same sequence and the engine books it
+ * once. The stream is the session key and its creation time, so the day reset starts new streams at 1.
+ *
  * <p>QuickFIX/J stores a message before it sends it and does not send when the store throws
  * ({@code Session.sendRaw}), so an IOException here is how a refused write stays off the wire.
  */
@@ -74,6 +79,8 @@ final class FixSessionStore implements MessageStoreFactory {
     volatile Consumer<SessionID> onLost = s -> { };
     /** True only while NATS is connected and the buckets are set up: no session is served without its store. */
     private volatile boolean available;
+    /** ADR-090 (FR-XOD-12): keep the inbound order records; set by the acceptor before any Logon. */
+    volatile boolean sequenceOrders;
 
     FixSessionStore(final String natsUrl, final String owner) throws InterruptedException {
         this.owner = owner;
@@ -213,6 +220,44 @@ final class FixSessionStore implements MessageStoreFactory {
         }
     }
 
+    // ----- ADR-090 (FR-XOD-12): gateway-sequenced FIX orders -------------------------------------
+
+    /** The engine stream this session's sequenced orders ride today (per account in the engine). */
+    long orderStream(final SessionID sid) {
+        final Store store = stores.get(sid);
+        synchronized (store) {
+            long h = 0xcbf29ce484222325L;
+            for (final char c : (store.key + '/' + store.created).toCharArray()) {
+                h = (h ^ c) * 0x100000001b3L;
+            }
+            return h;
+        }
+    }
+
+    /** {account, seq} of a ClOrdID this session stored today, or null. */
+    long[] orderSeq(final SessionID sid, final String clOrdId) {
+        final Store store = stores.get(sid);
+        synchronized (store) {
+            return store.orderSeqs.get(clOrdId);
+        }
+    }
+
+    /** Store {@code raw} as {@code account}'s next sequenced order; an IOException means not stored: do not submit. */
+    long recordOrder(final SessionID sid, final int account, final String clOrdId, final String raw) throws IOException {
+        final Store store = stores.get(sid);
+        synchronized (store) {
+            return store.recordOrder(account, clOrdId, raw);
+        }
+    }
+
+    /** The stored request at {@code (account, seq)}, or null. */
+    String storedOrder(final SessionID sid, final int account, final long seq) {
+        final Store store = stores.get(sid);
+        synchronized (store) {
+            return store.orderRaws.get(account + "." + seq);
+        }
+    }
+
     /** Take a free lease without waiting (ADR-084 fills for a session live nowhere); false if held elsewhere. */
     boolean acquire(final SessionID sid) {
         final Store store = stores.get(sid);
@@ -326,6 +371,10 @@ final class FixSessionStore implements MessageStoreFactory {
         boolean live;
         int inFlight;
         long lastUse;
+        // ADR-090: today's K.o.* records, reloaded with the session
+        final Map<String, long[]> orderSeqs = new java.util.HashMap<>();
+        final Map<Integer, Long> nextOrderSeq = new java.util.HashMap<>();
+        final Map<String, String> orderRaws = new java.util.HashMap<>();
 
         Store(final SessionID sid) {
             this.sid = sid;
@@ -474,6 +523,52 @@ final class FixSessionStore implements MessageStoreFactory {
             } catch (final JetStreamApiException e) {
                 throw new IOException(e);
             }
+            loadOrders();
+        }
+
+        /** ADR-090: this FIX day's order records. ponytail: the whole day per load, as scan(); checkpoint if Logon slows. */
+        private void loadOrders() throws IOException {
+            orderSeqs.clear();
+            nextOrderSeq.clear();
+            orderRaws.clear();
+            if (!sequenceOrders || kv == null) {
+                return;
+            }
+            for (final String v : scan(key + ".o.>")) {
+                final int nl = v.indexOf('\n');
+                final String[] f = v.substring(0, nl).split(" ", 3);
+                final int account = Integer.parseInt(f[0]);
+                final long seq = Long.parseLong(f[1]);
+                orderSeqs.put(f[2], new long[] { account, seq });
+                orderRaws.put(account + "." + seq, v.substring(nl + 1));
+                nextOrderSeq.merge(account, seq + 1, Math::max);
+            }
+        }
+
+        long recordOrder(final int account, final String clOrdId, final String raw) throws IOException {
+            if (!writable()) {
+                throw new IOException("FIX session " + sid + ": lease not held; order not stored");
+            }
+            final long seq = nextOrderSeq.getOrDefault(account, 1L);
+            try {
+                kv.create(key + ".o." + account + "." + seq,
+                    (account + " " + seq + " " + clOrdId + "\n" + raw).getBytes(StandardCharsets.UTF_8));
+            } catch (final JetStreamApiException e) {
+                // another gateway stored this sequence: it owns the session now (the seq record's fencing rule)
+                final boolean wasLive = live;
+                release();
+                if (wasLive) {
+                    ticker.execute(() -> onLost.accept(sid));
+                }
+                throw new IOException("FIX session " + sid + " fenced: order " + account + "." + seq
+                    + " stored by another gateway", e);
+            } catch (final IOException e) {
+                throw dropped(e);
+            }
+            nextOrderSeq.put(account, seq + 1);
+            orderSeqs.put(clOrdId, new long[] { account, seq });
+            orderRaws.put(account + "." + seq, raw);
+            return seq;
         }
 
         /** The fencing write: move K.seq only from the revision this gateway last saw. */
@@ -509,10 +604,14 @@ final class FixSessionStore implements MessageStoreFactory {
 
         /** Today's stored outbound messages, oldest first. */
         private List<String> scan() throws IOException {
+            return scan(key + ".m.*");
+        }
+
+        private List<String> scan(final String subject) throws IOException {
             final List<String> out = new ArrayList<>();
             final CountDownLatch done = new CountDownLatch(1);
             try {
-                final var sub = kv.watch(key + ".m.*", new KeyValueWatcher() {
+                final var sub = kv.watch(subject, new KeyValueWatcher() {
                     @Override
                     public void watch(final KeyValueEntry e) {
                         if (e.getOperation() == KeyValueOperation.PUT) {
@@ -647,6 +746,8 @@ final class FixSessionStore implements MessageStoreFactory {
             try {
                 nats.jetStreamManagement().purgeStream("KV_" + BUCKET,
                     PurgeOptions.subject("$KV." + BUCKET + "." + key + ".m.>"));
+                nats.jetStreamManagement().purgeStream("KV_" + BUCKET,   // ADR-090: the day's order records
+                    PurgeOptions.subject("$KV." + BUCKET + "." + key + ".o.>"));
             } catch (final JetStreamApiException e) {
                 throw new IOException(e);
             }
@@ -654,6 +755,9 @@ final class FixSessionStore implements MessageStoreFactory {
             target = 1;
             writeSeq(1);
             sender = 1;
+            orderSeqs.clear();
+            nextOrderSeq.clear();
+            orderRaws.clear();
         }
 
         @Override

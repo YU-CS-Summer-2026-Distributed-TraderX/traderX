@@ -79,5 +79,9 @@ public enum RiskReason {
     /** FR-OT40: cancelled by the cascade exhaustion path; rides a CANCELED order. */
     CASCADE_LIMIT,
     /** ADR-079 §6: a NEW on a security with no book while the member already holds MAX_ACTIVE_BOOKS books. */
-    BOOK_CAPACITY
+    BOOK_CAPACITY,
+    /** ADR-090: a sequenced NEW ahead of its stream's next sequence; the ack's orderRef names the expected one. */
+    OUT_OF_SEQUENCE,
+    /** ADR-090: a new stream while EXACTLY_ONCE_MAX_STREAMS streams were all used within the idle threshold. */
+    STREAM_LIMIT
 }

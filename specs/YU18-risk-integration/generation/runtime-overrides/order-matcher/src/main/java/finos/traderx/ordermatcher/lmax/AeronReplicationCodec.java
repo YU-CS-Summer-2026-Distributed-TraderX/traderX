@@ -35,7 +35,14 @@ public final class AeronReplicationCodec {
     public static final int ORDER_INSTRUCTION_TEMPLATE_ID = OrderInstructionMessageDecoder.TEMPLATE_ID;
 
     public static final int INPUT_FLAG_SHADOW = 1;
-    public static final int KNOWN_INPUT_FLAGS = INPUT_FLAG_SHADOW;
+    /**
+     * ADR-090: a sequenced ORDER_NEW. Templates 1 and 9 then carry a 16-byte tail after their block,
+     * {@code u64 streamId, u64 streamSeq} (little-endian). The schema and every unflagged message are
+     * unchanged, so old logs replay byte for byte; a member decodes both lengths (FR-XOD-10).
+     */
+    public static final int INPUT_FLAG_SEQUENCED = 2;
+    public static final int SEQUENCED_TAIL_BYTES = 16;
+    public static final int KNOWN_INPUT_FLAGS = INPUT_FLAG_SHADOW | INPUT_FLAG_SEQUENCED;
 
     public static final long ACK_ON_RING = 1L;
     public static final long ACK_JOURNALED = 1L << 1;
@@ -100,9 +107,31 @@ public final class AeronReplicationCodec {
             .flags(flags);
     }
 
+    /** ADR-090: append the sequenced tail to a message just encoded at {@code offset} with
+     *  {@code baseBytes}; returns the new length. The caller encoded it with INPUT_FLAG_SEQUENCED. */
+    public static int appendSequencedTail(MutableDirectBuffer buffer, int offset, int baseBytes,
+                                          long streamId, long streamSeq) {
+        buffer.putLong(offset + baseBytes, streamId, java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putLong(offset + baseBytes + 8, streamSeq, java.nio.ByteOrder.LITTLE_ENDIAN);
+        return baseBytes + SEQUENCED_TAIL_BYTES;
+    }
+
+    private long tailStreamId;
+    private long tailStreamSeq;
+
+    /** Length check for a template that may carry the sequenced tail: the flag and the length must agree. */
+    private int readSequencedTail(DirectBuffer buffer, int offset, int length, int baseBytes, int flags) {
+        final boolean sequenced = (flags & INPUT_FLAG_SEQUENCED) != 0;
+        if (length != baseBytes + (sequenced ? SEQUENCED_TAIL_BYTES : 0)) return WRONG_LENGTH;
+        tailStreamId = sequenced ? buffer.getLong(offset + baseBytes, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
+        tailStreamSeq = sequenced ? buffer.getLong(offset + baseBytes + 8, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
+        if (sequenced && tailStreamSeq == 0L) return WRONG_LENGTH;   // seq starts at 1; 0 means unsequenced
+        return OK;
+    }
+
     /** Validate and bind the decoder without mutating a ring slot. */
     public int tryInspectInput(DirectBuffer buffer, int offset, int length) {
-        int status = validateHeader(buffer, offset, length, INPUT_BYTES,
+        int status = validateHeader(buffer, offset, length, INPUT_BYTES, true,
             InputEventMessageDecoder.TEMPLATE_ID, InputEventMessageDecoder.BLOCK_LENGTH,
             InputEventMessageDecoder.SCHEMA_VERSION);
         if (status != OK) return status;
@@ -111,6 +140,8 @@ public final class AeronReplicationCodec {
             headerDecoder.blockLength(), headerDecoder.version());
         int flags = inputDecoder.flags();
         if ((flags & ~KNOWN_INPUT_FLAGS) != 0) return UNKNOWN_FLAGS;
+        status = readSequencedTail(buffer, offset, length, INPUT_BYTES, flags);
+        if (status != OK) return status;
 
         inputSeq = inputDecoder.inputSeq();
         leaderEpoch = inputDecoder.leaderEpoch();
@@ -132,6 +163,8 @@ public final class AeronReplicationCodec {
         target.side = (byte) inputDecoder.side();
         target.ingressNanos = 0L;
         target.clearOrderInstruction();   // YU18: template 1 is always an UNTYPED command
+        target.streamId = tailStreamId;
+        target.streamSeq = tailStreamSeq;
     }
 
     /**
@@ -167,7 +200,7 @@ public final class AeronReplicationCodec {
 
     /** YU18: decode template 9 into {@code target}; fails closed exactly as template 1 does. */
     public int tryDecodeOrderInstruction(DirectBuffer buffer, int offset, int length, InputEvent target) {
-        final int status = validateHeader(buffer, offset, length, ORDER_INSTRUCTION_BYTES,
+        final int status = validateHeader(buffer, offset, length, ORDER_INSTRUCTION_BYTES, true,
             OrderInstructionMessageDecoder.TEMPLATE_ID, OrderInstructionMessageDecoder.BLOCK_LENGTH,
             OrderInstructionMessageDecoder.SCHEMA_VERSION);
         if (status != OK) return status;
@@ -175,6 +208,8 @@ public final class AeronReplicationCodec {
             headerDecoder.blockLength(), headerDecoder.version());
         final int flags = instructionDecoder.flags();
         if ((flags & ~KNOWN_INPUT_FLAGS) != 0) return UNKNOWN_FLAGS;
+        final int tail = readSequencedTail(buffer, offset, length, ORDER_INSTRUCTION_BYTES, flags);
+        if (tail != OK) return tail;
         inputSeq = instructionDecoder.inputSeq();
         leaderEpoch = instructionDecoder.leaderEpoch();
         inputFlags = flags;
@@ -198,6 +233,8 @@ public final class AeronReplicationCodec {
         target.stopPx = instructionDecoder.stopPx();
         target.trailValue = instructionDecoder.trailValue();
         target.admissionSeq = 0L;
+        target.streamId = tailStreamId;
+        target.streamSeq = tailStreamSeq;
         return OK;
     }
 
@@ -305,7 +342,14 @@ public final class AeronReplicationCodec {
 
     private int validateHeader(DirectBuffer buffer, int offset, int length, int expectedLength,
                                int templateId, int blockLength, int version) {
-        if (length != expectedLength) return WRONG_LENGTH;
+        return validateHeader(buffer, offset, length, expectedLength, false, templateId, blockLength, version);
+    }
+
+    /** {@code sequencedTail}: the length may also carry the ADR-090 tail; the flags decide which (readSequencedTail). */
+    private int validateHeader(DirectBuffer buffer, int offset, int length, int expectedLength,
+                               boolean sequencedTail, int templateId, int blockLength, int version) {
+        if (length != expectedLength
+            && !(sequencedTail && length == expectedLength + SEQUENCED_TAIL_BYTES)) return WRONG_LENGTH;
         headerDecoder.wrap(buffer, offset);
         if (headerDecoder.schemaId() != InputEventMessageDecoder.SCHEMA_ID) return WRONG_SCHEMA;
         if (headerDecoder.templateId() != templateId) return WRONG_TEMPLATE;

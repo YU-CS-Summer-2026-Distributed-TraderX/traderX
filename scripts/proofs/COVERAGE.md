@@ -1598,18 +1598,18 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `recovery-identity FR-RI07` | CI |  |  | local custody; offline tests |
 | YU18 | `recovery-identity FR-RI08` | CI |  |  | local custody; offline tests |
 | YU18 | `recovery-identity FR-RI09` | CI |  |  | local custody; offline tests |
-| YU18 | `FR-XOD-01` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-02` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs: trades == accepted, strict replay allowance 0 |
-| YU18 | `FR-XOD-03` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs: duplicateKeys 0, resendsOfCommitted > 0; xn must fail |
-| YU18 | `FR-XOD-04` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-05` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-06` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-07` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-08` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-09` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-10` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-11` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
-| YU18 | `FR-XOD-12` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: FixExactlyOnceIT; NFR-XOD-03 A/B before enabling |
-| YU18 | `NFR-XOD-01` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs vs same-lane control: leader snapshot halt |
-| YU18 | `NFR-XOD-02` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs vs same-lane control: p50/p99 |
-| YU18 | `NFR-XOD-03` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: fix-session-latency.mjs vs ADR-086 baseline |
+| YU18 | `FR-XOD-01` | CI |  |  | ExactlyOnceStreamTest: contiguous books, an unknown stream starts at 1 (fails with the gate off); live: CLOUD-QUEUE row 17 |
+| YU18 | `FR-XOD-02` | LIVE |  |  | ExactlyOnceStreamTest; live: row 17 arm xs (trades == accepted, strict replay allowance 0) |
+| YU18 | `FR-XOD-03` | LIVE |  |  | ExactlyOnceStreamTest: a resend 262,145 keys behind the window is the original (the unsequenced control books twice), beyond-ring DUPLICATE; live: row 17 (duplicateKeys 0, resendsOfCommitted > 0; xn must show > 0) |
+| YU18 | `FR-XOD-04` | CI |  |  | ExactlyOnceStreamTest: a gap is refused OUT_OF_SEQUENCE(next) with byte-identical state |
+| YU18 | `FR-XOD-05` | CI |  |  | ExactlyOnceStreamTest: the sequenced resend survives a flushed key table |
+| YU18 | `FR-XOD-06` | CI |  |  | ExactlyOnceStreamTest: W carried per T_STREAM, a snapshot of another W refused |
+| YU18 | `FR-XOD-07` | CI |  |  | ExactlyOnceStreamTest: LRU idle eviction, LIMIT, evicted stream restarts at 1, per-account streams |
+| YU18 | `FR-XOD-08` | CI |  |  | ExactlyOnceStreamTest: eviction driven by the caller-passed log time only |
+| YU18 | `FR-XOD-09` | CI |  |  | ExactlyOnceStreamTest: format-14 round trip, snapshot + tail = full log, format 13 restores with no streams; SwapBookingTest pins format 14 |
+| YU18 | `FR-XOD-10` | CI |  |  | ExactlyOnceStreamTest: flag and tail must agree; a reused slot keeps no tail |
+| YU18 | `FR-XOD-11` | CI |  |  | BinarySequencedFrameTest |
+| YU18 | `FR-XOD-12` | CI |  |  | FixExactlyOnceIT (3: resend on the other replica answered with the original, stored-never-submitted caught up in order, unsequenced control submits twice); NFR-XOD-03 A/B before enabling |
+| YU18 | `NFR-XOD-01` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: leader snapshot halt |
+| YU18 | `NFR-XOD-02` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: p50/p99 |
+| YU18 | `NFR-XOD-03` | LIVE |  |  | implemented (ADR-090), FIX opt-in off; pending: fix-session-latency.mjs vs ADR-086 baseline |

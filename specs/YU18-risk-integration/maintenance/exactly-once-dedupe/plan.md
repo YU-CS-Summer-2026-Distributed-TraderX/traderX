@@ -5,30 +5,37 @@ lets the engine keep one counter per stream instead of one key per order. Contig
 applies to `MsgSeqNum`, is what makes that counter sound: "below `next`" can mean only "already answered".
 See ADR-090 for the bound, the options and the sizing.
 
-## Implementation (after ADR-090 is approved), in order
+## Implementation, in order (done 2026-10-28; as-built notes in ADR-090 §3–§4)
 
-1. **Engine state** (`risk/StreamDedupe.java`, new, owned by `BlpRiskState`). It holds presized arrays for
-   `account`, `streamId`, `next` and `lastUsedMs`, and `long[MAX_STREAMS × W]` for the rings, each entry packing
-   ref and decision. Stream lookup uses open addressing on `scopeKey(streamId, account)`. LRU eviction scans for
-   the minimum `lastUsedMs` only when the table is full (O(streams), and rare).
+1. **Engine state** (`risk/StreamDedupe.java`, new, attached to `BlpRiskState`). It holds presized arrays for
+   `account`, `streamId`, `next` and `lastUsed`, plus `int[MAX_STREAMS × W]` refs and `byte[MAX_STREAMS × W]`
+   decisions for the rings. Stream lookup uses open addressing with backward-shift delete. LRU eviction scans for
+   the minimum `lastUsed` only when a new stream meets a full table (O(streams), and rare).
    `ponytail:` the scan is fine at 8,192 streams; use an intrusive LRU list if `MAX_STREAMS` grows past ~10⁵.
-2. **Apply path** (`MatchingEngine`). Before `answeredAsDuplicate`, branch on the sequenced flag:
-   - duplicate: answer from the ring;
-   - gap: answer `OUT_OF_SEQUENCE`;
-   - in order: the existing path, then record the answer.
+2. **The stream gate** (`MatchingEngineClusteredService.admitSequenced`). It runs before the ref generator, so a
+   gate answer changes nothing:
+   - a gap answers `OUT_OF_SEQUENCE`;
+   - a full table answers `STREAM_LIMIT`;
+   - a duplicate with a recorded rejection answers that rejection;
+   - a duplicate with no answer it can give answers `DUPLICATE`;
+   - an admitted NEW, or a duplicate of an accepted one, continues into the engine, with
+     `BlpRiskState.beginSequenced` making the ring the answer store for that one key. The engine code is
+     unchanged: `answeredAsDuplicate` and `decideAndReserve` find the ring through the key lookups they already
+     make.
 
-   Append `OUT_OF_SEQUENCE` and `STREAM_LIMIT` after the last `RiskReason` ordinal.
-3. **Ingress codec** (`AeronReplicationCodec`, SBE schema). Add the `streamId u64, seq u64` tail and accept both
-   block lengths. `InputEvent` gains `streamId` and `streamSeq`.
-4. **Snapshot** (`MatchingEngineClusteredService`). Format 14 with `T_STREAM`, written with ring bulk copies. A
-   load of formats 9–13 leaves the stream table empty. W and `MAX_STREAMS` are recorded and checked (FR-XOD-06).
-5. **Binary gateway.** Decode the flags byte and pass `(streamId, seq)` through, applied to the YU18 override of
-   `BinaryGatewayAcceptor`.
-6. **Loadgen and hxb harness** (independent-baseline, not TraderX). Add `plan.sequenced` and the
-   `OUT_OF_SEQUENCE` go-back-N. Add HxNativeReplay `duplicateKeys` and `resendsOfCommitted`. Add arms `xs` and
-   `xn` in `render.py`.
-7. **FIX** (FR-XOD-12, separately enabled). Add the `FixSessionStore` inbound record and resubmit-on-adopt, then
-   run the NFR-XOD-03 A/B before it is turned on.
+   `OUT_OF_SEQUENCE` and `STREAM_LIMIT` are appended after the last `RiskReason` ordinal.
+3. **Ingress codec** (`AeronReplicationCodec`). The `u64 streamId, u64 seq` tail follows templates 1 and 9 behind
+   `INPUT_FLAG_SEQUENCED`; the schema is unchanged. `InputEvent` gains `streamId` and `streamSeq`.
+4. **Snapshot** (`MatchingEngineClusteredService`). Format 14 writes one `T_STREAM` per stream in index order, each
+   carrying W; restore puts each back at its index. A load of formats 9–13 leaves the stream table empty.
+5. **Binary gateway.** The YU18 override of `BinaryGatewayAcceptor` decodes the NEW flags byte and calls
+   `submitSequencedOrder`; `ClusterGatewayMain` appends the tail.
+6. **Loadgen and hxb harness** (independent-baseline, not TraderX). Add `plan.sequenced` (one stream per session)
+   with the `OUT_OF_SEQUENCE` go-back-N. Add HxNativeReplay `duplicateKeys` and `resendsOfCommitted`. Add arms
+   `xs` and `xn` in `render.py`.
+7. **FIX** (FR-XOD-12, enabled separately). `FixSessionStore` keeps the inbound order records, and
+   `FixGatewayAcceptor` sequences a NewOrderSingle through them, catching up on `OUT_OF_SEQUENCE`. Run the
+   NFR-XOD-03 A/B before it is turned on.
 
 Steps 1–5 land as one engine change and one image. Step 6 is hxb-only. Step 7 is gateway-only, so it can land
 later without touching the core.

@@ -112,6 +112,18 @@ public interface OrderSubmitter {
         return null;
     }
 
+    /** ADR-090: a binary NEW on sequenced stream {@code streamId}; {@code streamSeq} from 1. */
+    default ExecResult submitSequencedOrder(long clientKey, int accountId, int securityId, char side, int qty,
+                                            long limitPxTicks, long streamId, long streamSeq) {
+        return null;
+    }
+
+    /** ADR-090: a FIX NEW (typed when {@code typed != null}) on a gateway-sequenced stream (FR-XOD-12). */
+    default ExecResult submitSequencedOrder(String clOrdId, int accountId, String ticker, char side, int qty,
+                                            long limitPxTicks, TypedOrder typed, long streamId, long streamSeq) {
+        return null;
+    }
+
     /**
      * YU18 order types (FR-OT01, FR-OT36): the typed part of a NEW or REPLACE. Prices are Px (1e-6);
      * 0 means absent for every optional field. {@code tif} is already resolved (FR-OT06 default

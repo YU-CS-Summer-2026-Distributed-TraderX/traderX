@@ -209,6 +209,12 @@ public final class FixGatewayAcceptor {
             sessionStore = new FixSessionStore(nats,
                 System.getenv().getOrDefault("HOSTNAME", "gateway") + "/" + EXEC_ID_PREFIX);
         }
+        if ("jetstream".equals(System.getenv("FIX_EXACTLY_ONCE"))) {   // ADR-090 (FR-XOD-12)
+            if (sessionStore == null) {
+                throw new IllegalStateException("FIX_EXACTLY_ONCE=jetstream needs FIX_SESSION_STORE=jetstream (ADR-086)");
+            }
+            sessionStore.sequenceOrders = true;
+        }
         final SessionSettings settings = new SessionSettings();
         final Properties defaults = new Properties();
         defaults.setProperty("ConnectionType", "acceptor");
@@ -525,9 +531,26 @@ public final class FixGatewayAcceptor {
                 sendOrderReject(sessionId, clOrdId, ticker, side, qty, error);
                 return;
             }
-            final OrderSubmitter.ExecResult result = mapped instanceof OrderSubmitter.TypedOrder typed
-                ? submitter.submitTypedOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, typed)
-                : submitter.submitOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, (Long) mapped);
+            final OrderSubmitter.ExecResult result;
+            if (sessionStore != null && sessionStore.sequenceOrders) {
+                try {
+                    result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString());
+                } catch (final java.io.IOException e) {
+                    // FR-XOD-12: not stored, so not submitted; the store has already ended the session
+                    log.warn("FIX order {} not stored, not submitted: {}", clOrdId, e.toString());
+                    return;
+                }
+            } else {
+                result = mapped instanceof OrderSubmitter.TypedOrder typed
+                    ? submitter.submitTypedOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, typed)
+                    : submitter.submitOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, (Long) mapped);
+            }
+            answer(sessionId, clOrdId, accountId, ticker, side, qty, result);
+        }
+
+        /** The answer to one NewOrderSingle's submit (also a stored order resubmitted by FR-XOD-12's catch-up). */
+        private void answer(final SessionID sessionId, final String clOrdId, final int accountId, final String ticker,
+                            final char side, final int qty, final OrderSubmitter.ExecResult result) {
             if (result == null) {
                 // Post-publish ambiguity: no reject may be sent; the counterparty reconciles.
                 log.warn("FIX order {} ambiguous (no committed ack)", clOrdId);
@@ -547,6 +570,66 @@ public final class FixGatewayAcceptor {
             if (result.accepted() && result.kind() != OutputEvent.KIND_ORDER_CANCELED
                     && result.kind() != OutputEvent.KIND_ORDER_FILLED) {
                 track(result.orderRef(), sessionId, clOrdId, ticker, side);
+            }
+        }
+
+        /**
+         * ADR-090 (FR-XOD-12): a NewOrderSingle on this session's gateway-sequenced stream. A ClOrdID already stored
+         * today is resubmitted at its stored sequence, so the engine answers it with the original order; a new one is
+         * stored first (create-if-absent under the lease) and only then submitted. OUT_OF_SEQUENCE means an earlier
+         * stored order never reached the engine (its gateway died between store and submit): those go first, in
+         * order, each answered, and then this one again.
+         */
+        private OrderSubmitter.ExecResult submitSequenced(final SessionID sid, final String clOrdId, final int accountId,
+                                                          final String ticker, final char side, final int qty,
+                                                          final Object mapped, final String raw) throws java.io.IOException {
+            final long[] stored = sessionStore.orderSeq(sid, clOrdId);
+            final long seq = stored != null && stored[0] == accountId ? stored[1]
+                : sessionStore.recordOrder(sid, accountId, clOrdId, raw);
+            OrderSubmitter.ExecResult r = submitAt(sid, clOrdId, accountId, ticker, side, qty, mapped, seq);
+            if (r != null && !r.accepted() && r.riskReason() == OUT_OF_SEQUENCE) {
+                for (long s = Integer.toUnsignedLong(r.orderRef()); s >= 1 && s < seq; s++) {
+                    if (!resubmitStored(sid, accountId, s)) {
+                        break;
+                    }
+                }
+                r = submitAt(sid, clOrdId, accountId, ticker, side, qty, mapped, seq);
+            }
+            return r;
+        }
+
+        private OrderSubmitter.ExecResult submitAt(final SessionID sid, final String clOrdId, final int accountId,
+                                                   final String ticker, final char side, final int qty,
+                                                   final Object mapped, final long seq) {
+            final long stream = sessionStore.orderStream(sid);
+            return mapped instanceof OrderSubmitter.TypedOrder typed
+                ? submitter.submitSequencedOrder(qualify(sid, clOrdId), accountId, ticker, side, qty, 0L, typed, stream, seq)
+                : submitter.submitSequencedOrder(qualify(sid, clOrdId), accountId, ticker, side, qty, (Long) mapped, null,
+                    stream, seq);
+        }
+
+        /** FR-XOD-12 catch-up: submit and answer the stored order at {@code seq}; false stops the catch-up. */
+        private boolean resubmitStored(final SessionID sid, final int accountId, final long seq) {
+            final String raw = sessionStore.storedOrder(sid, accountId, seq);
+            if (raw == null) {
+                return false;
+            }
+            try {
+                final NewOrderSingle o = new NewOrderSingle();
+                o.fromString(raw, null, false);
+                final String c = o.getString(ClOrdID.FIELD);
+                final String ticker = o.getString(Symbol.FIELD).trim().toUpperCase();
+                final char side = o.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B';
+                final int qty = (int) o.getDouble(OrderQty.FIELD);
+                final Object mapped = mapOrder(o, side == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY, qty, false);
+                if (mapped instanceof String) {
+                    return false;
+                }
+                answer(sid, c, accountId, ticker, side, qty, submitAt(sid, c, accountId, ticker, side, qty, mapped, seq));
+                return true;
+            } catch (final Exception e) {
+                log.warn("FIX session {}: stored order {}.{} not resubmitted: {}", sid, accountId, seq, e.toString());
+                return false;
             }
         }
 
@@ -1221,6 +1304,7 @@ public final class FixGatewayAcceptor {
     }
 
     private static final int DUPLICATE = finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal();
+    private static final int OUT_OF_SEQUENCE = finos.traderx.ordermatcher.risk.RiskReason.OUT_OF_SEQUENCE.ordinal();
     private static final finos.traderx.ordermatcher.risk.RiskReason[] REASONS =
         finos.traderx.ordermatcher.risk.RiskReason.values();
 

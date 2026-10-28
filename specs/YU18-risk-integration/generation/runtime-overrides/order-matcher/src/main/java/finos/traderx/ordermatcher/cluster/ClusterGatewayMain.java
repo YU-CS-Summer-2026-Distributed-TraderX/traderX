@@ -182,7 +182,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private static final String CONTROL_FEED_SUBJECT =
         env("CONTROL_FEED_SUBJECT", "traderx.control.security.deltas");
     private final UnsafeBuffer orderBuffer = new UnsafeBuffer(new byte[
-        Math.max(AeronReplicationCodec.INPUT_BYTES, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES)]);
+        Math.max(AeronReplicationCodec.INPUT_BYTES, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES)
+            + AeronReplicationCodec.SEQUENCED_TAIL_BYTES]);
     private final UnsafeBuffer symbolBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
     private final Map<String, Integer> idByTicker = new HashMap<>();
     // Tasks that touch the cluster client; run ONLY on the owner thread.
@@ -1175,6 +1176,32 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             qty, limitPxTicks, clientKey, 0, securityId));
     }
 
+    /** ADR-090 binary NEW on a sequenced stream: the pair rides the ingress tail; the engine interprets it. */
+    @Override
+    public ExecResult submitSequencedOrder(final long clientKey, final int accountId, final int securityId,
+                                           final char side, final int qty, final long limitPxTicks,
+                                           final long streamId, final long streamSeq) {
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, null, side,
+            qty, limitPxTicks, clientKey, 0, securityId);
+        p.streamId = streamId;
+        p.streamSeq = streamSeq;
+        return submitPipelined(p);
+    }
+
+    /** ADR-090 FIX NEW on a gateway-sequenced stream (FR-XOD-12): as submitOrder / submitTypedOrder, plus the pair. */
+    @Override
+    public ExecResult submitSequencedOrder(final String clOrdId, final int accountId, final String ticker,
+                                           final char side, final int qty, final long limitPxTicks,
+                                           final TypedOrder typed, final long streamId, final long streamSeq) {
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, ticker, side,
+            qty, typed != null ? typed.limitPx() : limitPxTicks, clientOrderKey(clOrdId), 0);
+        p.clOrdId = clOrdId;
+        p.typed = typed;
+        p.streamId = streamId;
+        p.streamSeq = streamSeq;
+        return submitPipelined(p);
+    }
+
     /** Binary fast-path atomic replace (lever 4): {@link #submitReplace(int, String, int, long)}
      *  with the client's numeric idempotency key used directly rather than hashed from a String. */
     @Override
@@ -1373,7 +1400,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // member echoes it at ack bytes 24..31, which is what the keyed lookup completes on.
             // Owner thread only, so a plain increment; starts at 1 because 0 means "no request".
             p.requestId = nextRequestId++;
-            final int bytes;
+            int bytes;
+            final int flags = p.streamSeq != 0L ? AeronReplicationCodec.INPUT_FLAG_SEQUENCED : 0;
             if (p.typed != null) {
                 // YU18: typed NEW / REPLACE ride template 9; untyped keep template 1 byte for byte.
                 event.orderType = p.typed.orderType();
@@ -1385,12 +1413,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 event.trailMode = p.typed.trailMode();
                 event.trailValue = p.typed.trailValue();
                 event.admissionSeq = 0L;
-                codec.encodeOrderInstruction(orderBuffer, 0, event, p.requestId, 0, 0);
+                codec.encodeOrderInstruction(orderBuffer, 0, event, p.requestId, 0, flags);
                 bytes = AeronReplicationCodec.ORDER_INSTRUCTION_BYTES;
             } else {
                 event.clearOrderInstruction();
-                codec.encodeInput(orderBuffer, 0, event, p.requestId, 0, 0);
+                codec.encodeInput(orderBuffer, 0, event, p.requestId, 0, flags);
                 bytes = AeronReplicationCodec.INPUT_BYTES;
+            }
+            if (flags != 0) {   // ADR-090: the stream pair, uninterpreted here (FR-XOD-11)
+                bytes = AeronReplicationCodec.appendSequencedTail(orderBuffer, 0, bytes, p.streamId, p.streamSeq);
             }
             final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
             pipelineOfferAttempts++;
@@ -3447,6 +3478,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // on cancel, neither of which has one). A reference to a String the REST/FIX layer already
         // built — no allocation, and never touched by the owner thread.
         String clOrdId;
+        // ADR-090: a sequenced NEW's stream pair, carried in the ingress tail; streamSeq 0 = unsequenced.
+        long streamId;
+        long streamSeq;
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
                      final int qty, final long limitPx, final long clientKey, final int orderRef) {
