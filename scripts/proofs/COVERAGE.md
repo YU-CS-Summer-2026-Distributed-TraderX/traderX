@@ -117,11 +117,15 @@ as FR-CUI-17 requires, so its acceptance half joins the managed-run tier gap (sp
 
 ### Findings, round 3
 
-**After round 3 (2026-10-28, not re-run live):** suspect 16 fixed (the Desk server marks a pre-send
-refusal `sent:false`; the Desk shows `Refused: <reason>`, FR-CUI-19). Spec gap 18 closed: ADR-060 §1a and
-FR-TR08 define the key, which is account-scoped (ENGINE-REVIEW G1); both `yu13-otel-*` proofs predicted
-the unscoped key and now derive the scoped one (checked against the Java functions on four ClOrdID/account
-pairs). Spec gaps 19 and 20 closed in FR-CUI-21 (hosted profile) and the unmanaged-run paragraph of the
+**After round 3 (2026-10-28):** suspect 16 fixed (the Desk server marks a pre-send refusal `sent:false`;
+the Desk shows `Refused: <reason>`, FR-CUI-19; unit tests only, not re-run live). Spec gap 18 closed:
+ADR-060 §1a and FR-TR08 define the key, which is account-scoped on YU18 (ENGINE-REVIEW G1); both
+`yu13-otel-*` proofs predicted the unscoped key and now derive the scoped one. **Live on the roll-4
+candidate (`97be0b39` images, side namespace `traderx-r4proof`, 9:30 am ET):** `yu13-otel-trace-join` PASS
+(every predicted id found, member spans on the predicted consensus span) and
+`yu13-otel-reject-trace-log-join` PASS (5-span reject trace at the predicted id, Loki line, Grafana join)
+after one more proof bug: its Loki query was hard-coded to `{namespace="traderx"}`, so on any side
+namespace it searched production's logs; it now queries `$NS`. Spec gaps 19 and 20 closed in FR-CUI-21 (hosted profile) and the unmanaged-run paragraph of the
 trader-workspace spec.
 
 ### New suspects (round 3)

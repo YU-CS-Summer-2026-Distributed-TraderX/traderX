@@ -268,7 +268,7 @@ ok "one rejected order and one accepted order, both outside the head sample"
 echo "[run] waiting for the asynchronous exporter and promtail to flush"
 sleep "${FLUSH_WAIT:-12}"
 
-REJECT_CLORDID="${REJECT_CLORDID}" ACCEPT_CLORDID="${ACCEPT_CLORDID}" SEEDED_ACCOUNT="${SEEDED_ACCOUNT}" UNKNOWN_ACCOUNT="${UNKNOWN_ACCOUNT}" KEY_SCOPED="${KEY_SCOPED:-1}" \
+REJECT_CLORDID="${REJECT_CLORDID}" ACCEPT_CLORDID="${ACCEPT_CLORDID}" SEEDED_ACCOUNT="${SEEDED_ACCOUNT}" UNKNOWN_ACCOUNT="${UNKNOWN_ACCOUNT}" KEY_SCOPED="${KEY_SCOPED:-1}" NS="${NS}" \
 TEMPO_URL="${TEMPO_URL}" LOKI_URL="${LOKI_URL}" GRAFANA_URL="${GRAFANA_URL}" \
 GRAFANA_USER="${GRAFANA_USER}" GRAFANA_PASSWORD="${GRAFANA_PASSWORD}" PROOF_VERBOSE="${VERBOSE}" python3 - <<'PY'
 import base64, json, os, sys, time, urllib.error, urllib.parse, urllib.request
@@ -386,7 +386,7 @@ except urllib.error.HTTPError as e:
 end = time.time_ns()
 start = end - 30 * 60 * 1_000_000_000
 query = urllib.parse.urlencode({
-    "query": '{namespace="traderx"} |= "trace=' + predicted + '"',
+    "query": '{namespace="' + os.environ["NS"] + '"} |= "trace=' + predicted + '"',   # the rig's own namespace
     "start": start, "end": end, "limit": 50,
 })
 lines = []
