@@ -302,7 +302,7 @@ proof bug is left open. Round-1 suspects 1, 2, 3 and 6 are closed on this tip. T
 | [`yu18-fix-session.sh`](yu18-fix-session.sh) + `.mjs` | FR-ERH-S3, FR-FIX04/05/10/11/12 | FAIL: S3, FIX10, FIX12(b) and the effect end pass; suspects 7–10. PASS on fp-7ea8db5c (ADR-086 rig, 2026-10-28) |
 | [`yu18-fix-resume.sh`](yu18-fix-resume.sh) + `.mjs` | FR-FIX04/11/12(d) across replicas, ADR-086 | added after round 2; PASS on fp-7ea8db5c, and `NEGATIVE=1` without the store fails it (B's Logon at 1) |
 | [`yu18-fix-store-faults.sh`](yu18-fix-store-faults.sh) + `.mjs` | FR-GFS-04, FR-GFS-09 (ADR-086): SIGSTOP takeover with fencing, NATS outage | added after round 2, DESTRUCTIVE=1, side namespaces only; PASS on fp-533ad3c7 (takeover fenced, outage drop 1.6 s, resume) |
-| [`yu18-market-order.sh`](yu18-market-order.sh) | FR-LOB04/05 | FAIL: suspect 11 (PRICE_MISSING arm); the rest passes |
+| [`yu18-market-order.sh`](yu18-market-order.sh) | FR-LOB04/05 | FAIL: suspect 11 (PRICE_MISSING arm); the rest passes. Step 1 re-specified 2026-10-28 (562c25c8), not re-run |
 | [`yu18-cdm-instruments.sh`](yu18-cdm-instruments.sh) | FR-CDM07/08/23/24 | PASS (both arms) |
 | [`yu18-swap-capacity.sh`](yu18-swap-capacity.sh) | FR-OTC09 | PASS: 8 + 4088 = 4096, then CAPACITY ×4 |
 | [`yu18-bridge-receipts.sh`](yu18-bridge-receipts.sh) + [`lib-jetstream.py`](lib-jetstream.py) | FR-DRS-06/11/12/13/14/17/24 | PASS at P=1 and at P=4 (two partitions) |
@@ -1059,7 +1059,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU13 | `FR-LOB01` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB02` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB03` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
-| YU13 | `FR-LOB04` | LIVE | yu18-market-order |  | PRICE_MISSING arm still FAILS: suspect 11 |
+| YU13 | `FR-LOB04` | LIVE | yu18-market-order |  | suspect 11 closed as a spec gap (562c25c8); YU18 reservation at the worse of mark and opposite best (ADR-089) is unit-pinned by `MarketOrderReservationTest`, no live run yet |
 | YU13 | `FR-LOB05` | LIVE | yu18-market-order |  |  |
 | YU13 | `FR-LOB06` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB07` | LIVE | yu17-keyed-ack-correlation |  |  |
