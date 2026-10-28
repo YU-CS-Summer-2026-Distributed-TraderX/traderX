@@ -6,6 +6,7 @@
 - [x] `ClusterNodeMain` closes the barrier and exits 143; `ClusterNodeShutdownTest`.
 - [x] Promtail in the CompSci render.
 - [x] Admission population 21 images / 24 slots, defined once in `admit.py`.
+- [x] `/ready` refuses until the member's election is CLOSED (FR-GMR-08); `ReadinessDiagnosticsTest`.
 
 ## Still open
 

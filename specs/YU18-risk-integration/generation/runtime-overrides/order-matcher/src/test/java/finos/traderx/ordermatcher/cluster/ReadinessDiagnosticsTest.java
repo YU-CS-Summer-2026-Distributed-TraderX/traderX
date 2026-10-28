@@ -3,6 +3,9 @@ package finos.traderx.ordermatcher.cluster;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import io.aeron.cluster.ElectionState;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -15,9 +18,41 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** FR-RD01..04: production sampler/renderer/HTTP, disposable synthetic sequence fixtures only. */
+/** FR-RD01..04, FR-GMR-08: production sampler/renderer/HTTP, disposable synthetic sequence fixtures only. */
 class ReadinessDiagnosticsTest {
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    // The FR-RD fixtures below describe a joined member; the FR-GMR-08 tests set their own phase.
+    @BeforeEach void joined() { ClusterNodeMain.ELECTION_STATE.set(ElectionState.CLOSED.code()); }
+    @AfterEach void unread() { ClusterNodeMain.ELECTION_STATE.set(-1); }
+
+    // FR-GMR-08, measured on traderx 2026-10-27: a replacement member at applied 0 was Ready against
+    // peers at 1328 because the whole log was shorter than the 5000 lag tolerance.
+    @Test void rejoiningMemberBehindAShortLogIsNotReady() throws Exception {
+        ClusterNodeMain.ELECTION_STATE.set(ElectionState.FOLLOWER_CATCHUP.code());
+        try (var e = new Endpoint(service(0, 1328), List.of("localhost", "localhost", "localhost"))) {
+            var j = e.await("complete", 503);
+            assertEquals(1328, j.get("observedLag").asLong());
+            assertTrue(j.get("withinLagTolerance").asBoolean(), "the lag arm alone would pass it");
+            assertEquals("FOLLOWER_CATCHUP", j.get("electionState").asText());
+        }
+        ClusterNodeMain.ELECTION_STATE.set(ElectionState.CLOSED.code());
+        try (var e = new Endpoint(service(1328, 1328), List.of("localhost", "localhost", "localhost"))) {
+            assertEquals("CLOSED", e.await("complete", 200).get("electionState").asText());
+        }
+    }
+
+    @Test void unreadOrOpenElectionIsNotReadyEvenWithNoPeer() throws Exception {
+        ClusterNodeMain.ELECTION_STATE.set(-1);
+        var unread = JSON.readTree(ClusterNodeMain.readinessBody(true, 0, -1, 0, 0, 5000, 1L, 2L));
+        assertFalse(unread.get("ready").asBoolean());
+        assertTrue(unread.get("electionState").isNull());
+        for (ElectionState s : ElectionState.values()) {
+            ClusterNodeMain.ELECTION_STATE.set(s.code());
+            var j = JSON.readTree(ClusterNodeMain.readinessBody(true, 0, -1, 0, 0, 5000, 1L, 2L));
+            assertEquals(s == ElectionState.CLOSED, j.get("ready").asBoolean(), s.name());
+        }
+    }
 
     @Test void initialCacheIsExplicitlyUnsampled() throws Exception {
         final var j = JSON.readTree(ClusterNodeMain.readinessBody(false, -1, -1, 2, -1, 5000, null, null));

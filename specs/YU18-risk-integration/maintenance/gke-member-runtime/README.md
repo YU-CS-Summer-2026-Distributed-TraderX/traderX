@@ -8,7 +8,7 @@ Sources:
 - `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/storageclass.yaml`, `statefulset-emptydir.yaml`,
   `statefulset.yaml`, `kustomization.yaml`: the archive volume, heap and pause goal.
 - YU18 `generation/runtime-overrides/order-matcher/.../cluster/ClusterNodeMain.java` and
-  `ClusterNodeShutdownTest.java`: the SIGTERM exit.
+  `ClusterNodeShutdownTest.java`: the SIGTERM exit; `ReadinessDiagnosticsTest.java`: the catch-up readiness gate.
 - `scripts/gcp-compsci/prepare.py`, `test_prepare.py`, `admit.py`, `prepare-admission.py`,
   `admission-controls.py`: the CompSci render (StorageClass, promtail) and its admitted image population.
 

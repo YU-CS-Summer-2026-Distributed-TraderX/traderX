@@ -27,6 +27,15 @@
   returns (FR-IMRG32/33). Until reference-data's first delta creates `TRADERX_CONTROL_SECURITY` the
   subscriber SHALL retry without blocking readiness, logging each distinct failure once. The CompSci render
   (`prepare.py`) SHALL refuse a gateway without it.
+- FR-GMR-08: A member's `/ready` SHALL refuse until its Aeron election state (`CLUSTER_ELECTION_STATE`)
+  is `CLOSED`, in addition to the started engine and the `CLUSTER_READY_MAX_LAG` tolerance. A rejoining
+  member closes its election only after `FOLLOWER_CATCHUP` has brought it up to the leader's log and it has
+  joined the live log, so a StatefulSet roll does not take a second member down before the first has caught
+  up, however short the log. An unread state is not ready, and `/ready` reports it as `electionState`. The
+  no-observed-peer arm is kept: it cannot pass a member whose election is open, and a joined member does not
+  go NotReady because its peers' `/health` is unreachable. Measured on `traderx` 2026-10-27 without the gate:
+  a replacement member was Ready at applied 0 against peers at 1328 (the whole log), 15 s before
+  `FOLLOWER_READY`.
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the emptyDir tier.
 
@@ -38,3 +47,6 @@
   `test_member_archive_storageclass_is_rendered` and `test_promtail_ships_this_namespace_from_every_node`.
 - SC-GMR-03: An empty-root CompSci candidate contains the StorageClass, the promtail DaemonSet and
   exactly 21 distinct images in 24 slots.
+- SC-GMR-04: `ReadinessDiagnosticsTest.rejoiningMemberBehindAShortLogIsNotReady` passes: applied 0 against
+  peers at 1328 with lag tolerance 5000 is 503 while the election is in `FOLLOWER_CATCHUP`, and 200 once
+  `CLOSED` at 1328.

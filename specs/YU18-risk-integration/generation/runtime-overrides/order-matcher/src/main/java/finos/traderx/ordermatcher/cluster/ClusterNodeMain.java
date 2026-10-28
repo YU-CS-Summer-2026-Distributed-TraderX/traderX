@@ -28,10 +28,13 @@ import java.util.List;
  *
  * Health (stdlib HTTP on {@code HEALTH_PORT}, default 8080): {@code /health} reports member id,
  * role, applied sequence, trades, and snapshot count; {@code /ready} is 200 once the service
- * has started AND this member is caught up to within {@code CLUSTER_READY_MAX_LAG} of its
- * furthest-ahead peer — the gate that makes k8s rolling restarts safe on emptyDir members.
+ * has started, its Aeron election has CLOSED (it has caught up and joined the live log) AND it
+ * is within {@code CLUSTER_READY_MAX_LAG} of its furthest-ahead peer — the gate that makes k8s
+ * rolling restarts safe on emptyDir members (FR-GMR-08).
  */
 public final class ClusterNodeMain {
+    /** This member's CLUSTER_ELECTION_STATE code, published by the election-phase watcher; -1 until read. */
+    static final java.util.concurrent.atomic.AtomicLong ELECTION_STATE = new java.util.concurrent.atomic.AtomicLong(-1);
     /** Cluster sessions refused for bad or missing credentials (ClusterClientAuth); exported on /metrics. */
     static final java.util.concurrent.atomic.AtomicLong INGRESS_REJECTED = new java.util.concurrent.atomic.AtomicLong();
     /** Set once the shutdown signal arrives: from then on a consensus-module termination is part of the close. */
@@ -233,6 +236,7 @@ public final class ClusterNodeMain {
                             counters, io.aeron.AeronCounters.CLUSTER_ELECTION_STATE_TYPE_ID, 0);
                     } else {
                         final long code = counters.getCounterValue(counterId);
+                        ELECTION_STATE.set(code);
                         if (code != last) {
                             last = code;
                             System.out.println("ELECTION-PHASE state="
@@ -330,7 +334,7 @@ public final class ClusterNodeMain {
                 + ",\"bridges\":" + service.bridgeJson() + "}";
             respond(exchange, 200, body);
         });
-        // Routing readiness retains its lag tolerance and no-observed-peer arm. These do not
+        // Routing readiness = election CLOSED + lag tolerance (or no observed peer). These do not
         // establish book convergence, quorum health, leader eligibility or recovery safety.
         // Diagnostic comparisons below concern only the maximum OBSERVED applied sequence.
         final long maxLag = Long.parseLong(env("CLUSTER_READY_MAX_LAG", "5000"));
@@ -893,22 +897,36 @@ public final class ClusterNodeMain {
                 maxObserved = Math.max(maxObserved, peer.observedApplied());
             }
         }
-        // Preserve the legacy routing decision exactly, including its no-observation arm.
-        final boolean ready = maxPeer < 0 || mine >= maxPeer - maxLag;
-        return new ReadinessSample(ready, readinessBody(true, mine, maxPeer, maxObserved, configured, observed,
-            maxLag, began, System.currentTimeMillis()));
+        final long election = ELECTION_STATE.get();
+        final String body = readinessBody(true, mine, maxPeer, maxObserved, configured, observed,
+            maxLag, election, began, System.currentTimeMillis());
+        return new ReadinessSample(ready(true, mine, maxPeer, maxLag, election), body);
+    }
+
+    /** FR-GMR-08. The lag arm alone passed a rejoining member at applied 0 whenever the whole log was
+     *  shorter than maxLag (measured on traderx: applied 0 vs peers at 1328, lag 5000). Its election
+     *  only CLOSES after FOLLOWER_CATCHUP has brought the log up to the leader's and it has joined the
+     *  live log, so that is the catch-up gate; the lag arm then bounds steady-state replication lag.
+     *  The no-peer arm stays: it can no longer pass a catching-up member (that needs CLOSED), and a
+     *  joined member must not go NotReady because its peers' /health is unreachable. */
+    private static boolean ready(final boolean started, final long mine, final long maxPeer,
+                                 final long maxLag, final long election) {
+        return started && election == io.aeron.cluster.ElectionState.CLOSED.code()
+            && (maxPeer < 0 || mine >= maxPeer - maxLag);
     }
 
     static String readinessBody(final boolean started, final long mine, final long maxPeer,
                                 final int configured, final int observed, final long maxLag,
                                 final Long began, final Long completed) {
-        return readinessBody(started, mine, maxPeer, maxPeer, configured, observed, maxLag, began, completed);
+        return readinessBody(started, mine, maxPeer, maxPeer, configured, observed, maxLag,
+            ELECTION_STATE.get(), began, completed);
     }
 
     private static String readinessBody(final boolean started, final long mine, final long maxPeer,
                                        final long maxObserved, final int configured, final int observed,
-                                       final long maxLag, final Long began, final Long completed) {
-        final boolean ready = started && (maxPeer < 0 || mine >= maxPeer - maxLag);
+                                       final long maxLag, final long election,
+                                       final Long began, final Long completed) {
+        final boolean ready = ready(started, mine, maxPeer, maxLag, election);
         final boolean comparable = started && mine >= 0 && observed > 0 && maxObserved >= 0;
         final Long lag = comparable ? Math.max(0L, maxObserved - mine) : null;
         final String coverage = observed < 0 ? "not_sampled"
@@ -916,6 +934,8 @@ public final class ClusterNodeMain {
             : observed == 0 ? "unavailable"
             : observed < configured ? "partial" : "complete";
         return "{\"ready\":" + ready
+            + ",\"electionState\":" + (election < 0 ? "null"
+                : "\"" + io.aeron.cluster.ElectionState.get(election) + "\"")
             + (started ? ",\"applied\":" + mine + ",\"maxPeerApplied\":" + maxPeer
                 : ",\"reason\":\"not started\"")
             + ",\"configuredPeerCount\":" + configured
