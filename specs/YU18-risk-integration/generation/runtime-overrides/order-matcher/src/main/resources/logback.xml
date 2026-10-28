@@ -8,7 +8,7 @@
   -->
   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} -- %replace(%msg%n%xEx){'(^|[\x01|])(554|925)=[^\x01|]*', '$1$2=********'}%nopex</pattern>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %level %logger -- %replace(%msg%n%xEx){'(^|[\x01|])(554|925)=[^\x01|]*', '$1$2=********'}%nopex</pattern>
     </encoder>
   </appender>
   <root level="INFO">
