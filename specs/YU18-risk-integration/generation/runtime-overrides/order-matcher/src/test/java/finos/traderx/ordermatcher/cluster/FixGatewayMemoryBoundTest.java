@@ -27,8 +27,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * ADR-092 (FR-FGM-01/02): what a FIX session can make this gateway hold is bounded by a count of messages, not by
  * how long it runs or how far its client lags. f15ho (1 h at 400K/s, ~22K orders/s per gateway) filled a 768 MiB
- * heap; locally, every unread ExecutionReport stayed queued in MINA (~690 bytes each) for as long as the session
- * lived (a client that reads nothing is cut off only by MINA's 60 s write timeout). Raw sockets, so the test decides whether the client reads; the stub submitter answers at once.
+ * heap; locally, every unread ExecutionReport stayed queued in MINA (~690 bytes each) for as long as the client
+ * kept reading too slowly (one that reads nothing is cut off only by MINA's 60 s write timeout). Raw sockets, so the
+ * test decides whether the client reads; the stub submitter answers at once.
  */
 @Timeout(90)
 class FixGatewayMemoryBoundTest {
@@ -152,8 +153,7 @@ class FixGatewayMemoryBoundTest {
                 queued = now;
             }
             assertTrue(queued > FixGatewayAcceptor.INBOUND_QUEUE / 2, "the client did not outrun its answers: " + queued);
-            // One socket read past the watermark can still be decoded: MINA reads at most 64 KiB (~400 orders).
-            assertTrue(queued <= FixGatewayAcceptor.INBOUND_QUEUE + 512,
+            assertTrue(queued <= FixGatewayAcceptor.INBOUND_QUEUE,
                 queued + " orders queued in the gateway for one session; the bound is " + FixGatewayAcceptor.INBOUND_QUEUE);
 
             venue.open.countDown();

@@ -156,11 +156,13 @@ public final class FixGatewayAcceptor {
      */
     static final int MAX_QUEUED_WRITES = Integer.parseInt(System.getenv().getOrDefault("FIX_MAX_QUEUED_WRITES", "2048"));
     /**
-     * ADR-092 (FR-FGM-02): inbound messages a session may have waiting for its dispatcher before this gateway stops
-     * reading its socket (it resumes at a quarter), so a client that sends faster than its orders are answered is
-     * held back by TCP, not queued here. QuickFIX/J's default was 10,000 per session (~2.5 KB each).
+     * ADR-092 (FR-FGM-02): inbound messages a session may have waiting for its dispatcher. When it is full, the MINA
+     * I/O thread that reads the session waits for room, so a client that sends faster than its orders are answered
+     * is held back by TCP, not queued here. QuickFIX/J's default was 10,000 per session (~2.5 KB each). 256 is
+     * ~0.75 s of a session at f15ho's 343 orders/s. Not QuickFIX/J's watermarks: their resumeRead races MINA
+     * 2.1.4's unsynchronised interestOps update on the I/O thread and can lose OP_READ, wedging the session.
      */
-    static final int INBOUND_QUEUE = Integer.parseInt(System.getenv().getOrDefault("FIX_INBOUND_QUEUE", "1024"));
+    static final int INBOUND_QUEUE = Integer.parseInt(System.getenv().getOrDefault("FIX_INBOUND_QUEUE", "256"));
 
     private static final class Tracked {
         final SessionID session;
@@ -282,7 +284,7 @@ public final class FixGatewayAcceptor {
             .withSettings(settings)
             .withLogFactory(RedactingLog::new)
             .withMessageFactory(new DefaultMessageFactory())
-            .withQueueWatermarks(INBOUND_QUEUE / 4, INBOUND_QUEUE)   // ADR-092
+            .withQueueCapacity(INBOUND_QUEUE)   // ADR-092
             .build();
         acceptor.start();
         log.info("FIX gateway acceptor on :{} for {} CompID(s), sessions {}", port, compIds.size(),

@@ -34,7 +34,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [FIX fill reports](fix-fill-reports/README.md) | Code 2026-10-28 (`abc57a39`, `0326f733`); on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-084) |
 | [Control feed republish](control-feed-republish/README.md) | Code 2026-10-27 (`3b10e7e2`); on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-085) |
 | [Exactly-once client](exactly-once-client/README.md) | Venue contract and FIX restatement integrated 2026-10-28; binary client proven locally (ADR-091) |
-| [FIX gateway memory](fix-gateway-memory/README.md) | Integrated 2026-10-28: slow-consumer limit, inbound watermarks, streaming adoption (ADR-092) |
+| [FIX gateway memory](fix-gateway-memory/README.md) | Integrated 2026-10-28: slow-consumer limit, bounded inbound queue, streaming adoption, fill-feed backoff (ADR-092) |
 | [FIX session persistence](fix-session-persistence/README.md) | Integrated 2026-10-28; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-086) |
 | [Exactly-once dedupe](exactly-once-dedupe/README.md) | Proposed 2026-10-28 (ADR-090), awaiting approval; not implemented |
 | [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, on production since roll 4 (ADR-087) |

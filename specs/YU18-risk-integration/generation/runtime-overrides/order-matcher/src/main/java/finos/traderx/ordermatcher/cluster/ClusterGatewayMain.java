@@ -2601,30 +2601,73 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final String natsUrl = env("NATS_ADDRESS",
             "nats://" + env("NATS_BROKER_HOST", "nats") + ":4222");
         final Thread t = new Thread(() -> {
-            String lastFailure = null;
-            while (true) {
-                try {
-                    connectFillFeed(natsUrl, mode, env("PROJECTION_FEED_STREAM", "TRADERX_FEED"), fix::onOrderUpdate);
-                    return;
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                } catch (final Exception e) {
-                    if (!String.valueOf(e).equals(lastFailure)) {
-                        lastFailure = String.valueOf(e);
-                        System.err.println("FIX fill feed: not subscribed yet (retrying): " + e);
-                    }
-                    try {
-                        Thread.sleep(2_000);
-                    } catch (final InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
-                }
+            try {
+                retryFillFeed(natsUrl, () -> connectFillFeed(natsUrl, mode,
+                    env("PROJECTION_FEED_STREAM", "TRADERX_FEED"), fix::onOrderUpdate), Thread::sleep);
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }, "fix-fill-feed");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** ADR-092 (FR-FGM-05): failed fill-feed connect attempts, and whether the feed is subscribed (gateway /metrics). */
+    static final AtomicLong fillFeedConnectFailures = new AtomicLong();
+    static volatile boolean fillFeedSubscribed;
+    static final long FILL_FEED_RETRY_MIN_MS = 1_000;
+    static final long FILL_FEED_RETRY_MAX_MS = 60_000;
+
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    /**
+     * ADR-092 (FR-FGM-05): retry {@code attempt} until it subscribes, backing off from 1 s to 60 s. One WARN on the
+     * first failure, then only the counter: f15ho ran an hour with no NATS and logged two SEVERE lines every 2 s.
+     */
+    static void retryFillFeed(final String url, final java.util.concurrent.Callable<?> attempt, final Sleeper sleep)
+        throws InterruptedException {
+        long delay = FILL_FEED_RETRY_MIN_MS;
+        for (long failures = 0; ; failures++) {
+            try {
+                attempt.call();
+                fillFeedSubscribed = true;
+                if (failures > 0) {
+                    System.out.println("FIX fill feed: subscribed after " + failures + " failed attempt(s)");
+                }
+                return;
+            } catch (final InterruptedException e) {
+                throw e;
+            } catch (final Exception e) {
+                fillFeedConnectFailures.incrementAndGet();
+                if (failures == 0) {
+                    System.err.println("FIX fill feed WARN: not subscribed at " + url + " (" + e + "); retrying with"
+                        + " backoff to " + FILL_FEED_RETRY_MAX_MS / 1000 + " s, counted in"
+                        + " traderx_fix_fill_feed_connect_failures_total; fills after the ack go unreported until then");
+                }
+                sleep.sleep(delay);
+                delay = Math.min(delay * 2, FILL_FEED_RETRY_MAX_MS);
+            }
+        }
+    }
+
+    /** jnats logs each failed connect (two SEVERE lines). Until the feed first subscribes, FR-FGM-05's WARN and
+     *  counter say it once; after that the connection's errors are logged as jnats always did. */
+    static final class QuietUntilSubscribed extends io.nats.client.impl.ErrorListenerLoggerImpl {
+        @Override
+        public void errorOccurred(final io.nats.client.Connection conn, final String error) {
+            if (fillFeedSubscribed) {
+                super.errorOccurred(conn, error);
+            }
+        }
+
+        @Override
+        public void exceptionOccurred(final io.nats.client.Connection conn, final Exception exp) {
+            if (fillFeedSubscribed) {
+                super.exceptionOccurred(conn, exp);
+            }
+        }
     }
 
     /** One attempt: connect and subscribe {@code /orders} and {@code /orders.*} (every
@@ -2633,7 +2676,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                                                      final java.util.function.Consumer<byte[]> sink)
         throws Exception {
         final io.nats.client.Connection nats = io.nats.client.Nats.connect(
-            new io.nats.client.Options.Builder().server(url).maxReconnects(-1).build());
+            new io.nats.client.Options.Builder().server(url).maxReconnects(-1)
+                .errorListener(new QuietUntilSubscribed()).build());
         try {
             final boolean durable = !"core".equals(mode)
                 && nats.jetStreamManagement().getStreamNames("/orders").contains(stream);
@@ -3101,7 +3145,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private void handleMetrics(final HttpExchange exchange) {
         final FixGatewayAcceptor fix = fixAcceptor;
         final String body = (fix == null ? "" : "traderx_fix_fill_reports_total{outcome=\"sent\"} " + fix.fillReports()
-                + "\ntraderx_fix_fill_reports_total{outcome=\"gap\"} " + fix.fillGaps() + "\n")
+                + "\ntraderx_fix_fill_reports_total{outcome=\"gap\"} " + fix.fillGaps()
+                + "\ntraderx_fix_fill_feed_connect_failures_total " + fillFeedConnectFailures.get()
+                + "\ntraderx_fix_fill_feed_subscribed " + (fillFeedSubscribed ? 1 : 0) + "\n")
             + "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
             + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
             + "traderx_order_events_total{event=\"canceled\"} " + canceledOrders + "\n"
