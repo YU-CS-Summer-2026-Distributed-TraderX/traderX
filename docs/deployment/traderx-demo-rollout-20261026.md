@@ -493,5 +493,19 @@ Readiness: the replacement member was Ready at 8:55:09 pm with applied 0, and re
 1328, so it does not hold a rejoining member until it has caught up. Every roll here still ended with all three
 members agreeing; the end-of-step agreement check is what gated them.
 
+Control replica completed and Z8812 removed (10:54–10:56 pm ET, approved by yaakov; the code fix that makes this
+automatic, `3b10e7e2`, is not deployed). Rollback record first: `stocks`, `stocks_control_outbox`, `stocks_source_epoch`,
+the stream and the gateway replica (shared notes `ctlrepub-20261027/`). Loki showed no security halt or restriction this
+epoch (557 initialization enables only), so replaying `enabled=true` for the universe changed no engine flag.
+
+| Step | Result |
+|---|---|
+| Disable Z8812 (10:54:08) | operator `POST /risk/control/security {"ticker":"Z8812","enabled":false}` from the console pod (token from its env): 200, members 1328 → 1329. The engine keeps the symbol id (log-replicated), now disabled |
+| Delete `TRADERX_CONTROL_SECURITY` (10:54:26) | held 1 message (Z8812); absent after |
+| SQL, one transaction (10:54:38) | `stocks` −1 and outbox −1 (Z8812, version 534); 533 rows flagged unpublished; after: 533 / 533, max version 533 |
+| Restart reference-data (10:54:51) | stream recreated on the first publish: 533 messages, seq 1..533; outbox unpublished 0; snapshot watermark 533, count 533, no Z8812 |
+| Restart the gateway (10:55:39) | replica count 533, watermark 533, ticker set = reference-data's, 533 enabled / 0 restricted, no Z8812; consumer delivered 533 / ack floor 533 / redelivered 0 |
+| Members | agree at applied 2395 (+1066: a registration and an enable per delta), 16 trades, book order hash 0, same position hash |
+
 Spend: build VM 7:59–8:14 pm ET, deleted (≈ $0.15). Rollback record (71 objects + DB dump) and the admission
 evidence: shared notes `roll3-20261027/`, `admission-40d93f6b-20261027/`.
