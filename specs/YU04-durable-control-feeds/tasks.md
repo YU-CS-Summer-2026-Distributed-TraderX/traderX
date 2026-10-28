@@ -92,6 +92,11 @@
 - [x] T-41 `bash pipeline/generate-state.sh YU04-durable-control-feeds` end-to-end with real
       implementation code (always exit 0), `./gradlew test`/`npm test` on the generated trees.
 
+- [x] FR-IMRG36: `StocksOutboxPublisher.auditStream()` checks the published flags against
+      `TRADERX_CONTROL_SECURITY` (missing, fewer messages, or last version below the watermark → republish
+      the universe; ahead of the watermark → ALERT only); `stocks-outbox-publisher.service.spec.ts`
+      publishes, wipes the stream, restarts and sees the universe again.
+
 ## Still open
 
 - [ ] Grafana dashboard + alerts for the new feed-health metrics

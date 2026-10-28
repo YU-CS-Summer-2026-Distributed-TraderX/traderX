@@ -37,14 +37,30 @@ export class JetStreamControlFeedPublisher implements ControlFeedPublisher, OnMo
   private async connectAndEnsureStream(): Promise<JetStreamClient> {
     const servers = process.env.NATS_ADDRESS ?? `nats://${process.env.NATS_BROKER_HOST ?? 'localhost'}:4222`;
     this.connection = await connect({ servers, maxReconnectAttempts: -1 });
-    const jsm: JetStreamManager = await this.connection.jetstreamManager();
-    try {
-      await jsm.streams.info(STREAM_NAME);
-    } catch {
-      await jsm.streams.add({ name: STREAM_NAME, subjects: [SUBJECT], storage: StorageType.File });
-    }
+    await this.ensureStream(await this.connection.jetstreamManager());
     this.jetStreamClient = this.connection.jetstream();
     return this.jetStreamClient;
+  }
+
+  private async ensureStream(jsm: JetStreamManager): Promise<number> {
+    try {
+      return (await jsm.streams.info(STREAM_NAME)).state.messages;
+    } catch {
+      // Missing: a new or reset NATS store. Recreated empty; the caller's audit republishes into it.
+      await jsm.streams.add({ name: STREAM_NAME, subjects: [SUBJECT], storage: StorageType.File });
+      return 0;
+    }
+  }
+
+  async streamState(): Promise<{ messages: number; lastVersion: number }> {
+    await this.jetStream();
+    const jsm = await this.connection!.jetstreamManager();
+    const messages = await this.ensureStream(jsm);
+    if (messages === 0) {
+      return { messages: 0, lastVersion: 0 };
+    }
+    const last = await jsm.streams.getMessage(STREAM_NAME, { last_by_subj: SUBJECT });
+    return { messages, lastVersion: Number(JSON.parse(this.codec.decode(last.data)).version ?? 0) };
   }
 
   async publish(natsMsgId: string, payloadJson: string): Promise<void> {

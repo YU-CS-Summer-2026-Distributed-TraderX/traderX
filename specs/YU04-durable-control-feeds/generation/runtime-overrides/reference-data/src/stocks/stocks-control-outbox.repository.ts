@@ -59,6 +59,21 @@ export class StocksControlOutboxRepository {
     return Number(rows[0].watermark);
   }
 
+  async publishedCount(): Promise<number> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      'select count(*) as cnt from stocks_control_outbox where published = true',
+    );
+    return Number(rows[0].cnt);
+  }
+
+  /** The stream lost what these rows claim it holds: queue every row again, in version order. */
+  async markAllUnpublished(): Promise<number> {
+    const [result] = await this.pool.execute<ResultSetHeader>(
+      'update stocks_control_outbox set published = false where published = true',
+    );
+    return result.affectedRows;
+  }
+
   async unpublishedCount(): Promise<number> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
       'select count(*) as cnt from stocks_control_outbox where published = false',

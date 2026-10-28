@@ -14,4 +14,11 @@ export interface ControlFeedPublisher {
    * @param payloadJson the message body (JSON)
    */
   publish(natsMsgId: string, payloadJson: string): Promise<void>;
+
+  /**
+   * What the stream actually holds: its message count and the version of its last message (0 and 0
+   * when the stream is missing or empty; a missing stream is recreated). The outbox's `published`
+   * flags are a claim about this stream; this is the evidence they are checked against.
+   */
+  streamState(): Promise<{ messages: number; lastVersion: number }>;
 }

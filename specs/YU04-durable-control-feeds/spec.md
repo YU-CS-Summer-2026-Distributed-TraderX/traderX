@@ -52,6 +52,18 @@ state only replaces what feeds `GatewayReplicaStore`'s existence/identity record
   of that source only — never the other source.
 - FR-IMRG-OUTBOX-ORDER: The outbox publisher on each source SHALL publish unpublished rows in strict
   version order and SHALL NOT skip ahead past a row whose publish failed.
+- FR-IMRG36: A row's `published` flag is a claim about the stream, and the stream can be replaced under
+  it (a NATS store on a new volume or an emptyDir restart). `reference-data` SHALL check the claim on its
+  first outbox poll and every `SECURITY_OUTBOX_AUDIT_INTERVAL_MS` (default 30 s): if
+  `TRADERX_CONTROL_SECURITY` is missing, holds fewer messages than there are published rows, or its last
+  message's version is below the published watermark, every row SHALL be marked unpublished so the
+  poller republishes the whole universe in version order. The message count is the decisive test: a
+  stream recreated by one newer delta has a last version equal to the watermark while holding only that
+  delta. A stream whose last version is AHEAD of the watermark (the outbox restored from an older dump)
+  is not repaired by republishing; it SHALL be logged as an ALERT and left alone. A republish replays
+  existence deltas the consumer applies as `SECURITY_CONTROL enabled=true`, exactly as a gateway restart
+  replays the stream from its start, so a security halted through `/risk/control` is re-enabled by
+  either; a halt is not carried by this feed.
 
 ## Non-Functional Requirements
 
