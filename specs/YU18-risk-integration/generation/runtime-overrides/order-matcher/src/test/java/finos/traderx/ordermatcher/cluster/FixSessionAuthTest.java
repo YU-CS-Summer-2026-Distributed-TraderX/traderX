@@ -41,4 +41,14 @@ class FixSessionAuthTest {
         assertTrue(none.accountAllowed("ANY", 7, 11));
         assertThrows(IllegalArgumentException.class, () -> FixSessionAuth.fromEnv("CLIENT1"), "no password");
     }
+
+    @Test void aLoggedMessageNeverCarriesThePassword() {
+        final String logon = "8=FIX.4.4\u00019=70\u000135=A\u000149=CLIENT1\u0001554=s3cret\u0001925=n3w\u000158=554=x\u000110=000\u0001";
+        final String out = FixGatewayAcceptor.redact("Invalid message: " + logon);
+        assertFalse(out.contains("s3cret") || out.contains("n3w"), out);
+        assertTrue(out.contains("\u0001554=********\u0001925=********\u0001"), out);
+        assertTrue(out.contains("58=554=x"), "a value that merely contains 554= is not a field");
+        assertEquals("8=FIX|554=********|35=A", FixGatewayAcceptor.redact("8=FIX|554=pw|35=A"), "the |-delimited rendering");
+        assertNull(FixGatewayAcceptor.redact(null));
+    }
 }

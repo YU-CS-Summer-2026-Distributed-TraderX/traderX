@@ -30,6 +30,11 @@ bands, or exhaust the 1,024 replicated symbol slots for an entire epoch.
   whose workloads carry `ALLOW_DEV_SECRETS`. CLIENT1's one client there is the console's FIX ticket. It
   presents the same key, only for a signed-in operator, and the panel's copy of the Logon masks
   `554` (2026-10-27).
+  No credential is logged: QuickFIX/J writes the raw message into its session events (an invalid,
+  garbled or rejected message, a disconnect reason) and into its own SLF4J lines (a logon for an
+  unconfigured CompID, which it refuses before any session exists; a non-logon message before logon). The
+  session log is `FixGatewayAcceptor.RedactingLog` and the SLF4J output is `logback.xml`'s `%replace`, both
+  masking `554` and `925` (NewPassword) to `********` in the message and in exception text (2026-10-27).
 - **S4. Only trusted paths register symbols.** Order entry, `/trades` and `/resolve` only look tickers
   up, through the owner-thread cache refreshed from the member's read-only `/symbols`. Three paths
   register: `/seed`, the reference-data control feed (bbe9b040), and operator `/risk/control action=security`

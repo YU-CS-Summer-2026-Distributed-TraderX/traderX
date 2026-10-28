@@ -12,6 +12,8 @@
   SHALL enable TLS. A gateway with `FIX_ACCEPTOR_PORT` set SHALL refuse to start without `FIX_SESSION_AUTH`
   unless `ALLOW_DEV_SECRETS=true`. GKE SHALL source the password from `auth-secrets/fix-session-password`.
   The console SHALL spend it only for a signed-in operator and SHALL NOT return it to the browser.
+  No log line SHALL carry a `Password(554)` or `NewPassword(925)` value, including QuickFIX/J's session
+  events and its own SLF4J lines for a logon from an unconfigured CompID; both SHALL mask the value.
 - FR-ERH-S4: Order entry, `/trades` and `/resolve` SHALL only look tickers up. `/seed`, the
   reference-data control feed and operator `/risk/control action=security` SHALL register. The member
   SHALL serve its registered table read-only on `/symbols`.

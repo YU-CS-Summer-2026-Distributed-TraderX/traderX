@@ -1,0 +1,17 @@
+<configuration>
+  <!--
+    ADR-082 S3: no FIX credential reaches a log line. QuickFIX/J logs a raw message through SLF4J where no session
+    log can intercept it: a logon for an unconfigured CompID ("received message for unknown session"), a non-logon
+    message before logon, decoder and connector errors. Password(554) and NewPassword(925) are masked in the
+    message and in any exception text. The pattern is logback's previous default (TTLLLayout), so the lines read
+    as before; FixGatewayAcceptor.redact applies the same rule to the session log.
+  -->
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} -- %replace(%msg%n%xEx){'(^|[\x01|])(554|925)=[^\x01|]*', '$1$2=********'}%nopex</pattern>
+    </encoder>
+  </appender>
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>

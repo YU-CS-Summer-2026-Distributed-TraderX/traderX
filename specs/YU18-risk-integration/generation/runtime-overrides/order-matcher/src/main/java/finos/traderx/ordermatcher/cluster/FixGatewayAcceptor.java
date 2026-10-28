@@ -11,7 +11,6 @@ import quickfix.FieldNotFound;
 import quickfix.Message;
 import quickfix.MemoryStoreFactory;
 import quickfix.RejectLogon;
-import quickfix.ScreenLogFactory;
 import quickfix.Session;
 import quickfix.SessionID;
 import quickfix.SessionSettings;
@@ -163,7 +162,7 @@ public final class FixGatewayAcceptor {
             settings.setString(sid, "BeginString", "FIX.4.4");
         }
         acceptor = new ThreadedSocketAcceptor(new App(), new MemoryStoreFactory(), settings,
-            new ScreenLogFactory(false, false, false), new DefaultMessageFactory());
+            RedactingLog::new, new DefaultMessageFactory());
         acceptor.start();
         log.info("FIX gateway acceptor on :{} for {} CompID(s)", port, compIds.size());
     }
@@ -172,6 +171,38 @@ public final class FixGatewayAcceptor {
         if (acceptor != null) {
             acceptor.stop();
         }
+    }
+
+    /**
+     * ADR-082 S3: Password(554) and NewPassword(925) masked in a FIX message or any text that embeds one. QuickFIX/J
+     * puts the raw message into session events (an invalid or garbled message, a rejected one, a disconnect
+     * reason), so every session event goes through here. QuickFIX/J's own SLF4J lines (e.g. a logon for an
+     * unconfigured CompID, logged before any session exists) are masked by the same rule in logback.xml.
+     */
+    static String redact(final String text) {
+        return text == null ? null : PASSWORD_FIELD.matcher(text).replaceAll("$1$2=********");
+    }
+
+    private static final java.util.regex.Pattern PASSWORD_FIELD =
+        java.util.regex.Pattern.compile("(^|[\\x01|])(554|925)=[^\\x01|]*");
+
+    /**
+     * The session log, in place of ScreenLogFactory(false, false, false): messages are not logged (as before);
+     * events and error events are, through SLF4J and redacted. Rejected logons still read "Logon rejected: ...".
+     */
+    private static final class RedactingLog implements quickfix.Log {
+        private static final Logger sessionLog = LoggerFactory.getLogger("quickfix.session");
+        private final String session;
+
+        RedactingLog(final SessionID sessionId) {
+            this.session = sessionId.toString();
+        }
+
+        @Override public void clear() { }
+        @Override public void onIncoming(final String message) { }
+        @Override public void onOutgoing(final String message) { }
+        @Override public void onEvent(final String text) { sessionLog.info("{}: {}", session, redact(text)); }
+        @Override public void onErrorEvent(final String text) { sessionLog.error("{}: {}", session, redact(text)); }
     }
 
     private final class App implements Application {

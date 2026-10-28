@@ -168,7 +168,12 @@ class VarEsEndToEndTest {
 
         // 2. listed option over FIX 4.4 (OCC symbol): one session, two accounts it is bound to (S3).
         //    A wrong Password(554) and a missing one are refused at logon before the good session.
-        for (final String bad : new String[] {"not-the-password", null}) {
+        // ADR-082 S3: no credential reaches the gateway log on any path QuickFIX/J logs a raw message on.
+        final String leak = "e2e-leak-" + Long.toHexString(System.nanoTime());
+        rawFix("INTRUDER", "A", "98=0", "108=30", "554=" + leak + "-unbound");   // no session exists for this CompID
+        rawFix("CLIENT1", "0", "554=" + leak + "-prelogon");                     // a non-logon message before logon
+        rawFix("CLIENT1", "A", "98=0", "554=" + leak + "-garbled");              // Logon without HeartBtInt(108)
+        for (final String bad : new String[] {leak + "-wrong", null}) {
             final FixClient refused = new FixClient(bad);
             final SocketInitiator attempt = startInitiator(refused);
             try {
@@ -178,6 +183,9 @@ class VarEsEndToEndTest {
             }
         }
         assertFalse(gatewayLog().contains("FIX logon: CLIENT1"), "the acceptor established a session for a bad credential");
+        await(() -> gatewayLog().contains("unknown session"), "the unbound-CompID logon reached the gateway log");
+        assertFalse(gatewayLog().contains(leak), "a FIX password reached the gateway log:\n" + gatewayLog());
+        assertTrue(gatewayLog().contains("554=********"), "no masked raw message: the leak paths did not run\n" + gatewayLog());
         final FixClient client = new FixClient(FIX_PASSWORD);
         fix = startInitiator(client);
         assertTrue(client.loggedOn.await(30, TimeUnit.SECONDS), "FIX logon with session credentials");
@@ -307,6 +315,32 @@ class VarEsEndToEndTest {
             assertFalse(control.waitFor(10, TimeUnit.SECONDS), "the configured gateway exited");
         } finally {
             control.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
+        }
+    }
+
+    /** One raw FIX 4.4 frame to the acceptor (header 49=compId, 56=TRADERX), then whatever it answers until it closes. */
+    private void rawFix(final String compId, final String msgType, final String... fields) throws Exception {
+        final StringBuilder body = new StringBuilder();
+        for (final String f : new String[] {"35=" + msgType, "49=" + compId, "56=TRADERX", "34=1",
+                "52=" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss.SSS")
+                    .format(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC))}) {
+            body.append(f).append('\u0001');
+        }
+        for (final String f : fields) {
+            body.append(f).append('\u0001');
+        }
+        final String head = "8=FIX.4.4\u00019=" + body.length() + "\u0001";
+        int sum = 0;
+        for (final char c : (head + body).toCharArray()) {
+            sum += c;
+        }
+        final String frame = head + body + "10=" + String.format("%03d", sum % 256) + "\u0001";
+        try (Socket socket = new Socket("localhost", fixPort)) {
+            socket.setSoTimeout(3000);
+            socket.getOutputStream().write(frame.getBytes(StandardCharsets.US_ASCII));
+            try {
+                while (socket.getInputStream().read() >= 0) { }
+            } catch (final java.net.SocketTimeoutException stillOpen) { }
         }
     }
 
