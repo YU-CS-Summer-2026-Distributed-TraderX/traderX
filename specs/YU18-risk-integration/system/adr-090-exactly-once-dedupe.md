@@ -84,10 +84,23 @@ This is (b) made sound by **contiguity**, the same rule FIX applies to `MsgSeqNu
 Because nothing below `next` is ever skipped, `seq < next` really means "already answered". A resend is caught
 **for as long as the stream exists**, with no time bound, no wall clock and no rate assumption.
 
-The only bound is depth: the original ref comes back for resends within W of `next`. A resend can fall behind
-`next` only by the requests on its stream that committed but were never received. In `xp` that was 24 in an hour,
-across all 1,152 streams. **W = 256** (`EXACTLY_ONCE_STREAM_WINDOW`) leaves two orders of magnitude of margin.
-W only limits which resends get their original ref back; no resend is ever booked twice, whatever W is.
+The only bound is depth: the original ref comes back for resends within W of `next`. W only limits which resends
+get their original ref back; no resend is ever booked twice, whatever W is.
+
+How far a resend falls behind `next` is set by the stream's rate and the resend's delay, not by how many acks
+were lost. An open-loop client keeps sending new requests on a stream after an ack is lost, and those commit. So
+`next` runs ahead by about (per-stream rate × resend delay). At 400K/s over 1,152 streams that is about 347/s ×
+12–42 s, or 4K–15K requests. CLOUD-QUEUE row 17 saw it: most post-failover resends landed past W = 256 (about
+0.74 s of stream). (An earlier draft of this ADR argued from the 24 unreceived acks in an hour of `xp`. That
+counts lost acks, not stream advance.)
+
+**W = 256** (`EXACTLY_ONCE_STREAM_WINDOW`) is kept. A ring that covered the resend delay at 400K/s would need
+W ≈ 16K, which is about 670 MB presized at 8,192 streams, or 170 MB at 2,048 with up to ~260 MB of snapshot.
+That brings back the snapshot-walk tail this ADR removes. Past W, a resend's answer is the ref-less DUPLICATE,
+and that answer is its receipt (FR-XOD-03).
+- Alternative, not adopted: **W = 2,048** gives the original ref back for about 6 s of stream at 347/s. It costs
+  about 40 MB presized at 2,048 streams and up to ~33 MB of snapshot. Adopt it only after its snapshot halt has
+  been measured on hxb against W = 256.
 
 State is `MAX_STREAMS` × (24 B + W × 5 B). The default of 8,192 streams × 256 is about 10 MB presized. The rig
 runs 1,152 binary and 864 FIX streams, 2,016 in all. A snapshot writes only filled ring entries: at most

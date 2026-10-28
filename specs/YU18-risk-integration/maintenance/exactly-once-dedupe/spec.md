@@ -25,7 +25,11 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
   - If the ring holds a rejection, the answer SHALL be REJECTED with that reason.
   - If the ring holds no answer (an order held in the PRE_OPEN queue), the key table and the queue SHALL answer it,
     as they do today.
-  - Otherwise, including when `next − seq > W`, the answer SHALL be REJECTED / `DUPLICATE`.
+  - Otherwise, including when `next − seq > W`, the answer SHALL be REJECTED / `DUPLICATE` with no ref
+    (`orderRef` 0).
+  - Client contract for that ref-less answer: it SHALL be read as the receipt for that `seq`. The request was
+    committed earlier, exactly once, and its own answer was lost beyond the window. The client SHALL reconcile the
+    order's state by order status, and SHALL NOT resend that `seq` again. It is never a failure of the request.
   - Every answer from the stream gate consumes no ref and changes no state.
 - FR-XOD-04: A request with `seq > next` SHALL NOT execute and SHALL NOT change any state. It SHALL be answered
   REJECTED / `OUT_OF_SEQUENCE`, with `orderRef` set to the expected `next`.

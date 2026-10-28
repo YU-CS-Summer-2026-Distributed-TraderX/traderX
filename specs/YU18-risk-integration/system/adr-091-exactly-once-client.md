@@ -18,7 +18,10 @@ replicated state (FR-IMRG14), consulted before risk, identical on every member a
    invents an outcome. A second answer naming a different order for one key is a violation, not a duplicate ack.
 2. **The engine owns uniqueness.** A retry of an accepted key restates the original order and changes nothing
    (FR-XOC-02): one unpublished output, no trade, no reservation. Once the original has left terminal retention
-   the answer is REJECTED/DUPLICATE naming its ref; a client reads that as the receipt for that ref.
+   the answer is REJECTED/DUPLICATE naming its ref; a client reads that as the receipt for that ref. On an
+   ADR-090 sequenced stream, a resend more than W behind the stream's next is answered REJECTED/DUPLICATE with no
+   ref. That is the receipt for its `seq`: the client reconciles the order by status and never resends it
+   (FR-XOD-03).
 3. **FIX speaks FIX.** That DUPLICATE answer reaches a FIX client as an Order Status report (`150=I`) for
    `ord-<ref>`, its state from the read model when there is one. Before this it was `39=8` with `OrderID NONE`,
    which a FIX client would book as a reject of an order that had executed.
