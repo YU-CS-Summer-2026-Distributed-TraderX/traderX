@@ -2,9 +2,10 @@
 # yu18-market-order.sh — YU13 FR-LOB04/05 (and the contract-delta matching table), black-box, at the
 # effect end on a fresh ticker:
 #
-#   1. FR-LOB04 refusal: with no trade printed and an empty book, a market Buy (no limitPrice) is
-#      refused PRICE_MISSING and books nothing. The ticker is seeded first, so this also pins that a
-#      tick-seeded mark is NOT the "last trade price" a market order is validated at (FR-LOB04/05).
+#   1. FR-LOB04 on a tick-seeded mark: with no trade printed and an empty book, a market Buy (no
+#      limitPrice) is validated at the mark the seed tick set (ADR-051), books nothing and ends
+#      CANCELED, never resting. PRICE_MISSING needs a security with neither a tick nor a trade, which
+#      /seed cannot make; LimitOrderBookTest covers that arm (suspect 11 was this step expecting it).
 #   2. FR-LOB04 fallback + never rests: a resting Sell 5 @50, then a market Buy 8. It is validated
 #      at the opposite best, fills 5 @50 (the resting price) and its remainder 3 is cancelled in
 #      place: SQL holds the two sides, positions are +5 / -5, and the market order is not open.
@@ -42,14 +43,15 @@ c="$(code -X POST "${GW}/seed" -H 'Content-Type: application/json' -H "X-Risk-Co
 [[ "${c}" == 200 ]] || fail "operator /seed ${T}: ${c} $(body)"
 ok "seeded; members' trades $(trades_all)"
 
-step "1. FR-LOB04: no last trade, no opposite best -> PRICE_MISSING, nothing booked"
+step "1. FR-LOB04: no trade, empty book, tick-seeded mark -> validated at the mark, nothing booked, CANCELED"
 T0="$(trades_all)"
 order "${ACCT_A}" Buy 4
 same_trades "${T0}" || fail "the market order on an empty book moved the members' trades ${T0} -> $(trades_all)"
 [[ "$(sql "SELECT COUNT(*) FROM orderbook WHERE security='${T}' AND status IN ('NEW','PARTIALLY_FILLED')")" == 0 ]] || fail "a market order on an empty book is open in SQL: it rested"
 # Recorded, not fatal: steps 2-4 are independent of it.
-if [[ "${R}" == *PRICE_MISSING* ]]; then ok "PRICE_MISSING; members ${T0} unchanged; nothing open"
-else SUSPECT=1; echo "[FAIL] a market Buy on an untraded, empty book answered ${C} ${R:0:200} and ended $(status_of "$(ref)") (FR-LOB04: PRICE_MISSING; the seed tick is a mark, not a last trade)"; fi
+S1="$(status_of "$(ref)")"
+if [[ "${S1}" == CANCELED ]]; then ok "CANCELED unfilled; members ${T0} unchanged; nothing open"
+else SUSPECT=1; echo "[FAIL] a market Buy on an untraded, empty, tick-seeded book answered ${C} ${R:0:200} and ended '${S1}' (FR-LOB04/ADR-051: validated at the seeded mark, CANCELED with nothing filled)"; fi
 
 step "2. FR-LOB04: validated at the opposite best; fills the depth, cancels the remainder"
 order "${ACCT_B}" Sell 5 "${PX}"; [[ "${C}" == 200 && "${R}" != *'"kind":2'* ]] || fail "the resting Sell was not accepted"

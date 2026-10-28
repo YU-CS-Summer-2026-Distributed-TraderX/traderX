@@ -283,6 +283,20 @@ class LimitOrderBookTest {
         assertEquals((byte) RiskReason.PRICE_MISSING.ordinal(), rejected.riskReason());
     }
 
+    /** FR-LOB04 as ADR-051 decides it (proof-audit suspect 11): before the first print a tick seeds the
+     *  mark, and the mark is a market order's reference, so an empty book answers CANCELED with nothing
+     *  filled, never PRICE_MISSING (that needs neither a tick nor a trade, above). */
+    @Test
+    void marketOrderOnEmptyBookValidatesAtTheTickSeededMark() {
+        newEngine(true);
+        tick(PX150);
+        int mkt = market(ACCT, InputEvent.SIDE_BUY, 100);
+        Emitted end = lastOrderUpdate(drain(), mkt);
+        assertEquals(OutputEvent.KIND_ORDER_CANCELED, end.kind(), "validated at the seeded mark, then never rests");
+        assertEquals(0, end.lastFillQty());
+        assertEquals(0, engine.book(SEC).openOrders());
+    }
+
     @Test
     void marketOrderValidatesAgainstOppositeBestWhenNoTradeYet() {
         newEngine(true);

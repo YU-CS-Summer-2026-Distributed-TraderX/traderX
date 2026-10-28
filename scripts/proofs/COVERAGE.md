@@ -145,6 +145,11 @@ trader-workspace spec.
 - **Suspect 15: CLOSED by ADR-087** (see the disk-loss and minority rows).
 - **Suspect 11 (FR-LOB04 PRICE_MISSING): still open.** A market Buy on an untraded, empty book answers
   `200 {"kind":1}` and ends CANCELED.
+  **CLOSED 2026-10-28: a spec gap, not a defect.** YU13 ADR-051 decides that a tick seeds the mark before
+  the first print, "enabling … market-order validation before the first cross"; FR-LOB04 named only the
+  last trade. FR-LOB04 now names the mark, `yu18-market-order` step 1 expects CANCELED unfilled, and
+  `LimitOrderBookTest.marketOrderOnEmptyBookValidatesAtTheTickSeededMark` pins it (it fails if validation
+  reads the last trade only). No engine change.
 - **Suspect 13 (recon bond prices at 3 dp) and 14 (missingTradeSides 0 for DB-refused sides): still open.**
   `yu05-recon`: `field_mismatch=6`, `missing_in_projection=2`, exactly as in round 2.
 - **Suspect 5 (trace id): now a spec gap, not a defect** (spec gap 18).

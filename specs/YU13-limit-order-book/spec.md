@@ -38,8 +38,9 @@
   resting side's order update SHALL carry the resting-update flag.
 - FR-LOB04: A market order (no limit price) SHALL execute immediately against available depth and
   SHALL cancel any unfilled remainder in place; market orders SHALL never rest. Risk validation
-  of a market order SHALL price it at the last trade price, falling back to the opposite best;
-  with neither available the order SHALL reject PRICE_MISSING.
+  of a market order SHALL price it at the security's mark — the last trade price, or before the
+  first trade the mark a price tick seeded (FR-LOB05, ADR-051) — falling back to the opposite best;
+  with none available the order SHALL reject PRICE_MISSING.
 - FR-LOB05: Price ticks SHALL NOT trigger fills. A tick SHALL update risk price-freshness state
   and SHALL seed the security's mark only while no trade has printed; once the book trades, the
   last trade price is the mark (ADR-051).
