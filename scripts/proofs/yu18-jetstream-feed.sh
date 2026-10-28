@@ -23,8 +23,15 @@ ACCT_A="${ACCT_A:-22214}"; ACCT_B="${ACCT_B:-42422}"; N="${N:-3000}"
 T="$(mint_ticker)"; T2="$(mint_ticker)"; PX=10
 TPDEP="${TP_TARGET:-deploy/trade-processor}"
 ENVS=(PROJECTION_FEED_MODE TRADE_PROJECTION_MODE ORDER_FEED_PERSIST)
+# Restore what the tier had, not "unset": since FR-DRS-25 the production render itself sets
+# PROJECTION_FEED_MODE=jetstream, and removing it would leave trade-processor on the core feed.
+ORIG=()
+for e in "${ENVS[@]}"; do
+  v="$("${K[@]}" get "${TPDEP}" -o "jsonpath={.spec.template.spec.containers[0].env[?(@.name==\"${e}\")].value}" 2>/dev/null)"
+  if [[ -n "${v}" ]]; then ORIG+=("${e}=${v}"); else ORIG+=("${e}-"); fi
+done
 restore() {
-  "${K[@]}" set env "${TPDEP}" "${ENVS[@]/%/-}" >/dev/null 2>&1
+  "${K[@]}" set env "${TPDEP}" "${ORIG[@]}" >/dev/null 2>&1
   "${K[@]}" rollout status "${TPDEP}" --timeout=300s >/dev/null 2>&1
 }
 trap 'restore; _lib_yu18_cleanup' EXIT
@@ -113,4 +120,4 @@ for i in $(seq 1 30); do st="$(orders_view "${ACCT_A}" all | status_of "${REF}")
 [[ -z "$(orders_view "${ACCT_A}" | status_of "${REF}")" ]] || fail "cancelled ${REF} still in the open set"
 ok "cancel -> CANCELED in ?status=all and gone from the open set"
 
-echo; echo "YU18-JETSTREAM-FEED PASS N=${N} ticker=${T} order=${REF} (trade-processor restored to defaults on exit)"
+echo; echo "YU18-JETSTREAM-FEED PASS N=${N} ticker=${T} order=${REF} (trade-processor restored to its own env on exit)"

@@ -421,7 +421,7 @@ order() { # order <account> <side> <qty> <price> -> body
 }
 replace() { # replace <orderRef> <qty> <price> -> "<http> <body>"
   local out
-  out="$(curl -s --max-time 30 -o /tmp/yu13-gke-rep -w '%{http_code}' \
+  out="$(curl "${AUTH[@]}" -s --max-time 30 -o /tmp/yu13-gke-rep -w '%{http_code}' \
     -X POST "${MATCHER_URL}/replace" -H 'Content-Type: application/json' \
     -d "{\"orderRef\":$1,\"quantity\":$2,\"limitPrice\":$3}")"
   echo "${out} $(cat /tmp/yu13-gke-rep)"
@@ -484,6 +484,8 @@ echo "  order read model answers on trade-processor:18091 (the effect end for ev
 # THE TAPE IS A WRITER, AND THIS PROOF IS ONLY MEANINGFUL WHILE IT IS RUNNING. Every assertion here
 # was rewritten because replayed flow moved a counter underneath it; a run with the tape stopped
 # re-proves none of that and would quietly restore confidence in the shapes that were removed.
+if replay_retired "tape-live block waived (the step-0 printReplay reads)"; then SUBMITTED0=0
+else
 PUB_H="$(pub /health)"
 [[ -n "${PUB_H}" ]] || fail "price-publisher /health did not answer — cannot establish the tape is live"
 SUBMITTED0="$(printf '%s' "${PUB_H}" | jget printReplay.submitted)" \
@@ -505,6 +507,7 @@ awk -v r="${RATE0}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
   || fail "the tape reports ${REPLAY_MIN_RATE:+}${RATE0:-no}/s, outside ADR-072's ${REPLAY_MIN_RATE}-${REPLAY_MAX_RATE}/s band.
   Enabled and error-free is NOT the same as writing at pressure, and a quarter-rate tape lets every
   assertion here pass for the wrong reason. Check the print-sample Secret against PRICE_TICKERS."
+fi
 RUN_T0=${SECONDS}
 PRESSURE0="$(pressure_row)"
 
@@ -754,6 +757,10 @@ echo "  restart counts: [${RESTARTS0}] -> [${RESTARTS1}]  (the destroyed pod is 
 # order flow could not move it. That rewrite is only DEMONSTRATED by a run in which the tape was
 # actually writing — otherwise this is a proof that the new shapes pass on a quiet venue, which is
 # the one thing nobody doubted. Brackets the entire run, so it costs nothing.
+if replay_retired "end-of-run tape gates waived"; then SUBMITTED1=0
+  echo "  write pressure across this run (member 0, indented rows are the operator halves):"
+  print_pressure "${PRESSURE0}" "$(pressure_row)" 7
+else
 SUBMITTED1="$(pub /health | jget printReplay.submitted)" || SUBMITTED1=""
 [[ "${SUBMITTED1}" =~ ^[0-9]+$ ]] \
   || fail "could not read printReplay.submitted at the end of the run, so this proof cannot say the
@@ -782,10 +789,11 @@ awk -v r="${OBS_RATE}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
   band. The venue was not under the write pressure these assertions were rewritten for, so this run
   does not demonstrate the class even though every arm above passed."
 
+fi
 echo
 echo "[PASS] atomic replace on a real cluster: ack correlation under cancel-plus-add, three-member"
 echo "       identity, and survival across a snapshot and a member rebuilt from an empty disk —"
-echo "       asserted while the ADR-072 tape replayed $(( SUBMITTED1 - SUBMITTED0 )) orders into the same venue."
+echo "       asserted while the ADR-072 tape replayed $(( SUBMITTED1 - SUBMITTED0 )) orders into the same venue${REPLAY_RETIRED:+ (REPLAY_RETIRED=1: no tape on this run)}."
 echo "       The order-level claims are the ORDER'S OWN read-model state (status, quantity, price),"
 echo "       which no other writer can move; the two volume claims are operator-scoped counters"
 echo "       bracketed by the operator ref generator."

@@ -45,6 +45,8 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 # an operator asked for.
 IMAGE_PRE_NAMED=0
 [[ -n "${IMAGE_PRE:-}" ]] && IMAGE_PRE_NAMED=1
+IMAGE_FIX_NAMED=0
+[[ -n "${IMAGE_FIX:-}" ]] && IMAGE_FIX_NAMED=1
 # DEFAULT MEASURED, not assumed — 2026-08-18. It used to be traderx/cluster-node:yu15, a MUTABLE tag
 # that was retagged away on 2026-08-17 (it turned out to hold a YU16-intermediate build, not a YU15
 # one), after which this half skipped silently on every run while the summary line still said PASS.
@@ -394,6 +396,16 @@ image_available() { # image_available <ref> -- local docker OR any kind node
   done
   return 1
 }
+# A registry-backed cluster (GKE) has no kind nodes to look on and no `kind load`: the forward claim
+# runs against the image the gateway ALREADY serves, unless IMAGE_FIX names another, and the
+# regression half needs IMAGE_PRE named explicitly (pushed to the cluster's registry).
+REMOTE_IMAGES=0
+[[ "${CTX}" == kind-* ]] || REMOTE_IMAGES=1
+if [[ "${REMOTE_IMAGES}" == 1 ]]; then
+  [[ "${IMAGE_FIX_NAMED:-0}" == 1 ]] || IMAGE_FIX="${GW_ORIGINAL_IMAGE}"
+  image_available() { [[ "$1" == "${GW_ORIGINAL_IMAGE}" || ( "$1" == */* && "${1%%/*}" == *.* ) ]]; }
+  [[ "${IMAGE_PRE_NAMED}" == 1 ]] || IMAGE_PRE="(none on ${CTX}: name IMAGE_PRE=<registry ref>)"
+fi
 PRE_ABSENT=0
 if ! image_available "${IMAGE_PRE}"; then
   [[ "${IMAGE_PRE_NAMED}" == "1" ]] && fail "IMAGE_PRE=${IMAGE_PRE} was named explicitly but is on neither local Docker nor the nodes"
@@ -408,7 +420,8 @@ image_available "${IMAGE_FIX}" \
 # out with "did not complete" -- saying nothing about the missing image. Load them here.
 _load=("${IMAGE_FIX}")
 [[ "${PRE_ABSENT}" == "1" ]] || _load=("${IMAGE_PRE}" "${IMAGE_FIX}")
-for _img in "${_load[@]}"; do
+[[ "${REMOTE_IMAGES}" == 1 ]] && _load=()
+for _img in ${_load[@]+"${_load[@]}"}; do
   kind load docker-image "${_img}" --name "${CLUSTER:-traderx-yu12-cluster}" >/dev/null 2>&1 \
     || echo "[warn] could not kind-load ${_img}; assuming it is already on the nodes"
 done

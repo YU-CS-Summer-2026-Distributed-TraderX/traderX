@@ -66,6 +66,11 @@ except Exception: print(s)")"
 if [ -n "${FIX_JWT}" ] && [ "${FIX_JWT}" != "null" ] && ! echo "${FIX_JWT}" | grep -q '404\|error'; then
   ok "mint session JWT" "dev-token issued (account ${ACCOUNT})"
 else bad "mint session JWT" "no token from ${TP}/auth/dev-token"; exit 1; fi
+# YU18 FR-ERH-S3 supersedes FR-FIX07's JWT-in-554 on a gateway that binds the CompID to a password
+# (FIX_SESSION_AUTH, sourced on GKE from auth-secrets/fix-session-password): Logon then carries
+# that password, and a JWT there is refused "invalid credentials". Use it when the rig has one.
+FIX_PW="${FIX_PASSWORD:-$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" get secret auth-secrets -o "jsonpath={.data.fix-session-password}" 2>/dev/null | base64 -d 2>/dev/null)}"
+[ -n "${FIX_PW}" ] && { FIX_JWT="${FIX_PW}"; vlog "   Logon Password(554): the rig's fix-session-password (FR-ERH-S3), not the JWT"; }
 
 # 2. DB projection baseline for this account (proves FIX orders reach the same read model)
 db_orders() {

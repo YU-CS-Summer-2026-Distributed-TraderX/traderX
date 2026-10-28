@@ -47,9 +47,13 @@ GRAFANA_URL="${GRAFANA_URL:-http://localhost:3000/grafana}"
 # Anonymous access is Viewer, and /api/datasources is Admin-only — so this check has to
 # authenticate. Defaults are the kind rig's own (GF_SECURITY_ADMIN_USER/PASSWORD on the deployment).
 GRAFANA_USER="${GRAFANA_USER:-admin}"
-GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-admin}"
 NS="${NS:-traderx}"
 KCTX="${KCTX:-${CTX:-kind-traderx-yu12-cluster}}"   # CTX accepted too, so one env var drives every proof
+# A GKE tier generates the admin password into Secret grafana-credentials (provision-secrets.py);
+# only kind keeps the literal default. Read the rig's own before falling back to it.
+GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-$(kubectl --context "${KCTX}" -n "${NS}" get secret grafana-credentials \
+  -o 'go-template={{index .data "admin-password"}}' 2>/dev/null | base64 -d 2>/dev/null)}"
+GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-admin}"
 K="kubectl --context ${KCTX} -n ${NS}"
 # ADR-082 S2: /seed needs the operator pair or an admin JWT; the orders need a bearer.
 CTX="${KCTX}"; . "$(dirname "${BASH_SOURCE[0]}")/lib-gateway-auth.sh"

@@ -30,10 +30,11 @@ step() { echo; echo "=== $* ==="; }
 PF_PIDS=()
 _lib_yu18_cleanup() { local p; for p in "${PF_PIDS[@]:-}"; do [[ -n "${p}" ]] && kill "${p}" 2>/dev/null; done; true; }
 trap _lib_yu18_cleanup EXIT
-# pf <VAR> <target> <remotePort> — sets VAR to http://127.0.0.1:<free port> once the forward answers.
+# pf <VAR> <target> <remotePort> [tcp] — sets VAR to http://127.0.0.1:<free port> once the forward
+# answers (with `tcp`: to the bare port, once it accepts a connection — a FIX port speaks no HTTP).
 # A proof that adds its own EXIT trap must call _lib_yu18_cleanup from it.
 pf() {
-  local var="$1" target="$2" rport="$3" lp i
+  local var="$1" target="$2" rport="$3" mode="${4:-http}" lp i
   lp="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
   # Up to ~2 min, re-dialling: trade-processor has no readiness probe, so `rollout status` returns
   # before Spring listens, and a forward opened against a not-yet-listening pod dies on first use.
@@ -41,7 +42,11 @@ pf() {
     "${K[@]}" port-forward "${target}" "${lp}:${rport}" >/dev/null 2>&1 &
     PF_PIDS+=($!)
     for j in 1 2 3 4 5 6 7 8 9 10; do
-      curl -s -o /dev/null -m 2 "http://127.0.0.1:${lp}/" && { printf -v "${var}" 'http://127.0.0.1:%s' "${lp}"; return 0; }
+      if [[ "${mode}" == tcp ]]; then
+        (exec 3<>"/dev/tcp/127.0.0.1/${lp}") 2>/dev/null && { printf -v "${var}" '%s' "${lp}"; return 0; }
+      else
+        curl -s -o /dev/null -m 2 "http://127.0.0.1:${lp}/" && { printf -v "${var}" 'http://127.0.0.1:%s' "${lp}"; return 0; }
+      fi
       kill -0 "${PF_PIDS[${#PF_PIDS[@]}-1]}" 2>/dev/null || break
       sleep 0.3
     done
