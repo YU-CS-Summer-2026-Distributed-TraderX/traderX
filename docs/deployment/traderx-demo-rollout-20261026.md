@@ -476,15 +476,22 @@ empty, applied 1323 unchanged since 3:40 pm).
 | Durable feed | `TRADERX_FEED` 8 msgs; `tp-trades-p0` delivered 8 / ack floor 8 / pending 0 / redelivered 0; `projection_cursor` `trade-seq:` = 16; first side since start 15 (= 14 + 1), `missingTradeSides` 0 |
 | Recon (10 s) | cursor 14 → 16 on the sweep after the fill; matched 16, missing 0, mismatch 0, orphan 0 |
 | Gateway / edge | `/orders` without a bearer 401; demo and desk 200; `/grafana` → 301 `https://demo.yaakovseif.dev/grafana/` |
-| Members' exit | 137 on all three: each old pod (revision `74b8f675c5`) still ran the old `& wait $!` command, and a pod terminates under its own spec. The new pods (`86584b6f45`) carry the forwarding wrapper; their first delete shows 143 |
+| Members' exit | Roll: 137 on all three, because each old pod (revision `74b8f675c5`) still ran the old `& wait $!` command and a pod terminates under its own spec. Afterwards (approved): barrier 127 → 128, then `kubectl delete pod order-matcher-cluster-0` (a follower) at 8:54:51 pm: **exit 143**, finished 8:54:52 (grace deadline 8:55:02), last lines `Cluster node stopping: shutdown signal received` / `Cluster node down`; rejoined and agreed 1328 / 16 with the same book hashes at 8:55:27 |
 
 One difference from the admitted candidate, deliberate: the console carries batch custody (as in roll 2).
 Recon now runs at the candidate's 10 s; roll 2's daily override is gone (its cause was fixed in `6ef26b36`).
 
-Control feed: the gateway subscribes and retries `No matching streams` once per distinct failure. The
-`TRADERX_CONTROL_SECURITY` stream does not exist yet: reference-data's 533 outbox rows were all published at 2:20 pm
-to the store roll 2 replaced, and nothing republishes a published row, so the gateway replica is empty (0) until the
-next delta.
+Control feed: reference-data's 533 outbox rows had all been published at 2:20 pm to the store roll 2 replaced, and nothing
+republishes a published row, so after the roll `TRADERX_CONTROL_SECURITY` did not exist and the gateway replica was
+empty (watermark 0, count 0) while the gateway retried. With yaakov's approval, `POST /stocks` Z8812 at 8:53:33 pm
+(version 534): reference-data created the stream, the gateway logged `CONTROL-FEED subscribed` and `applied
+ticker=Z8812 version=534`, its replica had Z8812 about 2 s later (watermark 534, count 1), 0 restarts. The replica
+holds only deltas published since 8:53 pm; the 533 earlier securities are not in it.
+
+Readiness: the replacement member was Ready at 8:55:09 pm with applied 0, and reached `FOLLOWER_READY` and 1328 at
+8:55:24–27. `/ready` is `mine >= maxPeer - CLUSTER_READY_MAX_LAG` with the default 5000, and this tier's whole log is
+1328, so it does not hold a rejoining member until it has caught up. Every roll here still ended with all three
+members agreeing; the end-of-step agreement check is what gated them.
 
 Spend: build VM 7:59–8:14 pm ET, deleted (≈ $0.15). Rollback record (71 objects + DB dump) and the admission
 evidence: shared notes `roll3-20261027/`, `admission-40d93f6b-20261027/`.
