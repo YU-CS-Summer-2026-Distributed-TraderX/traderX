@@ -75,6 +75,8 @@ data:
       -- update. A trace id is derived from the client order id, which stops at the gateway, so
       -- without this column only the browser that submitted an order could ever name its trace.
       traceid VARCHAR(32),
+      -- ADR-093: the client's account-scoped key (unsigned decimal), off the booking update only.
+      clientorderkey VARCHAR(20),
       -- YU18 order types (FR-OT33): type, TIF and typed parameters; PENDING_TRIGGER and
       -- SUSPENDED are live statuses. stopprice is a TRAILING_STOP's CURRENT level.
       ordertype VARCHAR(16),
@@ -93,6 +95,7 @@ data:
     );
     CREATE INDEX idx_orderbook_status ON orderbook(status);
     CREATE INDEX idx_orderbook_updatedat ON orderbook(updatedat);
+    CREATE INDEX idx_orderbook_account_clientkey ON orderbook(accountid, clientorderkey);
 
     -- YU06 EOD price production: versioned immutable closing-price snapshot (single
     -- source of truth for every overnight batch job) + the first consumer's P&L output.
@@ -411,6 +414,8 @@ data:
       -- FR-DRS-27: quantity filled so far, FIX CumQty. remainingquantity is 0 once CANCELED.
       filledquantity INTEGER,
       traceid VARCHAR(32),
+      -- ADR-093: the client's account-scoped key (unsigned decimal), off the booking update only.
+      clientorderkey VARCHAR(20),
       -- YU18 order types (FR-OT33): type, TIF and typed parameters; PENDING_TRIGGER and
       -- SUSPENDED are live statuses. stopprice is a TRAILING_STOP's CURRENT level.
       ordertype VARCHAR(16),
@@ -603,6 +608,9 @@ data:
     -- already exists, and trade-processor runs ddl-auto=none, so a populated volume needs this
     -- explicit ADD or every order write fails on an unknown column. Re-running it is a no-op.
     ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS traceid VARCHAR(32);
+    -- ADR-093: orderbook.clientorderkey, the lookup a ref-less DUPLICATE (ADR-090 FR-XOD-03) reconciles by.
+    ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS clientorderkey VARCHAR(20);
+    CREATE INDEX IF NOT EXISTS idx_orderbook_account_clientkey ON orderbook(accountid, clientorderkey);
 
     -- YU18 order types (FR-OT33). The columns, then the widened status CHECK. orderbook.status
     -- carries a COLUMN-level check (the trap documented above for trades.state): MODIFY clears it,

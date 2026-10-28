@@ -238,6 +238,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     row.setLastFillQuantity(u.getLastFillQuantity());
     row.setFilledQuantity(u.getFilledQuantity());
     row.setTraceId(u.getTraceId());
+    row.setClientOrderKey(u.getClientOrderKey());
     // YU18 (FR-OT33): an untyped order is read as what the engine inferred from its price —
     // LIMIT GTC above zero, MARKET IOC otherwise — so every row names a type and a TIF.
     final boolean typed = u.getOrderType() != null;
@@ -274,10 +275,11 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
    * not blocked by a stale row.
    */
   OrderRow preserveTraceId(OrderRow row) {
-    if (row.getTraceId() == null && row.getId() != null) {
-      orderRepository.findById(row.getId())
-          .map(OrderRow::getTraceId)
-          .ifPresent(row::setTraceId);
+    if ((row.getTraceId() == null || row.getClientOrderKey() == null) && row.getId() != null) {
+      orderRepository.findById(row.getId()).ifPresent(old -> {
+        if (row.getTraceId() == null) { row.setTraceId(old.getTraceId()); }
+        if (row.getClientOrderKey() == null) { row.setClientOrderKey(old.getClientOrderKey()); }   // ADR-093, same rule
+      });
     }
     return row;
   }

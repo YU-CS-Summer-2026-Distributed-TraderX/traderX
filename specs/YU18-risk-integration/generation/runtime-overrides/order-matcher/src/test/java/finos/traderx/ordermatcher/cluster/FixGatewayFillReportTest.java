@@ -252,6 +252,57 @@ class FixGatewayFillReportTest {
         }
     }
 
+    /** ADR-093: the fill feed is a strict consumer of /orders; a booking event carrying clientOrderKey reads as before. */
+    @Test
+    void aBookingEventCarryingTheClientKeyIsReadAsBefore() throws Exception {
+        final StubSubmitter submitter = new StubSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "k1", Side.BUY, 5, 51.0);
+        assertNotNull(c.await(r -> is(r, "k1", ExecType.NEW)), "no New");
+        final String booking = new String(feed(1, (byte) 0, 5, 5, NEW, 0, 0), java.nio.charset.StandardCharsets.UTF_8)
+            .replace("\"status\"", "\"clientOrderKey\":\"18446744073709551615\",\"status\"");
+        assertTrue(booking.contains("clientOrderKey"), booking);
+        acceptor.onOrderUpdate(booking.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        acceptor.onOrderUpdate(feed(1, (byte) 0, 5, 0, FILLED, 50.0, 5));
+        final ExecutionReport r = c.await(m -> is(m, "k1", ExecType.TRADE));
+        assertNotNull(r, "no fill report after a keyed booking event");
+        assertFill(r, "ord-1", OrdStatus.FILLED, 5, 50.0, 5, 0, 50.0);
+    }
+
+    /**
+     * ADR-093: an OrderStatusRequest for a ClOrdID this gateway holds no ref for (another replica booked it, or its ref
+     * was lost past ADR-090's answer ring) is found by the key the gateway submits it under. Fails on a gateway that
+     * answers "unknown order".
+     */
+    @Test
+    void orderStatusOfAClOrdIdThisGatewayNeverSawIsFoundByItsClientKey() throws Exception {
+        final Client c = new Client("CLIENT1");
+        final long key = ClusterGatewayMain.clientOrderKey("CLIENT1\u0001x9");
+        start(new StubSubmitter(), new OrderStatusSource() {
+            @Override
+            public List<OrderView> orders(final int account, final boolean all) {
+                return List.of(new OrderView(7, "Buy", 10, 10, "NEW", "IBM", 0));   // not this order
+            }
+
+            @Override
+            public List<OrderView> ordersByKey(final int account, final long clientKey) {
+                return account == 11 && clientKey == key ? List.of(new OrderView(42, "Buy", 5, 0, "FILLED", "IBM", 5))
+                    : List.of();
+            }
+        }, c);
+        final OrderStatusRequest h = new OrderStatusRequest();
+        h.set(new ClOrdID("x9"));
+        h.set(new Side(Side.BUY));
+        h.set(new Symbol("IBM"));
+        h.set(new Account("11"));
+        Session.sendToTarget(h, c.sessionId);
+        final ExecutionReport r = c.await(m -> is(m, "x9", ExecType.ORDER_STATUS));
+        assertNotNull(r, "no status report found by the client key");
+        assertEquals("ord-42", r.getString(OrderID.FIELD));
+        assertEquals(OrdStatus.FILLED, r.getChar(OrdStatus.FIELD));
+    }
+
     /** FR-XOC-03: a resent ClOrdID whose original left retention is restated as that order, never rejected. */
     @Test
     void aResentClOrdIdWhoseOriginalLeftRetentionIsRestatedNotRejected() throws Exception {

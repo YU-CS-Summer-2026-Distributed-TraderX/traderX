@@ -878,17 +878,23 @@ public final class FixGatewayAcceptor {
                 && req.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B';
             final int orderRef = resolveOrderRef(req, qualify(sessionId, clOrdId));
 
-            final List<OrderStatusSource.OrderView> orders =
-                statusSource == null || accountOf(sessionId, req) < 0 ? null   // S3: own accounts only
+            // ADR-093: a ClOrdID this gateway holds no ref for (another replica booked it, or its ref was lost past
+            // ADR-090's answer ring) is found by the key the gateway submits it under; the read model scopes it.
+            final List<OrderStatusSource.OrderView> byKey = orderRef >= 0 || statusSource == null
+                || accountOf(sessionId, req) < 0 ? null
+                : statusSource.ordersByKey(accountOf(sessionId, req),
+                    ClusterGatewayMain.clientOrderKey(qualify(sessionId, clOrdId)));
+            final List<OrderStatusSource.OrderView> orders = byKey != null && !byKey.isEmpty() ? byKey
+                : statusSource == null || accountOf(sessionId, req) < 0 ? null   // S3: own accounts only
                     : statusSource.orders(accountOf(sessionId, req), true);
             if (orders == null) {
                 sendStatusReject(sessionId, clOrdId, null, side,
                     "order status unavailable (no read model configured)");
                 return;
             }
-            OrderStatusSource.OrderView match = null;
+            OrderStatusSource.OrderView match = byKey != null && !byKey.isEmpty() ? byKey.get(0) : null;
             for (final OrderStatusSource.OrderView v : orders) {
-                if (v.orderRef() == orderRef) {
+                if (match == null && v.orderRef() == orderRef) {
                     match = v;
                     break;
                 }

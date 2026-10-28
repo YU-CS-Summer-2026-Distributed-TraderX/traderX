@@ -50,6 +50,7 @@ final class OrderNatsPublisher {
         // rendered id: traceIdHex allocates a String and offer() runs on the deterministic apply
         // thread, so the hex is rendered in encode() on this bridge's own thread instead.
         long traceKey;
+        long clientOrderKey;   // ADR-093: set on the booking event only
         // YU18 order types (FR-OT33/34). All zero for an untyped order, whose JSON is unchanged.
         byte orderType;
         byte tif;
@@ -165,6 +166,7 @@ final class OrderNatsPublisher {
         r.createdAtMillis = o.createdAtMillis;
         r.updatedAtMillis = o.updatedAtMillis;
         r.traceKey = traceKey;
+        r.clientOrderKey = o.clientOrderKey;
         r.orderType = o.orderType;
         r.tif = o.typed.tif;
         r.stopPx = o.typed.stopPx;
@@ -228,6 +230,12 @@ final class OrderNatsPublisher {
         // fields, so an absent traceId is a null on the consumer, not a parse failure.
         if (r.traceKey != 0L) {
             sb.append(",\"traceId\":\"").append(OrderTrace.traceIdHex(r.traceKey)).append('"');
+        }
+        // ADR-093: the client's key, account-scoped as the engine holds it, on the event that books the order, so the
+        // read model can find the order by it (a resend past ADR-090's answer ring learns no ref). A decimal STRING: an
+        // unsigned 64-bit value does not survive a JSON number in every reader. Omitted on every other event.
+        if (r.clientOrderKey != 0L) {
+            sb.append(",\"clientOrderKey\":\"").append(Long.toUnsignedString(r.clientOrderKey)).append('"');
         }
         // YU18: the reason a venue event gave this order (DAY_EXPIRED, FOK_UNFILLABLE, a trigger
         // refusal...). Omitted when ACCEPTED, so an untyped accepted order's JSON is unchanged.

@@ -73,6 +73,10 @@ public class OrderRow implements Serializable {
   @Column(length = 32, name = "traceid")
   private String traceId;
 
+  /** ADR-093: the client's account-scoped key, written once off the booking update, kept like traceId. */
+  @Column(length = 20, name = "clientorderkey")
+  private String clientOrderKey;
+
   // YU18 order types (FR-OT33). Declared in the shipped DDL and added to existing databases by
   // the 900-migrations key, so ddl-auto=validate refuses a database that lacks them.
   @Column(length = 16, name = "ordertype")
@@ -224,6 +228,14 @@ public class OrderRow implements Serializable {
 
   public void setTraceId(String traceId) {
     this.traceId = traceId;
+  }
+
+  public String getClientOrderKey() {
+    return clientOrderKey;
+  }
+
+  public void setClientOrderKey(String clientOrderKey) {
+    this.clientOrderKey = clientOrderKey;
   }
   public String getOrderType() {
     return orderType;

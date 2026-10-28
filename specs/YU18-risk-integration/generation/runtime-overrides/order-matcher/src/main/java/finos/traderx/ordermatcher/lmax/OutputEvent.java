@@ -72,6 +72,8 @@ public final class OutputEvent {
     public long positionAvgCostTicks; // KIND_POSITION_UPDATED: weighted average cost basis (Px ticks)
     public long averageCostBasisPx;   // alias retained for direct UI payloads/tests
     public long ingressNanos;
+    /** ADR-093: the client's (account-scoped) key, on the event that books a NEW order only; 0 on every other. */
+    public long clientOrderKey;
 
     // YU18 order types: the order's typed shape, copied from the order on every TYPED order update
     // so the read model can show it (FR-OT33/34). orderType stays inline (LEGACY = 0 means every

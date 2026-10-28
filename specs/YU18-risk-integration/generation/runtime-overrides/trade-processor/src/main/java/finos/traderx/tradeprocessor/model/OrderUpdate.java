@@ -34,6 +34,9 @@ public class OrderUpdate implements ScopedEvent {
    * id; {@code OrderFeedHandler} therefore PRESERVES the persisted value rather than overwriting.
    */
   private String traceId;
+  // ADR-093: the client's account-scoped key (unsigned decimal) on the booking update only; preserved across later
+  // updates by the read model, and never part of the event digest.
+  private String clientOrderKey;
   // YU18 order types (FR-OT33/34): absent on untyped orders; the feed handler derives them.
   private String orderType;
   private String timeInForce;
@@ -159,6 +162,14 @@ public class OrderUpdate implements ScopedEvent {
 
   public void setTraceId(String traceId) {
     this.traceId = traceId;
+  }
+
+  public String getClientOrderKey() {
+    return clientOrderKey;
+  }
+
+  public void setClientOrderKey(String clientOrderKey) {
+    this.clientOrderKey = clientOrderKey;
   }
 
   public String getOrderType() {

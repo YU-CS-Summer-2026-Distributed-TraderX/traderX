@@ -36,4 +36,12 @@ public interface OrderStatusSource {
      * is false, every state when true. Empty list ⇒ none; {@code null} ⇒ read model unavailable.
      */
     List<OrderView> orders(int accountId, boolean includeTerminal);
+
+    /**
+     * ADR-093: the order {@code accountId} booked under the client's RAW key (the read model mixes the account in, as the
+     * gateway does), any state. Empty ⇒ none; {@code null} ⇒ read model unavailable or without the lookup.
+     */
+    default List<OrderView> ordersByKey(int accountId, long clientKey) {
+        return null;
+    }
 }

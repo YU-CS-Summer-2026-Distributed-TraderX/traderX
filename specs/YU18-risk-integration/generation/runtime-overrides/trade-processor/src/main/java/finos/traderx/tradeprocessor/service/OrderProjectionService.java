@@ -94,6 +94,7 @@ public final class OrderProjectionService {
           && "SEALED".equals(registry.scope(row.getProjectionScope()).get("phase")) && sameLegacyState(old,row)) return null;
       registry.requireWritable(update,run);
       if (row.getTraceId()==null && old!=null) {row.setTraceId(old.getTraceId());}
+      if (row.getClientOrderKey()==null && old!=null) {row.setClientOrderKey(old.getClientOrderKey());}   // ADR-093
       // persist() for a row known to be absent skips merge()'s SELECT; an existing row is already
       // managed in this transaction, so merging onto it issues no read either.
       OrderRow written;
@@ -110,7 +111,7 @@ public final class OrderProjectionService {
   private static boolean sameLegacyState(OrderRow old,OrderRow incoming) {
     var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
     com.fasterxml.jackson.databind.node.ObjectNode a=mapper.valueToTree(old),b=mapper.valueToTree(incoming);
-    for(String field:java.util.List.of("traceId","createdAt","updatedAt","eventDigest","filledQuantity")) {a.remove(field);b.remove(field);}
+    for(String field:java.util.List.of("traceId","clientOrderKey","createdAt","updatedAt","eventDigest","filledQuantity")) {a.remove(field);b.remove(field);}
     return a.equals(b);
   }
   static String digest(OrderUpdate update) {
@@ -118,6 +119,9 @@ public final class OrderProjectionService {
       var mapper=DIGEST_MAPPER; // was built per update
       var tree=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(update);
       tree.remove("traceId"); // processing trace attribution is not economic event identity
+      // ADR-093: nor is the client's key. Leaving it in would change the digest of every event retained before the
+      // field existed (the bean serializes it, as null), and recovery would refuse that history.
+      tree.remove("clientOrderKey");
       tree.remove("filledQuantity"); // derived by the read model (FR-DRS-27), not part of the event
       return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(tree)));
     } catch (Exception ex) {throw new IllegalArgumentException("invalid order event",ex);}

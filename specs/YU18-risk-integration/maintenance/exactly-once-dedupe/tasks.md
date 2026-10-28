@@ -15,6 +15,8 @@
       window-plus-index store and with the check off.
 - [x] FIX: a ref-less DUPLICATE is answered `35=j EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`, never `39=8` (FR-XOD-14).
       `FixExactlyOnceIT` case 5 fails on the gateway that sent `39=8`.
+- [x] ADR-093: client key on the booking egress (recon parity), read-model index + REST lookup, digest excludes it,
+      FIX status fallback (FR-XOD-15..17). Not rolled. Roll order when it is: read model → gateways → members.
 - [x] Loadgen `plan.sequenced` and HxNativeReplay `duplicateKeys`/`resendsOfCommitted`; arms `xs`/`xn`
       (`exactly-once-sequenced.patch`, the hxb harness, not this repo).
 - [x] Local triad `xs`: 400/s and 1,600/s valid, strict replay `duplicateKeys` 0, `resendsOfCommitted` 2,056 at

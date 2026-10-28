@@ -85,6 +85,16 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
   (`RefMsgType=D`, `BusinessRejectRefID` = the ClOrdID). The text SHALL begin
   `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`. The gateway SHALL NOT send an ExecutionReport with `39=8`, which reads as
   "did not execute" (ADR-091 §3), for an order that executed once.
+- FR-XOD-15 (ADR-093): The `/orders` event that books a NEW order SHALL carry `clientOrderKey`. The value is the
+  engine's account-scoped key, written as an unsigned decimal string. No other order event SHALL carry it. The
+  recon replay SHALL project the same bytes from the same log.
+- FR-XOD-16 (ADR-093): The read model SHALL keep the key from the booking across later updates.
+  - `GET /accounts/{id}/orders?clientOrderKey=<raw u64>` SHALL return the order booked under it, scoping the raw
+    key by the account as the gateway does, or an empty list.
+  - The key SHALL NOT enter the event digest or the recovery state comparisons. An event retained before the
+    field existed SHALL verify unchanged.
+- FR-XOD-17 (ADR-093): A FIX OrderStatusRequest whose order neither `OrderID` nor the gateway's ClOrdID map names
+  SHALL be looked up in the read model by the key the gateway submits that ClOrdID under.
 
 ## Non-functional
 

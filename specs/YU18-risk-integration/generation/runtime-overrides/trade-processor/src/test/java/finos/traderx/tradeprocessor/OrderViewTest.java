@@ -80,4 +80,25 @@ class OrderViewTest {
     v.apply(u("9-1", 1, "CANCELED", null, null, null));
     assertEquals("CANCELED", v.all(1).get(0).getStatus());
   }
+
+  /** ADR-093: the booking update names the client's key; later updates do not, and the key still finds the order. */
+  @Test void theClientKeyFindsTheOrderAfterLaterUpdatesAndGoesWithIt() {
+    OrderView v = new OrderView(1);
+    OrderUpdate booking = u("1-8", 4, "NEW", 1L, 0, null);
+    booking.setClientOrderKey("1509528116303909258");
+    v.apply(booking);
+    v.apply(u("1-8", 4, "FILLED", 2L, 0, null));                 // carries no key
+    assertEquals("FILLED", v.byClientKey(4, "1509528116303909258").getStatus());
+    assertEquals("1509528116303909258", v.byClientKey(4, "1509528116303909258").getClientOrderKey());
+    assertEquals(null, v.byClientKey(5, "1509528116303909258"), "another account's key space");
+    v.apply(u("1-9", 4, "CANCELED", 3L, 0, null));               // ring of 1: evicts 1-8, and its key
+    assertEquals(null, v.byClientKey(4, "1509528116303909258"));
+  }
+
+  /** ADR-093: the same scoping as the gateway's PendingOrder.scopeKey; ClusterGatewayMainScopeKeyTest pins the same vectors. */
+  @Test void theClientKeyIsScopedByTheAccountAsTheGatewayScopesIt() {
+    assertEquals("1509528116303909258", Long.toUnsignedString(OrderView.scopeKey((0x00012345L << 32) | 7L, 65000)));
+    assertEquals("11752876707446874652", Long.toUnsignedString(OrderView.scopeKey(-1L, 11)));
+    assertEquals(0L, OrderView.scopeKey(0L, 11));
+  }
 }

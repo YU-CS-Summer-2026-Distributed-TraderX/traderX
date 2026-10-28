@@ -1078,7 +1078,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         return count.incrementAndGet() <= perSecond;
     }
 
-    private static long clientOrderKey(final String clOrdId) {
+    static long clientOrderKey(final String clOrdId) {   // package-private: FIX status derives the same key (ADR-093)
         if (clOrdId == null || clOrdId.isEmpty()) {
             return 0L;
         }
@@ -3435,8 +3435,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         if (base.isEmpty()) {
             return null;
         }
-        final String url = base + "/accounts/" + accountId + "/orders"
-            + (includeTerminal ? "?status=all" : "");
+        return queryReadModel(base + "/accounts/" + accountId + "/orders" + (includeTerminal ? "?status=all" : ""),
+            accountId);
+    }
+
+    /** ADR-093: {@code GET /accounts/{id}/orders?clientOrderKey=<raw, unsigned>}, the same shape as {@link #orders}. */
+    @Override
+    public List<OrderStatusSource.OrderView> ordersByKey(final int accountId, final long clientKey) {
+        final String base = env("ORDER_READMODEL_URL", "");
+        return base.isEmpty() ? null : queryReadModel(base + "/accounts/" + accountId + "/orders?clientOrderKey="
+            + Long.toUnsignedString(clientKey), accountId);
+    }
+
+    private List<OrderStatusSource.OrderView> queryReadModel(final String url, final int accountId) {
         try {
             final HttpResponse<String> resp = readModelClient.send(
                 HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(2)).GET().build(),

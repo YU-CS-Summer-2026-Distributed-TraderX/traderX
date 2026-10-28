@@ -913,7 +913,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // Ack first: the REST create response is the NEW order, exactly as in 009. The first
         // non-resting order-lifecycle ack after an offer is the gateway's correlation contract.
         out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CREATE, true,
-            lastPxBySecurity[e.securityId], e.ingressNanos);
+            lastPxBySecurity[e.securityId], e.ingressNanos, e.clientOrderKey());   // ADR-093: the booking names its key
 
         cross(o, book, e);
 
@@ -1694,7 +1694,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         index(o);
         out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CREATE, true, lastPxBySecurity[s],
-            e.ingressNanos);
+            e.ingressNanos, e.clientOrderKey());
         cross(o, book, e);
         if (o.remaining == 0) {
             return;
@@ -1794,7 +1794,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         index(o);
         linkPending(o);
         out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CREATE, true, lastPxBySecurity[s],
-            e.ingressNanos);
+            e.ingressNanos, e.clientOrderKey());
     }
 
     private static boolean stopThrough(RestingOrder o, long printPx) {
@@ -1862,7 +1862,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         index(o);
         linkPeg(o);
         out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CREATE, true, lastPxBySecurity[s],
-            e.ingressNanos);
+            e.ingressNanos, e.clientOrderKey());
         cross(o, book, e);   // only an opposite MIDPOINT peg can be reached (FR-OT23 consequence)
         if (o.remaining > 0) {
             restAt(o, book, slot);

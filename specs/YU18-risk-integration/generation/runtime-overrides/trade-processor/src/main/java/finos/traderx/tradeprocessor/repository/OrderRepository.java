@@ -14,4 +14,7 @@ public interface OrderRepository extends JpaRepository<OrderRow, String> {
 
   List<OrderRow> findByProjectionScopeAndAccountId(String scope,Integer id);
   List<OrderRow> findByProjectionScopeAndAccountIdAndStatusIn(String scope,Integer id,Collection<String> statuses);
+  // ADR-093: the order booked under an account-scoped client key
+  List<OrderRow> findByAccountIdAndClientOrderKey(Integer accountId, String clientOrderKey);
+  List<OrderRow> findByProjectionScopeAndAccountIdAndClientOrderKey(String scope, Integer accountId, String clientOrderKey);
 }

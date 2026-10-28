@@ -30,6 +30,8 @@ public final class OrderView {
   static final Set<String> OPEN = Set.of("NEW", "PARTIALLY_FILLED", "QUEUED", "PENDING_TRIGGER", "SUSPENDED");
 
   private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, OrderUpdate>> byAccount = new ConcurrentHashMap<>();
+  // ADR-093: account -> client key -> order id, for every order this view holds; dropped with the order.
+  private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> byClientKey = new ConcurrentHashMap<>();
   private final ArrayDeque<OrderUpdate> terminals = new ArrayDeque<>();
   private final int terminalCapacity;
   private final AtomicLong applied = new AtomicLong();
@@ -48,12 +50,16 @@ public final class OrderView {
     OrderUpdate winner = orders.merge(u.getId(), u, (old, next) -> {
       if (!newer(old, next)) { return old; }
       if (next.getTraceId() == null) { next.setTraceId(old.getTraceId()); }
+      if (next.getClientOrderKey() == null) { next.setClientOrderKey(old.getClientOrderKey()); }
       next.setFilledQuantity(filled(next.getStatus(), next.getQuantity(), next.getRemainingQuantity(),
           old.getFilledQuantity()));
       return next;
     });
     if (winner != u) { ignored.incrementAndGet(); return; }
     applied.incrementAndGet();
+    if (u.getClientOrderKey() != null) {
+      byClientKey.computeIfAbsent(u.getAccountId(), k -> new ConcurrentHashMap<>()).put(u.getClientOrderKey(), u.getId());
+    }
     if (!OPEN.contains(u.getStatus())) { retainTerminal(u); }
   }
 
@@ -66,7 +72,10 @@ public final class OrderView {
     if (evict != null) {
       Map<String, OrderUpdate> orders = byAccount.get(evict.getAccountId());
       // Only the entry this very update put there: a newer update for the same id stays.
-      if (orders != null) { orders.remove(evict.getId(), evict); }
+      if (orders != null && orders.remove(evict.getId(), evict) && evict.getClientOrderKey() != null) {
+        Map<String, String> keys = byClientKey.get(evict.getAccountId());
+        if (keys != null) { keys.remove(evict.getClientOrderKey(), evict.getId()); }
+      }
     }
   }
 
@@ -105,6 +114,29 @@ public final class OrderView {
       if (!openOnly || OPEN.contains(u.getStatus())) { out.add(u); }
     }
     return out;
+  }
+
+  /** ADR-093: the order booked under this account-scoped client key, or null if this view holds none. */
+  public OrderUpdate byClientKey(int accountId, String scopedKey) {
+    Map<String, String> keys = byClientKey.get(accountId);
+    String id = keys == null ? null : keys.get(scopedKey);
+    Map<String, OrderUpdate> orders = id == null ? null : byAccount.get(accountId);
+    return orders == null ? null : orders.get(id);
+  }
+
+  /**
+   * ADR-093: the engine's key for a client's raw key: the gateway mixes the account in (ClusterGatewayMain.PendingOrder
+   * .scopeKey, ENGINE-REVIEW G1), so the same function, byte for byte. Pinned by a shared vector in both modules' tests.
+   */
+  public static long scopeKey(long clientKey, int accountId) {
+    if (clientKey == 0L || accountId == 0) {
+      return clientKey;
+    }
+    long h = clientKey ^ (0x9e3779b97f4a7c15L * accountId);
+    h ^= h >>> 29;
+    h *= 0xbf58476d1ce4e5b9L;
+    h ^= h >>> 32;
+    return h == 0L ? 1L : h;
   }
 
   public long applied() { return applied.get(); }

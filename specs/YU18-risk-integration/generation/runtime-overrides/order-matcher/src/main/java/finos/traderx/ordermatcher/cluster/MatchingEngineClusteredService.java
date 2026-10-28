@@ -1693,7 +1693,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         sessionOrder.status = finos.traderx.ordermatcher.lmax.RestingOrder.STATUS_QUEUED;
         sessionOrder.riskReason = (byte) RiskReason.ACCEPTED.ordinal();
         outputs.emitOrderUpdate(sessionOrder, event.seq, OutputEvent.FLAG_CREATE, true,
-            engine.markPx((int) row[2]), event.ingressNanos);
+            engine.markPx((int) row[2]), event.ingressNanos, row[6]);   // ADR-093: the queued booking names its key
     }
 
     /** A queued order leaving the queue without ever reaching a book: CANCELED, carrying the

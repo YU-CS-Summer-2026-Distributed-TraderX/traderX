@@ -56,11 +56,19 @@ public class OrderController {
     return null;
   }
 
+  public ResponseEntity<List<OrderRow>> ordersForAccount(Integer accountId, String status) {
+    return ordersForAccount(accountId, status, null);
+  }
+
   @GetMapping("/accounts/{accountId}/orders")
   public ResponseEntity<List<OrderRow>> ordersForAccount(
       @PathVariable Integer accountId,
-      @RequestParam(name = "status", required = false) String status) {
+      @RequestParam(name = "status", required = false) String status,
+      @RequestParam(name = "clientOrderKey", required = false) String clientOrderKey) {
     OrderFeedHandler memory = memoryOnlyFeed();
+    if (clientOrderKey != null) {
+      return ResponseEntity.ok(byClientKey(memory, accountId, clientOrderKey));
+    }
     if (memory != null) {
       boolean all = "all".equalsIgnoreCase(status);
       List<OrderUpdate> found = all ? memory.view().all(accountId) : memory.view().open(accountId);
@@ -73,6 +81,29 @@ public class OrderController {
         ? orderRepository.findByAccountId(accountId)
         : orderRepository.findByAccountIdAndStatusIn(accountId, OPEN_STATUSES);
     return ResponseEntity.ok(orders);
+  }
+
+  /**
+   * ADR-093: the order (any state) booked under the client's RAW key: its own u64 (binary; a sequenced stream's
+   * {@code streamId:u32 | seq:u32}) or the gateway's hash of {@code CompID SOH ClOrdID} (FIX), as an unsigned decimal.
+   * The account is mixed in here as the gateway mixes it in. Empty means no order this read model holds was booked
+   * under it; that is the answer a ref-less DUPLICATE (ADR-090 FR-XOD-03) is reconciled with.
+   */
+  private List<OrderRow> byClientKey(OrderFeedHandler memory, Integer accountId, String rawKey) {
+    final String scoped;
+    try {
+      scoped = Long.toUnsignedString(finos.traderx.tradeprocessor.OrderView.scopeKey(Long.parseUnsignedLong(rawKey), accountId));
+    } catch (NumberFormatException ex) {
+      throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST,
+          "clientOrderKey must be an unsigned 64-bit decimal");
+    }
+    if (memory != null) {
+      OrderUpdate u = memory.view().byClientKey(accountId, scoped);
+      return u == null ? List.of() : List.of(OrderFeedHandler.toRow(u));
+    }
+    return runRegistry != null
+        ? orderRepository.findByProjectionScopeAndAccountIdAndClientOrderKey(runRegistry.activeScope(), accountId, scoped)
+        : orderRepository.findByAccountIdAndClientOrderKey(accountId, scoped);
   }
 
   @GetMapping("/v2/projections/{scope}/accounts/{accountId}/orders")

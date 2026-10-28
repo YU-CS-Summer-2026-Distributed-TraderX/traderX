@@ -5,7 +5,7 @@ as-built notes in §4 record where the implementation narrowed the proposal and 
 FIX order records are a ring per account, in the store and in the heap, and a resend the ring may have lost is
 refused, never booked (§4a, FR-XOD-13). At 400K/s (CLOUD-QUEUE row 17, arm `xs`, image `f815003d`), a key-level check
 of the full member log found 0 keys booked twice among 14,679,944 acceptances (Evidence).
-Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..14 and
+Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..17 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
 (`independent-baseline/results-20261025-open/STALLS.md` §4, the 1-hour 400K/s `xp` arm) and the
@@ -98,7 +98,7 @@ counts lost acks, not stream advance.)
 **W = 256** (`EXACTLY_ONCE_STREAM_WINDOW`) is kept. A ring that covered the resend delay at 400K/s would need
 W ≈ 16K, which is about 670 MB presized at 8,192 streams, or 170 MB at 2,048 with up to ~260 MB of snapshot.
 That brings back the snapshot-walk tail this ADR removes. Past W, a resend's answer is the ref-less DUPLICATE,
-and that answer is its receipt (FR-XOD-03). No status path can find the order by its key yet: ADR-093 (proposed) closes that.
+and that answer is its receipt (FR-XOD-03). Order status finds the order by that key (ADR-093, FR-XOD-15..17).
 - Alternative, not adopted: **W = 2,048** gives the original ref back for about 6 s of stream at 347/s. It costs
   about 40 MB presized at 2,048 streams and up to ~33 MB of snapshot. Adopt it only after its snapshot halt has
   been measured on hxb against W = 256.

@@ -46,9 +46,16 @@ public final class OutputPublisher {
 
     public void emitOrderUpdate(RestingOrder order, long inputSeq, int flags, boolean publishNats,
                                 long marketPx, long ingressNanos) {
+        emitOrderUpdate(order, inputSeq, flags, publishNats, marketPx, ingressNanos, 0L);
+    }
+
+    /** ADR-093: the booking event of a NEW names the client's key; every other order update passes 0. */
+    public void emitOrderUpdate(RestingOrder order, long inputSeq, int flags, boolean publishNats,
+                                long marketPx, long ingressNanos, long clientOrderKey) {
         long seq = claim(1);
         try {
-            writeOrderUpdate(ring.get(seq), order, inputSeq, flags, publishNats, marketPx, ingressNanos);
+            writeOrderUpdate(ring.get(seq), order, inputSeq, flags, publishNats, marketPx, ingressNanos,
+                clientOrderKey);
         } finally {
             ring.publish(seq);
         }
@@ -63,7 +70,7 @@ public final class OutputPublisher {
         long tradeSlot = hi - 1;
         long positionSlot = hi;
         try {
-            writeOrderUpdate(ring.get(updateSlot), order, inputSeq, flags, true, marketPx, ingressNanos);
+            writeOrderUpdate(ring.get(updateSlot), order, inputSeq, flags, true, marketPx, ingressNanos, 0L);
             writeTradeBooked(ring.get(tradeSlot), order.accountId, order.securityId, order.side, fillQty,
                 tradePx, tradeSeq, inputSeq, order.updatedAtMillis, ingressNanos, order.orderRef);
             writePositionUpdated(ring.get(positionSlot), order.accountId, order.securityId, newPosition,
@@ -108,7 +115,7 @@ public final class OutputPublisher {
         long seq = claim(1);
         try {
             OutputEvent e = ring.get(seq);
-            writeOrderUpdate(e, order, inputSeq, OutputEvent.FLAG_REJECT, false, marketPx, ingressNanos);
+            writeOrderUpdate(e, order, inputSeq, OutputEvent.FLAG_REJECT, false, marketPx, ingressNanos, 0L);
             e.riskReason = riskReasonOrdinal;
         } finally {
             ring.publish(seq);
@@ -168,8 +175,10 @@ public final class OutputPublisher {
     }
 
     private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
-                                         boolean publishNats, long marketPx, long ingressNanos) {
+                                         boolean publishNats, long marketPx, long ingressNanos,
+                                         long clientOrderKey) {
         e.kind = orderKind(order, flags);
+        e.clientOrderKey = clientOrderKey;   // every lifecycle slot is written here, so a reused slot never keeps one
         e.inputSeq = inputSeq;
         e.flags = flags;
         e.publishNats = publishNats;
