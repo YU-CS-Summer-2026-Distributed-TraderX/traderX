@@ -30,7 +30,7 @@ tables only — no collision with existing table names):
 | Table | Columns | Notes |
 |---|---|---|
 | `stocks` | `ticker VARCHAR(16) PRIMARY KEY`, `company_name VARCHAR(100) NOT NULL`, `version BIGINT NOT NULL` | Replaces the CSV as the live source of truth; CSV becomes a one-time idempotent seed (only runs if the table is empty at boot). |
-| `stocks_control_outbox` | `version BIGINT PRIMARY KEY AUTO_INCREMENT`, `ticker VARCHAR(16) NOT NULL`, `company_name VARCHAR(100)`, `published BOOLEAN NOT NULL DEFAULT FALSE`, `created_at DATETIME NOT NULL` | One row per ticker create/rename, in the same transaction as the `stocks` write (including each seed row, so the initial universe is itself replayable). |
+| `stocks_control_outbox` | `version BIGINT PRIMARY KEY AUTO_INCREMENT`, `ticker VARCHAR(16) NOT NULL`, `company_name VARCHAR(100)`, `published BOOLEAN NOT NULL DEFAULT FALSE`, `created_at DATETIME NOT NULL` | One row per ticker create/rename, in the same transaction as the `stocks` write (including each seed row, so the initial universe is itself replayable). `published` is reset on every row when the stream no longer holds them (FR-IMRG36), so the universe is republished. |
 | `stocks_source_epoch` | `epoch BIGINT NOT NULL` | Same shape/semantics as `account_source_epoch`. |
 
 ## JetStream streams (new; independent of the existing `TRADERX_BLP_REPLICATION` stream)

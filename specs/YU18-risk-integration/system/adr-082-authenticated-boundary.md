@@ -35,6 +35,8 @@ bands, or exhaust the 1,024 replicated symbol slots for an entire epoch.
   unconfigured CompID, which it refuses before any session exists; a non-logon message before logon). The
   session log is `FixGatewayAcceptor.RedactingLog` and the SLF4J output is `logback.xml`'s `%replace`, both
   masking `554` and `925` (NewPassword) to `********` in the message and in exception text (2026-10-27).
+  Not taken: dynamic acceptor sessions, which would route an unconfigured CompID through `fromAdmin` but make
+  QuickFIX/J keep one `Session` per CompID a caller chooses, an unbounded table.
 - **S4. Only trusted paths register symbols.** Order entry, `/trades` and `/resolve` only look tickers
   up, through the owner-thread cache refreshed from the member's read-only `/symbols`. Three paths
   register: `/seed`, the reference-data control feed (bbe9b040), and operator `/risk/control action=security`

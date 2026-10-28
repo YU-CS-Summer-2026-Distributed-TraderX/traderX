@@ -103,7 +103,8 @@ added `commandType` and one added egress ack kind on the existing templates.
   - payload: parent-order lifecycle event (`type`, `parentOrderId`, plus type-specific fields)
 
 - `traderx.control.security.deltas` (JetStream, stream `TRADERX_CONTROL_SECURITY`)
-  - producer: `reference-data` (outbox publisher, inherited from YU04)
+  - producer: `reference-data` (outbox publisher, inherited from YU04); republishes the whole universe in version
+    order when the stream holds fewer messages than published rows or lags the watermark (FR-CFR-02, ADR-085)
   - consumer: `order-matcher` risk replica bootstrap (`ControlFeedSubscriber`)
   - delivery: `durable broadcast` (JetStream file storage)
   - wildcard: `no`
