@@ -2,7 +2,8 @@
 # yu18-member-runtime.sh — ADR-081 / FR-GMR-01, -03, -04, -05 on the GKE tier, read off the running
 # members rather than the manifest:
 #
-#   01  each member's /data is a generic ephemeral claim of StorageClass order-matcher-archive,
+#   01  each member's /data is its own StatefulSet claim data-<pod> (ADR-087: retained Retain/Retain) of
+#       StorageClass order-matcher-archive (STORAGE_CLASS=<copy> on a side namespace), hyperdisk-balanced,
 #       32Gi, ReadWriteOnce, Bound, and is NOT on the node boot disk (the whole point of ADR-081 §1
 #       is that the archive no longer shares the boot disk's ext4 journal). The comparison is with
 #       /etc/hosts, which the kubelet bind-mounts from its pod directory ON the boot disk; the
@@ -21,23 +22,28 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "${here}/lib-yu18.sh"
 C="${MEMBER_CONTAINER:-cluster-node}"
 
-step "01. /data is a dedicated order-matcher-archive volume on every member"
+# STORAGE_CLASS: the class the rig's StatefulSet names (order-matcher-archive on the CompSci render; a side
+# namespace may carry an identically-parameterised copy so it never binds to production's).
+SC_WANT="${STORAGE_CLASS:-order-matcher-archive}"
+step "01. /data is each member's own retained ${SC_WANT} claim (FR-GMR-01, ADR-087)"
+ret="$("${K[@]}" get sts order-matcher-cluster -o jsonpath='{.spec.persistentVolumeClaimRetentionPolicy.whenScaled}/{.spec.persistentVolumeClaimRetentionPolicy.whenDeleted}')"
+[[ "${ret}" == Retain/Retain ]] || fail "StatefulSet claim retention is '${ret}', want Retain/Retain (a scale-down must not delete a member's log)"
+scp="$(kubectl --context "${CTX}" get storageclass "${SC_WANT}" -o jsonpath='{.parameters.type}/{.volumeBindingMode}/{.reclaimPolicy}' 2>/dev/null)"
+[[ "${scp}" == hyperdisk-balanced/WaitForFirstConsumer/Delete ]] || fail "StorageClass ${SC_WANT} is '${scp}', want hyperdisk-balanced/WaitForFirstConsumer/Delete"
 for ((m=0; m<MEMBERS; m++)); do
   pod="order-matcher-cluster-${m}"
   vol="$("${K[@]}" get pod "${pod}" -o json | jget "[v for v in d['spec']['volumes'] if v['name']==([vm['name'] for c in d['spec']['containers'] if c['name']=='${C}' for vm in c.get('volumeMounts',[]) if vm['mountPath']=='/data'] or ['?'])[0]][0]")"
   [[ -n "${vol}" ]] || fail "${pod}: no volume mounted at /data"
-  sc="$(jget "d['ephemeral']['volumeClaimTemplate']['spec'].get('storageClassName')" <<<"${vol}")"
-  sz="$(jget "d['ephemeral']['volumeClaimTemplate']['spec']['resources']['requests']['storage']" <<<"${vol}")"
-  am="$(jget "','.join(d['ephemeral']['volumeClaimTemplate']['spec']['accessModes'])" <<<"${vol}")"
-  name="$(jget "d['name']" <<<"${vol}")"
-  [[ "${sc}" == order-matcher-archive && "${sz}" == 32Gi && "${am}" == ReadWriteOnce ]] \
-    || fail "${pod}: /data volume is not an ephemeral 32Gi RWO order-matcher-archive claim (sc=${sc} size=${sz} modes=${am})"
-  phase="$("${K[@]}" get pvc "${pod}-${name}" -o jsonpath='{.status.phase}' 2>/dev/null)"
-  [[ "${phase}" == Bound ]] || fail "${pod}: claim ${pod}-${name} is '${phase}', not Bound"
+  claim="$(jget "(d.get('persistentVolumeClaim') or {}).get('claimName','')" <<<"${vol}")"
+  [[ "${claim}" == "data-${pod}" ]] || fail "${pod}: /data is not the StatefulSet claim data-${pod} (volume: ${vol})"
+  read -r sc sz am phase <<<"$("${K[@]}" get pvc "${claim}" -o jsonpath='{.spec.storageClassName} {.spec.resources.requests.storage} {.spec.accessModes[0]} {.status.phase}')"
+  [[ "${sc}" == "${SC_WANT}" && "${sz}" == 32Gi && "${am}" == ReadWriteOnce && "${phase}" == Bound ]] \
+    || fail "${pod}: ${claim} is sc=${sc} size=${sz} mode=${am} phase=${phase}, want ${SC_WANT} 32Gi ReadWriteOnce Bound"
+  name="${claim}"
   devs="$("${K[@]}" exec -c "${C}" "${pod}" -- sh -c 'stat -c %d /data; stat -c %d /etc/hosts' 2>/dev/null | tr '\n' ' ')"
   read -r d1 d2 <<<"${devs}"
   [[ -n "${d1}" && "${d1}" != "${d2}" ]] || fail "${pod}: /data is on the boot disk, same device as /etc/hosts (${devs})"
-  ok "${pod}: ${pod}-${name} Bound, ${sc} ${sz} ${am}, /data device ${d1} != boot disk (/etc/hosts) ${d2}"
+  ok "${pod}: ${claim} Bound, ${sc} ${sz} ${am}, /data device ${d1} != boot disk (/etc/hosts) ${d2}"
 done
 
 step "03. the running JVM's heap and pause goal"

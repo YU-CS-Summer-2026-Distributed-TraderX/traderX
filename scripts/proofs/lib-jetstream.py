@@ -6,8 +6,12 @@
                                                                   {"seq":..,"subject":..,"data":<payload>}
     last   <host:port> <stream>                                -> the stream's last sequence
     info   <host:port> <stream>                                -> the STREAM.INFO response (config + state)
+    purge  <host:port> <stream>                                -> WRITE: empty the stream (destructive proofs only)
+    consumers <host:port> <stream>                             -> one JSON line per consumer: {"name":..,"durable":..,"filters":[..]}
+    cdelete <host:port> <stream> <consumer>                    -> WRITE: delete one consumer (destructive proofs only)
+    delete <host:port> <stream>                                -> WRITE: delete the stream (destructive proofs only)
 
-Reads only: `count` and `last` use STREAM.INFO; `read` creates an ephemeral, ack-none pull consumer that
+Reads, except `purge`/`delete` (the two writes, for DESTRUCTIVE proofs): `count` and `last` use STREAM.INFO; `read` creates an ephemeral, ack-none pull consumer that
 the server deletes when it goes inactive. Nothing is published to a stream subject.
 """
 import json
@@ -84,6 +88,16 @@ def main():
     n = Nats(addr)
     if cmd == 'last':
         print(n.request(f'$JS.API.STREAM.INFO.{stream}', {})['state']['last_seq']); return
+    if cmd == 'consumers':
+        r = n.request(f'$JS.API.CONSUMER.LIST.{stream}', {'offset': 0})
+        for c in r.get('consumers', []):
+            cf = c.get('config', {})
+            print(json.dumps({'name': c['name'], 'durable': bool(cf.get('durable_name')), 'filters': cf.get('filter_subjects') or [cf.get('filter_subject', '')]}))
+        return
+    if cmd == 'cdelete':
+        print(json.dumps(n.request(f'$JS.API.CONSUMER.DELETE.{stream}.{sys.argv[4]}', None))); return
+    if cmd in ('purge', 'delete'):
+        print(json.dumps(n.request(f'$JS.API.STREAM.{cmd.upper()}.{stream}', {}))); return
     if cmd == 'info':
         print(json.dumps(n.request(f'$JS.API.STREAM.INFO.{stream}', {}))); return
     filt = sys.argv[4]

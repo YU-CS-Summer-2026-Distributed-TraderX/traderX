@@ -47,5 +47,12 @@ n="$(orders)"; [[ "${n}" == 2 ]] || fail "SQL orderbook holds ${n} orders on ${T
 [[ "$(pos "${ACCT_A}")" == 5 && "$(pos "${ACCT_B}")" == -5 ]] || fail "positions ${ACCT_A}=$(pos "${ACCT_A}") ${ACCT_B}=$(pos "${ACCT_B}"), want +5/-5"
 ok "members ${T0} -> ${T1}; 2 orders on ${T}; positions +5/-5; resend answered: $(sed -n 's/^RESULT dup_answer=//p' <<<"${OUT}")"
 
+step "8. no FIX password in any gateway log (the refused logons above carried it; ADR-082 S3 redaction)"
+for p in $("${K[@]}" get pods -l app=cluster-gateway -o name); do
+  l="$("${K[@]}" logs "${p}" 2>/dev/null)"
+  ! grep -qF "${PW}" <<<"${l}" || fail "${p#pod/} logs the FIX session password in clear ($(grep -cF "${PW}" <<<"${l}") lines)"
+done
+ok "the password is in no gateway log ($(grep -c NOTBOUND <<<"${l}") NOTBOUND line(s) in the last pod, masked)"
+
 [[ "${rc}" == 0 ]] || fail "the effect end holds, but the FIX session failed the checks above"
 echo; echo "YU18-FIX-SESSION PASS ticker=${T}"

@@ -1,6 +1,6 @@
 # Proof coverage against the specs
 
-Audited 2026-10-27 against the spec packs on `traderX-risk-integration`, round 1 at `b28fd9f3` and round 2 at `40d93f6b` (state
+Audited 2026-10-27 against the spec packs on `traderX-risk-integration`, round 1 at `b28fd9f3`, round 2 at `40d93f6b` and round 3 at `41a77949` / `071cde6d` (state
 `YU18-risk-integration` and every YU state it carries). Written **black-box, from the specs only**:
 spec prose, ADRs, contracts, data models, messaging maps, `quickstart.md`, `docs/` and the existing
 proof scripts. No implementation source was read (`generated/`, `src/`, `runtime-overrides/`).
@@ -24,6 +24,238 @@ Cluster tier; their runtime claims are counted where the cluster tier inherits t
 rows are success criteria / non-functional budgets and are owned by CI and bench; they are not in
 the counts. "Covered" is per requirement ID, not per clause: a proof that exercises one arm of a
 multi-clause FR covers the row (the Note column says PARTIAL where that matters).
+
+## Round 3 (2026-10-28 overnight, tip `41a77949`; FIX on `071cde6d`)
+
+Same rules: black-box, assertions from the specs, interface material (contracts, manifests, env names, deploy
+scripts, the spec packs' own proof drivers) only for how to reach the system. The tip adds persistent member
+volumes (ADR-087, suspect 15), persistent FIX sessions (ADR-086), FIX fill reports (ADR-084), the FIX password
+redaction (suspect 12), the control-stream republish (ADR-085) and the ready-gate/election fixes. The FIX proofs
+were then re-run on a gateway built from `071cde6d` (the durable fill feed, FR-FFR-01..11, and the session
+hardening, FR-GFS-01..13); `41a77949` → `071cde6d` changes only gateway code and three gateway env values, so
+only the gateway was rolled. "Before" is round 2's end state, re-counted on the `071cde6d` spec packs (32 new
+requirement IDs: FR-CFR-01..05, FR-GMR-08..10, FR-FFR-01..11, FR-GFS-01..13).
+
+**Coverage: 218 → 270 of 352 live-provable requirements (62% → 77%).** YU18 38 → 90 of 154.
+
+### Live run, round 3
+
+Fresh side namespace `traderx-proofaudit` on `traderx-demo`. Images `pa-41a77949` (13, desk included) from an
+empty-root render on VM `proofaudit-build-20261028` (c4d-standard-16, 12:23–12:32 am ET, deleted), and
+`pa-071cde6d` from VM `proofaudit-build-20261028b` (1:29–1:42 am ET, deleted). Pools `pa-engine`
+(3× c4d-standard-8) and `pa-support` (2× e2-standard-8), 12:23–2:41 am ET, deleted. The members' persistent
+claims used a proof-owned copy of the archive class (`pa-hyperdisk`, identical parameters, reclaim Delete), so
+nothing bound to production's `order-matcher-archive`; claims and the class were deleted at the end and no
+proof-audit volume is left. The hosted Desk was rendered with `render-desk-deployment.py`'s own derivation,
+minus the public certificate and NEG. gcloud auth expired at 1:14 am ET mid-batch and was renewed at 1:29 am; the
+four proofs it interrupted were re-run.
+
+**85 runs. Final verdict per proof: 64 pass, 5 fail, 1 honest skip.** The 5: suspect 11 (`yu18-market-order`),
+suspects 13+14 (`yu05-recon`), the trace-key spec gap (`yu13-otel-trace-join`, `yu13-otel-reject-trace-log-join`)
+and the new suspect 16 (`yu18-desk`). Every other failure on the way was the auth expiry or a proof bug, all fixed
+and re-run green. Round-2 suspects 7, 8, 9, 10, 12 and 15 are closed on this tip.
+
+### Proofs added in round 3
+
+| Proof | Covers | Result |
+|---|---|---|
+| [`yu18-console-run-scope.sh`](yu18-console-run-scope.sh) + `.mjs` | FR-MUI01..09 (browser), FR-MUI07 (proxy) | PASS, including DESTRUCTIVE=1 (database gone, hung read) |
+| [`yu18-desk.sh`](yu18-desk.sh) + `.mjs` | FR-CUI-01, 02, 04..17, 19..21 (browser + effect end) | FAIL on suspect 16 only (soft); every other check PASS |
+| [`lib-cdp.mjs`](lib-cdp.mjs) | headless Chrome over CDP, no dependencies (the spec packs' own pattern) | — |
+| [`yu18-control-republish.sh`](yu18-control-republish.sh) | FR-CFR-01, 02, 04 (ADR-085) | PASS: complete stream untouched; purged and deleted streams refilled (536 rows, version order) |
+| [`yu18-fix-fill-feed.sh`](yu18-fix-fill-feed.sh) + `.mjs` | FR-FFR-02/03/04/07/08/09, FR-GFS-07/08/10/12 | PASS on 071cde6d |
+
+Re-run, written by other lanes: `yu18-member-disk-survives` (MODE=scale and delete) and the SIGSTOP
+`yu18-minority-no-commit` PASS on 41a77949; `yu18-fix-session`, `yu18-fix-resume` (and NEGATIVE=1) and
+`yu18-fix-store-faults` PASS on 071cde6d.
+
+**The UI proofs, briefly.** The console proof is the spec pack's SC-MUI04/06 browser driver on a live tier:
+registry phases and scoped rows are the spec's own labelled SQL fixtures applied on the rig's database, and
+put back on exit; a hung read is a session holding WRITE locks on the registry tables. The Desk proof creates
+a workspace and an account through the UI and reads every claim the browser cannot settle at the effect end:
+SQL rows, the gateway's admission (a REST order on the new account accepted, a never-created account refused
+`UNKNOWN_ACCOUNT`), no password, hash or salt in any downloaded bundle, a WebSocket RST leaving the Desk server
+up and unrestarted. On this unmanaged run (`legacy-unknown`) the Desk refuses every submit before sending,
+as FR-CUI-17 requires, so its acceptance half joins the managed-run tier gap (spec gap 20).
+
+### Proof bugs fixed in round 3
+
+- `yu18-member-runtime`: step 01 still asserted the generic ephemeral volume ADR-087 removed; it now asserts
+  the retained `data-<pod>` claim, the class's parameters and Retain/Retain (`STORAGE_CLASS` names a side
+  namespace's copy). PASS.
+- `yu18-fix-fill-feed` (new this round): its first version deleted every `/orders` consumer, including
+  trade-processor's durable `tp-orders-p0`, which stopped the order read model until trade-processor restarted
+  (and failed the two FIX proofs after it). It now deletes only the gateways' ordered consumers. Observed on
+  the way: trade-processor does not recreate a deleted durable consumer until it restarts (no spec line covers
+  it; noted, not a suspect).
+- `yu18-console-run-scope`: NATS monitoring is on the pod, not the Service.
+- `yu18-fix-session`: step 8 asserts the FIX password is in no gateway log (suspect 12's regression check).
+- `lib-jetstream.py`: `consumers`, and the destructive `cdelete` / `purge` / `delete` for the proofs above.
+
+### Coverage by state (round 3)
+
+| State | Live-provable | Covered before | Covered after | Live script outside proofs/ | CI/offline/static |
+|---|---|---|---|---|---|
+| YU02 | 1 | 1 | 1 | 0 | 8 |
+| YU03 | 19 | 14 | 14 | 0 | 9 |
+| YU04 | 3 | 3 | 3 | 0 | 4 |
+| YU05 | 18 | 18 | 18 | 0 | 1 |
+| YU06 | 17 | 17 | 17 | 0 | 2 |
+| YU07 | 3 | 0 | 0 | 0 | 12 |
+| YU08 | 9 | 6 | 6 | 0 | 0 |
+| YU09 | 0 | 0 | 0 | 0 | 10 |
+| YU10 | 13 | 13 | 13 | 0 | 0 |
+| YU11 | 0 | 0 | 0 | 0 | 27 |
+| YU12 | 14 | 14 | 14 | 0 | 3 |
+| YU13 | 16 | 16 | 16 | 0 | 1 |
+| YU14 | 5 | 5 | 5 | 0 | 2 |
+| YU15 | 19 | 17 | 17 | 0 | 0 |
+| YU16 | 26 | 21 | 21 | 0 | 40 |
+| YU17 | 35 | 35 | 35 | 0 | 8 |
+| YU18 | 154 | 38 | 90 | 42 | 190 |
+| **all** | **352** | **218 (62%)** | **270 (77%)** | 42 | 317 |
+
+### Findings, round 3
+
+### New suspects (round 3)
+
+16. **FR-CUI-19: the Desk shows a server refusal that sent nothing as "Outcome unknown".** On the hosted Desk
+    (unmanaged run, `legacy-unknown`), Submit order posts `/desk-api/orders/orders` and the Desk server answers
+    `503 {"error":"Current run could not be confirmed. Nothing sent."}`: the FR-CUI-17 preflight, correctly
+    refusing because no ACTIVE registered descriptor exists. The ticket then says `Outcome unknown. Check orders
+    before submitting again; this request will not be retried.` FR-CUI-19 separates the two: "Server reads can
+    refuse safely before sending; transport failure after sending remains an unknown outcome." The draft is
+    kept and nothing is retried (both correct, both asserted), and SQL holds no order from it; only the label is
+    wrong. It matters because a trader told "unknown" is told to go and check for an order that cannot exist.
+
+### Round-1/2 suspects re-run on 41a77949 (FIX rows also on 071cde6d, below)
+
+- **Suspects 7, 8, 9, 10: CLOSED.** `yu18-fix-session` PASSES every check on 41a77949: OrderStatus answers
+  from the read model (7), the fill reports arrive (8), an abrupt reconnect continues the sequence (9), an
+  unknown symbol is answered `OrdStatus=8 rejected: UNKNOWN_SECURITY` (10).
+- **Suspect 12: CLOSED.** The refused `NOTBOUND` Logon is logged `554=********`; the password string occurs
+  in no gateway log line. `yu18-fix-session.sh` now asserts that (step 8).
+- **Suspect 15: CLOSED by ADR-087** (see the disk-loss and minority rows).
+- **Suspect 11 (FR-LOB04 PRICE_MISSING): still open.** A market Buy on an untraded, empty book answers
+  `200 {"kind":1}` and ends CANCELED.
+- **Suspect 13 (recon bond prices at 3 dp) and 14 (missingTradeSides 0 for DB-refused sides): still open.**
+  `yu05-recon`: `field_mismatch=6`, `missing_in_projection=2`, exactly as in round 2.
+- **Suspect 5 (trace id): now a spec gap, not a defect** (spec gap 18).
+
+### New spec gaps (round 3)
+
+18. **ADR-060 does not define the trace key, so no black-box proof can predict a trace id.** It says the key is
+    "a client idempotency key ... set by the gateway from the ClOrdID" and names `TRACE_SALT`, `SAMPLE_SALT`,
+    `CLUSTER_SALT` and a mask without values; no spec gives the ClOrdID → key function. `yu13-otel-trace-join`
+    predicts with FNV-1a(ClOrdID) and the salts from an older reading of the code; on 41a77949 all three
+    predicted ids 404. **Observed, on the same rig:** Tempo holds 19 gateway-rooted `order` traces, and **all 19**
+    carry the member's `cluster.commit` and `cluster.apply` spans parented on the gateway's own
+    `cluster.consensus` span, with the same `traderx.order_ref`. So the property ADR-060 is for (one trace
+    across the consensus boundary, derived independently on both tiers) holds; only the proof's guess at the
+    key is wrong. Also observed: 1,798 member-only traces with no gateway root, almost all `order_ref 0`
+    (sequenced non-order commands such as reference-data registration and account admission, which the
+    gateway does not trace) and a few with real refs (6 spans of ref 27, 2 of ref 21). Whether a member should
+    trace a command the gateway does not is not specified either.
+19. **FR-CUI-21's membership rule cannot apply on the hosted Desk.** "Account projection reads require owned
+    membership" is written for non-admin local-mode sessions; every hosted Desk session holds the admin role
+    (the operator password is required for each), and a hosted session reads a foreign account's positions,
+    trades and orders with 200. Not a defect by the text; the spec does not say what the hosted profile
+    promises instead.
+20. **FR-CUI-16/17/19 order flows are managed-run only, so the hosted Desk on an unmanaged run cannot trade.**
+    By FR-CUI-17 every direct Desk submit needs a registered ACTIVE descriptor; the CompSci render is unmanaged
+    (`legacy-unknown`), so every Desk submit is refused before sending. The acceptance half of FR-CUI-16 and
+    all of FR-CUI-18/19 join the managed-run tier gap (with FR-ER01..07). If the hosted Desk is meant to place
+    orders on the CompSci demo, that is a product question for the spec, not something a proof can settle.
+
+### Run table, round 3
+
+| Run | Proof | Result | Triage |
+|---|---|---|---|
+| A, 41a77949 | `scripts/yu15/seed-proof-fixtures.sh` | PASS (40s) |  |
+| A, 41a77949 | `yu03-risk-proof` | PASS (4s) |  |
+| A, 41a77949 | `yu05-auth-entitlements` | PASS (6s) |  |
+| A, 41a77949 | `yu05-settlement` | PASS (7s) |  |
+| A, 41a77949 | `yu13-clordid-suppression` | PASS (23s) |  |
+| A, 41a77949 | `yu10-fix-session` | FAIL (6s) | A: FIX tunnel refused once (not reached). PASS on re-run and on 071cde6d. |
+| A, 41a77949 | `yu13-readmodel-effect-end` | PASS (23s) |  |
+| A, 41a77949 | `yu05-regulatory-reproducible` | PASS (2s) |  |
+| A, 41a77949 | `yu04-live-delta` | PASS (2s) |  |
+| A, 41a77949 | `yu04-offline-catchup` | PASS (19s) |  |
+| A, 41a77949 | `yu15-option-persistence` | PASS (36s) |  |
+| A, 41a77949 | `yu17-book-retick` | PASS (7s) |  |
+| A, 41a77949 | `yu13-otel-trace-join` | FAIL (27s) | Spec gap 18 (was suspect 5): the proof predicts ids from an undefined key; Tempo shows 19/19 gateway traces joined to the member spans. |
+| A, 41a77949 | `yu13-otel-reject-trace-log-join` | FAIL (234s) | Spec gap 18, same key. |
+| A, 41a77949 | `yu06-quality-gate` | PASS (69s) |  |
+| A, 41a77949 | `yu06-consumer-halt` | PASS (43s) |  |
+| A, 41a77949 | `yu16-treasury-pricing` | PASS (3s) |  |
+| A, 41a77949 | `yu16-bond-position` | PASS (33s) |  |
+| A, 41a77949 | `yu16-accrued-interest` | PASS (4s) |  |
+| A, 41a77949 | `yu17-session-opens-from-close` | SKIP (2s) | Honest skip: precondition (no prior session close on a fresh rig). |
+| A, 41a77949 | `yu16-book-grid` | PASS (157s) |  |
+| A, 41a77949 | `yu17-band-follows-market` | PASS (19s) |  |
+| A, 41a77949 | `yu17-option-collar` | PASS (4s) |  |
+| A, 41a77949 | `yu17-fnma-collar` | PASS (4s) |  |
+| A, 41a77949 | `yu17-fine-grid` | PASS (6s) |  |
+| A, 41a77949 | `yu17-retick-determinism` | PASS (205s) |  |
+| A, 41a77949 | `yu17-session-closed-rejects` | PASS (23s) |  |
+| A, 41a77949 | `yu17-preopen-queue-open` | PASS (27s) |  |
+| A, 41a77949 | `yu17-swap-netting` | PASS (49s) |  |
+| A, 41a77949 | `yu17-swaption-terms` | PASS (15s) |  |
+| A, 41a77949 | `yu17-fx-credit` | PASS (47s) |  |
+| A, 41a77949 | `yu16-ready-tracks-commit` | PASS (69s) |  |
+| A, 41a77949 | `yu16-liveness-restarts-wedge` | PASS (218s) |  |
+| A, 41a77949 | `yu18-gateway-auth-boundary` | PASS (29s) |  |
+| A, 41a77949 | `yu18-cluster-ingress-auth` | PASS (115s) |  |
+| A, 41a77949 | `yu18-console-sessions` | PASS (10s) |  |
+| A, 41a77949 | `yu18-legacy-trade-bearer` | PASS (15s) |  |
+| A, 41a77949 | `yu18-projection-effect-end` | PASS (15s) |  |
+| A, 41a77949 | `yu18-fix-session` | PASS (38s) | Suspects 7-10 and 12 CLOSED (step 8 asserts no password in any gateway log). |
+| A, 41a77949 | `yu18-market-order` | FAIL (40s) | Suspect 11 (FR-LOB04 PRICE_MISSING arm); steps 2-4 PASS. |
+| A, 41a77949 | `yu18-cdm-instruments` | PASS (16s) |  |
+| A, 41a77949 | `yu18-operator-recovery` | PASS (6s) |  |
+| A, 41a77949 | `scripts/yu15/seed-proof-fixtures.sh` | PASS (41s) |  |
+| A, 41a77949 | `yu15-risk-extract` | FAIL (0s) | A: gcloud auth expired mid-run (kubectl unreachable). PASS on re-run. |
+| A, 41a77949 | `yu13-cancel-ingress` | FAIL (1s) | A: auth expired. PASS on re-run. |
+| A, 41a77949 | `yu05-recon` | FAIL (0s) | Suspects 13 + 14 (field_mismatch=6, missing_in_projection=2), unchanged from round 2. |
+| A, 41a77949 | `yu17-keyed-ack-correlation` | FAIL (0s) | A: auth expired. PASS on re-run. |
+| A re-run after auth, 41a77949 | `scripts/yu15/seed-proof-fixtures.sh` | PASS (58s) |  |
+| A re-run after auth, 41a77949 | `yu15-risk-extract` | PASS (41s) |  |
+| A re-run after auth, 41a77949 | `yu13-cancel-ingress` | PASS (18s) |  |
+| A re-run after auth, 41a77949 | `yu05-recon` | FAIL (26s) | Suspects 13 + 14 (field_mismatch=6, missing_in_projection=2), unchanged from round 2. |
+| A re-run after auth, 41a77949 | `yu17-keyed-ack-correlation` | PASS (96s) |  |
+| A re-run after auth, 41a77949 | `yu10-fix-session` | PASS (17s) |  |
+| B (destructive), 41a77949 | `yu18-console-run-scope` | PASS (127s) |  |
+| B (destructive), 41a77949 | `yu18-desk` | FAIL (112s) | Suspect 16 (soft): a pre-send refusal labelled "Outcome unknown". First B run used the earlier proof version (no working row); C is the final. |
+| B (destructive), 41a77949 | `yu18-control-republish` | PASS (121s) |  |
+| B (destructive), 41a77949 | `yu18-projection-effect-end+NEGATIVE_1` | PASS (51s) |  |
+| B (destructive), 41a77949 | `yu18-cdm-instruments` | PASS (55s) |  |
+| B (destructive), 41a77949 | `yu18-bridge-receipts` | PASS (21s) |  |
+| B (destructive), 41a77949 | `yu18-jetstream-feed` | PASS (62s) |  |
+| B (destructive), 41a77949 | `yu18-extract-off-projection` | PASS (32s) |  |
+| B (destructive), 41a77949 | `yu08-algo-slicing` | PASS (54s) |  |
+| B (destructive), 41a77949 | `yu18-swap-capacity` | PASS (35s) |  |
+| B (destructive), 41a77949 | `yu17-halt-survives-failover` | PASS (111s) |  |
+| B (destructive), 41a77949 | `yu17-closed-survives-restart` | PASS (114s) |  |
+| B (destructive), 41a77949 | `yu18-member-runtime` | FAIL (0s) | B: PROOF BUG (step 01 still expected the ephemeral volume ADR-087 removed); fixed, PASS in C. |
+| B (destructive), 41a77949 | `yu13-gke-replace-proof` | PASS (323s) |  |
+| B (destructive), 41a77949 | `yu12-gke-failover-transparency` | PASS (108s) |  |
+| B (destructive), 41a77949 | `yu12-gke-recovery` | PASS (97s) |  |
+| B (destructive), 41a77949 | `yu12-gke-cross-epoch-idreuse` | PASS (86s) |  |
+| B (destructive), 41a77949 | `yu18-member-disk-survives` | PASS (53s) | FR-GMR-10: members 1+2 return on the same claims at the same applied/hashes (suspect 15 closed). |
+| B (destructive), 41a77949 | `yu18-member-disk-survives+MODE_delete` | PASS (22s) | FR-GMR-10: members 1+2 return on the same claims at the same applied/hashes (suspect 15 closed). |
+| B (destructive), 41a77949 | `yu18-minority-no-commit` | PASS (103s) | SIGSTOP minority: FR-AC12 holds and admission returns (suspect 15 closed). |
+| C (fixed proofs), 41a77949 | `yu18-member-runtime+STORAGE_CLASS_pa-hyperdisk` | PASS (44s) |  |
+| C (fixed proofs), 41a77949 | `yu18-desk` | FAIL (45s) | Suspect 16 (soft): a pre-send refusal labelled "Outcome unknown". First B run used the earlier proof version (no working row); C is the final. |
+| C (fixed proofs), 41a77949 | `yu18-desk` | FAIL (103s) | Suspect 16 (soft): a pre-send refusal labelled "Outcome unknown". First B run used the earlier proof version (no working row); C is the final. |
+| FIX, gateway 071cde6d | `yu18-fix-session` | PASS (40s) | Suspects 7-10 and 12 CLOSED (step 8 asserts no password in any gateway log). |
+| FIX, gateway 071cde6d | `yu18-fix-resume` | PASS (28s) |  |
+| FIX, gateway 071cde6d | `yu18-fix-fill-feed` | FAIL (106s) | FIX: PROOF BUG: it deleted trade-processor's durable /orders consumer too, stalling the order read model (and the two FIX proofs after it); fixed to spare durables, PASS in the re-run. |
+| FIX, gateway 071cde6d | `yu10-fix-session` | FAIL (18s) | A: FIX tunnel refused once (not reached). PASS on re-run and on 071cde6d. |
+| FIX, gateway 071cde6d | `yu18-fix-store-faults` | FAIL (195s) | FIX: failed only on the read-model stall above; PASS in the re-run. |
+| FIX re-run, gateway 071cde6d | `yu18-fix-fill-feed` | PASS (58s) |  |
+| FIX re-run, gateway 071cde6d | `yu10-fix-session` | PASS (17s) |  |
+| FIX re-run, gateway 071cde6d | `yu18-fix-store-faults` | PASS (48s) |  |
+| FIX negative, gateway 071cde6d | `yu18-fix-resume+NEGATIVE_1` | PASS (14s) | Store unset: B restarts at 1 (the TD-AC01 behaviour), as the control requires. |
 
 ## Round 2 (2026-10-27 evening, tip `40d93f6b`)
 
@@ -546,7 +778,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | `yu16-invisible-orders-repro` | NOT RUN | not run  | NOT RUN: a defect reproducer, not a proof. |
 | `failover-nodeclock.sh` | NOT RUN | not run  | NOT RUN: a measurement. |
 
-## Ranked gap list (live-provable, still uncovered after round 2)
+## Ranked gap list (live-provable, still uncovered after round 3)
 
 | Rank | Risk class | State | Requirement | Why uncovered |
 |---|---|---|---|---|
@@ -597,63 +829,43 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | 45 | recovery/failover | YU08 | `FR-AE08` | crash-resume replay from JetStream: no live arm (SC-AE06) |
 | 46 | recovery/failover | YU18 | `FR-ERH-F11` | needs a purged archive / 65,536 FIX orders; not attempted |
 | 47 | recovery/failover | YU18 | `FR-ERH-F8` | needs a purged archive / 65,536 FIX orders; not attempted |
-| 48 | recovery/failover | YU18 | `FR-RD01` | diagnostic metric/readout shape: no live proof (unit) |
-| 49 | recovery/failover | YU18 | `FR-RD02` | diagnostic metric/readout shape: no live proof (unit) |
-| 50 | recovery/failover | YU18 | `FR-RD03` | diagnostic metric/readout shape: no live proof (unit) |
-| 51 | recovery/failover | YU18 | `FR-RD04` | diagnostic metric/readout shape: no live proof (unit) |
-| 52 | EOD/extract | YU15 | `FR-RXT06` | not injectable black-box (the cut travels member->extract over Aeron egress) |
-| 53 | EOD/extract | YU15 | `FR-RXT09` | not injectable black-box (the cut travels member->extract over Aeron egress) |
-| 54 | EOD/extract | YU18 | `FR-EB29` | console EOD status distinctions: no live proof |
-| 55 | security/auth | YU18 | `FR-CS-02` | hosted Desk: not in the CompSci side-namespace render |
-| 56 | security/auth | YU18 | `FR-CS-03` | hosted Desk: not in the CompSci side-namespace render |
-| 57 | security/auth | YU18 | `FR-ERH-S5` | refuse-to-start on dev secret: no live arm |
-| 58 | UI/ops | YU07 | `FR-TS12` | kdb capture tap off the running cluster: no live proof (tap not in CompSci render) |
-| 59 | UI/ops | YU07 | `FR-TS13` | kdb capture tap off the running cluster: no live proof (tap not in CompSci render) |
-| 60 | UI/ops | YU07 | `FR-TS14` | kdb capture tap off the running cluster: no live proof (tap not in CompSci render) |
-| 61 | UI/ops | YU16 | `FR-CDM01` | /instruments and /stocks response shapes: no live proof |
-| 62 | UI/ops | YU16 | `FR-CDM02` | /instruments and /stocks response shapes: no live proof |
-| 63 | UI/ops | YU16 | `FR-CDM03` | /instruments and /stocks response shapes: no live proof |
-| 64 | UI/ops | YU16 | `FR-CDM04` | /instruments and /stocks response shapes: no live proof |
-| 65 | UI/ops | YU16 | `FR-CDM09` | /instruments and /stocks response shapes: no live proof |
-| 66 | UI/ops | YU18 | `FR-AM01` | diagnostic metric/readout shape: no live proof (unit) |
-| 67 | UI/ops | YU18 | `FR-AM02` | diagnostic metric/readout shape: no live proof (unit) |
-| 68 | UI/ops | YU18 | `FR-AM03` | diagnostic metric/readout shape: no live proof (unit) |
-| 69 | UI/ops | YU18 | `FR-AM04` | diagnostic metric/readout shape: no live proof (unit) |
-| 70 | UI/ops | YU18 | `FR-AM05` | diagnostic metric/readout shape: no live proof (unit) |
-| 71 | UI/ops | YU18 | `FR-AM06` | diagnostic metric/readout shape: no live proof (unit) |
-| 72 | UI/ops | YU18 | `FR-CUI-01` | combined desk UI: no live proof |
-| 73 | UI/ops | YU18 | `FR-CUI-02` | combined desk UI: no live proof |
-| 74 | UI/ops | YU18 | `FR-CUI-03` | combined desk UI: no live proof |
-| 75 | UI/ops | YU18 | `FR-CUI-04` | combined desk UI: no live proof |
-| 76 | UI/ops | YU18 | `FR-CUI-05` | combined desk UI: no live proof |
-| 77 | UI/ops | YU18 | `FR-CUI-06` | combined desk UI: no live proof |
-| 78 | UI/ops | YU18 | `FR-CUI-07` | combined desk UI: no live proof |
-| 79 | UI/ops | YU18 | `FR-CUI-08` | combined desk UI: no live proof |
-| 80 | UI/ops | YU18 | `FR-CUI-09` | combined desk UI: no live proof |
-| 81 | UI/ops | YU18 | `FR-CUI-10` | combined desk UI: no live proof |
-| 82 | UI/ops | YU18 | `FR-CUI-11` | combined desk UI: no live proof |
-| 83 | UI/ops | YU18 | `FR-CUI-12` | combined desk UI: no live proof |
-| 84 | UI/ops | YU18 | `FR-CUI-13` | combined desk UI: no live proof |
-| 85 | UI/ops | YU18 | `FR-CUI-14` | combined desk UI: no live proof |
-| 86 | UI/ops | YU18 | `FR-CUI-15` | combined desk UI: no live proof |
-| 87 | UI/ops | YU18 | `FR-CUI-16` | combined desk UI: no live proof |
-| 88 | UI/ops | YU18 | `FR-CUI-17` | combined desk UI: no live proof |
-| 89 | UI/ops | YU18 | `FR-CUI-18` | combined desk UI: no live proof |
-| 90 | UI/ops | YU18 | `FR-CUI-19` | combined desk UI: no live proof |
-| 91 | UI/ops | YU18 | `FR-CUI-20` | combined desk UI: no live proof |
-| 92 | UI/ops | YU18 | `FR-CUI-21` | combined desk UI: no live proof |
-| 93 | UI/ops | YU18 | `FR-MUI01` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 94 | UI/ops | YU18 | `FR-MUI02` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 95 | UI/ops | YU18 | `FR-MUI03` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 96 | UI/ops | YU18 | `FR-MUI04` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 97 | UI/ops | YU18 | `FR-MUI05` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 98 | UI/ops | YU18 | `FR-MUI06` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 99 | UI/ops | YU18 | `FR-MUI07` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 100 | UI/ops | YU18 | `FR-MUI08` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 101 | UI/ops | YU18 | `FR-MUI09` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| 102 | UI/ops | YU18 | `FR-MUI10` | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
+| 48 | recovery/failover | YU18 | `FR-GMR-08` | ready gate / negative DNS TTL: no black-box observable driven |
+| 49 | recovery/failover | YU18 | `FR-GMR-09` | ready gate / negative DNS TTL: no black-box observable driven |
+| 50 | recovery/failover | YU18 | `FR-RD01` | diagnostic metric/readout shape: no live proof (unit) |
+| 51 | recovery/failover | YU18 | `FR-RD02` | diagnostic metric/readout shape: no live proof (unit) |
+| 52 | recovery/failover | YU18 | `FR-RD03` | diagnostic metric/readout shape: no live proof (unit) |
+| 53 | recovery/failover | YU18 | `FR-RD04` | diagnostic metric/readout shape: no live proof (unit) |
+| 54 | EOD/extract | YU15 | `FR-RXT06` | not injectable black-box (the cut travels member->extract over Aeron egress) |
+| 55 | EOD/extract | YU15 | `FR-RXT09` | not injectable black-box (the cut travels member->extract over Aeron egress) |
+| 56 | EOD/extract | YU18 | `FR-EB29` | console EOD status distinctions: no live proof |
+| 57 | security/auth | YU18 | `FR-CS-02` | hosted Desk: not in the CompSci side-namespace render |
+| 58 | security/auth | YU18 | `FR-CS-03` | hosted Desk: not in the CompSci side-namespace render |
+| 59 | security/auth | YU18 | `FR-ERH-S5` | refuse-to-start on dev secret: no live arm |
+| 60 | UI/ops | YU07 | `FR-TS12` | kdb capture tap off the running cluster: no live proof (tap not in CompSci render) |
+| 61 | UI/ops | YU07 | `FR-TS13` | kdb capture tap off the running cluster: no live proof (tap not in CompSci render) |
+| 62 | UI/ops | YU07 | `FR-TS14` | kdb capture tap off the running cluster: no live proof (tap not in CompSci render) |
+| 63 | UI/ops | YU16 | `FR-CDM01` | /instruments and /stocks response shapes: no live proof |
+| 64 | UI/ops | YU16 | `FR-CDM02` | /instruments and /stocks response shapes: no live proof |
+| 65 | UI/ops | YU16 | `FR-CDM03` | /instruments and /stocks response shapes: no live proof |
+| 66 | UI/ops | YU16 | `FR-CDM04` | /instruments and /stocks response shapes: no live proof |
+| 67 | UI/ops | YU16 | `FR-CDM09` | /instruments and /stocks response shapes: no live proof |
+| 68 | UI/ops | YU18 | `FR-AM01` | diagnostic metric/readout shape: no live proof (unit) |
+| 69 | UI/ops | YU18 | `FR-AM02` | diagnostic metric/readout shape: no live proof (unit) |
+| 70 | UI/ops | YU18 | `FR-AM03` | diagnostic metric/readout shape: no live proof (unit) |
+| 71 | UI/ops | YU18 | `FR-AM04` | diagnostic metric/readout shape: no live proof (unit) |
+| 72 | UI/ops | YU18 | `FR-AM05` | diagnostic metric/readout shape: no live proof (unit) |
+| 73 | UI/ops | YU18 | `FR-AM06` | diagnostic metric/readout shape: no live proof (unit) |
+| 74 | UI/ops | YU18 | `FR-CFR-03` | stream ahead of the outbox / broker down mid-audit: not driven |
+| 75 | UI/ops | YU18 | `FR-CFR-05` | stream ahead of the outbox / broker down mid-audit: not driven |
+| 76 | UI/ops | YU18 | `FR-CUI-03` | TIER GAP: needs a managed run (historical runs, descriptor-fenced commands) |
+| 77 | UI/ops | YU18 | `FR-CUI-18` | TIER GAP: needs a managed run (historical runs, descriptor-fenced commands) |
+| 78 | UI/ops | YU18 | `FR-FFR-06` | race / 65,536 cap: unit-level only |
+| 79 | UI/ops | YU18 | `FR-FFR-10` | race / 65,536 cap: unit-level only |
+| 80 | UI/ops | YU18 | `FR-GFS-02` | full store / fresh-epoch purge: not driven |
+| 81 | UI/ops | YU18 | `FR-GFS-13` | full store / fresh-epoch purge: not driven |
+| 82 | UI/ops | YU18 | `FR-MUI10` | Admin trade list: not driven (no admin-page proof yet) |
 
-## Appendix: requirement matrix (round 2)
+## Appendix: requirement matrix (round 3)
 
 | State | Requirement | Class | Proofs (before) | Proofs (added) | Note |
 |---|---|---|---|---|---|
@@ -776,15 +988,15 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU10 | `FR-FIX01` | LIVE | yu10-fix-session |  |  |
 | YU10 | `FR-FIX02` | LIVE | yu10-fix-session |  |  |
 | YU10 | `FR-FIX03` | LIVE | yu13-cancel-ingress |  | yu13-fix-cancel.mjs |
-| YU10 | `FR-FIX04` | LIVE |  | yu18-fix-session, yu18-fix-resume | suspect 7 FIXED by ADR-086 (`ORDER_READMODEL_URL`); PASS on fp-7ea8db5c, not yet on traderx |
-| YU10 | `FR-FIX05` | LIVE | yu10-fix-session | yu18-fix-session | suspect 8 FIXED by ADR-084 (step 4 passes on `traderx-fixf`; not yet on traderx) |
+| YU10 | `FR-FIX04` | LIVE | yu18-fix-session | yu18-fix-session yu18-fix-resume | PASS: suspects 7, 8, 9, 10 closed |
+| YU10 | `FR-FIX05` | LIVE | yu10-fix-session yu18-fix-session | yu18-fix-session yu18-fix-resume | PASS: suspects 7, 8, 9, 10 closed |
 | YU10 | `FR-FIX06` | LIVE | yu13-cancel-ingress |  | yu13-fix-cancel.mjs |
 | YU10 | `FR-FIX07` | LIVE | yu10-fix-session |  | logon; superseded by ERH-S3 FIX_SESSION_AUTH |
 | YU10 | `FR-FIX08` | LIVE | yu10-fix-session |  | logon; superseded by ERH-S3 FIX_SESSION_AUTH |
 | YU10 | `FR-FIX09` | LIVE | yu10-fix-session |  |  |
-| YU10 | `FR-FIX10` | LIVE |  | yu18-fix-session | resend answers the ORIGINAL order (spec says "rejected": spec gap 13) |
-| YU10 | `FR-FIX11` | LIVE |  | yu18-fix-session, yu18-fix-resume | suspect 9 FIXED by ADR-086 (JetStream session store, any replica); PASS on fp-7ea8db5c, not yet on traderx |
-| YU10 | `FR-FIX12` | LIVE |  | yu18-fix-session, yu18-fix-resume | (b) PASS; (c) suspect 10 FIXED (UNKNOWN_SECURITY reject); (d) reconcile via status + resend; PASS on fp-7ea8db5c, not yet on traderx |
+| YU10 | `FR-FIX10` | LIVE | yu18-fix-session |  | resend answers the ORIGINAL order (spec says "rejected": spec gap 13) |
+| YU10 | `FR-FIX11` | LIVE | yu18-fix-session | yu18-fix-session yu18-fix-resume | PASS: suspects 7, 8, 9, 10 closed |
+| YU10 | `FR-FIX12` | LIVE | yu18-fix-session | yu18-fix-session yu18-fix-resume | PASS: suspects 7, 8, 9, 10 closed |
 | YU10 | `FR-FIX13` | LIVE | yu10-fix-session |  |  |
 | YU11 | `FR-AR01` | CI |  |  | dual-transport replication retired by YU12 Aeron Cluster |
 | YU11 | `FR-AR02` | CI |  |  | dual-transport replication retired by YU12 Aeron Cluster |
@@ -824,7 +1036,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU12 | `FR-AC09` | LIVE | yu12-gke-cross-epoch-idreuse |  |  |
 | YU12 | `FR-AC10` | LIVE | yu12-gke-recovery |  |  |
 | YU12 | `FR-AC11` | LIVE | yu12-gke-failover-transparency failover-nodeclock |  |  |
-| YU12 | `FR-AC12` | LIVE |  | yu18-minority-no-commit | PASS (minority = the majority taken away; no Dataplane V2 for a true partition); its step 4 found suspect 15 |
+| YU12 | `FR-AC12` | LIVE | yu18-minority-no-commit |  | PASS with the SIGSTOP minority (41a77949); after SIGCONT the cluster commits again (suspect 15 closed) |
 | YU12 | `FR-AC13` | LIVE | yu12-gke-failover-transparency failover-nodeclock |  |  |
 | YU12 | `FR-AC14` | LIVE | yu13-readmodel-effect-end yu18-projection-effect-end |  |  |
 | YU12 | `FR-AC15` | LIVE | yu16-ready-tracks-commit yu16-liveness-restarts-wedge |  |  |
@@ -833,8 +1045,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU13 | `FR-LOB01` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB02` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB03` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
-| YU13 | `FR-LOB04` | LIVE |  | yu18-market-order | fill+cancel-remainder PASS; PRICE_MISSING arm FAILS: suspect 11 |
-| YU13 | `FR-LOB05` | LIVE |  | yu18-market-order |  |
+| YU13 | `FR-LOB04` | LIVE | yu18-market-order |  | PRICE_MISSING arm still FAILS: suspect 11 |
+| YU13 | `FR-LOB05` | LIVE | yu18-market-order |  |  |
 | YU13 | `FR-LOB06` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB07` | LIVE | yu17-keyed-ack-correlation |  |  |
 | YU13 | `FR-LOB08` | LIVE | yu16-book-grid yu17-fine-grid |  |  |
@@ -917,8 +1129,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU16 | `FR-CDM04` | LIVE |  |  | /instruments and /stocks response shapes: no live proof |
 | YU16 | `FR-CDM05` | LIVE | yu16-treasury-pricing |  |  |
 | YU16 | `FR-CDM06` | CI |  |  | CI/static/offline |
-| YU16 | `FR-CDM07` | LIVE |  | yu18-cdm-instruments |  |
-| YU16 | `FR-CDM08` | LIVE |  | yu18-cdm-instruments |  |
+| YU16 | `FR-CDM07` | LIVE | yu18-cdm-instruments |  |  |
+| YU16 | `FR-CDM08` | LIVE | yu18-cdm-instruments |  |  |
 | YU16 | `FR-CDM09` | LIVE |  |  | /instruments and /stocks response shapes: no live proof |
 | YU16 | `FR-CDM10` | LIVE | yu04-live-delta yu04-offline-catchup |  |  |
 | YU16 | `FR-CDM11` | LIVE | yu04-live-delta yu04-offline-catchup |  |  |
@@ -933,8 +1145,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU16 | `FR-CDM20` | LIVE | yu16-treasury-pricing |  |  |
 | YU16 | `FR-CDM21` | LIVE | yu16-treasury-pricing |  |  |
 | YU16 | `FR-CDM22` | LIVE | yu16-bond-position |  |  |
-| YU16 | `FR-CDM23` | LIVE |  | yu18-cdm-instruments | DESTRUCTIVE=1 arm (reference-data scaled to 0) |
-| YU16 | `FR-CDM24` | LIVE |  | yu18-cdm-instruments | DESTRUCTIVE=1 arm (reference-data scaled to 0) |
+| YU16 | `FR-CDM23` | LIVE | yu18-cdm-instruments |  | DESTRUCTIVE=1 arm (reference-data scaled to 0) |
+| YU16 | `FR-CDM24` | LIVE | yu18-cdm-instruments |  | DESTRUCTIVE=1 arm (reference-data scaled to 0) |
 | YU16 | `FR-CDM25` | LIVE | yu16-accrued-interest |  |  |
 | YU16 | `FR-CDM26` | LIVE | yu16-accrued-interest |  |  |
 | YU16 | `FR-CDM27` | LIVE | yu16-accrued-interest |  |  |
@@ -947,7 +1159,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU17 | `FR-OTC06` | LIVE | yu17-swap-netting |  |  |
 | YU17 | `FR-OTC07` | LIVE | yu17-swap-netting |  |  |
 | YU17 | `FR-OTC08` | LIVE | yu17-swap-netting |  |  |
-| YU17 | `FR-OTC09` | LIVE |  | yu18-swap-capacity | PASS: prior 8 + 4088 booked = 4096, then CAPACITY x4; "no credit consumed" unobservable (spec gap 16) |
+| YU17 | `FR-OTC09` | LIVE | yu18-swap-capacity |  | PASS: prior 8 + 4088 booked = 4096, then CAPACITY x4; "no credit consumed" unobservable (spec gap 16) |
 | YU17 | `FR-OTC10` | LIVE | yu17-swap-netting |  |  |
 | YU17 | `FR-OTC11` | LIVE | yu17-swap-netting |  |  |
 | YU17 | `FR-OTC12` | LIVE | yu17-swap-netting |  |  |
@@ -1009,6 +1221,11 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-BMA06` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-BMA07` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-BMA08` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
+| YU18 | `FR-CFR-01` | LIVE |  | yu18-control-republish | PASS: complete stream untouched; purged and deleted streams refilled from the outbox in version order |
+| YU18 | `FR-CFR-02` | LIVE |  | yu18-control-republish | PASS: complete stream untouched; purged and deleted streams refilled from the outbox in version order |
+| YU18 | `FR-CFR-03` | LIVE |  |  | stream ahead of the outbox / broker down mid-audit: not driven |
+| YU18 | `FR-CFR-04` | LIVE |  | yu18-control-republish | PASS: complete stream untouched; purged and deleted streams refilled from the outbox in version order |
+| YU18 | `FR-CFR-05` | LIVE |  |  | stream ahead of the outbox / broker down mid-audit: not driven |
 | YU18 | `FR-CPU01` | CI |  |  | local coordinator/engine packaging: ri03/ri07 + test-state |
 | YU18 | `FR-CPU02` | CI |  |  | local coordinator/engine packaging: ri03/ri07 + test-state |
 | YU18 | `FR-CPU03` | CI |  |  | local coordinator/engine packaging: ri03/ri07 + test-state |
@@ -1022,27 +1239,27 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-CS-03` | LIVE |  |  | hosted Desk: not in the CompSci side-namespace render |
 | YU18 | `FR-CS-04` | LIVE | yu18-console-sessions |  |  |
 | YU18 | `FR-CS-05` | LIVE | yu18-console-sessions |  |  |
-| YU18 | `FR-CUI-01` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-02` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-03` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-04` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-05` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-06` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-07` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-08` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-09` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-10` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-11` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-12` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-13` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-14` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-15` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-16` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-17` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-18` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-19` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-20` | LIVE |  |  | combined desk UI: no live proof |
-| YU18 | `FR-CUI-21` | LIVE |  |  | combined desk UI: no live proof |
+| YU18 | `FR-CUI-01` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-02` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-03` | LIVE |  |  | TIER GAP: needs a managed run (historical runs, descriptor-fenced commands) |
+| YU18 | `FR-CUI-04` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-05` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-06` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-07` | LIVE |  | yu18-desk | no fixture fallback + finite deadline: the CUI-20 hung read and the no-account refusal |
+| YU18 | `FR-CUI-08` | LIVE |  | yu18-desk | no automatic retry of a refused submit (1 POST); typed-semantics refusal not driven |
+| YU18 | `FR-CUI-09` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-10` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-11` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-12` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-13` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-14` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-15` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-16` | LIVE |  | yu18-desk | refused half PASS (draft kept, no retry); acceptance half = managed-run tier gap (spec gap 20) |
+| YU18 | `FR-CUI-17` | LIVE |  | yu18-desk | unmanaged arm PASS: submit refused before sending, no cancel/replace; managed arm = tier gap |
+| YU18 | `FR-CUI-18` | LIVE |  |  | TIER GAP: needs a managed run (historical runs, descriptor-fenced commands) |
+| YU18 | `FR-CUI-19` | LIVE |  | yu18-desk | FAILS: suspect 16 (a pre-send refusal shown as "Outcome unknown"); typed-payload half = tier gap |
+| YU18 | `FR-CUI-20` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
+| YU18 | `FR-CUI-21` | LIVE |  | yu18-desk | signed-out raw proxy order 403; membership rule is non-admin local-mode (spec gap 19) |
 | YU18 | `FR-DA01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1055,25 +1272,25 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-03` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |
 | YU18 | `FR-DRS-04` | LIVE | yu18-projection-effect-end |  | indirect: tip bridge payload accepted end to end |
 | YU18 | `FR-DRS-05` | LIVE | yu18-jetstream-feed |  |  |
-| YU18 | `FR-DRS-06` | LIVE |  | yu18-bridge-receipts | PASS with BRIDGE_PARTITIONS=4 on the members, two partitions exercised |
+| YU18 | `FR-DRS-06` | LIVE | yu18-bridge-receipts |  | PASS with BRIDGE_PARTITIONS=4 on the members, two partitions exercised |
 | YU18 | `FR-DRS-07` | LIVE | yu18-jetstream-feed |  |  |
 | YU18 | `FR-DRS-08` | LIVE | yu18-jetstream-feed |  |  |
 | YU18 | `FR-DRS-09` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |
 | YU18 | `FR-DRS-10` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |
-| YU18 | `FR-DRS-11` | LIVE |  | yu18-bridge-receipts | FR-DRS-17 only in its no-rejection form |
-| YU18 | `FR-DRS-12` | LIVE |  | yu18-bridge-receipts | FR-DRS-17 only in its no-rejection form |
-| YU18 | `FR-DRS-13` | LIVE |  | yu18-bridge-receipts | FR-DRS-17 only in its no-rejection form |
-| YU18 | `FR-DRS-14` | LIVE |  | yu18-bridge-receipts | FR-DRS-17 only in its no-rejection form |
+| YU18 | `FR-DRS-11` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
+| YU18 | `FR-DRS-12` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
+| YU18 | `FR-DRS-13` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
+| YU18 | `FR-DRS-14` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
 | YU18 | `FR-DRS-15` | LIVE |  |  | needs a forced ingest 429; not forced |
 | YU18 | `FR-DRS-16` | LIVE |  |  | needs a forced ingest 429; not forced |
-| YU18 | `FR-DRS-17` | LIVE |  | yu18-bridge-receipts | FR-DRS-17 only in its no-rejection form |
+| YU18 | `FR-DRS-17` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
 | YU18 | `FR-DRS-18` | LIVE |  |  | /recon/catchup-events needs a managed run (FR-APR) |
 | YU18 | `FR-DRS-19` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | YU18 | `FR-DRS-20` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | YU18 | `FR-DRS-21` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | YU18 | `FR-DRS-22` | LIVE | yu05-recon |  | recon grace |
 | YU18 | `FR-DRS-23` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
-| YU18 | `FR-DRS-24` | LIVE |  | yu18-bridge-receipts | FR-DRS-17 only in its no-rejection form |
+| YU18 | `FR-DRS-24` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
 | YU18 | `FR-DRS-25` | LIVE | yu18-projection-effect-end |  | NEGATIVE=1 PASS on the production render (6/6, +15/-15) |
 | YU18 | `FR-EB01` | CI |  |  | offline eod-risk-bundles CLI: test-state-YU18-eod-risk-bundles.sh |
 | YU18 | `FR-EB02` | CI |  |  | offline eod-risk-bundles CLI: test-state-YU18-eod-risk-bundles.sh |
@@ -1113,7 +1330,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-ER05` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
 | YU18 | `FR-ER06` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
 | YU18 | `FR-ER07` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER08` | LIVE |  | yu18-operator-recovery | readers only; the catch-up route is closed on this tier (trade-processor has no RISK_CONTROL_TOKEN) |
+| YU18 | `FR-ER08` | LIVE | yu18-operator-recovery |  | readers only; the catch-up route is closed on this tier (trade-processor has no RISK_CONTROL_TOKEN) |
 | YU18 | `FR-ERH-C1` | LIVE | yu18-console-sessions |  |  |
 | YU18 | `FR-ERH-C2` | LIVE | yu18-legacy-trade-bearer |  |  |
 | YU18 | `FR-ERH-F1` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
@@ -1129,10 +1346,21 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-ERH-F9` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
 | YU18 | `FR-ERH-S1` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-ERH-S2` | LIVE | yu18-gateway-auth-boundary |  |  |
-| YU18 | `FR-ERH-S3` | LIVE |  | yu18-fix-session | no/wrong 554 and an unbound CompID refused; CLIENT1 trades |
+| YU18 | `FR-ERH-S3` | LIVE | yu18-fix-session |  | no/wrong 554 and an unbound CompID refused; CLIENT1 trades |
 | YU18 | `FR-ERH-S4` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-ERH-S5` | LIVE |  |  | refuse-to-start on dev secret: no live arm |
 | YU18 | `FR-ERH-S6` | LIVE | yu18-gateway-auth-boundary |  |  |
+| YU18 | `FR-FFR-01` | LIVE |  | yu18-fix-session yu18-fix-resume | PASS on 071cde6d (two replicas) |
+| YU18 | `FR-FFR-02` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
+| YU18 | `FR-FFR-03` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
+| YU18 | `FR-FFR-04` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
+| YU18 | `FR-FFR-05` | LIVE |  | yu18-fix-session yu18-fix-resume | PASS on 071cde6d (two replicas) |
+| YU18 | `FR-FFR-06` | LIVE |  |  | race / 65,536 cap: unit-level only |
+| YU18 | `FR-FFR-07` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
+| YU18 | `FR-FFR-08` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
+| YU18 | `FR-FFR-09` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
+| YU18 | `FR-FFR-10` | LIVE |  |  | race / 65,536 cap: unit-level only |
+| YU18 | `FR-FFR-11` | LIVE |  | yu18-fix-resume | the persistent-session half (stored, resent after Logon) |
 | YU18 | `FR-FR01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-FR02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-FR03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1144,13 +1372,29 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GD03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GD04` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GD05` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
-| YU18 | `FR-GMR-01` | LIVE | yu18-member-runtime |  | PASS on 40d93f6b: exit 143 in 0 s (suspect 1 closed) |
+| YU18 | `FR-GFS-01` | LIVE |  | yu18-fix-resume yu18-fix-session | PASS on 071cde6d |
+| YU18 | `FR-GFS-02` | LIVE |  |  | full store / fresh-epoch purge: not driven |
+| YU18 | `FR-GFS-03` | LIVE |  | yu18-fix-resume yu18-fix-session | PASS on 071cde6d |
+| YU18 | `FR-GFS-04` | LIVE |  | yu18-fix-store-faults | PASS on 071cde6d: SIGSTOP takeover fenced; NATS outage refused by name, resumed |
+| YU18 | `FR-GFS-05` | LIVE |  | yu18-fix-resume yu18-fix-session | PASS on 071cde6d |
+| YU18 | `FR-GFS-06` | LIVE |  | yu18-fix-resume yu18-fix-session | PASS on 071cde6d |
+| YU18 | `FR-GFS-07` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d (GFS-12 REST arm; FIX arm in yu18-fix-session) |
+| YU18 | `FR-GFS-08` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d (GFS-12 REST arm; FIX arm in yu18-fix-session) |
+| YU18 | `FR-GFS-09` | LIVE |  | yu18-fix-store-faults | PASS on 071cde6d: SIGSTOP takeover fenced; NATS outage refused by name, resumed |
+| YU18 | `FR-GFS-10` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d (GFS-12 REST arm; FIX arm in yu18-fix-session) |
+| YU18 | `FR-GFS-11` | LIVE |  | yu18-fix-resume | NEGATIVE=1 PASS (store unset: B restarts at 1) |
+| YU18 | `FR-GFS-12` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d (GFS-12 REST arm; FIX arm in yu18-fix-session) |
+| YU18 | `FR-GFS-13` | LIVE |  |  | full store / fresh-epoch purge: not driven |
+| YU18 | `FR-GMR-01` | LIVE | yu18-member-runtime | yu18-member-runtime yu18-member-disk-survives | step 01 rewritten for the retained claim (proof bug fixed); PASS |
 | YU18 | `FR-GMR-02` | CI |  |  | render/admission counts: test_prepare |
 | YU18 | `FR-GMR-03` | LIVE | yu18-member-runtime |  | PASS on 40d93f6b: exit 143 in 0 s (suspect 1 closed) |
 | YU18 | `FR-GMR-04` | LIVE | yu18-member-runtime |  | PASS on 40d93f6b: exit 143 in 0 s (suspect 1 closed) |
 | YU18 | `FR-GMR-05` | LIVE | yu18-member-runtime |  | PASS on 40d93f6b: exit 143 in 0 s (suspect 1 closed) |
 | YU18 | `FR-GMR-06` | CI |  |  | render/admission counts: test_prepare |
 | YU18 | `FR-GMR-07` | LIVE | yu04-live-delta yu04-offline-catchup yu17-book-retick yu15-option-persistence |  | the four control-feed proofs PASS on 40d93f6b |
+| YU18 | `FR-GMR-08` | LIVE |  |  | ready gate / negative DNS TTL: no black-box observable driven |
+| YU18 | `FR-GMR-09` | LIVE |  |  | ready gate / negative DNS TTL: no black-box observable driven |
+| YU18 | `FR-GMR-10` | LIVE |  | yu18-member-disk-survives | PASS MODE=scale and MODE=delete (suspect 15 closed); MODE=reschedule not run (needs a spare engine node) |
 | YU18 | `FR-GP01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1181,16 +1425,16 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-MAR01` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-MAR02` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-MAR03` | LIVE |  |  | readout field set: partially read by the new proof |
-| YU18 | `FR-MUI01` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI02` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI03` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI04` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI05` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI06` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI07` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI08` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI09` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
-| YU18 | `FR-MUI10` | LIVE |  |  | console UI: specs/.../managed-run-ui/proofs/*.mjs (browser), not in scripts/proofs |
+| YU18 | `FR-MUI01` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI02` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI03` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI04` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI05` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI06` | LIVE |  | yu18-console-run-scope | DESTRUCTIVE=1 arm PASS: database scaled to 0; hung read = held table lock |
+| YU18 | `FR-MUI07` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI08` | LIVE |  | yu18-console-run-scope | PASS on GKE: the spec SC-MUI04/06 browser proof on this tier; MUI07 = 7 path forms 403 signed in + operator token |
+| YU18 | `FR-MUI09` | LIVE |  | yu18-console-run-scope | DESTRUCTIVE=1 arm PASS: database scaled to 0; hung read = held table lock |
+| YU18 | `FR-MUI10` | LIVE |  |  | Admin trade list: not driven (no admin-page proof yet) |
 | YU18 | `FR-OD01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-OD02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-OD03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1235,6 +1479,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-OT33` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
 | YU18 | `FR-OT34` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
 | YU18 | `FR-OT35` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
+| YU18 | `FR-OT36` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
 | YU18 | `FR-OT37` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
 | YU18 | `FR-OT38` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
 | YU18 | `FR-OT39` | EXT | scripts/ri07/order-types-live.py |  | 31 console-path cases; outside scripts/proofs |
