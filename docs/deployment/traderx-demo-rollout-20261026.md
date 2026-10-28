@@ -445,3 +445,46 @@ in the bucket.
 Spend: build VM 3:13–3:26 pm ET, deleted (≈ $0.20). Ongoing: NATS's 32 GiB `standard-rwo` PVC (≈ $3.20/month)
 and its 1-CPU request on default-pool. Rollback record (68 objects + DB dump) and the admission evidence: shared
 notes `roll2-20261027/`, `admission-b28fd9f3-20261027/`.
+
+## 12. Third production roll of `traderx`, to `40d93f6b` (2026-10-27, 7:59–8:46 pm ET)
+
+What it carries since `b28fd9f3`: authenticated FIX logon on GKE and the console `/fixorder` sign-in (`a961d89a`),
+the Grafana redirect guard (`e3149bbd`), member SIGTERM forwarding (`334e9c45`), the gateway's YU04 control-feed
+subscriber (`61fafad4`), the recon grace (`6ef26b36`), and trade-processor on the durable JetStream feed with row
+projection, the persisted tradeSeq watermark and the recon waiting for feed catch-up (`40d93f6b`). Approved by yaakov.
+
+**No fresh epoch, no NATS restart.** No apply-path change; members rolled one at a time after a snapshot barrier
+(123 → 124). NATS, its PVC/config and `database-init-sql` had no diff and were not touched, so the algo and EOD
+streams kept their consumers. **Feed switch:** `TRADERX_FEED` did not exist, so the new trade-processor created it
+and its durables (`tp-trades-p0`, `tp-orders-p0`) start at sequence 1, the first side after the switch: no trade
+already in SQL can be replayed and none after it skipped. The rolling update overlaps the old core consumer with
+the new one; TradeService ignores an already-booked trade id, and the book was quiet (order hash 0, algo stream
+empty, applied 1323 unchanged since 3:40 pm).
+
+| Step | Result |
+|---|---|
+| Secret (8:37 pm) | `auth-secrets/fix-session-password` (hex, 32 bytes) saved to `credentials.json` first, merge-patched over stdin, read back: all 7 keys equal to `credentials.json`; no value printed |
+| Build (VM `yu18-roll3-20261027`, 7:59–8:05 pm) | 12 private images + desk + `tip-40d93f6b-risk` console, all linux/amd64, label `40d93f6b` |
+| `measure-admission.py --build-records` | **admitted-offline**; 12/12 payloads byte-identical to independent reference builds; 19/19 refusal controls; `admitted.yaml` = candidate (sha256 `ab707313…`, 69 objects); test_prepare 32/32 |
+| Server-side dry run | 69/69 objects; NATS, NATS PVC/config and DB init: no diff |
+| Apply (`roll.sh`, 8:38:05–8:43:04 pm) | trade-processor (jetstream, 8:38:27) → barrier (8:38:56) → members (8:40:53, agree 1323 / 14) → rest → console + desk |
+| Running images | 18 private containers on exactly the pushed digests, 0 stale; 0 restarts |
+| Book + positions | before = after: members 1323 / 14 trades / same book hashes; SQL 27 trades, 18 positions, same fingerprints |
+| FIX (8:44 pm) | wrong password and no password: Logout `58=invalid credentials`, gateway `Logon rejected`; before the roll a passwordless logon was accepted. Console `/fixorder` signed out: 401 |
+| Good logon trades (8:44–8:45 pm) | CLIENT1 logon with the pod's password, NewOrderSingle → ExecutionReport New. Same-account Buy/Sell is self-trade-prevented (`1-18` CANCELED `SELF_TRADE_PREVENTED`); a FIX Buy 1 MSFT @ 393 from 42422 crossed the resting `1-19`: applied 1326 / 16 trades on all three, book order hash 0 |
+| Effect end (that cross) | SQL `15-S` (22214) and `16-B` (42422) at 393; MSFT 22214 10 → 9, 42422 −10 → −9; leader bridge published 2 trades / 6 orders, rejected 0, dropped 0 |
+| Durable feed | `TRADERX_FEED` 8 msgs; `tp-trades-p0` delivered 8 / ack floor 8 / pending 0 / redelivered 0; `projection_cursor` `trade-seq:` = 16; first side since start 15 (= 14 + 1), `missingTradeSides` 0 |
+| Recon (10 s) | cursor 14 → 16 on the sweep after the fill; matched 16, missing 0, mismatch 0, orphan 0 |
+| Gateway / edge | `/orders` without a bearer 401; demo and desk 200; `/grafana` → 301 `https://demo.yaakovseif.dev/grafana/` |
+| Members' exit | 137 on all three: each old pod (revision `74b8f675c5`) still ran the old `& wait $!` command, and a pod terminates under its own spec. The new pods (`86584b6f45`) carry the forwarding wrapper; their first delete shows 143 |
+
+One difference from the admitted candidate, deliberate: the console carries batch custody (as in roll 2).
+Recon now runs at the candidate's 10 s; roll 2's daily override is gone (its cause was fixed in `6ef26b36`).
+
+Control feed: the gateway subscribes and retries `No matching streams` once per distinct failure. The
+`TRADERX_CONTROL_SECURITY` stream does not exist yet: reference-data's 533 outbox rows were all published at 2:20 pm
+to the store roll 2 replaced, and nothing republishes a published row, so the gateway replica is empty (0) until the
+next delta.
+
+Spend: build VM 7:59–8:14 pm ET, deleted (≈ $0.15). Rollback record (71 objects + DB dump) and the admission
+evidence: shared notes `roll3-20261027/`, `admission-40d93f6b-20261027/`.
