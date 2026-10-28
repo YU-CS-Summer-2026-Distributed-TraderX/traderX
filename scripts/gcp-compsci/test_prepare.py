@@ -169,6 +169,12 @@ class Rendering(unittest.TestCase):
         env=module.podspec(gw)['containers'][0]['env']; env[:]=[e for e in env if e['name']!='CONTROL_FEED_SUBSCRIBER']
         with self.assertRaises(AssertionError): module.validate(docs)
 
+    def test_gateway_reports_fix_fills(self):
+        docs=copy.deepcopy(self.docs)
+        gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        module.podspec(gw)['containers'][0]['env'].append({'name':'FIX_FILL_FEED','value':'0'})
+        with self.assertRaises(AssertionError): module.validate(docs)
+
     def member_script(self, docs=None):
         engine=next(d for d in (docs or self.docs) if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
         return module.podspec(engine)['containers'][0]['command']

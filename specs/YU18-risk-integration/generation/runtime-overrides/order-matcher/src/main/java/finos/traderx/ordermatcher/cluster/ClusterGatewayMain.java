@@ -491,6 +491,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 Integer.parseInt(env("FIX_DEFAULT_ACCOUNT", "11")), compIds,
                 FixSessionAuth.fromEnv(env("FIX_SESSION_AUTH", "")));   // S3: COMPID:password:acct|acct,...
             fix.start();
+            startFillFeed(fix);
             Runtime.getRuntime().addShutdownHook(new Thread(fix::stop));
         }
 
@@ -2537,6 +2538,54 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final String natsUrl = env("NATS_ADDRESS",
             "nats://" + env("NATS_BROKER_HOST", "nats") + ":4222");
         final Thread t = new Thread(() -> runControlFeed(natsUrl), "control-feed-subscriber");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * FR-FIX05 (ADR-084): feed the leader's {@code /orders} updates to the FIX acceptor, which
+     * reports every fill after the direct ack to the session that owns the order. A core NATS
+     * subscription to the bare subject and every partition ({@code BRIDGE_PARTITIONS}), so it needs
+     * no partition count of its own; no durable consumer, because FIX session state is ephemeral
+     * anyway (TD-AC01) and a gateway restart drops the sessions it would replay into. Every order
+     * update on the venue reaches this gateway: {@code FIX_FILL_FEED=0} turns it off where FIX
+     * fills do not matter and that fan-out does (a throughput rig).
+     */
+    private static void startFillFeed(final FixGatewayAcceptor fix) {
+        if ("0".equals(env("FIX_FILL_FEED", "1"))) {
+            System.out.println("FIX fill feed OFF (FIX_FILL_FEED=0): fills after the ack are not reported");
+            return;
+        }
+        final String natsUrl = env("NATS_ADDRESS",
+            "nats://" + env("NATS_BROKER_HOST", "nats") + ":4222");
+        final Thread t = new Thread(() -> {
+            String lastFailure = null;
+            while (true) {
+                try {
+                    final io.nats.client.Connection nats = io.nats.client.Nats.connect(
+                        new io.nats.client.Options.Builder().server(natsUrl).maxReconnects(-1).build());
+                    final io.nats.client.Dispatcher d = nats.createDispatcher(m -> fix.onOrderUpdate(m.getData()));
+                    d.subscribe("/orders");
+                    d.subscribe("/orders.*");
+                    System.out.println("FIX fill feed: subscribed /orders and /orders.* on " + natsUrl);
+                    return;
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (final Exception e) {
+                    if (!String.valueOf(e).equals(lastFailure)) {
+                        lastFailure = String.valueOf(e);
+                        System.err.println("FIX fill feed: NATS connect failed (retrying): " + e);
+                    }
+                    try {
+                        Thread.sleep(2_000);
+                    } catch (final InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+        }, "fix-fill-feed");
         t.setDaemon(true);
         t.start();
     }

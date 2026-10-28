@@ -20,6 +20,8 @@ import quickfix.field.ClOrdID;
 import quickfix.field.CumQty;
 import quickfix.field.ExecID;
 import quickfix.field.ExecType;
+import quickfix.field.LastPx;
+import quickfix.field.LastQty;
 import quickfix.field.LeavesQty;
 import quickfix.field.OrdStatus;
 import quickfix.field.OrderID;
@@ -72,6 +74,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * — the same {@code orderbook} read model the REST blotter serves — so a FIX status answer and a
  * {@code GET /accounts/{id}/orders} answer are the same data. No cluster round-trip: status is
  * off-consensus.
+ *
+ * <p>YU18 (FR-FIX05, ADR-084): a fill after the direct ack — the resting side of someone else's
+ * cross, or the aggressor's own fills in the apply that accepted it — is reported unsolicited as an
+ * ExecutionReport {@code ExecType=F (Trade)}, read from the leader's {@code /orders} feed
+ * ({@link #onOrderUpdate}). The cluster egress cannot carry it: its 32-byte record has no fill
+ * quantity or price, and it is addressed to the AGGRESSOR's cluster session, so a resting order
+ * owned by another gateway's session is never on this gateway's egress at all.
  */
 public final class FixGatewayAcceptor {
     private static final Logger log = LoggerFactory.getLogger(FixGatewayAcceptor.class);
@@ -103,6 +112,53 @@ public final class FixGatewayAcceptor {
                 return size() > CLORDID_MAP_CAPACITY;
             }
         });
+
+    /**
+     * FR-FIX05: orderRef → the FIX order a feed fill belongs to. Bounded like the map above, and
+     * an entry leaves on its terminal update (filled, canceled, rejected). ponytail: an order
+     * evicted while still working gets no further fill reports; it stays answerable by H.
+     */
+    private static final int TRACKED_CAPACITY = 65_536;
+    private final Map<Integer, Tracked> tracked = new LinkedHashMap<>(1024, 0.75f, false) {
+        @Override
+        protected boolean removeEldestEntry(final Map.Entry<Integer, Tracked> eldest) {
+            return size() > TRACKED_CAPACITY;
+        }
+    };
+
+    /**
+     * The feed can beat the direct ack: the leader publishes both from one apply, and the ack
+     * still has to complete a future and wake the FIX thread before the order is tracked. Fill
+     * updates for untracked refs are kept here, and {@link #track} replays any for its ref.
+     * ponytail: the last 4,096 fills on the venue; at ~400k fills/s that is a 10 ms window, which
+     * an ack-to-track gap of microseconds sits well inside. Raise it if a gap ever outlasts it.
+     */
+    private static final int EARLY_CAPACITY = 4_096;
+    private final int[] earlyRef = new int[EARLY_CAPACITY];
+    private final byte[][] earlyMsg = new byte[EARLY_CAPACITY][];
+    private int earlyNext;
+    /** One lock for {@link #tracked}, the early ring and each {@link Tracked}'s counters, so a
+     *  feed update and the registration of its order can never miss each other. */
+    private final Object feedLock = new Object();
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
+        new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private static final class Tracked {
+        final SessionID session;
+        final String symbol;
+        final char side;
+        String clOrdId;
+        String epoch;
+        int cumQty;
+        double notional;
+
+        Tracked(final SessionID session, final String clOrdId, final String symbol, final char side) {
+            this.session = session;
+            this.clOrdId = clOrdId;
+            this.symbol = symbol;
+            this.side = side;
+        }
+    }
 
     private ThreadedSocketAcceptor acceptor;
 
@@ -298,6 +354,12 @@ public final class FixGatewayAcceptor {
                 refByClOrdId.put(qualify(sessionId, clOrdId), result.orderRef());
             }
             sendReport(sessionId, clOrdId, ticker, side, qty, result);
+            // After the New, so a fill can never be reported ahead of the order it fills. An ack that
+            // is already terminal (filled by its own ack, FOK/IOC canceled) has nothing left to report.
+            if (result.accepted() && result.kind() != OutputEvent.KIND_ORDER_CANCELED
+                    && result.kind() != OutputEvent.KIND_ORDER_FILLED) {
+                track(result.orderRef(), sessionId, clOrdId, ticker, side);
+            }
         }
 
         /**
@@ -437,6 +499,12 @@ public final class FixGatewayAcceptor {
             // follow-up cancel by OrigClOrdID would 'unknown order' an order that plainly exists.
             refByClOrdId.put(qualify(sessionId, clOrdId), orderRef);
             final boolean filled = result.kind() == OutputEvent.KIND_ORDER_FILLED;
+            synchronized (feedLock) {   // later fills report under the ClOrdID the order now has
+                final Tracked t = tracked.get(orderRef);
+                if (t != null) {
+                    t.clOrdId = clOrdId;
+                }
+            }
             final ExecutionReport report = new ExecutionReport(
                 new OrderID("ord-" + orderRef),
                 new ExecID(String.valueOf(execSeq.incrementAndGet())),
@@ -644,6 +712,9 @@ public final class FixGatewayAcceptor {
             }
             send(report, sessionId, clOrdId);
             refByClOrdId.remove(qualify(sessionId, origClOrdId));
+            synchronized (feedLock) {
+                tracked.remove(orderRef);
+            }
         }
 
         private void sendCancelReject(final SessionID sessionId, final String orderId,
@@ -728,6 +799,148 @@ public final class FixGatewayAcceptor {
             report.set(new Text(text));
             send(report, sessionId, clOrdId);
         }
+    }
+
+    /**
+     * FR-FIX05: one {@code /orders} feed message (the leader's order bridge, ADR-048 sibling). Every
+     * gateway sees every order's updates and acts only on the refs it tracks, so the session that
+     * owns a resting order hears its fill whichever gateway the aggressor came through. Called on
+     * the NATS dispatcher thread. The byte scans keep an untracked message (almost all of them on a
+     * busy venue) free of parsing and allocation.
+     */
+    public void onOrderUpdate(final byte[] json) {
+        final int ref = feedRef(json);
+        if (ref <= 0) {
+            return;
+        }
+        synchronized (feedLock) {
+            final Tracked t = tracked.get(ref);
+            if (t != null) {
+                applyUpdate(ref, t, json);
+            } else if (indexOf(json, FILL_STATUS, 0) >= 0 || indexOf(json, PARTIAL_STATUS, 0) >= 0) {
+                earlyRef[earlyNext] = ref;
+                earlyMsg[earlyNext] = json;
+                earlyNext = (earlyNext + 1) % EARLY_CAPACITY;
+            }
+        }
+    }
+
+    private void track(final int ref, final SessionID session, final String clOrdId, final String symbol,
+                       final char side) {
+        synchronized (feedLock) {
+            final Tracked t = new Tracked(session, clOrdId, symbol, side);
+            tracked.put(ref, t);
+            for (int i = 0; i < EARLY_CAPACITY; i++) {   // oldest first
+                final int k = (earlyNext + i) % EARLY_CAPACITY;
+                if (earlyRef[k] == ref && earlyMsg[k] != null) {
+                    final byte[] m = earlyMsg[k];
+                    earlyMsg[k] = null;
+                    applyUpdate(ref, t, m);
+                }
+            }
+        }
+    }
+
+    /** Under {@link #feedLock}. Reports the quantity this update adds over what the session has
+     *  been told; a NEW, a redelivery or a stale state adds none, and a missed message folds into
+     *  the next one's LastQty, so CumQty is always the engine's. */
+    private void applyUpdate(final int ref, final Tracked t, final byte[] json) {
+        final com.fasterxml.jackson.databind.JsonNode p;
+        try {
+            p = JSON.readTree(json).path("payload");
+        } catch (final java.io.IOException e) {
+            return;
+        }
+        final String id = p.path("id").asText("");
+        final String epoch = id.substring(0, Math.max(0, id.lastIndexOf('-')));
+        if (t.epoch == null) {
+            t.epoch = epoch;
+        } else if (!t.epoch.equals(epoch)) {
+            tracked.remove(ref);   // a new epoch reuses refs: this is a stranger's order
+            return;
+        }
+        final String status = p.path("status").asText("");
+        final boolean filled = "FILLED".equals(status);
+        if (!filled && !"PARTIALLY_FILLED".equals(status)) {
+            if ("CANCELED".equals(status) || "REJECTED".equals(status)) {
+                tracked.remove(ref);
+            }
+            return;
+        }
+        final int qty = p.path("quantity").asInt();
+        final int leaves = filled ? 0 : p.path("remainingQuantity").asInt();
+        final int cum = qty - leaves;
+        if (cum <= t.cumQty) {
+            return;
+        }
+        final int lastQty = cum - t.cumQty;
+        final double lastPx = p.path("lastExecutionPrice").asDouble();
+        t.notional += lastQty * lastPx;
+        t.cumQty = cum;
+        final ExecutionReport report = new ExecutionReport(
+            new OrderID("ord-" + ref),
+            new ExecID(String.valueOf(execSeq.incrementAndGet())),
+            new ExecType(ExecType.TRADE),
+            new OrdStatus(leaves == 0 ? OrdStatus.FILLED : OrdStatus.PARTIALLY_FILLED),
+            new Side(t.side == 'S' ? Side.SELL : Side.BUY),
+            new LeavesQty(leaves),
+            new CumQty(cum),
+            new AvgPx(t.notional / cum));
+        report.set(new ClOrdID(t.clOrdId));
+        report.set(new Symbol(t.symbol));
+        report.set(new OrderQty(qty));
+        report.set(new LastQty(lastQty));
+        report.set(new LastPx(lastPx));
+        try {
+            Session.sendToTarget(report, t.session);
+        } catch (final quickfix.SessionNotFound e) {
+            log.warn("FIX session gone before fill report for {}", t.clOrdId);
+        }
+        if (leaves == 0) {
+            tracked.remove(ref);
+        }
+    }
+
+    private static final byte[] ID_KEY = "\"id\":\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] FILL_STATUS = "\"status\":\"FILLED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] PARTIAL_STATUS =
+        "\"status\":\"PARTIALLY_FILLED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+    /** The orderRef of {@code "id":"<epoch>-<orderRef>"}, or -1. */
+    static int feedRef(final byte[] json) {
+        final int start = indexOf(json, ID_KEY, 0);
+        if (start < 0) {
+            return -1;
+        }
+        int i = start + ID_KEY.length;
+        int digitsFrom = i;
+        while (i < json.length && json[i] != '"') {
+            if (json[i] == '-') {
+                digitsFrom = i + 1;
+            }
+            i++;
+        }
+        long ref = 0;
+        for (int k = digitsFrom; k < i; k++) {
+            if (json[k] < '0' || json[k] > '9' || ref > Integer.MAX_VALUE) {
+                return -1;
+            }
+            ref = ref * 10 + (json[k] - '0');
+        }
+        return i > digitsFrom && ref <= Integer.MAX_VALUE ? (int) ref : -1;
+    }
+
+    private static int indexOf(final byte[] hay, final byte[] needle, final int from) {
+        outer:
+        for (int i = from; i <= hay.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (hay[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
     }
 
     private static final finos.traderx.ordermatcher.risk.RiskReason[] REASONS =

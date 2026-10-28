@@ -130,7 +130,8 @@ and checkpoints unchanged.
    58="order status unavailable (no read model configured)"` for a resting order (`ord-21`, SQL `NEW`) and
    again after it filled (SQL `FILLED`). No manifest under `specs/*/generation/kubernetes/**` sets a
    read-model or status variable for the gateway, so nothing in the render could configure one.
-8. **FR-FIX05 — no fill ExecutionReports reach the FIX session.** A resting FIX Sell and a crossing FIX Buy
+8. **FR-FIX05 — no fill ExecutionReports reach the FIX session.** *Fixed by YU18 ADR-084: fills are read
+   from the leader's `/orders` feed, because the egress record carries no fill quantity or price.* A resting FIX Sell and a crossing FIX Buy
    on the same session: both get `ExecType=0 New`; neither gets a fill report within 15 s, though SQL shows
    both orders `FILLED`, two trade rows at the resting price, and every member's `trades` moved by 2.
 9. **FR-FIX11 — the session sequence restarts on reconnect.** With one gateway replica, after an abrupt TCP
@@ -767,7 +768,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU10 | `FR-FIX02` | LIVE | yu10-fix-session |  |  |
 | YU10 | `FR-FIX03` | LIVE | yu13-cancel-ingress |  | yu13-fix-cancel.mjs |
 | YU10 | `FR-FIX04` | LIVE |  | yu18-fix-session | FAILS: suspect 7 (no read model on the GKE gateway) |
-| YU10 | `FR-FIX05` | LIVE | yu10-fix-session | yu18-fix-session | FAILS on GKE: suspect 8 (no fill ExecutionReports) |
+| YU10 | `FR-FIX05` | LIVE | yu10-fix-session | yu18-fix-session | suspect 8 FIXED by ADR-084 (step 4 passes on `traderx-fixf`; not yet on traderx) |
 | YU10 | `FR-FIX06` | LIVE | yu13-cancel-ingress |  | yu13-fix-cancel.mjs |
 | YU10 | `FR-FIX07` | LIVE | yu10-fix-session |  | logon; superseded by ERH-S3 FIX_SESSION_AUTH |
 | YU10 | `FR-FIX08` | LIVE | yu10-fix-session |  | logon; superseded by ERH-S3 FIX_SESSION_AUTH |

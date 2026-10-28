@@ -171,6 +171,7 @@ def validate(docs):
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
             env = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
             require(env.get('CONTROL_FEED_SUBSCRIBER') == '1', 'gateway does not subscribe to the control feed (YU04)')
+            require(env.get('FIX_FILL_FEED', '1') != '0', 'FIX sessions would get no fill reports (FR-FIX05, ADR-084)')
         # FR-DRS-25: the production projection replays an outage from the stream, and the stream outlives NATS.
         if doc['metadata']['name'] == 'trade-processor' and pod:
             env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}
