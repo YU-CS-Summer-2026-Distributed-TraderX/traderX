@@ -1,8 +1,9 @@
 # Exactly-once client
 
 Status: the venue contract and the FIX restatement on `traderX-risk-integration`; the client is the hxb loadgen
-(`independent-baseline/pods/loadgen.mjs`, `plan.exactlyOnce`, binary), proven locally through a gateway kill and a
-leader kill with a strict native replay. FIX client side and the GKE arm pending. Decision:
+(`independent-baseline/pods/loadgen.mjs`, `plan.exactlyOnce`), proven locally over binary (arm `xo`) and FIX with
+ADR-086 sessions (arm `xof`) through a gateway kill and a leader kill, each with a strict native replay
+(allowance 0). The GKE arms are queued at ≤ 5K/s. Decision:
 [ADR-091](../../system/adr-091-exactly-once-client.md). Base requirement: YU03 FR-IMRG14 (idempotent retry).
 
 Sources (YU18 `generation/runtime-overrides/order-matcher/.../cluster/`): `FixGatewayAcceptor.java`

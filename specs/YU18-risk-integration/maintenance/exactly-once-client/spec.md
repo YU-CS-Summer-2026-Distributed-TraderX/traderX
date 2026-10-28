@@ -40,3 +40,4 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
 | same, no read model | 03 | `FixGatewayFillReportTest.withoutAReadModel…` | `150=I`, `37=ord-42`, `39=3`, never `39=8` |
 | binary client through a gateway kill and a leader kill | 01, 02, 05 | harness arm `xo`, local triad | 0 missing / duplicate / ambiguous; strict native replay, allowance 0 |
 | stub gateways: 20 ambiguous, a gateway dies with 20 in flight | 05 | harness `tests/test_loadgen_exactly_once.mjs` | 600/600 executed once; today's loadgen fails |
+| FIX client through a gateway kill and a leader kill, ADR-086 sessions | 01, 03 | harness arm `xof`, local triad | 0 missing / duplicate / ambiguous; strict native replay, allowance 0 |
