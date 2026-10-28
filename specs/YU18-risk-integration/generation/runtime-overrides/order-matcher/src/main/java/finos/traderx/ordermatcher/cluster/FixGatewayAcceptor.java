@@ -213,8 +213,12 @@ public final class FixGatewayAcceptor {
         final Properties defaults = new Properties();
         defaults.setProperty("ConnectionType", "acceptor");
         defaults.setProperty("SocketAcceptPort", String.valueOf(port));
-        defaults.setProperty("StartTime", "00:00:00");
-        defaults.setProperty("EndTime", "00:00:00");
+        // ADR-086 §6: the FIX day, and with it the resend horizon, ends here. Default 17:00 New York: after
+        // the 16:00 ET close and its marks, so a FIX day is a US trading day. 00:00 UTC is 8 pm ET (7 pm in
+        // winter), in the middle of the US evening, and would reset sessions during after-hours trading.
+        defaults.setProperty("StartTime", System.getenv().getOrDefault("FIX_SESSION_RESET_TIME", "17:00:00"));
+        defaults.setProperty("EndTime", System.getenv().getOrDefault("FIX_SESSION_RESET_TIME", "17:00:00"));
+        defaults.setProperty("TimeZone", System.getenv().getOrDefault("FIX_SESSION_TIME_ZONE", "America/New_York"));
         defaults.setProperty("HeartBtInt", "30");
         // ADR-086: persistent sessions keep their numbers across reconnects and replicas; RefreshOnLogon
         // rereads the store, which another replica may have advanced since this one last held it.
@@ -244,7 +248,7 @@ public final class FixGatewayAcceptor {
                 final Session session = sessionOf(sid);
                 try {
                     if (session != null) {
-                        session.disconnect("FIX session lease lost to another gateway", true);
+                        session.disconnect("FIX session lease or store lost (ADR-086)", true);
                     }
                 } catch (final java.io.IOException e) {
                     log.warn("FIX session {}: disconnect after lease loss failed: {}", sid, e.toString());
@@ -424,12 +428,24 @@ public final class FixGatewayAcceptor {
                     }
                     // ADR-086: one gateway per live session. Wait briefly for a previous owner (a
                     // client that just dropped) to let go; the lease is taken only after the password.
+                    if (sessionStore != null && !sessionStore.available()) {
+                        throw new RejectLogon("FIX session store unavailable; retry later");
+                    }
                     if (sessionStore != null && !acquire(sessionId)) {
-                        throw new RejectLogon("session is live on another gateway");
+                        throw new RejectLogon(sessionStore.available() ? "session is live on another gateway"
+                            : "FIX session store unavailable; retry later");
                     }
                 }
             } catch (final FieldNotFound ignore) {
                 // non-logon admin message
+            }
+        }
+
+        private String msgTypeOf(final Message message) {
+            try {
+                return "35=" + message.getHeader().getString(35);
+            } catch (final FieldNotFound e) {
+                return "a message";
             }
         }
 
@@ -447,6 +463,22 @@ public final class FixGatewayAcceptor {
 
         @Override
         public void fromApp(final Message message, final SessionID sessionId) {
+            // ADR-086: nothing reaches the cluster for a session this gateway cannot prove it still owns
+            // (paused past the lease TTL and taken over, or its store down). The answer could not be stored,
+            // so it could never be sent: end the session instead of accepting an order it cannot report.
+            if (sessionStore != null && !sessionStore.confirm(sessionId)) {
+                log.warn("FIX {}: lease not confirmed (store {}); disconnecting without acting on {}",
+                    sessionId.getTargetCompID(), sessionStore.available() ? "up" : "down", msgTypeOf(message));
+                final Session session = sessionOf(sessionId);
+                if (session != null) {
+                    try {
+                        session.disconnect("FIX session lease not confirmed", true);
+                    } catch (final java.io.IOException ignore) {
+                        // already gone
+                    }
+                }
+                return;
+            }
             // ADR-086: an answer that completes after its client left must still find the lease.
             if (sessionStore != null) {
                 sessionStore.requestStarted(sessionId);

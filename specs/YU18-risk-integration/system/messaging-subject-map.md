@@ -206,6 +206,12 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   `/orders.*` from `TRADERX_FEED` through two ephemeral JetStream ordered (push) consumers per gateway,
   starting at "new", recreated at the last delivered sequence after a gap. `core` subscribes the same
   two subjects without the stream.
+- FIX session store (ADR-086, `FIX_SESSION_STORE=jetstream`): KV bucket `FIX_SESSIONS` (stream
+  `KV_FIX_SESSIONS`, subjects `$KV.FIX_SESSIONS.<K>.seq` and `$KV.FIX_SESSIONS.<K>.m.<n>`, history 1, max age 7 d,
+  1 GiB, discard new) and KV bucket `FIX_SESSION_LEASE` (stream `KV_FIX_SESSION_LEASE`, subject
+  `$KV.FIX_SESSION_LEASE.<K>`, max age 10 s). `<K>` is the SessionID with every character outside `[A-Za-z0-9-]`
+  written as `_XX`. Each `cluster-gateway` creates both idempotently once NATS is reachable. Only the gateway
+  holding a session's lease writes that session's keys. A fresh epoch purges both (FR-GFS-13).
 - `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and
   `/accounts/{id}/positions` publishes.
 - Bridge receipts (ADR-083): every `/trades[.<p>]` and `/orders[.<p>]` message carries a reply subject

@@ -78,7 +78,9 @@
   JetStream (`FIX_SESSION_STORE=jetstream`), not a file: sequence numbers and sent messages persist
   across reconnects, gateway restarts and replicas; a lease lets one replica serve a session at a time,
   and a Logon on another replica while it is live is refused with Logout. Retention is the daily session
-  (00:00 UTC), with a 7-day, 1 GiB backstop that fails closed.
+  (`FIX_SESSION_RESET_TIME`, 17:00 New York on GKE), with a 7-day, 1 GiB backstop that fails closed; with NATS
+  down no FIX session is served. Testable form: YU18 FR-GFS-01..13
+  (`specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`).
 - FR-FIX12: Admission outcomes SHALL be distinguished: (a) pre-publish failure (ring claim
   timeout, ledger unavailable) → session-level reject, no order exists; (b) malformed or
   unsupported message → session `Reject (35=3)`; (c) application rejection (risk screen, unknown

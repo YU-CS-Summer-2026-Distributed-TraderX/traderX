@@ -24,7 +24,9 @@ leader signal.
 Client-observed failover is bounded by Raft election plus gateway re-point rather than by TCP
 session death, and the under-one-second gate is measured at this tier. The order path gains one
 in-cluster hop. Gateway loss drops counterparty sessions to ordinary reconnect while cluster
-order state is unaffected — recorded as TD-AC01.
+order state is unaffected — recorded as TD-AC01. *(YU18, ADR-086: with `FIX_SESSION_STORE=jetstream` the
+session state lives in JetStream instead, under a per-session lease, and resumes on any replica; the tier
+stays stateless.)*
 
 ## Horizontal scale-out (ingress throughput)
 

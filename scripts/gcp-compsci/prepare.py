@@ -185,6 +185,8 @@ def validate(docs):
                         'FIX sessions restart at MsgSeqNum 1 on reconnect (FR-FIX11, ADR-086)')
                 require((env.get('ORDER_READMODEL_URL') or '').startswith('http://trade-processor:'),
                         'FIX order status has no read model (FR-FIX04)')
+                require(re.fullmatch(r'\d\d:\d\d:\d\d', env.get('FIX_SESSION_RESET_TIME') or '') and env.get('FIX_SESSION_TIME_ZONE'),
+                        'FIX session reset time and zone not pinned (FR-GFS-08)')
         # FR-DRS-25: the production projection replays an outage from the stream, and the stream outlives NATS.
         if doc['metadata']['name'] == 'trade-processor' and pod:
             env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}

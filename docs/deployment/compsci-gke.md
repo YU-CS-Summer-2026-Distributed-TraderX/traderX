@@ -186,6 +186,31 @@ enable a sandbox here. Database bootstrap, migration and clients use the same Se
 with a separate root password. The readiness probe reads runtime credentials.
 Grafana also uses a private Secret reference.
 
+## FIX sessions (ADR-086)
+
+The gateway keeps FIX session state in NATS JetStream (`FIX_SESSION_STORE=jetstream`): bucket `FIX_SESSIONS`
+holds each session's sequence numbers and sent messages, and `FIX_SESSION_LEASE` (10 s max age) names the one
+gateway serving it. A counterparty may reconnect to any gateway replica and `ResendRequest` what it missed.
+Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
+
+- **Daily reset.** `FIX_SESSION_RESET_TIME` / `FIX_SESSION_TIME_ZONE` (manifest: `17:00:00`,
+  `America/New_York`). The first Logon or timer tick after it purges the stored messages and restarts the
+  sequence at 1.
+- **NATS down means no FIX.** On losing NATS each gateway logs `ALERT FIX session store unavailable`, closes
+  its live FIX sessions and refuses Logons (Logout `FIX session store unavailable; retry later`) until NATS is
+  back; then Logons continue the stored sequence. REST and binary order entry are unaffected.
+- **Fresh epoch: purge the FIX store.** A fresh cluster epoch reuses order refs, and stored reports name orders
+  as `ord-<orderRef>`, so wipe the sessions with the venue (gateways scaled to 0 first, or their next Logon
+  adopts stale orders):
+
+  ```bash
+  kubectl -n traderx run fixpurge --rm -i --restart=Never --image=natsio/nats-box:0.14.5 -- \
+    sh -c 'nats -s nats://nats:4222 stream purge KV_FIX_SESSIONS -f && nats -s nats://nats:4222 stream purge KV_FIX_SESSION_LEASE -f'
+  ```
+
+  Every counterparty then logs on with `ResetSeqNumFlag=Y` (or is reset by the acceptor on its first Logon).
+- **First roll onto ADR-086** resets every live FIX session once: there is no stored state yet.
+
 ## Before application deployment
 
 The companion's `compiled-context-v1` provider binds independently derived full

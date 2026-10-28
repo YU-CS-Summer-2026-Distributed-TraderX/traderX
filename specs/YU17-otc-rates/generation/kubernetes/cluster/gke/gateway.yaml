@@ -184,6 +184,14 @@ spec:
             # sessions that restart at MsgSeqNum 1 on every reconnect (TD-AC01).
             - name: FIX_SESSION_STORE
               value: "jetstream"
+            # ADR-086 §6 (FR-GFS-08): the FIX day ends, and stored messages are purged, at this local time.
+            # 17:00 New York is after the 16:00 ET close and its marks, so a FIX day is a US trading day;
+            # the old fixed 00:00 UTC fell at 8 pm ET (7 pm in winter), mid-evening. Pinned here, not left
+            # to the code default, so a change is a reviewed manifest change.
+            - name: FIX_SESSION_RESET_TIME
+              value: "17:00:00"
+            - name: FIX_SESSION_TIME_ZONE
+              value: "America/New_York"
             # FR-FIX04 / suspect 7: OrderStatusRequest (H) and OrderMassStatusRequest (AF) read the
             # order read model the REST blotter reads (GET /accounts/{id}/orders on trade-processor).
             # Unset, every status request answered "order status unavailable (no read model

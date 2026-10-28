@@ -47,6 +47,7 @@ class FixSessionPersistenceIT {
         .waitingFor(Wait.forLogMessage(".*Server is ready.*", 1));
 
     private final List<FixGatewayAcceptor> gateways = new ArrayList<>();
+    private final List<FixSessionStore> stores = new ArrayList<>();
 
     @AfterEach
     void stop() {
@@ -56,10 +57,12 @@ class FixSessionPersistenceIT {
     /** One "cluster" behind both replicas: refs are global; a Buy fills, a Sell rests; Sell qty 99 is slow. */
     private static final class Venue implements OrderSubmitter {
         final AtomicInteger nextRef = new AtomicInteger(1);
+        final AtomicInteger submitted = new AtomicInteger();
 
         @Override
         public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
                                       final char side, final int qty, final long limitPxTicks) {
+            submitted.incrementAndGet();
             if (qty == 99) {
                 try {
                     Thread.sleep(1_500);   // the ack arrives after the client is gone
@@ -86,13 +89,24 @@ class FixSessionPersistenceIT {
     }
 
     private int startGateway(final Venue venue, final String name, final String compId) throws Exception {
+        return startGateway(venue, name, compId, NATS);
+    }
+
+    private int startGateway(final Venue venue, final String name, final String compId,
+                             final GenericContainer<?> nats) throws Exception {
         final int port;
         try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
             port = s.getLocalPort();
         }
-        final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+        final String url = "nats://" + nats.getHost() + ":" + nats.getMappedPort(4222);
+        final FixSessionStore store = new FixSessionStore(url, name);
+        stores.add(store);
+        for (int i = 0; i < 100 && !store.available(); i++) {
+            Thread.sleep(100);   // the store sets up its buckets on connect, off the caller's thread
+        }
+        assertTrue(store.available(), "store never became available");
         final FixGatewayAcceptor gw = new FixGatewayAcceptor(venue, null, port, "TRADERX", 11, List.of(compId))
-            .withSessionStore(new FixSessionStore(url, name));
+            .withSessionStore(store);
         gw.start();
         gateways.add(gw);
         return port;
@@ -197,6 +211,115 @@ class FixSessionPersistenceIT {
         assertEquals(String.valueOf(Integer.parseInt(fill2.get("34")) + 1), fill3.get("34"),
             "nothing between the two fills: no duplicate from A, none for the redelivery");
         c2.close();
+    }
+
+    /**
+     * The owner stops renewing (a SIGSTOP stand-in) past the lease TTL; the other replica takes the session
+     * over. The old owner, resumed and handed an order on its stale connection, must not submit it to the
+     * cluster or write the session: it re-confirms the lease, finds it gone, and drops the client.
+     */
+    @Test
+    void anExpiredOwnerIsFencedAfterTakeover() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT4");
+        final int b = startGateway(venue, "gw-b", "CLIENT4");
+        final Client c1 = new Client(a, "CLIENT4");
+        assertEquals("A", c1.logon().get("35"));
+        stores.get(0).renewalsStalled = true;
+        Thread.sleep(FixSessionStore.LEASE_TTL.toMillis() + 3_000);
+
+        final Client c2 = new Client(b, "CLIENT4");
+        c2.out = 2;
+        assertEquals("A", c2.logon().get("35"), "B takes over once A's lease has aged out");
+        c2.order("s1", '2', 10);
+        assertEquals("s1", c2.awaitType("8").get("11"));
+        final int before = venue.submitted.get();
+
+        stores.get(0).renewalsStalled = false;   // SIGCONT
+        c1.order("stale", '2', 10);
+        try {
+            final Map<String, String> m = c1.read();
+            throw new AssertionError("the fenced owner answered: " + m);
+        } catch (final IOException closed) {
+            // dropped without an answer
+        }
+        assertEquals(before, venue.submitted.get(), "the fenced owner put an order into the cluster");
+        c2.order("s2", '2', 10);
+        final Map<String, String> next = c2.awaitType("8");
+        assertEquals("s2", next.get("11"));
+        assertEquals("4", next.get("34"), "B's sequence is untouched by A: Logon 2, s1 3, s2 4");
+        c2.close();
+    }
+
+    /** NATS goes away mid-session: the live session ends at once (no hang), and a Logon is refused by name. */
+    @Test
+    void aStoreOutageEndsSessionsAndRefusesLogons() throws Exception {
+        try (GenericContainer<?> nats = new GenericContainer<>("nats:2.14-alpine").withCommand("-js")
+                 .withExposedPorts(4222).waitingFor(Wait.forLogMessage(".*Server is ready.*", 1))) {
+            nats.start();
+            final Venue venue = new Venue();
+            final int a = startGateway(venue, "gw-a", "CLIENT5", nats);
+            final Client c1 = new Client(a, "CLIENT5");
+            assertEquals("A", c1.logon().get("35"));
+            c1.order("s1", '2', 10);
+            assertEquals("s1", c1.awaitType("8").get("11"));
+
+            nats.stop();
+            final long t0 = System.nanoTime();
+            try {
+                final Map<String, String> m = c1.read();
+                throw new AssertionError("the session outlived its store: " + m);
+            } catch (final IOException closed) {
+                assertTrue(System.nanoTime() - t0 < 10_000_000_000L, "dropped promptly, not after a timeout");
+            }
+            final Client c2 = new Client(a, "CLIENT5");
+            c2.out = 3;
+            final Map<String, String> refused = c2.logon();
+            assertEquals("5", refused.get("35"), refused.toString());
+            assertTrue(refused.getOrDefault("58", "").contains("store unavailable"), refused.toString());
+            assertEquals(1, venue.submitted.get());
+        }
+    }
+
+    /** A gateway that starts before NATS still starts its acceptor: Logons are refused by name until NATS is up. */
+    @Test
+    void aGatewayStartedBeforeNatsServesFixOnceItArrives() throws Exception {
+        final int natsPort;
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            natsPort = s.getLocalPort();
+        }
+        final int port;
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            port = s.getLocalPort();
+        }
+        final FixSessionStore store = new FixSessionStore("nats://127.0.0.1:" + natsPort, "gw-early");
+        stores.add(store);
+        final FixGatewayAcceptor gw = new FixGatewayAcceptor(new Venue(), null, port, "TRADERX", 11, List.of("CLIENT6"))
+            .withSessionStore(store);
+        gw.start();   // must not throw with NATS absent
+        gateways.add(gw);
+        final Client c1 = new Client(port, "CLIENT6");
+        final Map<String, String> refused = c1.logon();
+        assertEquals("5", refused.get("35"), refused.toString());
+        assertTrue(refused.getOrDefault("58", "").contains("store unavailable"), refused.toString());
+        // A refusal writes transiently and must not move the cached numbers: the client's retry, at the same
+        // MsgSeqNum, is refused by name again, not dropped as "MsgSeqNum too low".
+        final Client c1b = new Client(port, "CLIENT6");
+        final Map<String, String> again = c1b.logon();
+        assertTrue(again.getOrDefault("58", "").contains("store unavailable"), again.toString());
+
+        try (org.testcontainers.containers.FixedHostPortGenericContainer<?> nats =
+                 new org.testcontainers.containers.FixedHostPortGenericContainer<>("nats:2.14-alpine")) {
+            nats.withFixedExposedPort(natsPort, 4222).withCommand("-js")
+                .waitingFor(Wait.forLogMessage(".*Server is ready.*", 1)).start();
+            for (int i = 0; i < 300 && !store.available(); i++) {
+                Thread.sleep(100);   // jnats reconnect backoff, then bucket setup
+            }
+            assertTrue(store.available(), "the store never came up after NATS did");
+            final Client c2 = new Client(port, "CLIENT6");
+            assertEquals("A", c2.logon().get("35"), "Logon accepted once the store is up");
+            c2.close();
+        }
     }
 
     @Test

@@ -57,6 +57,7 @@ proof bug is left open. Round-1 suspects 1, 2, 3 and 6 are closed on this tip. T
 | [`yu18-operator-recovery.sh`](yu18-operator-recovery.sh) | FR-ER08; FR-ER01/06, NFR-ER02 refusals where reachable | PASS (FR-ER08 + no write); refusals SKIP: tier-closed |
 | [`yu18-fix-session.sh`](yu18-fix-session.sh) + `.mjs` | FR-ERH-S3, FR-FIX04/05/10/11/12 | FAIL: S3, FIX10, FIX12(b) and the effect end pass; suspects 7–10. PASS on fp-7ea8db5c (ADR-086 rig, 2026-10-28) |
 | [`yu18-fix-resume.sh`](yu18-fix-resume.sh) + `.mjs` | FR-FIX04/11/12(d) across replicas, ADR-086 | added after round 2; PASS on fp-7ea8db5c, and `NEGATIVE=1` without the store fails it (B's Logon at 1) |
+| [`yu18-fix-store-faults.sh`](yu18-fix-store-faults.sh) + `.mjs` | FR-GFS-04, FR-GFS-09 (ADR-086): SIGSTOP takeover with fencing, NATS outage | added after round 2, DESTRUCTIVE=1, side namespaces only; PASS on fp-533ad3c7 (takeover fenced, outage drop 1.6 s, resume) |
 | [`yu18-market-order.sh`](yu18-market-order.sh) | FR-LOB04/05 | FAIL: suspect 11 (PRICE_MISSING arm); the rest passes |
 | [`yu18-cdm-instruments.sh`](yu18-cdm-instruments.sh) | FR-CDM07/08/23/24 | PASS (both arms) |
 | [`yu18-swap-capacity.sh`](yu18-swap-capacity.sh) | FR-OTC09 | PASS: 8 + 4088 = 4096, then CAPACITY ×4 |
@@ -144,6 +145,9 @@ and checkpoints unchanged.
    `yu18-fix-session` and `yu18-fix-resume` pass on `fp-7ea8db5c`. Suspect 7 closed by the same change
    (`ORDER_READMODEL_URL` on the GKE gateway), suspect 10 by refusing an unresolvable ticker as
    `UNKNOWN_SECURITY` instead of answering nothing.
+   **Open, found while proving it:** `OrderStatusRequest` for a CANCELED order reports `CumQty = qty − remaining`,
+   so a cancel that filled nothing shows the whole quantity filled (`yu18-fix-resume` step 5: S2 Sell 3,
+   canceled unfilled, answered `OrdStatus=4 CumQty=3`). Pre-existing in `statusReportFor` (YU13); not fixed.
 10. **FR-FIX12(c) — an unknown symbol is not answered.** `D` with `55=ZZNOSUCH9` gets no message of any kind
     in 20 s. The gateway logs `FIX order <clOrdId> ambiguous (no committed ack)`, i.e. it classed an
     application reject as outcome (d). The spec wants `ExecutionReport OrdStatus=Rejected`. (b) is correct:
