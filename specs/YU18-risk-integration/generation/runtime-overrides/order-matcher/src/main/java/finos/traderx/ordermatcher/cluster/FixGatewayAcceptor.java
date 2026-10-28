@@ -1040,8 +1040,32 @@ public final class FixGatewayAcceptor {
         }
         final int lastQty = cum - t.cumQty;
         final double lastPx = p.path("lastExecutionPrice").asDouble();
+        // Each update names its own fill. More cumulative quantity than that means updates this
+        // gateway never received (core NATS, or a bridge drop upstream of the stream): CumQty stays
+        // the engine's, but the client's LastQty folds fills it should have seen one by one.
+        final int ownFill = p.path("lastFillQuantity").asInt();
+        if (ownFill > 0 && lastQty > ownFill) {
+            fillGaps.incrementAndGet();
+            log.error("ALERT FIX fill gap on ord-{} ({}): {} filled in order updates this gateway never received;"
+                + " reported as one fill of {} (CumQty {} is the engine's)", ref, t.clOrdId, lastQty - ownFill, lastQty, cum);
+        }
         t.notional += lastQty * lastPx;
         t.cumQty = cum;
+        final Session session = sessionOf(t.session);
+        if (session == null) {
+            log.warn("FIX session gone before fill report for {}", t.clOrdId);
+        } else if (session.send(fillReport(t, ref, qty, cum, lastQty, lastPx))) {   // false: off-lease (ADR-086)
+            fillReports.incrementAndGet();
+        }
+        if (leaves == 0) {
+            tracked.remove(ref);
+        }
+    }
+
+    /** The unsolicited fill ExecutionReport (ADR-084 §3); {@code t.notional} already includes it. */
+    private ExecutionReport fillReport(final Tracked t, final int ref, final int qty, final int cum,
+                                       final int lastQty, final double lastPx) {
+        final int leaves = qty - cum;
         final ExecutionReport report = new ExecutionReport(
             new OrderID("ord-" + ref),
             new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
@@ -1056,15 +1080,19 @@ public final class FixGatewayAcceptor {
         report.set(new OrderQty(qty));
         report.set(new LastQty(lastQty));
         report.set(new LastPx(lastPx));
-        final Session session = sessionOf(t.session);
-        if (session != null) {
-            session.send(report);
-        } else {
-            log.warn("FIX session gone before fill report for {}", t.clOrdId);
-        }
-        if (leaves == 0) {
-            tracked.remove(ref);
-        }
+        return report;
+    }
+
+    private final AtomicLong fillReports = new AtomicLong();
+    private final AtomicLong fillGaps = new AtomicLong();
+
+    /** Fill reports sent, and fill gaps ALERTed (gateway {@code /metrics}). */
+    public long fillReports() {
+        return fillReports.get();
+    }
+
+    public long fillGaps() {
+        return fillGaps.get();
     }
 
     private static final byte[] ID_KEY = "\"id\":\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);

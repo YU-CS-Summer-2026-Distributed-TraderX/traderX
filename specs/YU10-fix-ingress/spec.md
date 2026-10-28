@@ -45,9 +45,12 @@
   I/O on the output-ring thread.
   On the YU12+ gateway tier the direct ack answers the order (New, Rejected, Canceled or Filled),
   and every later fill (`ExecType=F`, `OrdStatus` PartiallyFilled or Filled, with `LastQty`,
-  `LastPx`, `CumQty`, `LeavesQty` and `AvgPx`) is read from the leader's `/orders` feed and sent to
-  the owning session on whichever gateway holds it, because the cluster egress carries no fill
-  quantity or price: [YU18 ADR-084](../YU18-risk-integration/system/adr-084-fix-fill-reports.md).
+  `LastPx`, `CumQty`, `LeavesQty` and `AvgPx`) is read from the leader's `/orders` feed, through
+  the durable `TRADERX_FEED` stream in production, and sent to the owning session on whichever
+  gateway holds it, because the cluster egress carries no fill quantity or price. A fill missed
+  upstream is ALERTed. A fill published while no gateway consumes the feed is not reported
+  unsolicited, on in-memory or persistent sessions alike; the client recovers it with
+  OrderStatusRequest: [YU18 ADR-084](../YU18-risk-integration/system/adr-084-fix-fill-reports.md).
 - FR-FIX06: Cancel requests that cannot be honored (unknown order, foreign account, terminal
   state) SHALL be answered with `OrderCancelReject (35=9)` carrying the reason.
 - FR-FIX07: Logon SHALL authenticate the session: `Password(554)` carries a JWT resolved once

@@ -168,11 +168,14 @@ class Rendering(unittest.TestCase):
         env=module.podspec(gw)['containers'][0]['env']; env[:]=[e for e in env if e['name']!='CONTROL_FEED_SUBSCRIBER']
         with self.assertRaises(AssertionError): module.validate(docs)
 
-    def test_gateway_reports_fix_fills(self):
-        docs=copy.deepcopy(self.docs)
-        gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
-        module.podspec(gw)['containers'][0]['env'].append({'name':'FIX_FILL_FEED','value':'0'})
-        with self.assertRaises(AssertionError): module.validate(docs)
+    def test_gateway_reports_fix_fills_from_the_stream(self):
+        gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        self.assertIn({'name':'FIX_FILL_FEED','value':'jetstream'},module.podspec(gw)['containers'][0]['env'])
+        for value in ('0','core','auto'):
+            docs=copy.deepcopy(self.docs)
+            gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+            next(e for e in module.podspec(gw)['containers'][0]['env'] if e['name']=='FIX_FILL_FEED')['value']=value
+            with self.assertRaises(AssertionError): module.validate(docs)
 
     def test_fix_sessions_persist_and_status_has_a_read_model(self):
         # ADR-086: FR-FIX11 resume on any replica, FR-FIX04 status from the read model; either one dropped is refused.

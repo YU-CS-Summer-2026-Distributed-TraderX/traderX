@@ -311,6 +311,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // Binary per-order funnel diagnostics. The acceptor counters have many connection-thread
     // writers; these pipeline counters have one owner-thread writer and a racy /metrics reader.
     private BinaryGatewayAcceptor binaryAcceptor;
+    private volatile FixGatewayAcceptor fixAcceptor;
     private volatile long pipelineOfferAttempts;
     private volatile long pipelineOffersSucceeded;
     private volatile long pipelineOfferBackpressure;
@@ -491,6 +492,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 Integer.parseInt(env("FIX_DEFAULT_ACCOUNT", "11")), compIds,
                 FixSessionAuth.fromEnv(env("FIX_SESSION_AUTH", "")));   // S3: COMPID:password:acct|acct,...
             fix.start();
+            fixAcceptor = fix;
             startFillFeed(fix);
             Runtime.getRuntime().addShutdownHook(new Thread(fix::stop));
         }
@@ -2548,15 +2550,20 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     /**
      * FR-FIX05 (ADR-084): feed the leader's {@code /orders} updates to the FIX acceptor, which
-     * reports every fill after the direct ack to the session that owns the order. A core NATS
-     * subscription to the bare subject and every partition ({@code BRIDGE_PARTITIONS}), so it needs
-     * no partition count of its own; no durable consumer, because FIX session state is ephemeral
-     * anyway (TD-AC01) and a gateway restart drops the sessions it would replay into. Every order
-     * update on the venue reaches this gateway: {@code FIX_FILL_FEED=0} turns it off where FIX
-     * fills do not matter and that fan-out does (a throughput rig).
+     * reports every fill after the direct ack to the session that owns the order. Every order update
+     * on the venue reaches this gateway; the acceptor acts on its own refs.
+     *
+     * <p>{@code FIX_FILL_FEED}: {@code jetstream} (the production render) reads the TRADERX_FEED
+     * capture stream through ordered consumers, so a message this gateway misses (a slow consumer, a
+     * dropped connection, a lost consumer) is re-read from the stream rather than lost; it waits for
+     * the stream rather than falling back. {@code core} subscribes without the stream, where a missed
+     * message is gone: the acceptor's per-order check ALERTs when a later fill shows it, and the last
+     * fill of an order can be lost unseen. Unset or {@code auto} takes the stream when one captures
+     * {@code /orders}, else core with a WARN. {@code 0} turns it off (a throughput rig).
      */
     private static void startFillFeed(final FixGatewayAcceptor fix) {
-        if ("0".equals(env("FIX_FILL_FEED", "1"))) {
+        final String mode = env("FIX_FILL_FEED", "auto");
+        if ("0".equals(mode)) {
             System.out.println("FIX fill feed OFF (FIX_FILL_FEED=0): fills after the ack are not reported");
             return;
         }
@@ -2566,12 +2573,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             String lastFailure = null;
             while (true) {
                 try {
-                    final io.nats.client.Connection nats = io.nats.client.Nats.connect(
-                        new io.nats.client.Options.Builder().server(natsUrl).maxReconnects(-1).build());
-                    final io.nats.client.Dispatcher d = nats.createDispatcher(m -> fix.onOrderUpdate(m.getData()));
-                    d.subscribe("/orders");
-                    d.subscribe("/orders.*");
-                    System.out.println("FIX fill feed: subscribed /orders and /orders.* on " + natsUrl);
+                    connectFillFeed(natsUrl, mode, env("PROJECTION_FEED_STREAM", "TRADERX_FEED"), fix::onOrderUpdate);
                     return;
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -2579,7 +2581,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 } catch (final Exception e) {
                     if (!String.valueOf(e).equals(lastFailure)) {
                         lastFailure = String.valueOf(e);
-                        System.err.println("FIX fill feed: NATS connect failed (retrying): " + e);
+                        System.err.println("FIX fill feed: not subscribed yet (retrying): " + e);
                     }
                     try {
                         Thread.sleep(2_000);
@@ -2592,6 +2594,46 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }, "fix-fill-feed");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** One attempt: connect and subscribe {@code /orders} and {@code /orders.*} (every
+     *  BRIDGE_PARTITIONS layout). Returns the connection, which reconnects by itself from here on. */
+    static io.nats.client.Connection connectFillFeed(final String url, final String mode, final String stream,
+                                                     final java.util.function.Consumer<byte[]> sink)
+        throws Exception {
+        final io.nats.client.Connection nats = io.nats.client.Nats.connect(
+            new io.nats.client.Options.Builder().server(url).maxReconnects(-1).build());
+        try {
+            final boolean durable = !"core".equals(mode)
+                && nats.jetStreamManagement().getStreamNames("/orders").contains(stream);
+            if ("jetstream".equals(mode) && !durable) {
+                throw new IllegalStateException("stream " + stream + " does not capture /orders yet");
+            }
+            final io.nats.client.Dispatcher d = nats.createDispatcher();
+            for (final String subject : new String[] {"/orders", "/orders.*"}) {
+                if (durable) {
+                    // Ordered consumer: from "now" (FIX sessions are ephemeral, TD-AC01), in stream
+                    // order, and recreated at the last delivered sequence + 1 on any gap or missed
+                    // heartbeat.
+                    nats.jetStream().subscribe(subject, d, m -> sink.accept(m.getData()), false,
+                        io.nats.client.PushSubscribeOptions.builder().stream(stream).ordered(true)
+                            .configuration(io.nats.client.api.ConsumerConfiguration.builder()
+                                .deliverPolicy(io.nats.client.api.DeliverPolicy.New).build())
+                            .build());
+                } else {
+                    d.subscribe(subject, m -> sink.accept(m.getData()));
+                }
+            }
+            nats.flush(java.time.Duration.ofSeconds(5));   // the server holds the interest before we say so
+            System.out.println(durable
+                ? "FIX fill feed: JetStream " + stream + " ordered consumers on /orders and /orders.* (" + url + ")"
+                : "FIX fill feed WARN: core NATS on /orders and /orders.* (" + url + "): a missed message"
+                    + " loses a fill report; a later fill of the same order ALERTs, the last one cannot");
+            return nats;
+        } catch (final Exception e) {
+            nats.close();
+            throw e;
+        }
     }
 
     private void runControlFeed(final String natsUrl) {
@@ -3026,7 +3068,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     /** Prometheus-text metrics the inherited bench harness reads (booked/s = delta of the fill
      *  counter / elapsed). Format matches the order-matcher's traderx_order_events_total family. */
     private void handleMetrics(final HttpExchange exchange) {
-        final String body = "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
+        final FixGatewayAcceptor fix = fixAcceptor;
+        final String body = (fix == null ? "" : "traderx_fix_fill_reports_total{outcome=\"sent\"} " + fix.fillReports()
+                + "\ntraderx_fix_fill_reports_total{outcome=\"gap\"} " + fix.fillGaps() + "\n")
+            + "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
             + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
             + "traderx_order_events_total{event=\"canceled\"} " + canceledOrders + "\n"
             + "traderx_order_events_total{event=\"replaced\"} " + replacedOrders + "\n"

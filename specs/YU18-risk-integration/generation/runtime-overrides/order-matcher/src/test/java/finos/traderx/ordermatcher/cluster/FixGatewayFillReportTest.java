@@ -151,8 +151,27 @@ class FixGatewayFillReportTest {
         Thread.sleep(300);
         final List<ExecutionReport> fills = c.reports.stream().filter(r -> exec(r) == ExecType.TRADE).toList();
         assertEquals(2, fills.size(), "the redelivered partial or the stranger's fill was reported");
+        assertEquals(0, acceptor.fillGaps(), "a complete sequence raised a gap ALERT");
         assertFill(fills.get(0), "ord-1", OrdStatus.PARTIALLY_FILLED, 4, 50.0, 4, 6, 50.0);
         assertFill(fills.get(1), "ord-1", OrdStatus.FILLED, 6, 52.0, 10, 0, 51.2);
+    }
+
+    @Test
+    void aFillThisGatewayNeverReceivedIsAlertedAndCumQtyStaysTheEngines() throws Exception {
+        final StubSubmitter submitter = new StubSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "g1", Side.BUY, 10, 50.0);
+        assertNotNull(c.await(r -> is(r, "g1", ExecType.NEW)));
+
+        // The partial (4 @ 50) is lost before it reaches this gateway; the final fill (6) arrives.
+        acceptor.onOrderUpdate(feed(1, (byte) 0, 10, 0, FILLED, 50.0, 6));
+
+        final ExecutionReport f = c.await(r -> is(r, "g1", ExecType.TRADE));
+        assertNotNull(f, "the surviving fill was not reported");
+        assertFill(f, "ord-1", OrdStatus.FILLED, 10, 50.0, 10, 0, 50.0);
+        assertEquals(1, acceptor.fillGaps(), "the lost partial was not detected");
+        assertEquals(1, acceptor.fillReports());
     }
 
     @Test

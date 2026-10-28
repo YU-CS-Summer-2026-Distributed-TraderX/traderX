@@ -73,6 +73,11 @@ def configure_private_runtime(docs):
                 # down are replayed on restart instead of lost. Row projection: SQL keeps every trade.
                 c['env'] = [e for e in c.get('env', []) if e['name'] != 'PROJECTION_FEED_MODE']
                 c['env'].append({'name': 'PROJECTION_FEED_MODE', 'value': 'jetstream'})
+            if name == 'cluster-gateway':
+                # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
+                # misses is re-read from TRADERX_FEED rather than lost.
+                c['env'] = [e for e in c.get('env', []) if e['name'] != 'FIX_FILL_FEED']
+                c['env'].append({'name': 'FIX_FILL_FEED', 'value': 'jetstream'})
             if name == 'web-front-end-angular':
                 # The inherited development image CMD names a removed script.
                 # This packaged script builds production assets and serves on WEB_SERVICE_PORT.
@@ -171,7 +176,8 @@ def validate(docs):
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
             env = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
             require(env.get('CONTROL_FEED_SUBSCRIBER') == '1', 'gateway does not subscribe to the control feed (YU04)')
-            require(env.get('FIX_FILL_FEED', '1') != '0', 'FIX sessions would get no fill reports (FR-FIX05, ADR-084)')
+            require(env.get('FIX_FILL_FEED') == 'jetstream',
+                    'FIX fill reports not on the durable stream: a missed message loses a fill (FR-FIX05, ADR-084)')
             # ADR-086: FIX sessions resume on any replica (FR-FIX11), and status requests have a read model
             # (FR-FIX04), so a reconnecting client can recover what it missed.
             if 'FIX_ACCEPTOR_PORT' in env:
