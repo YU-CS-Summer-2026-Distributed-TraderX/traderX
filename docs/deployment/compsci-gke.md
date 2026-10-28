@@ -214,12 +214,12 @@ Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
 ## Order filled quantity (ADR-088)
 
 trade-processor validates the schema at start, and ADR-088 adds `orderbook.filledquantity` (FR-DRS-27). On an
-existing database volume, roll in this order: the `database-init-sql` ConfigMap, then restart the database pod
+existing database volume, roll in this order: the `database-init-sql` ConfigMap, then restart `eod-price-db`
 (its `schema-migrate` init container applies `900-migrations.sql`, idempotently), then trade-processor. Rolled
 the other way round, trade-processor refuses to start and names the column. Check:
 
 ```bash
-kubectl -n traderx exec deploy/database -- sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" traderx -e "SHOW COLUMNS FROM orderbook LIKE \"filledquantity\""'
+kubectl -n traderx exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" traderx -e "SHOW COLUMNS FROM orderbook LIKE \"filledquantity\""'
 ```
 
 ## Before application deployment
