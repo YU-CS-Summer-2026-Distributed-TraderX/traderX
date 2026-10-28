@@ -31,6 +31,7 @@ import quickfix.field.OrigClOrdID;
 import quickfix.field.Price;
 import quickfix.field.Side;
 import quickfix.field.Symbol;
+import quickfix.field.Text;
 import quickfix.field.TransactTime;
 import quickfix.fix44.ExecutionReport;
 import quickfix.fix44.NewOrderSingle;
@@ -78,10 +79,14 @@ class FixGatewayFillReportTest {
     private static final class StubSubmitter implements OrderSubmitter {
         final AtomicInteger nextRef = new AtomicInteger(1);
         volatile IntConsumer beforeAck = ref -> { };
+        volatile ExecResult answer;   // when set, the engine's answer to every order
 
         @Override
         public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
                                       final char side, final int qty, final long limitPxTicks) {
+            if (answer != null) {
+                return answer;
+            }
             final int ref = nextRef.getAndIncrement();
             beforeAck.accept(ref);
             return new ExecResult(true, ref, OutputEvent.KIND_ORDER_ACCEPTED);
@@ -245,6 +250,39 @@ class FixGatewayFillReportTest {
             assertEquals(want[ref - 1][0], r.getDouble(CumQty.FIELD), "CumQty of ord-" + ref);
             assertEquals(want[ref - 1][1], r.getDouble(LeavesQty.FIELD), "LeavesQty of ord-" + ref);
         }
+    }
+
+    /** FR-XOC-03: a resent ClOrdID whose original left retention is restated as that order, never rejected. */
+    @Test
+    void aResentClOrdIdWhoseOriginalLeftRetentionIsRestatedNotRejected() throws Exception {
+        final StubSubmitter submitter = new StubSubmitter();
+        submitter.answer = new OrderSubmitter.ExecResult(false, 42, OutputEvent.KIND_ORDER_REJECTED,
+            (byte) finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal());
+        final Client c = new Client("CLIENT1");
+        start(submitter, (account, all) -> List.of(new OrderStatusSource.OrderView(42, "Buy", 5, 0, "FILLED", "IBM", 5)), c);
+        sendOrder(c, "r1", Side.BUY, 5, 50.0);
+        final ExecutionReport r = c.await(m -> "r1".equals(cl(m)));
+        assertNotNull(r, "the resend was not answered");
+        assertEquals(ExecType.ORDER_STATUS, r.getChar(ExecType.FIELD));
+        assertEquals("ord-42", r.getString(OrderID.FIELD), "the original order, not NONE");
+        assertEquals(OrdStatus.FILLED, r.getChar(OrdStatus.FIELD), "its state from the read model");
+        assertEquals(5.0, r.getDouble(CumQty.FIELD));
+        assertTrue(r.getString(Text.FIELD).startsWith("DUPLICATE"));
+    }
+
+    @Test
+    void withoutAReadModelTheRestatementSaysOnlyThatTheOrderIsDone() throws Exception {
+        final StubSubmitter submitter = new StubSubmitter();
+        submitter.answer = new OrderSubmitter.ExecResult(false, 42, OutputEvent.KIND_ORDER_REJECTED,
+            (byte) finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal());
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "r2", Side.BUY, 5, 50.0);
+        final ExecutionReport r = c.await(m -> "r2".equals(cl(m)));
+        assertNotNull(r, "the resend was not answered");
+        assertEquals(ExecType.ORDER_STATUS, r.getChar(ExecType.FIELD));
+        assertEquals("ord-42", r.getString(OrderID.FIELD));
+        assertEquals(OrdStatus.DONE_FOR_DAY, r.getChar(OrdStatus.FIELD), "never OrdStatus=8");
     }
 
     // ----- harness ---------------------------------------------------------------------------

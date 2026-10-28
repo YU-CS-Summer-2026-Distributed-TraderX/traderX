@@ -533,6 +533,11 @@ public final class FixGatewayAcceptor {
                 log.warn("FIX order {} ambiguous (no committed ack)", clOrdId);
                 return;
             }
+            if (!result.accepted() && result.riskReason() == DUPLICATE && result.orderRef() > 0) {
+                refByClOrdId.put(qualify(sessionId, clOrdId), result.orderRef());
+                sendRestatement(sessionId, clOrdId, accountId, ticker, side, qty, result.orderRef());
+                return;
+            }
             if (result.accepted()) {
                 refByClOrdId.put(qualify(sessionId, clOrdId), result.orderRef());
             }
@@ -984,6 +989,33 @@ public final class FixGatewayAcceptor {
             send(report, sessionId, clOrdId);
         }
 
+        /**
+         * FR-XOC-03: a NewOrderSingle whose ClOrdID this session already executed (a PossResend after a disconnect or an
+         * unanswered order) whose original has left terminal retention. The engine names that original
+         * (REJECTED/DUPLICATE + its ref): the order exists, so it is restated, ExecType=I, never rejected. Its state
+         * comes from the read model when one is configured; without one only "terminal" is known (DONE_FOR_DAY).
+         */
+        private void sendRestatement(final SessionID sessionId, final String clOrdId, final int accountId,
+                                     final String ticker, final char side, final int qty, final int orderRef) {
+            OrderStatusSource.OrderView found = null;
+            final List<OrderStatusSource.OrderView> orders =
+                statusSource == null ? null : statusSource.orders(accountId, true);
+            if (orders != null) {
+                for (final OrderStatusSource.OrderView v : orders) {
+                    if (v.orderRef() == orderRef) {
+                        found = v;
+                        break;
+                    }
+                }
+            }
+            final ExecutionReport report = found != null ? statusReportFor(found)
+                : statusReport(orderRef, side, qty, 0, 0, OrdStatus.DONE_FOR_DAY, ticker);
+            report.set(new ClOrdID(clOrdId));
+            report.set(new Text("DUPLICATE: ClOrdID already executed as ord-" + orderRef
+                + (found == null ? "; its final state is no longer retained" : "")));
+            send(report, sessionId, clOrdId);
+        }
+
         /** YU18 (FR-OT03/04): a boundary refusal — nothing was sequenced. */
         private void sendOrderReject(final SessionID sessionId, final String clOrdId, final String ticker,
                                      final char side, final int qty, final String text) {
@@ -1188,6 +1220,7 @@ public final class FixGatewayAcceptor {
         return -1;
     }
 
+    private static final int DUPLICATE = finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal();
     private static final finos.traderx.ordermatcher.risk.RiskReason[] REASONS =
         finos.traderx.ordermatcher.risk.RiskReason.values();
 

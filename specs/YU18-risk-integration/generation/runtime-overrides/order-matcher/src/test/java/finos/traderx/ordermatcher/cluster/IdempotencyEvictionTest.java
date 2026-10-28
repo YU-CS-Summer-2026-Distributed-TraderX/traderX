@@ -80,4 +80,33 @@ class IdempotencyEvictionTest {
         apply(s, order(2, InputEvent.SIDE_SELL, 10, 0L));
         assertEquals(10, s.engine().positionQuantity(1, 0), "the keyed order executed exactly once");
     }
+
+    /**
+     * FR-XOC-02: a keyed retry whose original is still retained restates it: ONE output, the original's ref and state,
+     * not published (publishNats=false) and no TRADE_BOOKED, so a strict log replay and the read model count it once.
+     */
+    @Test
+    void retryOfARetainedOrderIsOneUnpublishedRestatement() {
+        final MatchingEngineClusteredService s = new MatchingEngineClusteredService();
+        s.initEngine();
+        final List<long[]> outs = new ArrayList<>();   // {kind, orderRef, publishNats}
+        s.outputSink(o -> outs.add(new long[] { o.kind, o.orderRef, o.publishNats ? 1 : 0 }));
+        apply(s, ctl(InputEvent.TYPE_ACCOUNT_CONTROL, 1, 0));
+        apply(s, ctl(InputEvent.TYPE_ACCOUNT_CONTROL, 2, 0));
+        apply(s, ctl(InputEvent.TYPE_SECURITY_CONTROL, 0, 0));
+        InputEvent tick = new InputEvent();
+        tick.type = InputEvent.TYPE_PRICE_TICK; tick.securityId = 0; tick.priceTicks = 100 * PX;
+        apply(s, tick);
+        apply(s, order(1, InputEvent.SIDE_BUY, 10, KEY));
+        final int originalRef = (int) s.nextOrderRef() - 1;
+        apply(s, order(2, InputEvent.SIDE_SELL, 10, 0L));   // fills it
+
+        outs.clear();
+        apply(s, order(1, InputEvent.SIDE_BUY, 10, KEY));    // the retry
+        assertEquals(1, outs.size(), "exactly one output");
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, (byte) outs.get(0)[0], "the original's state");
+        assertEquals(originalRef, (int) outs.get(0)[1]);
+        assertEquals(0L, outs.get(0)[2], "a restatement is not published");
+        assertEquals(10, s.engine().positionQuantity(1, 0));
+    }
 }

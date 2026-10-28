@@ -70,6 +70,11 @@
   duplicate; ledger entries for live orders are never evicted; when the ledger cannot accept new
   entries (disk failure, capacity), order admission over FIX SHALL fail closed with a session
   reject rather than accept an uncorrelatable order.
+  *Gateway tier (YU12+):* the ledger is the engine's replicated idempotency table keyed by
+  `TargetCompID + ClOrdID`, and a repeated `ClOrdID` is a retry, not a reject: it restates the original order.
+  From YU18 (ADR-091) that includes a retry whose original aged out of retention: an Order Status report for
+  `ord-<ref>`, never `OrdStatus=8`.
+  Testable form: YU18 FR-XOC-01..05 (`specs/YU18-risk-integration/maintenance/exactly-once-client/spec.md`).
 - FR-FIX11: FIX session state (sequence numbers, sent messages for resend) SHALL persist in a
   QuickFIX/J file store on the FIX data directory of the existing `lmax-runtime-data` volume,
   surviving pod restarts; `PersistMessages` is enabled so `ResendRequest` re-delivers stored
