@@ -28,7 +28,7 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   ADR-084 fill for an order the gateway tracks (the gateway takes a free lease on demand for it). A gateway
   that takes a session's lease SHALL rebuild `ClOrdID → orderRef` and each open order's reported `CumQty`
   from the stored log, so `OrderCancelRequest` by `OrigClOrdID` resolves on any replica and no fill is
-  reported twice.
+  reported twice, reading the log one message at a time and keeping only open orders (ADR-092, FR-FGM-03).
 - FR-GFS-06: The GKE gateway SHALL set `ORDER_READMODEL_URL=http://trade-processor:18091`, and
   `OrderStatusRequest`/`OrderMassStatusRequest` SHALL answer from that read model (FR-FIX04). `prepare.py`
   SHALL refuse a render whose FIX gateway lacks it or lacks `FIX_SESSION_STORE=jetstream`.

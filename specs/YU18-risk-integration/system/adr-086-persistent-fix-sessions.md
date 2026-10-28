@@ -185,8 +185,9 @@ today's in-memory sessions, for kind and for the throughput rigs. The GKE gatewa
   total rate scales with sessions. That is ample for the console's FIX ticket; the throughput rigs leave the store
   off (FR-GFS-11). Upgrade path if one session must go faster: write the body asynchronously behind the claim,
   and batch target updates.
-- Acquiring a session scans its log for the day. That is fine at console volume. A session with a
-  heavy daily volume would need a checkpoint of its order state.
+- Acquiring a session scans its log for the day: its time grows with the day's volume, its heap does not (ADR-092
+  streams the log and keeps only open orders). A session with a heavy daily volume would need a checkpoint of its
+  order state to keep Logon fast.
 - A GTC order placed on an earlier day is not in today's log, so after a replica change its fills are
   reported only by the gateway that accepted it. `OrderStatusRequest` and `OrderMassStatusRequest` answer
   for it.

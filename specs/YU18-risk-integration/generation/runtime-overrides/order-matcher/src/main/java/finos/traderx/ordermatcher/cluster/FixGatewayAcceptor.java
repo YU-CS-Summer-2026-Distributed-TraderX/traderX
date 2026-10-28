@@ -148,6 +148,20 @@ public final class FixGatewayAcceptor {
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
         new com.fasterxml.jackson.databind.ObjectMapper();
 
+    /**
+     * ADR-092 (FR-FGM-01): messages this gateway may hold for a session's client that the client has not read.
+     * One more and QuickFIX/J drops the session as a slow consumer, instead of queueing reports in the heap for as
+     * long as the client lags (f15ho: ~690 bytes each, without limit). A dropped session's unsent reports are in its
+     * store under ADR-086 (resent on ResendRequest), and a client of an in-memory session reconciles with H/AF.
+     */
+    static final int MAX_QUEUED_WRITES = Integer.parseInt(System.getenv().getOrDefault("FIX_MAX_QUEUED_WRITES", "2048"));
+    /**
+     * ADR-092 (FR-FGM-02): inbound messages a session may have waiting for its dispatcher before this gateway stops
+     * reading its socket (it resumes at a quarter), so a client that sends faster than its orders are answered is
+     * held back by TCP, not queued here. QuickFIX/J's default was 10,000 per session (~2.5 KB each).
+     */
+    static final int INBOUND_QUEUE = Integer.parseInt(System.getenv().getOrDefault("FIX_INBOUND_QUEUE", "1024"));
+
     private static final class Tracked {
         final SessionID session;
         final String symbol;
@@ -232,6 +246,7 @@ public final class FixGatewayAcceptor {
         defaults.setProperty("ResetOnLogon", persistent ? "N" : "Y");
         defaults.setProperty("PersistMessages", persistent ? "Y" : "N"); // in-memory: TD-AC01
         defaults.setProperty("RefreshOnLogon", persistent ? "Y" : "N");
+        defaults.setProperty("MaxScheduledWriteRequests", String.valueOf(MAX_QUEUED_WRITES));   // ADR-092
         // ENGINE-REVIEW S3: TLS on the session when a keystore is configured (QuickFIX/J native SSL).
         final String keystore = System.getenv("FIX_SSL_KEYSTORE");
         if (keystore != null && !keystore.isBlank()) {
@@ -261,12 +276,22 @@ public final class FixGatewayAcceptor {
                 }
             };
         }
-        acceptor = new ThreadedSocketAcceptor(new App(),
-            persistent ? sessionStore : new MemoryStoreFactory(), settings,
-            RedactingLog::new, new DefaultMessageFactory());
+        acceptor = ThreadedSocketAcceptor.newBuilder()
+            .withApplication(new App())
+            .withMessageStoreFactory(persistent ? sessionStore : new MemoryStoreFactory())
+            .withSettings(settings)
+            .withLogFactory(RedactingLog::new)
+            .withMessageFactory(new DefaultMessageFactory())
+            .withQueueWatermarks(INBOUND_QUEUE / 4, INBOUND_QUEUE)   // ADR-092
+            .build();
         acceptor.start();
         log.info("FIX gateway acceptor on :{} for {} CompID(s), sessions {}", port, compIds.size(),
             persistent ? "in JetStream (ADR-086)" : "in memory");
+    }
+
+    /** Inbound messages waiting for session dispatchers, all sessions (ADR-092's FR-FGM-02 bound). */
+    int inboundQueued() {
+        return acceptor.getQueueSize();
     }
 
     public void stop() {
@@ -302,64 +327,79 @@ public final class FixGatewayAcceptor {
      * <p>ponytail: an adopted entry learns its epoch from its next feed update. A fresh cluster epoch is a
      * wipe of the venue, and purging {@code FIX_SESSIONS} belongs to that wipe, or today's refs would
      * name the new epoch's orders.
+     *
+     * <p>ADR-092 (FR-FGM-03): the log is read one message at a time and only the session's open orders are kept
+     * (at most {@link #TRACKED_CAPACITY}, as {@link #tracked} itself), so adopting a long FIX day costs no more heap
+     * than adopting a short one.
      */
-    private void adopt(final SessionID sid, final List<String> sent) {
-        final Map<Integer, Message> last = new LinkedHashMap<>();
-        for (final String raw : sent) {
-            try {
-                final Message m = new Message();
-                m.fromString(raw, null, false);
-                if (!"8".equals(m.getHeader().getString(35)) || !m.isSetField(ClOrdID.FIELD)
-                    || !m.isSetField(OrderID.FIELD) || !m.getString(OrderID.FIELD).startsWith("ord-")
-                    || m.getChar(ExecType.FIELD) == ExecType.ORDER_STATUS) {
-                    continue;   // a status answer reports the read model; it tells the session no fill
-                }
-                final int ref = Integer.parseInt(m.getString(OrderID.FIELD).substring(4));
-                final String key = sid.getTargetCompID() + '\001' + m.getString(ClOrdID.FIELD);
-                if (m.getChar(ExecType.FIELD) == ExecType.CANCELED) {
-                    refByClOrdId.remove(key);
-                } else {
-                    refByClOrdId.put(key, ref);
-                }
-                last.remove(ref);   // re-insert: iteration follows each order's latest report
-                last.put(ref, m);
-            } catch (final Exception e) {
-                // not an order report; nothing to adopt
+    private void adopt(final SessionID sid, final FixSessionStore.SentLog sent) {
+        final Map<Integer, Tracked> open = new LinkedHashMap<>(1024, 0.75f, false) {
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<Integer, Tracked> eldest) {
+                return size() > TRACKED_CAPACITY;
             }
-        }
-        int open = 0;
-        synchronized (feedLock) {
-            for (final Map.Entry<Integer, Message> e : last.entrySet()) {
+        };
+        final int[] messages = new int[1];
+        try {
+            sent.forEach(raw -> {
+                messages[0]++;
                 try {
-                    final Message m = e.getValue();
+                    final Message m = new Message();
+                    m.fromString(raw, null, false);
+                    if (!"8".equals(m.getHeader().getString(35)) || !m.isSetField(ClOrdID.FIELD)
+                        || !m.isSetField(OrderID.FIELD) || !m.getString(OrderID.FIELD).startsWith("ord-")
+                        || m.getChar(ExecType.FIELD) == ExecType.ORDER_STATUS) {
+                        return;   // a status answer reports the read model; it tells the session no fill
+                    }
+                    final int ref = Integer.parseInt(m.getString(OrderID.FIELD).substring(4));
+                    final String key = sid.getTargetCompID() + '\001' + m.getString(ClOrdID.FIELD);
+                    if (m.getChar(ExecType.FIELD) == ExecType.CANCELED) {
+                        refByClOrdId.remove(key);
+                    } else {
+                        refByClOrdId.put(key, ref);
+                    }
+                    open.remove(ref);   // re-insert: iteration follows each order's latest report
                     final char status = m.getChar(OrdStatus.FIELD);
-                    Tracked t = tracked.get(e.getKey());
                     if (status != OrdStatus.NEW && status != OrdStatus.PARTIALLY_FILLED) {
-                        if (t != null && t.session.equals(sid)) {
-                            tracked.remove(e.getKey());
+                        synchronized (feedLock) {   // done: nothing is left to report for it here
+                            final Tracked t = tracked.get(ref);
+                            if (t != null && t.session.equals(sid)) {
+                                tracked.remove(ref);
+                            }
                         }
-                        continue;
+                        return;
                     }
-                    if (t == null) {
-                        t = new Tracked(sid, m.getString(ClOrdID.FIELD),
-                            m.isSetField(Symbol.FIELD) ? m.getString(Symbol.FIELD) : "",
-                            m.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B');
-                        tracked.put(e.getKey(), t);
-                    } else if (!t.session.equals(sid)) {
-                        continue;
-                    }
-                    t.clOrdId = m.getString(ClOrdID.FIELD);
-                    t.cumQty = (int) m.getDouble(CumQty.FIELD);
-                    t.notional = t.cumQty * (m.isSetField(AvgPx.FIELD) ? m.getDouble(AvgPx.FIELD) : 0d);
-                    replayEarly(e.getKey(), t);
-                    open++;
-                } catch (final FieldNotFound ignore) {
-                    // a report without Side/CumQty/OrdStatus is not one this acceptor wrote
+                    final Tracked a = new Tracked(sid, m.getString(ClOrdID.FIELD),
+                        m.isSetField(Symbol.FIELD) ? m.getString(Symbol.FIELD) : "",
+                        m.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B');
+                    a.cumQty = (int) m.getDouble(CumQty.FIELD);
+                    a.notional = a.cumQty * (m.isSetField(AvgPx.FIELD) ? m.getDouble(AvgPx.FIELD) : 0d);
+                    open.put(ref, a);
+                } catch (final Exception e) {
+                    // not an order report this acceptor wrote; nothing to adopt
                 }
+            });
+        } catch (final java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        synchronized (feedLock) {
+            for (final Map.Entry<Integer, Tracked> e : open.entrySet()) {
+                final Tracked a = e.getValue();
+                Tracked t = tracked.get(e.getKey());
+                if (t == null) {
+                    t = a;
+                    tracked.put(e.getKey(), t);
+                } else if (!t.session.equals(sid)) {
+                    continue;
+                } else {
+                    t.clOrdId = a.clOrdId;
+                    t.cumQty = a.cumQty;
+                    t.notional = a.notional;
+                }
+                replayEarly(e.getKey(), t);
             }
         }
-        log.info("FIX session {}: adopted {} order(s), {} open, from {} stored message(s)",
-            sid, last.size(), open, sent.size());
+        log.info("FIX session {}: adopted {} open order(s) from {} stored message(s)", sid, open.size(), messages[0]);
     }
 
     /**

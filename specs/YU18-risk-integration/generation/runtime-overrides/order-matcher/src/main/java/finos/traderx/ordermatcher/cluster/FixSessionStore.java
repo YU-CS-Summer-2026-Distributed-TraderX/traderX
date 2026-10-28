@@ -73,8 +73,13 @@ final class FixSessionStore implements MessageStoreFactory {
         t.setDaemon(true);
         return t;
     });
+    /** A session's stored outbound messages, oldest first, read one at a time (ADR-092: never the whole day at once). */
+    interface SentLog {
+        void forEach(Consumer<String> each) throws IOException;
+    }
+
     /** Called with the session's stored outbound messages each time this gateway takes its lease. */
-    volatile BiConsumer<SessionID, List<String>> onAcquired = (s, m) -> { };
+    volatile BiConsumer<SessionID, SentLog> onAcquired = (s, m) -> { };
     /** Called when this gateway loses a lease it was using; the live session must be dropped. */
     volatile Consumer<SessionID> onLost = s -> { };
     /** True only while NATS is connected and the buckets are set up: no session is served without its store. */
@@ -280,9 +285,9 @@ final class FixSessionStore implements MessageStoreFactory {
             store.adoptPending = false;
         }
         try {
-            onAcquired.accept(store.sid, store.scan());
+            onAcquired.accept(store.sid, each -> store.scan(store.key + ".m.*", each));
             return true;
-        } catch (final IOException | RuntimeException e) {
+        } catch (final RuntimeException e) {   // the acceptor rethrows a failed read as UncheckedIOException
             log.warn("FIX session {}: reading its log after acquiring failed: {}", store.sid, e.toString());
             synchronized (store) {
                 store.release();
@@ -602,20 +607,21 @@ final class FixSessionStore implements MessageStoreFactory {
             return e;
         }
 
-        /** Today's stored outbound messages, oldest first. */
-        private List<String> scan() throws IOException {
-            return scan(key + ".m.*");
-        }
-
         private List<String> scan(final String subject) throws IOException {
             final List<String> out = new ArrayList<>();
+            scan(subject, out::add);
+            return out;
+        }
+
+        /** Each stored value under {@code subject}, oldest first, handed over as it arrives. */
+        private void scan(final String subject, final Consumer<String> each) throws IOException {
             final CountDownLatch done = new CountDownLatch(1);
             try {
                 final var sub = kv.watch(subject, new KeyValueWatcher() {
                     @Override
                     public void watch(final KeyValueEntry e) {
                         if (e.getOperation() == KeyValueOperation.PUT) {
-                            out.add(e.getValueAsString());
+                            each.accept(e.getValueAsString());
                         }
                     }
 
@@ -624,8 +630,8 @@ final class FixSessionStore implements MessageStoreFactory {
                         done.countDown();
                     }
                 }, KeyValueWatchOption.IGNORE_DELETE);
-                // ponytail: the whole day's log per acquisition; checkpoint order state if a session's
-                // daily volume ever makes Logon slow.
+                // ponytail: the whole day's log is READ per acquisition (ADR-092 keeps only open orders of it);
+                // checkpoint order state if a session's daily volume ever makes Logon slow.
                 final boolean complete = done.await(30, TimeUnit.SECONDS);
                 sub.unsubscribe();
                 if (!complete) {
@@ -637,7 +643,6 @@ final class FixSessionStore implements MessageStoreFactory {
                 Thread.currentThread().interrupt();
                 throw new IOException(e);
             }
-            return out;
         }
 
         @Override
