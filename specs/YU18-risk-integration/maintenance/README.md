@@ -31,6 +31,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Bounded settlement](settlement-memory/README.md) | Source and isolated retained-data proof accepted; original delivery acceptance remains separate |
 | [Engine-review hardening](engine-review-hardening/README.md) | Integrated 2026-10-27: S1–S6 (ADR-082), F1–F11 |
 | [Console sessions](console-sessions/README.md) | Integrated 2026-10-26 |
+| [FIX fill reports](fix-fill-reports/README.md) | Code 2026-10-28 (`abc57a39`, `0326f733`), live on `traderx-fixf`, not deployed (ADR-084) |
 | [Control feed republish](control-feed-republish/README.md) | Code 2026-10-27 (`3b10e7e2`), not deployed; production repaired by hand (ADR-085) |
 | [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, code only (ADR-087) |
 

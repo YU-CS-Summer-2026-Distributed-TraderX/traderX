@@ -2,6 +2,7 @@
 
 Status: accepted (yaakov, 2026-10-27). Requirement: YU10 FR-FIX05 on the YU12+ gateway tier
 (ADR-047). Found by the spec-driven proof audit, round 2, suspect 8 (`scripts/proofs/COVERAGE.md`).
+Requirements: [FIX fill reports](../maintenance/fix-fill-reports/spec.md) (FR-FFR-01..11).
 
 ## Context
 

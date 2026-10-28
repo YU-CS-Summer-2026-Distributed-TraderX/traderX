@@ -70,7 +70,8 @@ added `commandType` and one added egress ack kind on the existing templates.
 
 - `/orders`
   - producer: `order-matcher`
-  - consumer: frontend admin order blotter stream
+  - consumer: frontend admin order blotter stream; `cluster-gateway` FIX fill reports (YU18 ADR-084: every
+    gateway reads every update and reports fills to the FIX sessions it holds)
   - delivery: `broadcast`
   - wildcard: `no`
   - scope: `global`
@@ -201,6 +202,10 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
 - JetStream stream `TRADERX_FEED` (`PROJECTION_FEED_STREAM`), file storage, subjects `/trades`,
   `/trades.*`, `/orders`, `/orders.*`. trade-processor creates it idempotently and consumes it with one
   durable pull consumer per owned partition when `PROJECTION_FEED_MODE=jetstream`.
+- `cluster-gateway` with `FIX_FILL_FEED=jetstream` (ADR-084, the CompSci render) reads `/orders` and
+  `/orders.*` from `TRADERX_FEED` through two ephemeral JetStream ordered (push) consumers per gateway,
+  starting at "new", recreated at the last delivered sequence after a gap. `core` subscribes the same
+  two subjects without the stream.
 - `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and
   `/accounts/{id}/positions` publishes.
 - Bridge receipts (ADR-083): every `/trades[.<p>]` and `/orders[.<p>]` message carries a reply subject
