@@ -45,15 +45,27 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   (5 s ping). When NATS returns, Logons SHALL be accepted and the stored sequence SHALL continue. The same
   SHALL hold for a gateway that starts while NATS is unreachable: it starts its acceptor, refuses Logons by
   name, and serves FIX once NATS is reachable (the store never blocks or aborts gateway start).
-- FR-GFS-10: `FIX_SESSIONS` SHALL have max age 7 days, a 1 GiB cap and discard-new, so a full store fails
-  writes (FR-GFS-02) and never drops a stored message. Lease expiry SHALL use the bucket max age, which every
-  JetStream server since 2.6 supports, not per-key TTL (2.11+).
+- FR-GFS-10: `FIX_SESSIONS` SHALL have max age 7 days and a 1 GiB cap with discard-OLD (amended 2026-10-28,
+  FR-GFS-15; it was discard-new). Lease expiry SHALL use the bucket max age, which every JetStream server since
+  2.6 supports, not per-key TTL (2.11+). The daily reset (FR-GFS-08) is the resend horizon; max age only clears
+  sessions abandoned for a week; the byte cap is a backstop the window (FR-GFS-14) keeps out of reach.
 - FR-GFS-11: Unset `FIX_SESSION_STORE` SHALL keep in-memory sessions (`ResetOnLogon=Y`, TD-AC01), for kind and
   the throughput rigs.
 - FR-GFS-12: A NewOrderSingle whose `Symbol` the gateway cannot resolve SHALL be answered with an
   ExecutionReport `OrdStatus=8` and `Text` `rejected: UNKNOWN_SECURITY`, not as an ambiguous outcome
   (FR-FIX12(c)). The same order on REST SHALL get its reject code, not 504, and SHALL not count toward the
   gateway's no-ack streak.
+- FR-GFS-14: A session SHALL keep its last `FIX_RESEND_WINDOW` (default 2,048) outbound messages, message `n`
+  at `K.m.<n mod FIX_RESEND_WINDOW>` overwriting `n - FIX_RESEND_WINDOW`, so the store holds at most
+  sessions × (window + 1) keys whatever the traffic. A ResendRequest SHALL get every retained message it asks for,
+  exactly as sent and in order (a slot is used only if its MsgSeqNum is the one asked for); older ones SHALL be
+  gap-filled, logged as an ALERT naming the range, and counted in `traderx_fix_resend_gapfilled_total`.
+  Sequence numbers are not windowed.
+- FR-GFS-15: A full `FIX_SESSIONS` SHALL NOT end sessions. The store SHALL set discard-OLD on the bucket's
+  stream when it connects (also on a bucket that already exists: the migration), so a full bucket drops its oldest
+  entries instead of refusing writes, and SHALL ALERT once a minute's check finds it at 90 % of its byte cap. The
+  oldest entries are ring slots and the sequence records of idle sessions (one rewritten on every send survives):
+  the worst case is one idle session resuming at 1, never every gateway dropping every session.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
@@ -76,3 +88,6 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | gateway started with NATS down | 09 | `FixSessionPersistenceIT` | acceptor starts; Logon refused `store unavailable`; accepted once NATS is up |
 | unknown symbol | 12 | `yu18-fix-session` step 5 | `OrdStatus=8 rejected: UNKNOWN_SECURITY` |
 | store off | 11 | `yu18-fix-resume NEGATIVE=1` | B answers the resumed Logon at MsgSeqNum 1 |
+| 3 × window messages through one session | 14 | `FixSessionStoreBoundIT.aLongSession…` | ≤ 2,048 message keys; a full ResendRequest returns the last 2,048 in order; 4,096 gap-filled, counted (before: 6,144 keys) |
+| bucket created discard-new at 64 KiB, 2,000 messages | 15 | `FixSessionStoreBoundIT.aFullBucket…` | moved to discard-old; no write fails, session not lost (before: `maximum bytes exceeded [10077]`, the f15s cliff) |
+| f15s, 864 sessions at 20K/s, store on | 14, 15 | GKE arm (FIX-tail lane) | before: bucket full at 12 min (3,999,940 keys), every gateway dropped every session |

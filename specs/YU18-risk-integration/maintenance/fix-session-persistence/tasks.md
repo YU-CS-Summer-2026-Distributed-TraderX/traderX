@@ -10,5 +10,9 @@
 - [x] Unknown ticker refused UNKNOWN_SECURITY (FR-GFS-12).
 - [x] `FixSessionPersistenceIT` (5 cases) and the negative control; GKE proofs `yu18-fix-resume`,
       `yu18-fix-store-faults`, `yu18-fix-session`; latency A/B recorded in ADR-086 (NFR-GFS-01).
+- [x] Bounded by sessions, not traffic (FR-GFS-14/15, ADR-086 §6a): per-session ring of `FIX_RESEND_WINDOW`
+      keys, discard-old with a 90 % ALERT; `FixSessionStoreBoundIT` fails on the previous store (6,144 keys;
+      `maximum bytes exceeded`). Found by f15s on GKE.
+- [ ] Production before the next roll: `nats stream edit KV_FIX_SESSIONS --discard old` (yaakov approves; §6a.5).
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

@@ -76,7 +76,8 @@ not established by f15ho's evidence (GC logs and control samples only).
 
 - **Resend semantics are unchanged.**
   - With ADR-086 sessions, a report is stored before it is sent (`Session.sendRaw`), so a report lost to a
-    slow-consumer drop is resent on the client's ResendRequest after it logs back on.
+    slow-consumer drop is resent on the client's ResendRequest after it logs back on, within the session's last
+    `FIX_RESEND_WINDOW` messages (2,048, matching `FIX_MAX_QUEUED_WRITES`; ADR-086 §6a); older ones are gap-filled.
   - In-memory sessions reset on Logon, as before (TD-AC01). Their client reconciles with OrderStatusRequest or
     OrderMassStatusRequest.
   - ADR-091's exactly-once client resends un-acked orders with the same ClOrdID after any disconnect. A drop is

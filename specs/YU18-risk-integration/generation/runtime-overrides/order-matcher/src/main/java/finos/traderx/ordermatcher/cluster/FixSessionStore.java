@@ -6,12 +6,16 @@ import io.nats.client.KeyValue;
 import io.nats.client.Nats;
 import io.nats.client.Options;
 import io.nats.client.PurgeOptions;
+import io.nats.client.JetStreamManagement;
+import io.nats.client.api.DiscardPolicy;
 import io.nats.client.api.KeyValueConfiguration;
 import io.nats.client.api.KeyValueEntry;
 import io.nats.client.api.KeyValueOperation;
 import io.nats.client.api.KeyValueWatchOption;
 import io.nats.client.api.KeyValueWatcher;
 import io.nats.client.api.StorageType;
+import io.nats.client.api.StreamConfiguration;
+import io.nats.client.api.StreamInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import quickfix.MessageStore;
@@ -31,6 +35,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -65,6 +70,17 @@ final class FixSessionStore implements MessageStoreFactory {
     /** A lease not renewed for this long is re-confirmed with the server before it is used: a gateway
      *  that was paused (GC, SIGSTOP, a frozen node) past the TTL may have lost it to another replica. */
     static final long FRESH_MILLIS = LEASE_TTL.toMillis() / 2;
+    /**
+     * ADR-086 amendment (FR-GFS-14): outbound messages kept per session for ResendRequest. Message n is stored at
+     * {@code K.m.<n mod RESEND_WINDOW>}, overwriting n - RESEND_WINDOW, so a session holds this many keys however
+     * long its FIX day; older ones are gap-filled. f15s filled the 1 GiB bucket in 12 minutes at 20K/s with one key
+     * per message.
+     */
+    static final int RESEND_WINDOW = Integer.parseInt(System.getenv().getOrDefault("FIX_RESEND_WINDOW", "2048"));
+    private static final long CAPACITY_CHECK_TICKS = 60;
+    private final AtomicLong gapFilled = new AtomicLong();
+    private long ticks;
+    private boolean nearlyFull;
 
     // Handed over by the first CONNECTED event (connectAsynchronously): a gateway may start before NATS does.
     private volatile Connection nats;
@@ -128,6 +144,7 @@ final class FixSessionStore implements MessageStoreFactory {
         try {
             ensureBucket(BUCKET, KeyValueConfiguration.builder().name(BUCKET).maxHistoryPerKey(1)
                 .ttl(Duration.ofDays(7)).maxBucketSize(1L << 30).storageType(StorageType.File).build());
+            discardOldest(nats.jetStreamManagement());
             ensureBucket(LEASE_BUCKET, KeyValueConfiguration.builder().name(LEASE_BUCKET).maxHistoryPerKey(1)
                 .ttl(LEASE_TTL).storageType(StorageType.File).build());
             kv = nats.keyValue(BUCKET);
@@ -138,6 +155,62 @@ final class FixSessionStore implements MessageStoreFactory {
         } catch (final IOException | JetStreamApiException | RuntimeException e) {
             log.warn("FIX session store not ready yet: {}", e.toString());
         }
+    }
+
+    /**
+     * FR-GFS-15: a full bucket drops its oldest entries instead of refusing the write. Discard-new (the KV default,
+     * and this store's before the amendment) made a full bucket fail every session's next send, so every gateway
+     * dropped every session at once. Applied to a bucket that already exists too: that is the migration.
+     */
+    private static void discardOldest(final JetStreamManagement jsm) throws IOException, JetStreamApiException {
+        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + BUCKET).getConfiguration();
+        if (sc.getDiscardPolicy() != DiscardPolicy.Old) {
+            jsm.updateStream(StreamConfiguration.builder(sc).discardPolicy(DiscardPolicy.Old).build());
+            log.warn("FIX session store: {} now discards its oldest entries when full, instead of refusing writes"
+                + " (ADR-086 amendment)", BUCKET);
+        }
+    }
+
+    /** FR-GFS-15: once a minute, ALERT when the bucket nears its byte cap, where discarding the oldest begins. */
+    private void checkCapacity() {
+        try {
+            final StreamInfo si = nats.jetStreamManagement().getStreamInfo("KV_" + BUCKET);
+            final long max = si.getConfiguration().getMaxBytes();
+            final boolean near = max > 0 && si.getStreamState().getByteCount() >= max * 9 / 10;
+            if (near && !nearlyFull) {
+                log.error("ALERT FIX session store {} at {} of {} bytes: its oldest entries are being discarded (an"
+                    + " idle session's sequence record among them); sessions x FIX_RESEND_WINDOW ({}) outgrows it",
+                    BUCKET, si.getStreamState().getByteCount(), max, RESEND_WINDOW);
+            } else if (!near && nearlyFull) {
+                log.warn("FIX session store {} back under 90% of its byte cap", BUCKET);
+            }
+            nearlyFull = near;
+        } catch (final IOException | JetStreamApiException | RuntimeException e) {
+            // the next minute tries again; availability is the connection listener's business
+        }
+    }
+
+    /** Messages a ResendRequest asked for that were past the window, answered by GapFill (gateway /metrics). */
+    long gapFilled() {
+        return gapFilled.get();
+    }
+
+    /** Where message {@code n} of a session lives: one of RESEND_WINDOW keys, reused in turn. */
+    static String messageKey(final String key, final int n) {
+        return key + ".m." + Integer.remainderUnsigned(n, RESEND_WINDOW);
+    }
+
+    /** MsgSeqNum (34) of a stored message, or -1: a ring slot can hold a later message than the one asked for. */
+    static int seqOf(final String message) {
+        final int at = message.indexOf("\u000134=");
+        if (at < 0) {
+            return -1;
+        }
+        int n = 0;
+        for (int i = at + 4; i < message.length() && Character.isDigit(message.charAt(i)); i++) {
+            n = n * 10 + (message.charAt(i) - '0');
+        }
+        return n;
     }
 
     private void ensureBucket(final String name, final KeyValueConfiguration config)
@@ -365,6 +438,8 @@ final class FixSessionStore implements MessageStoreFactory {
         }
         if (!available) {
             setUp();
+        } else if (++ticks % CAPACITY_CHECK_TICKS == 0) {
+            checkCapacity();
         }
         final long now = System.currentTimeMillis();
         for (final Store s : stores.values()) {
@@ -758,7 +833,7 @@ final class FixSessionStore implements MessageStoreFactory {
             }
             writeSeq(sequence + 1);   // claim the number first: a body without its claim would be unfenced
             try {
-                kv.put(key + ".m." + sequence, message.getBytes(StandardCharsets.UTF_8));
+                kv.put(messageKey(key, sequence), message.getBytes(StandardCharsets.UTF_8));
             } catch (final JetStreamApiException e) {
                 throw dropped(new IOException(e));
             } catch (final IOException e) {
@@ -770,15 +845,26 @@ final class FixSessionStore implements MessageStoreFactory {
         @Override
         public synchronized void get(final int startSequence, final int endSequence,
                                      final Collection<String> messages) throws IOException {
+            // FR-GFS-14: only the last RESEND_WINDOW are kept; a missing body is gap-filled by QuickFIX/J.
+            final int from = Math.max(startSequence, endSequence - RESEND_WINDOW + 1);
+            int missing = Math.max(0, from - startSequence);
             try {
-                for (int n = startSequence; n <= endSequence; n++) {
-                    final KeyValueEntry e = kv.get(key + ".m." + n);
-                    if (e != null && e.getOperation() == KeyValueOperation.PUT) {
-                        messages.add(e.getValueAsString());   // a missing body is gap-filled by QuickFIX/J
+                for (int n = from; n <= endSequence; n++) {
+                    final KeyValueEntry e = kv.get(messageKey(key, n));
+                    if (e != null && e.getOperation() == KeyValueOperation.PUT && seqOf(e.getValueAsString()) == n) {
+                        messages.add(e.getValueAsString());
+                    } else {
+                        missing++;
                     }
                 }
             } catch (final JetStreamApiException e) {
                 throw new IOException(e);
+            }
+            if (missing > 0) {
+                gapFilled.addAndGet(missing);
+                log.error("ALERT FIX session {}: ResendRequest {}..{} reaches past what is kept (last {} messages);"
+                    + " {} gap-filled, the client reconciles them by OrderStatusRequest", sid, startSequence, endSequence,
+                    RESEND_WINDOW, missing);
             }
         }
 

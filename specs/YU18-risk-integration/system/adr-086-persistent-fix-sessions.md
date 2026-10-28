@@ -32,7 +32,7 @@ to a legal key and two CompIDs never share one.
 | key | value | written |
 |---|---|---|
 | `K.seq` | `<nextSender> <nextTarget> <creationMillis>` | compare-and-set on its KV revision, every sequence change |
-| `K.m.<n>` | outbound message `n`, exactly as sent | after `K.seq` claims `n` |
+| `K.m.<n mod W>` | outbound message `n`, exactly as sent; `W` = `FIX_RESEND_WINDOW` (amendment below) | after `K.seq` claims `n` |
 
 `set(n, msg)` first moves `K.seq` to `n+1` with `update(key, value, lastRevision)`, then writes `K.m.<n>`.
 QuickFIX/J stores before it sends and does not send when the store throws (`Session.sendRaw`), so a
@@ -128,9 +128,44 @@ refuses a render whose FIX gateway has no read model.
   The old fixed 00:00 UTC fell at 8 pm ET (7 pm in winter), mid-evening. The first Logon or timer tick after
   it purges `K.m.>` and returns the sequence to 1. A day is the resend horizon.
 - **Backstop.** `FIX_SESSIONS` has max age 7 days (a session idle a week starts fresh, as the daily reset
-  would have made it anyway) and a 1 GiB cap with discard-new: a full bucket fails the write, so the send
-  fails and is logged. A sequence number is never dropped to make room.
+  would have made it anyway) and a 1 GiB cap, with discard-OLD since the amendment below. It was discard-new: a
+  full bucket failed the write, and so every session's next send, on every gateway.
 - **Lease.** `FIX_SESSION_LEASE` keeps one revision per session for at most 10 s.
+
+### 6a. Amendment 2026-10-28: the store is bounded by sessions, not traffic (FR-GFS-14/15)
+
+f15s (864 sessions with global CompIDs, 18 gateways, 20K orders/s, store on) filled `FIX_SESSIONS` in 12 minutes:
+3,999,940 keys, 1,073,741,670 bytes, one key per stored message (~268 B) and nothing removed until 17:00. The next
+write failed with `maximum bytes exceeded`, and as designed above that failed every live session's send, so every
+gateway dropped every session at once. Production (roll 4) has the same cliff at about 4M messages in a FIX day.
+
+1. **A ring per session.** Message `n` is stored at `K.m.<n mod FIX_RESEND_WINDOW>` (default 2,048), overwriting
+   `n - 2,048`: a session holds at most 2,049 keys (~550 KB) however long its day, and the bucket at most
+   sessions × that. `get(a, b)` reads only the last window of the range and uses a slot only when its stored
+   MsgSeqNum is the one asked for (a slot may hold a newer message, or one written by a gateway before the
+   amendment). Anything older is gap-filled, which QuickFIX/J already does for a missing body, with an ALERT naming
+   the range and `traderx_fix_resend_gapfilled_total`. The client reconciles those orders by OrderStatusRequest or
+   OrderMassStatusRequest (FR-FIX04). Adoption (§3) scans the ring in write order, so takeover rebuilds the open
+   orders in the window; an older open order is answered by status requests, but its later fills are reported only
+   by a gateway still tracking it.
+2. **A full bucket degrades.** The store sets discard-OLD on the bucket's stream when it connects, including an
+   existing bucket. A full bucket then drops its oldest entries: ring slots, and the sequence record of a session
+   idle since (one sending at all rewrites it on every message, heartbeats included). Measured on NATS 2.14:
+   discard-new refuses a new key at the cap but still accepts an overwrite; discard-old accepted 2,000 writes past
+   the cap with none failing, kept a sequence record rewritten every 10 writes, and dropped an idle one. A
+   minute's check ALERTs at 90 % of the cap.
+3. **Sizing.** 1 GiB holds ~1,900 sessions at the default window. Raise the cap, or lower `FIX_RESEND_WINDOW`,
+   before running more; the 90 % ALERT says when.
+4. **Rolling to it.** Keys written as `K.m.<n>` by older gateways stay until the day's reset purges `K.m.>`; a new
+   gateway reads slot `n mod W` and, finding a different MsgSeqNum, gap-fills. No restart order is needed.
+5. **No roll needed to stop the cliff today.** `ensureBucket` only creates a missing bucket, so an operator can set
+   discard-old on the live stream and the running code keeps working: `nats stream edit KV_FIX_SESSIONS --discard
+   old`. That removes the cluster-wide drop. It does not bound growth: the oldest stored reports go first, and a
+   session idle since the morning may lose its sequence record and resume at 1.
+6. **Not covered.** ADR-090's order records (`FIX_EXACTLY_ONCE=jetstream`, opt-in, not on production) share the
+   bucket and still grow with the day: `K.o.<account>.<seq>` and, since FR-XOD-13, `K.c.<account>.<ClOrdID>`, two
+   keys per order until the reset. Under discard-old a full bucket can now drop one, so a resend past its record
+   would be decided as new. Bounding them is ADR-090's owner's.
 
 ### 7. NATS outage: no FIX without its store
 

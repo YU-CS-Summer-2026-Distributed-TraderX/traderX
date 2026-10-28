@@ -291,6 +291,11 @@ public final class FixGatewayAcceptor {
             persistent ? "in JetStream (ADR-086)" : "in memory");
     }
 
+    /** ResendRequest messages answered by GapFill because they were past the stored window (ADR-086, FR-GFS-14). */
+    long resendGapFills() {
+        return sessionStore == null ? 0 : sessionStore.gapFilled();
+    }
+
     /** Inbound messages waiting for session dispatchers, all sessions (ADR-092's FR-FGM-02 bound). */
     int inboundQueued() {
         return acceptor.getQueueSize();
