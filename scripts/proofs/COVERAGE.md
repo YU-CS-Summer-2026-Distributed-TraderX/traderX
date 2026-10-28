@@ -1598,3 +1598,18 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `recovery-identity FR-RI07` | CI |  |  | local custody; offline tests |
 | YU18 | `recovery-identity FR-RI08` | CI |  |  | local custody; offline tests |
 | YU18 | `recovery-identity FR-RI09` | CI |  |  | local custody; offline tests |
+| YU18 | `FR-XOD-01` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-02` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs: trades == accepted, strict replay allowance 0 |
+| YU18 | `FR-XOD-03` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs: duplicateKeys 0, resendsOfCommitted > 0; xn must fail |
+| YU18 | `FR-XOD-04` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-05` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-06` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-07` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-08` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-09` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-10` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-11` | CI |  |  | proposed (ADR-090), not implemented; planned proof: ExactlyOnceStreamTest |
+| YU18 | `FR-XOD-12` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: FixExactlyOnceIT; NFR-XOD-03 A/B before enabling |
+| YU18 | `NFR-XOD-01` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs vs same-lane control: leader snapshot halt |
+| YU18 | `NFR-XOD-02` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: arm xs vs same-lane control: p50/p99 |
+| YU18 | `NFR-XOD-03` | LIVE |  |  | proposed (ADR-090), not implemented; planned proof: fix-session-latency.mjs vs ADR-086 baseline |
