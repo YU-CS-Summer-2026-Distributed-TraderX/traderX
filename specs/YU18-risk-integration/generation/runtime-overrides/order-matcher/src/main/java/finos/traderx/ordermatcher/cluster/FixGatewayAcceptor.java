@@ -585,6 +585,11 @@ public final class FixGatewayAcceptor {
                     final boolean mayBeResend = h.isSetField(quickfix.field.PossResend.FIELD)
                         && h.getBoolean(quickfix.field.PossResend.FIELD)
                         || h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD);
+                    if (mayBeResend && sessionStore.orderSeq(sessionId, accountId, clOrdId, true)
+                            == FixSessionStore.AGED_OUT) {
+                        sendAgedOut(sessionId, clOrdId);
+                        return;
+                    }
                     result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString(),
                         mayBeResend);
                 } catch (final java.io.IOException e) {
@@ -1156,6 +1161,20 @@ public final class FixGatewayAcceptor {
             report.set(new Text("DUPLICATE: ClOrdID already executed as ord-" + orderRef
                 + (found == null ? "; its final state is no longer retained" : "")));
             send(report, sessionId, clOrdId);
+        }
+
+        /**
+         * FR-XOD-13: a resend of a ClOrdID the exactly-once ring may have lost. It may have executed, so it is neither
+         * booked again nor rejected as an order (an ExecutionReport 39=8 would read as "did not execute"): a
+         * BusinessMessageReject with the reason, and the client reconciles by OrderStatusRequest/OrderMassStatusRequest.
+         */
+        private void sendAgedOut(final SessionID sessionId, final String clOrdId) {
+            final quickfix.fix44.BusinessMessageReject reject = new quickfix.fix44.BusinessMessageReject(
+                new quickfix.field.RefMsgType("D"), new quickfix.field.BusinessRejectReason(0));
+            reject.set(new quickfix.field.BusinessRejectRefID(clOrdId));
+            reject.set(new Text("EXACTLY_ONCE_AGED_OUT: ClOrdID is older than the last " + sessionStore.orderWindow
+                + " orders kept for this account today; not booked by this request; query its status"));
+            send(reject, sessionId, clOrdId);
         }
 
         /** YU18 (FR-OT03/04): a boundary refusal — nothing was sequenced. */

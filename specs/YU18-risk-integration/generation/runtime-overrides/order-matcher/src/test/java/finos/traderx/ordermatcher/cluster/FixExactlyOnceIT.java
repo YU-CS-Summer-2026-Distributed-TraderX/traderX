@@ -204,12 +204,13 @@ class FixExactlyOnceIT {
     }
 
     /**
-     * FR-XOD-13: 30 orders through a window of 8. The heap keeps 8 ClOrdIDs and no answered request, and a PossResend
-     * of an evicted ClOrdID, on this replica and on the one that adopts the session, is still the original order.
-     * Fails on a store that keeps the whole day (30 ClOrdIDs, 30 requests).
+     * FR-XOD-13: 30 orders through a ring of 8. The order bucket holds 8 keys and the session bucket none; the heap
+     * holds 8 ClOrdIDs and no answered request. A PossResend inside the ring is the original order; one past it is
+     * refused (35=j) and NOT booked again, on this replica and on the one that adopts the session. Fails on a store
+     * that keeps the day.
      */
     @Test
-    void theDaysOrdersAreBoundedAndAnEvictedResendIsStillTheOriginal() throws Exception {
+    void theOrderRecordsAreARingAndAnAgedOutResendIsRefusedNotBooked() throws Exception {
         final Venue venue = new Venue();
         final int a = startGateway(venue, "gw-a-C8", "CLIENT8", true);
         final int b = startGateway(venue, "gw-b-C8", "CLIENT8", true);
@@ -223,29 +224,46 @@ class FixExactlyOnceIT {
             assertEquals("ord-" + i, c1.awaitType("8").get("37"));
         }
         assertArrayEquals(new int[] { 8, 0 }, stores.get("gw-a-C8").heldOrders(sid), "{ClOrdIDs, requests} held");
+        try (io.nats.client.Connection nc = io.nats.client.Nats.connect(
+                "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222))) {
+            assertEquals(8, nc.keyValue(FixSessionStore.ORDER_BUCKET).keys().stream()
+                .filter(k -> k.contains("CLIENT8")).count(), "order keys: a ring of 8");
+            assertEquals(0, nc.keyValue(FixSessionStore.BUCKET).keys().stream()
+                .filter(k -> k.contains("CLIENT8") && (k.contains(".o.") || k.contains(".c."))).count(),
+                "no order records in the session bucket");
+        }
+        c1.order("o25", "97=Y\u0001");
+        assertEquals("ord-25", c1.awaitType("8").get("37"), "a resend inside the ring is the original");
         c1.order("o1", "97=Y\u0001");
-        assertEquals("ord-1", c1.awaitType("8").get("37"), "an evicted ClOrdID resent is the original");
+        assertAgedOut(c1, "o1");
         c1.rst();
         Thread.sleep(3_000);   // A lets the lease go
 
         final Client c2 = new Client(b, "CLIENT8");
-        c2.out = 33;           // Logon, 30 orders, 1 resend
+        c2.out = 34;           // Logon, 30 orders, 2 resends
         assertEquals("A", c2.logon().get("35"));
         c2.order("o2", "97=Y\u0001");
-        final Map<String, String> er;
-        while (true) {         // the adopted session's stored reports come back first
-            final Map<String, String> m = c2.awaitType("8");
-            if ("o2".equals(m.get("11")) && !"Y".equals(m.get("43"))) {
-                er = m;
-                break;
-            }
-        }
-        assertEquals("ord-2", er.get("37"), "adopted: an evicted ClOrdID resent is the original");
-        assertTrue(stores.get("gw-b-C8").heldOrders(sid)[0] <= 8, "adopted window");
+        assertAgedOut(c2, "o2");
+        c2.order("o26", "97=Y\u0001");
+        assertEquals("ord-26", c2.awaitType("8").get("37"), "adopted: a resend inside the ring is the original");
+        final int[] adopted = stores.get("gw-b-C8").heldOrders(sid);
+        assertEquals(8, adopted[0], "adopted ClOrdIDs");
+        assertTrue(adopted[1] <= 8, "adopted requests: the ring's, until the engine answers past them: " + adopted[1]);
+        assertEquals(30, venue.booked.size());
         for (int i = 1; i <= 30; i++) {
             assertEquals(1, venue.booked.get("CLIENT8\u0001o" + i), "o" + i + " booked once");
         }
         c2.close();
+    }
+
+    private static void assertAgedOut(final Client c, final String clOrdId) throws IOException {
+        Map<String, String> m;
+        do {
+            m = c.read();
+        } while ("0".equals(m.get("35")));
+        assertEquals("j", m.get("35"), "an aged-out resend is refused, not booked: " + m);
+        assertEquals(clOrdId, m.get("379"));
+        assertTrue(m.get("58").startsWith("EXACTLY_ONCE_AGED_OUT"), m.get("58"));
     }
 
     private static String now() {

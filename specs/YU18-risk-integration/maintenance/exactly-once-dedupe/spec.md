@@ -63,17 +63,19 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
     (which purges `K.o.*`) starts new streams.
   - A failed or fenced store write SHALL keep the order off the cluster and SHALL end the session, as in
     FR-GFS-02.
-- FR-XOD-13: With FR-XOD-12 enabled, a FIX session's heap SHALL hold a bounded part of the FIX day's order
-  records:
-  - It SHALL hold the raw requests the engine has not answered. Each answer moves a per-account floor: `seq + 1`
-    for an answer to `seq`, or `e` for `OUT_OF_SEQUENCE(e)`. A `STREAM_LIMIT` refusal and an ambiguous answer do
+- FR-XOD-13: With FR-XOD-12 enabled, a FIX session's order records SHALL be a ring per account:
+  - Order `seq` SHALL be stored at `K.<account>.<(seq-1) mod FIX_EXACTLY_ONCE_WINDOW>` (default 8,192) in KV
+    bucket `FIX_ORDERS`, which discards its oldest entries at `FIX_ORDER_STORE_BYTES` (default 1 GiB). No order
+    record SHALL be kept in `FIX_SESSIONS`.
+  - A slot SHALL be overwritten only from the revision this gateway wrote or read; another gateway's write in
+    between SHALL fence it. A slot discarded by a full bucket SHALL be created again.
+  - The heap SHALL hold the ring's ClOrdIDs, plus the raw requests the engine has not answered. Each answer moves
+    a per-account floor: `seq + 1`, or `e` for `OUT_OF_SEQUENCE(e)`. `STREAM_LIMIT` and an ambiguous answer do
     not move it.
-  - It SHALL hold the last `FIX_EXACTLY_ONCE_WINDOW` (default 8,192) ClOrdIDs.
-  - Every stored order SHALL be indexed at `K.c.<account>.<hex ClOrdID>`. Its index write SHALL be confirmed
-    before its ClOrdID leaves the window.
-  - A NewOrderSingle with `PossResend=Y` or `PossDupFlag=Y` whose ClOrdID is not in the window SHALL be looked up
-    in that index.
-  - The day reset SHALL purge the index.
+  - Once any record of the account's day is gone from the ring (overwritten, or discarded by a full bucket), a
+    NewOrderSingle with `PossResend=Y` or `PossDupFlag=Y` whose ClOrdID is not in the ring SHALL NOT be booked.
+    It SHALL be answered with a BusinessMessageReject (`RefMsgType=D`, `BusinessRejectRefID` = the ClOrdID), with
+    text beginning `EXACTLY_ONCE_AGED_OUT`.
 
 ## Non-functional
 
@@ -120,12 +122,15 @@ unflagged frame is unchanged, and seq 0 is a protocol error.
 - an order a replica stored and never submitted is answered first, in order, when the next order meets the gap;
 - negative control: unsequenced, the same resend reaches the venue twice.
 
-It also covers FR-XOD-13, with 30 orders through a window of 8:
+It also covers FR-XOD-13, with 30 orders through a ring of 8:
 
-- the heap holds 8 ClOrdIDs and no requests;
-- a `PossResend` of an evicted ClOrdID is answered with the original order, both on the same replica and after
-  another replica adopts the session;
-- the test fails on a store that keeps the whole day.
+- `FIX_ORDERS` holds 8 keys for the session and `FIX_SESSIONS` holds none, and the heap holds 8 ClOrdIDs and no
+  requests;
+- a `PossResend` inside the ring is answered with the original order;
+- a `PossResend` past the ring is refused with `35=j EXACTLY_ONCE_AGED_OUT` and not booked, both on the same
+  replica and after another replica adopts the session;
+- the test fails on the window-plus-index store in `FIX_SESSIONS` (92 keys for the session), and with the aged-out
+  check disabled (booked again).
 
 ### Local triad (`tests/run_local_triad.sh`)
 

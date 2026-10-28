@@ -2,7 +2,8 @@
 
 Status: approved by yaakov 2026-10-28 (option c) and implemented on `traderX-risk-integration`; not deployed. The
 as-built notes in §4 record where the implementation narrowed the proposal and why. Amended 2026-10-28: the
-FIX gateway's heap holds a bounded part of the day's order records (§4a, FR-XOD-13).
+FIX order records are a ring per account, in the store and in the heap, and a resend the ring may have lost is
+refused, never booked (§4a, FR-XOD-13).
 Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..13 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
@@ -176,34 +177,60 @@ members are never rolled one at a time:
   - Until this is enabled, FIX uses the key table as it does today. The extra JetStream write per order gets its
     own latency A/B (NFR-XOD-03).
 
-### 4a. Amendment: the FIX order records are bounded in the heap (FR-XOD-13)
+### 4a. Amendment: the FIX order records are a ring, and an aged-out resend fails safe (FR-XOD-13)
 
-As first built, `FixSessionStore` kept every stored order of the FIX day in the heap, as a ClOrdID index entry and
-its raw request (about 130 B plus the message per order), until the 17:00 reset. ADR-092 found this and left it
-to this ADR. At 400K/s it has no bound within the day. Two things need the records, and each needs only part of
-them:
+As first built, the FIX day's order records grew with the day in both places they live: in the store, one
+`K.o.<account>.<seq>` key per order, and in the heap, every ClOrdID and raw request until the 17:00 reset. ADR-092
+found the heap side. ADR-086 §6a then bounded the message log as a ring and set the bucket to discard its oldest
+entries when full. Under that setting, a growing record set fills the bucket, and the bucket then drops the oldest
+records. A resend of a dropped ClOrdID would be decided as new and booked twice. A first amendment (`82da1edb`)
+bounded the heap with a ClOrdID window plus a per-order index key, `K.c.*`. That added a second key per order to
+the bucket, so the same problem remained. This amendment replaces it.
 
-- **Go-back-N** asks for the stored requests `e .. seq-1` after `OUT_OF_SEQUENCE(e)`, and `e` is the engine's
-  expected next. A request below the engine's next has been committed and can never be asked for again. So every
-  answer from the engine moves a per-account floor: `seq + 1` for an answer to `seq`, or `e` for `OUT_OF_SEQUENCE(e)`.
-  A `STREAM_LIMIT` refusal and an ambiguous answer leave the floor where it is. Raw requests below the floor are
-  dropped. The heap holds only the requests the engine has not answered.
-- **A ClOrdID resend** needs the ClOrdID's sequence. The heap keeps the last `FIX_EXACTLY_ONCE_WINDOW` (default
-  8,192) ClOrdIDs per session. Each stored order is also indexed in the bucket at
-  `K.c.<account>.<hex ClOrdID> = seq`. This write is asynchronous and adds no wait to the order. Before a ClOrdID
-  leaves the heap window, its index write is confirmed; otherwise the next order is not stored. So every record
-  outside the last window has a durable index. A gateway that adopts the session reads the day and keeps the last
-  window, with its requests. It writes the window's index again, because the gateway that died may not have
-  finished it.
-- **Past the window**, a ClOrdID is looked up in the index only when the NewOrderSingle carries `PossResend=Y` or
-  `PossDupFlag=Y`. FIX does not allow a ClOrdID to be reused without one of those flags, and the ADR-091 client
-  sets `97=Y` on every resend. Inside the window, a resend without the flag is still answered with the original
-  order, as before. This narrows §4's "whether or not it carries `PossResend=Y`" to the window.
-- **The day reset** purges `K.c.*` together with `K.o.*`.
-
-The heap per session is then the window plus the unanswered requests, whatever the day's volume. That is an
-estimated 2–3 MB at the default window, from about 300 B per ClOrdID entry; this figure was not measured. The
-store on disk gains one small record per order, which the day reset purges.
+- **A ring per account, in a bucket of its own.** Order `seq` is stored at
+  `K.<account>.<(seq-1) mod FIX_EXACTLY_ONCE_WINDOW>` (default 8,192) in KV bucket `FIX_ORDERS`, overwriting
+  `seq - window`. A session holds at most the window's keys per account, however long its FIX day. There is no
+  index key.
+  - The bucket discards its oldest entries when it reaches `FIX_ORDER_STORE_BYTES` (default 1 GiB). Each entry
+    expires one day after it was last written. The 17:00 reset purges the session's keys first, so that expiry
+    only clears a session abandoned past a reset.
+  - The rings are kept out of `FIX_SESSIONS`, so they never push out a session's sequence record or its message
+    ring (ADR-086 §6a). At about 0.5 KB a slot, a ring is roughly 4 MB per session and account at the default
+    window.
+- **The fence is kept.** A slot is overwritten only from the revision this gateway wrote or read (`kv.update`;
+  `kv.create` for an empty slot). If another gateway wrote the slot in between, this gateway is fenced, as the
+  create-if-absent record fenced it before. If a full bucket discarded the slot, the slot is created again; that
+  is not a fence.
+  - This fence holds only while the slot exists. A stale gateway can recreate a discarded slot, so the session
+    lease remains the primary fence, as in ADR-086.
+  - A discarded slot marks the ring as aged. A resend that needed the slot is therefore refused before a
+    recreated slot could answer it.
+- **The heap mirrors the ring.** It holds the ring's ClOrdIDs and the raw requests the engine has not answered.
+  Every engine answer moves a per-account floor: `seq + 1` for an answer to `seq`, or `e` for
+  `OUT_OF_SEQUENCE(e)`. A `STREAM_LIMIT` refusal and an ambiguous answer leave the floor where it is. Go-back-N
+  only ever asks for `e .. seq-1`, so it is unaffected. A gateway that adopts the session reads only the rings,
+  not the day, and holds their requests until the engine answers past them.
+- **An aged-out ClOrdID fails safe.** A ring has *aged* once any record of today is gone from it, either
+  overwritten by the ring or discarded by a full bucket. On adoption this shows as fewer records than
+  `next - 1`. Then a NewOrderSingle carrying `PossResend=Y` or `PossDupFlag=Y` whose ClOrdID is not in the ring
+  is neither booked nor rejected as an order:
+  - It may have executed, so a `39=8` ExecutionReport would read as "did not execute".
+  - It is answered with a BusinessMessageReject (`35=j`, `RefMsgType=D`, `BusinessRejectRefID=<ClOrdID>`, text
+    `EXACTLY_ONCE_AGED_OUT: …`).
+  - The client reconciles by OrderStatusRequest or OrderMassStatusRequest and, if the order is unknown there,
+    sends it again under a new ClOrdID.
+  - This also refuses a resend that a dying gateway received but never stored, once the ring has aged. Such an
+    order was never submitted, so a refusal is safe, and the client recovers it the same way.
+  - While a ring has not aged, the heap holds every ClOrdID of the account's day. A miss is then a new order, as
+    before.
+- **Unflagged reuse.** A ClOrdID reused without one of the flags breaks FIX's uniqueness rule. Inside the ring it
+  is still answered with the original order. Past the ring it is taken as new.
+- **The horizon.** A resend reaches its original while fewer than the window's orders of the same account have
+  been stored since. That is window ÷ per-account rate: 0.8 s at 10K/s, 82 s at 100/s. Size the window to the
+  client's resend horizon at its rate. Past the horizon, the answer is the refusal above, never a second booking.
+- **Cost.** These are estimates, not measurements, per session and account at the default window:
+  - `FIX_ORDERS` holds one key per ring slot, about 4 MB.
+  - The heap holds about 300 B per ring slot for its ClOrdID entry, about 2.5 MB.
 
 ### 5. How the 400K/s proof shows it
 
@@ -239,11 +266,15 @@ Implemented as `f815003d` (2026-10-28). Unit tests ran in an empty-root render:
   fail.
 - `BinarySequencedFrameTest` 1/1.
 - `FixExactlyOnceIT` 3/3, including an unsequenced control that submits twice.
-- Amendment (FR-XOD-13): `FixExactlyOnceIT` 4/4. The new case sends 30 orders through a window of 8. The heap
-  holds 8 ClOrdIDs and no requests. A `PossResend` of an evicted ClOrdID, on the same replica and on the
-  replica that adopts the session, is answered with the original order, and each order is booked once.
-  - On the store as first built, the case fails with 30 ClOrdIDs held.
-  - With the index lookup disabled, it fails because the evicted resend books again, as `ord-31`.
+- Amendment (FR-XOD-13): `FixExactlyOnceIT` 4/4. The new case sends 30 orders through a ring of 8:
+  - `FIX_ORDERS` holds 8 keys for the session, and `FIX_SESSIONS` holds no order or index keys. The heap holds
+    8 ClOrdIDs and no requests.
+  - A `PossResend` inside the ring is answered with the original order.
+  - A `PossResend` of `o1` past the ring is refused with `35=j EXACTLY_ONCE_AGED_OUT`, and so is `o2` after
+    another replica adopts the session. Every order is booked exactly once.
+  - On the `b0bcd313` store (window plus index, in `FIX_SESSIONS`), the case fails with 92 keys for the
+    session, against a ring of 8.
+  - With the aged-out check disabled, it fails because `o1` is booked again (`35=8`).
 - The full order-matcher suite: 840 run, 0 failed, 6 skipped.
 - On the head merged with `39971df0`, the suite ran 842, with 1 failure: `ThreeMemberClusterTest` timed out at
   120 s in the full run. Run alone it passed 2 of 2 times, and it passed in the 840-test run.

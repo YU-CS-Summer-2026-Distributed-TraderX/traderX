@@ -88,4 +88,4 @@ not established by f15ho's evidence (GC logs and control samples only).
   latency metrics do not show it, so read client-observed latency for a FIX arm.
 - **Excluded:** ADR-090's per-FIX-day order index (`FIX_EXACTLY_ONCE=jetstream`, opt-in). As first built, it kept
   every stored order's sequence and raw message in the store's heap until the day reset. ADR-090 §4a
-  (FR-XOD-13) now bounds it: a window of ClOrdIDs, plus the requests the engine has not answered.
+  (FR-XOD-13) now bounds it: a ring of records per account, in the store and in the heap.
