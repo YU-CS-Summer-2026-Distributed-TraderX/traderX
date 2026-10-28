@@ -27,12 +27,15 @@ import quickfix.field.OrdStatus;
 import quickfix.field.OrdType;
 import quickfix.field.OrderID;
 import quickfix.field.OrderQty;
+import quickfix.field.OrigClOrdID;
 import quickfix.field.Price;
 import quickfix.field.Side;
 import quickfix.field.Symbol;
 import quickfix.field.TransactTime;
 import quickfix.fix44.ExecutionReport;
 import quickfix.fix44.NewOrderSingle;
+import quickfix.fix44.OrderCancelRequest;
+import quickfix.fix44.OrderStatusRequest;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -82,6 +85,11 @@ class FixGatewayFillReportTest {
             final int ref = nextRef.getAndIncrement();
             beforeAck.accept(ref);
             return new ExecResult(true, ref, OutputEvent.KIND_ORDER_ACCEPTED);
+        }
+
+        @Override
+        public ExecResult submitCancel(final int orderRef) {
+            return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
     }
 
@@ -188,6 +196,57 @@ class FixGatewayFillReportTest {
         assertFill(c.reports.get(1), "ord-1", OrdStatus.FILLED, 5, 50.0, 5, 0, 50.0);
     }
 
+    /** FR-FIX05: a cancel ends the order, not its fills; the Canceled report keeps CumQty and AvgPx. */
+    @Test
+    void aCancelAfterAPartialFillReportsWhatWasFilled() throws Exception {
+        final Client c = new Client("CLIENT1");
+        start(new StubSubmitter(), c);
+        sendOrder(c, "k1", Side.BUY, 10, 52.0);
+        assertNotNull(c.await(r -> is(r, "k1", ExecType.NEW)));
+        acceptor.onOrderUpdate(feed(1, (byte) 0, 10, 6, PARTIAL, 50.0, 4));
+        assertNotNull(c.await(r -> is(r, "k1", ExecType.TRADE)), "no partial fill report");
+
+        final OrderCancelRequest f = new OrderCancelRequest(new OrigClOrdID("k1"), new ClOrdID("k1x"),
+            new Side(Side.BUY), new TransactTime());
+        f.set(new Symbol("IBM"));
+        Session.sendToTarget(f, c.sessionId);
+
+        final ExecutionReport x = c.await(r -> is(r, "k1x", ExecType.CANCELED));
+        assertNotNull(x, "no Canceled report");
+        assertEquals(OrdStatus.CANCELED, x.getChar(OrdStatus.FIELD));
+        assertEquals(4.0, x.getDouble(CumQty.FIELD), "a canceled order keeps its fill");
+        assertEquals(0.0, x.getDouble(LeavesQty.FIELD));
+        assertEquals(50.0, x.getDouble(AvgPx.FIELD), 1e-9);
+    }
+
+    /** FR-DRS-27: OrderStatus for a CANCELED order reports the read model's filled quantity, never qty - 0. */
+    @Test
+    void orderStatusOfACanceledOrderReportsItsFillNotItsQuantity() throws Exception {
+        final Client c = new Client("CLIENT1");
+        final List<OrderStatusSource.OrderView> rows = new CopyOnWriteArrayList<>(List.of(
+            new OrderStatusSource.OrderView(1, "Buy", 10, 0, "CANCELED", "IBM", 4),
+            new OrderStatusSource.OrderView(2, "Sell", 3, 0, "CANCELED", "IBM"),            // read model without the field
+            new OrderStatusSource.OrderView(3, "Buy", 10, 6, "PARTIALLY_FILLED", "IBM")));   // ditto, still open
+        start(new StubSubmitter(), (account, all) -> rows, c);
+        for (int ref = 1; ref <= 3; ref++) {
+            final OrderStatusRequest h = new OrderStatusRequest();
+            h.set(new ClOrdID("h" + ref));
+            h.set(new OrderID("ord-" + ref));
+            h.set(new Side(Side.BUY));
+            h.set(new Symbol("IBM"));
+            h.set(new Account("11"));
+            Session.sendToTarget(h, c.sessionId);
+        }
+        final double[][] want = {{4, 0}, {0, 0}, {4, 6}};   // CumQty, LeavesQty
+        for (int ref = 1; ref <= 3; ref++) {
+            final String id = "h" + ref;
+            final ExecutionReport r = c.await(m -> is(m, id, ExecType.ORDER_STATUS));
+            assertNotNull(r, "no status report for ord-" + ref);
+            assertEquals(want[ref - 1][0], r.getDouble(CumQty.FIELD), "CumQty of ord-" + ref);
+            assertEquals(want[ref - 1][1], r.getDouble(LeavesQty.FIELD), "LeavesQty of ord-" + ref);
+        }
+    }
+
     // ----- harness ---------------------------------------------------------------------------
 
     private static void assertFill(final ExecutionReport r, final String orderId, final char ordStatus,
@@ -204,8 +263,13 @@ class FixGatewayFillReportTest {
     }
 
     private void start(final OrderSubmitter submitter, final Client... clients) throws Exception {
+        start(submitter, null, clients);
+    }
+
+    private void start(final OrderSubmitter submitter, final OrderStatusSource status, final Client... clients)
+        throws Exception {
         final int port = freePort();
-        acceptor = new FixGatewayAcceptor(submitter, null, port, "TRADERX", 11, List.of("CLIENT1", "CLIENT2"));
+        acceptor = new FixGatewayAcceptor(submitter, status, port, "TRADERX", 11, List.of("CLIENT1", "CLIENT2"));
         acceptor.start();
         for (final Client c : clients) {
             final SessionSettings settings = new SessionSettings();

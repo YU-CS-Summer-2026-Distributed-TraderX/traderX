@@ -22,6 +22,8 @@ public class OrderUpdate implements ScopedEvent {
   private String status;
   private BigDecimal lastExecutionPrice;
   private Integer lastFillQuantity;
+  /** FR-DRS-27: quantity filled so far (FIX CumQty), set by the read model, not the bridge. */
+  private Integer filledQuantity;
   private Long createdAt;
   private Long updatedAt;
   /**
@@ -117,6 +119,14 @@ public class OrderUpdate implements ScopedEvent {
 
   public void setLastExecutionPrice(BigDecimal lastExecutionPrice) {
     this.lastExecutionPrice = lastExecutionPrice;
+  }
+
+  public Integer getFilledQuantity() {
+    return filledQuantity;
+  }
+
+  public void setFilledQuantity(Integer filledQuantity) {
+    this.filledQuantity = filledQuantity;
   }
 
   public Integer getLastFillQuantity() {

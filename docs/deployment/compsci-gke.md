@@ -211,6 +211,17 @@ Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
   Every counterparty then logs on with `ResetSeqNumFlag=Y` (or is reset by the acceptor on its first Logon).
 - **First roll onto ADR-086** resets every live FIX session once: there is no stored state yet.
 
+## Order filled quantity (ADR-088)
+
+trade-processor validates the schema at start, and ADR-088 adds `orderbook.filledquantity` (FR-DRS-27). On an
+existing database volume, roll in this order: the `database-init-sql` ConfigMap, then restart the database pod
+(its `schema-migrate` init container applies `900-migrations.sql`, idempotently), then trade-processor. Rolled
+the other way round, trade-processor refuses to start and names the column. Check:
+
+```bash
+kubectl -n traderx exec deploy/database -- sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" traderx -e "SHOW COLUMNS FROM orderbook LIKE \"filledquantity\""'
+```
+
 ## Before application deployment
 
 The companion's `compiled-context-v1` provider binds independently derived full

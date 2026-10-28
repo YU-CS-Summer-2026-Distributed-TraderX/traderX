@@ -1,6 +1,6 @@
 # Downstream read side specification
 
-Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 2026-10-28). Dependencies: JetStream on the existing NATS server, the YU18 trade
+Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
 ## Requirements
@@ -134,6 +134,18 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   exact at 3 dp SHALL keep its 3-dp rendering. Before this, the member used the 009 equity edge rounding
   (`Px.toDecimalOrZero`, 3 dp HALF_UP) and every bond side was FIELD_MISMATCH (proof-audit suspect 13:
   `UST-20310630` blotter 0.997 vs SQL 0.996650).
+
+### Filled quantity ([ADR-088](../../system/adr-088-canceled-order-fill.md))
+
+- FR-DRS-27: Every order the read model returns (`GET /accounts/{id}/orders`, both projections) SHALL carry
+  `filledQuantity`, the quantity filled so far: `quantity − remainingQuantity` while open, `quantity` when
+  FILLED, and for CANCELED or REJECTED the order's filled quantity before that update (0 when the read model
+  holds no earlier update), because the engine reports those with `remainingQuantity` 0. The gateway's
+  `OrderStatusRequest`/`OrderMassStatusRequest` reports SHALL use it as `CumQty`. Against a read model that
+  does not send it, `CumQty` SHALL be 0 for a CANCELED or REJECTED order, never its whole quantity.
+  The SQL projection SHALL derive it from the row's own previous state (column `orderbook.filledquantity`,
+  added by `900-migrations.sql`), and it SHALL NOT enter the event digest.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
 - NFR-DRS-02: No engine, ack, snapshot or wire format changes.

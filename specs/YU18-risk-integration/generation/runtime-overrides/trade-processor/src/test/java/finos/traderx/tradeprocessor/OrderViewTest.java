@@ -48,6 +48,32 @@ class OrderViewTest {
     assertEquals("1-2", v.all(3).get(0).getId());
   }
 
+  /** FR-DRS-27: the engine zeroes a CANCELED order's remainingQuantity; its fill survives the cancel. */
+  @Test void aCanceledOrderKeepsWhatItFilled() {
+    OrderView v = new OrderView(10);
+    v.apply(qty(u("1-5", 7, "NEW", 1L, 0, null), 10, 10));
+    v.apply(qty(u("1-5", 7, "PARTIALLY_FILLED", 2L, 0, null), 10, 6));
+    v.apply(qty(u("1-5", 7, "CANCELED", 3L, 0, null), 10, 0));
+    assertEquals(4, v.all(7).get(0).getFilledQuantity());
+    v.apply(qty(u("1-5", 7, "CANCELED", 4L, 0, null), 10, 0));   // a cancel of a terminal order re-publishes it
+    assertEquals(4, v.all(7).get(0).getFilledQuantity());
+    v.apply(qty(u("1-6", 7, "NEW", 5L, 0, null), 3, 3));
+    v.apply(qty(u("1-6", 7, "CANCELED", 6L, 0, null), 3, 0));
+    v.apply(qty(u("1-8", 7, "FILLED", 7L, 0, null), 5, 0));
+    assertEquals(java.util.Map.of("1-5", 4, "1-6", 0, "1-8", 5), filled(v.all(7)));
+  }
+
+  private static OrderUpdate qty(OrderUpdate o, int quantity, int remaining) {
+    o.setQuantity(quantity); o.setRemainingQuantity(remaining);
+    return o;
+  }
+
+  private static java.util.Map<String, Integer> filled(java.util.List<OrderUpdate> all) {
+    java.util.Map<String, Integer> m = new java.util.HashMap<>();
+    for (OrderUpdate o : all) { m.put(o.getId(), o.getFilledQuantity()); }
+    return m;
+  }
+
   @Test void legacyUpdatesWithoutSequenceAreLastWriteWins() {
     OrderView v = new OrderView(10);
     v.apply(u("9-1", 1, "NEW", null, null, null));

@@ -42,6 +42,10 @@ subscription. No engine, wire, snapshot or consensus change.
   reported unsolicited, and the gateway SHALL NOT report it later from a stale position. The client recovers it with `OrderStatusRequest (H)` or
   `OrderMassStatusRequest (AF)`. With persistent sessions (ADR-086) a fill that arrives while the session is
   logged on nowhere is stored under its lease and resent after the next Logon.
+- FR-FFR-12: The Canceled ExecutionReport that answers an `OrderCancelRequest` SHALL carry the `CumQty` and
+  `AvgPx` this gateway last reported for the order (tracked, or rebuilt from the session store under ADR-086),
+  with `LeavesQty` 0. An order canceled after a partial fill SHALL NOT be reported `CumQty` 0
+  ([ADR-088](../../system/adr-088-canceled-order-fill.md)).
 - NFR-FFR-01: An update for an untracked order SHALL cost two byte scans and no JSON parse or allocation on
   the gateway. Every gateway with FIX on receives every order update on the venue; `FIX_FILL_FEED=0` is the
   opt-out for a throughput rig.
@@ -54,6 +58,7 @@ subscription. No engine, wire, snapshot or consensus change.
 | 10-lot filled 4 @ 50 then 6 @ 52, partial redelivered, a stranger's fill | 02, 03, 04, 08 | `…aPartialFill…` | `F` / 1 LastQty 4 leaves 6, then `F` / 2 LastQty 6 CumQty 10 AvgPx 51.2; nothing else; gap 0 |
 | the fill arrives before the ack | 01, 06 | `…aFillPublishedBeforeTheAck…` | New, then the fill |
 | the partial never reaches the gateway | 03, 08 | `…aFillThisGatewayNeverReceived…` | one report LastQty 10, CumQty 10; gap counter 1 |
+| 10-lot filled 4 @ 50, then canceled | 12 | `…aCancelAfterAPartialFillReportsWhatWasFilled` | Canceled, CumQty 4, LeavesQty 0, AvgPx 50 (was CumQty 0) |
 | connection cut mid-cross, 2 updates published during the cut | 07, 09 | `FixFillFeedIT` | `jetstream` delivers all 4 once, in order; `core` keeps 2; `jetstream` refuses to start before the stream exists |
 | CompSci render | 09 | `test_prepare.py` | gateway carries `FIX_FILL_FEED=jetstream`; `0`, `core`, `auto` are refused |
 | live cross on `traderx-fixf` | 02, 05 | `yu18-fix-session.sh` step 4, two-replica cross | Filled at the resting price on both sides, across replicas; partial then filled exact |

@@ -801,13 +801,24 @@ public final class FixGatewayAcceptor {
 
         private ExecutionReport statusReportFor(final OrderStatusSource.OrderView v) {
             final char side = "Sell".equalsIgnoreCase(v.side()) ? 'S' : 'B';
-            return statusReport(v.orderRef(), side, v.quantity(), v.remaining(),
+            // FR-DRS-27: CumQty is the read model's filled quantity. A read model too old to send it
+            // leaves qty - remaining, right while remaining > 0 or FILLED; a CANCELED/REJECTED order's
+            // remaining is 0, so there it would claim the whole order filled: report 0 instead.
+            final int cum = v.filled() >= 0 ? v.filled()
+                : v.remaining() > 0 || "FILLED".equals(v.status()) ? v.quantity() - v.remaining() : 0;
+            return statusReport(v.orderRef(), side, v.quantity(), v.remaining(), cum,
                 ordStatusOfName(v.status()), v.security());
+        }
+
+        private ExecutionReport statusReport(final int orderRef, final char side, final int qty,
+                                             final int remaining, final char ordStatus,
+                                             final String security) {
+            return statusReport(orderRef, side, qty, remaining, qty - remaining, ordStatus, security);
         }
 
         /** ExecutionReport(150=OrderStatus) skeleton; caller adds ClOrdID and/or MassStatusReqID. */
         private ExecutionReport statusReport(final int orderRef, final char side, final int qty,
-                                             final int remaining, final char ordStatus,
+                                             final int remaining, final int cum, final char ordStatus,
                                              final String security) {
             final ExecutionReport report = new ExecutionReport(
                 new OrderID(orderRef > 0 ? "ord-" + orderRef : "NONE"),
@@ -816,7 +827,7 @@ public final class FixGatewayAcceptor {
                 new OrdStatus(ordStatus),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
                 new LeavesQty(remaining),
-                new CumQty(qty - remaining),
+                new CumQty(cum),
                 new AvgPx(0));
             if (qty > 0) {
                 report.set(new OrderQty(qty));
@@ -872,6 +883,17 @@ public final class FixGatewayAcceptor {
         private void sendCancelReport(final SessionID sessionId, final String clOrdId,
                                       final String origClOrdId, final String ticker, final char side,
                                       final int orderRef, final OrderCancelRequest cancel) {
+            // FR-FIX05: a cancel ends the order, not its fills. What this gateway reported filled
+            // (tracked, or rebuilt from the session store on adoption) stands in the Canceled report.
+            int cum = 0;
+            double notional = 0;
+            synchronized (feedLock) {
+                final Tracked t = tracked.remove(orderRef);
+                if (t != null) {
+                    cum = t.cumQty;
+                    notional = t.notional;
+                }
+            }
             final ExecutionReport report = new ExecutionReport(
                 new OrderID("ord-" + orderRef),
                 new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
@@ -879,8 +901,8 @@ public final class FixGatewayAcceptor {
                 new OrdStatus(OrdStatus.CANCELED),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
                 new LeavesQty(0),
-                new CumQty(0),
-                new AvgPx(0));
+                new CumQty(cum),
+                new AvgPx(cum > 0 ? notional / cum : 0));
             report.set(new ClOrdID(clOrdId));
             report.set(new OrigClOrdID(origClOrdId));
             if (!ticker.isEmpty()) {
@@ -895,9 +917,6 @@ public final class FixGatewayAcceptor {
             }
             send(report, sessionId, clOrdId);
             refByClOrdId.remove(qualify(sessionId, origClOrdId));
-            synchronized (feedLock) {
-                tracked.remove(orderRef);
-            }
         }
 
         private void sendCancelReject(final SessionID sessionId, final String orderId,

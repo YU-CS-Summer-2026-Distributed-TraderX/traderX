@@ -389,9 +389,11 @@ and checkpoints unchanged.
    `yu18-fix-session` and `yu18-fix-resume` pass on `fp-7ea8db5c`. Suspect 7 closed by the same change
    (`ORDER_READMODEL_URL` on the GKE gateway), suspect 10 by refusing an unresolvable ticker as
    `UNKNOWN_SECURITY` instead of answering nothing.
-   **Open, found while proving it:** `OrderStatusRequest` for a CANCELED order reports `CumQty = qty − remaining`,
-   so a cancel that filled nothing shows the whole quantity filled (`yu18-fix-resume` step 5: S2 Sell 3,
-   canceled unfilled, answered `OrdStatus=4 CumQty=3`). Pre-existing in `statusReportFor` (YU13); not fixed.
+   **Found while proving it, CLOSED 2026-10-28 (ADR-088):** `OrderStatusRequest` for a CANCELED order reported
+   `CumQty = qty − remaining`, so a cancel that filled nothing showed the whole quantity filled (`yu18-fix-resume`
+   step 5: S2 Sell 3, canceled unfilled, answered `OrdStatus=4 CumQty=3`). Root cause: the engine zeroes
+   `remaining` on every cancel and nothing carried the fill. The read model now carries `filledQuantity`
+   (FR-DRS-27) and the Canceled report keeps the tracked CumQty (FR-FFR-12); step 5 now asserts CumQty 0 / 4.
 10. **FR-FIX12(c) — an unknown symbol is not answered.** `D` with `55=ZZNOSUCH9` gets no message of any kind
     in 20 s. The gateway logs `FIX order <clOrdId> ambiguous (no committed ack)`, i.e. it classed an
     application reject as outcome (d). The spec wants `ExecutionReport OrdStatus=Rejected`. (b) is correct:

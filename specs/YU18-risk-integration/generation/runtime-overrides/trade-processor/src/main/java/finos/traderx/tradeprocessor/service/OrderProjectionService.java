@@ -2,6 +2,7 @@ package finos.traderx.tradeprocessor.service;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import finos.traderx.tradeprocessor.OrderFeedHandler;
+import finos.traderx.tradeprocessor.OrderView;
 import finos.traderx.tradeprocessor.model.*;
 import finos.traderx.tradeprocessor.repository.OrderRepository;
 import java.security.MessageDigest;
@@ -62,6 +63,10 @@ public final class OrderProjectionService {
     {
       registry.validate(update,run);
       OrderRow row=OrderFeedHandler.toRow(update);
+      // FR-DRS-27: from this row's own previous state, never the in-memory view's (it may not hold it).
+      Integer before=old==null ? Integer.valueOf(0) : old.getFilledQuantity()!=null ? old.getFilledQuantity()
+          : OrderView.filled(old.getStatus(),old.getQuantity(),old.getRemainingQuantity(),null); // a row from before the column
+      row.setFilledQuantity(OrderView.filled(row.getStatus(),row.getQuantity(),row.getRemainingQuantity(),before));
       if (old!=null && !Objects.equals(old.getProjectionScope(),row.getProjectionScope())) {
         throw new IllegalArgumentException("ORDER_SCOPE_CONFLICT: "+row.getId());
       }
@@ -105,7 +110,7 @@ public final class OrderProjectionService {
   private static boolean sameLegacyState(OrderRow old,OrderRow incoming) {
     var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
     com.fasterxml.jackson.databind.node.ObjectNode a=mapper.valueToTree(old),b=mapper.valueToTree(incoming);
-    for(String field:java.util.List.of("traceId","createdAt","updatedAt","eventDigest")) {a.remove(field);b.remove(field);}
+    for(String field:java.util.List.of("traceId","createdAt","updatedAt","eventDigest","filledQuantity")) {a.remove(field);b.remove(field);}
     return a.equals(b);
   }
   static String digest(OrderUpdate update) {
@@ -113,6 +118,7 @@ public final class OrderProjectionService {
       var mapper=DIGEST_MAPPER; // was built per update
       var tree=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(update);
       tree.remove("traceId"); // processing trace attribution is not economic event identity
+      tree.remove("filledQuantity"); // derived by the read model (FR-DRS-27), not part of the event
       return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(tree)));
     } catch (Exception ex) {throw new IllegalArgumentException("invalid order event",ex);}
   }

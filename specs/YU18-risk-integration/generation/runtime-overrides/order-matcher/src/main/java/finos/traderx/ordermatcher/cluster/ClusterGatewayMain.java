@@ -3375,7 +3375,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     n.path("quantity").asInt(),
                     n.path("remainingQuantity").asInt(),
                     n.path("status").asText(""),
-                    n.path("security").asText("")));
+                    n.path("security").asText(""),
+                    n.path("filledQuantity").asInt(-1)));
             }
             return out;
         } catch (final InterruptedException e) {

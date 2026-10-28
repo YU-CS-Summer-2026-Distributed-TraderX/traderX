@@ -69,6 +69,8 @@ data:
       updatedat DATETIME NOT NULL,
       lastexecutionprice DECIMAL(18,6),
       lastfillquantity INTEGER,
+      -- FR-DRS-27: quantity filled so far, FIX CumQty. remainingquantity is 0 once CANCELED.
+      filledquantity INTEGER,
       -- YU17 (brief 07): the order's derived 32-hex W3C trace id, written once off the NEW
       -- update. A trace id is derived from the client order id, which stops at the gateway, so
       -- without this column only the browser that submitted an order could ever name its trace.
@@ -406,6 +408,8 @@ data:
       updatedat DATETIME NOT NULL,
       lastexecutionprice DECIMAL(18,6),
       lastfillquantity INTEGER,
+      -- FR-DRS-27: quantity filled so far, FIX CumQty. remainingquantity is 0 once CANCELED.
+      filledquantity INTEGER,
       traceid VARCHAR(32),
       -- YU18 order types (FR-OT33): type, TIF and typed parameters; PENDING_TRIGGER and
       -- SUSPENDED are live statuses. stopprice is a TRAILING_STOP's CURRENT level.
@@ -618,6 +622,9 @@ data:
     ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS sessiondate INTEGER;
     ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS suspendreason VARCHAR(16);
     ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS reason VARCHAR(32);
+    -- FR-DRS-27. A row written before this column reads its fill from quantity - remainingquantity
+    -- until its next update; trade-processor validates the schema, so it refuses to start without it.
+    ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS filledquantity INTEGER;
     ALTER TABLE orderbook MODIFY COLUMN status VARCHAR(24);
     ALTER TABLE orderbook DROP CONSTRAINT IF EXISTS orderbook_status;
     ALTER TABLE orderbook ADD CONSTRAINT orderbook_status CHECK (status in ('NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'QUEUED', 'PENDING_TRIGGER', 'SUSPENDED'));

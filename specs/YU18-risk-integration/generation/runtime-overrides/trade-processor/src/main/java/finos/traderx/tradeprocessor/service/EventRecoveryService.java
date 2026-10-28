@@ -183,7 +183,7 @@ public final class EventRecoveryService {
             },expected.getCreatedAt()==null?null:new java.sql.Timestamp(expected.getCreatedAt().getTime()),
               expected.getUpdatedAt()==null?null:new java.sql.Timestamp(expected.getUpdatedAt().getTime()));
         var b=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(expected);
-        for(String f:List.of("traceId","eventDigest")) {a.remove(f);b.remove(f);}
+        for(String f:List.of("traceId","eventDigest","filledQuantity")) {a.remove(f);b.remove(f);}   // filledQuantity: derived (FR-DRS-27)
         require(a.equals(b),"RECOVERY_RETAINED_ORDER_ROW_CONFLICT: "+o.getId());
     }
     private static String hash(String bytes) {

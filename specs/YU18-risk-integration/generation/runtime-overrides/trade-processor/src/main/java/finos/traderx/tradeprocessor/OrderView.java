@@ -42,9 +42,14 @@ public final class OrderView {
   public void apply(OrderUpdate u) {
     if (u == null || u.getId() == null || u.getAccountId() == null) { return; }
     Map<String, OrderUpdate> orders = byAccount.computeIfAbsent(u.getAccountId(), k -> new ConcurrentHashMap<>());
+    // ponytail: an order whose earlier updates this view never held (evicted, or before its first
+    // message) reads 0 filled when it ends CANCELED; the SQL projection keeps the row and has no gap.
+    u.setFilledQuantity(filled(u.getStatus(), u.getQuantity(), u.getRemainingQuantity(), 0));
     OrderUpdate winner = orders.merge(u.getId(), u, (old, next) -> {
       if (!newer(old, next)) { return old; }
       if (next.getTraceId() == null) { next.setTraceId(old.getTraceId()); }
+      next.setFilledQuantity(filled(next.getStatus(), next.getQuantity(), next.getRemainingQuantity(),
+          old.getFilledQuantity()));
       return next;
     });
     if (winner != u) { ignored.incrementAndGet(); return; }
@@ -63,6 +68,18 @@ public final class OrderView {
       // Only the entry this very update put there: a newer update for the same id stays.
       if (orders != null) { orders.remove(evict.getId(), evict); }
     }
+  }
+
+  /**
+   * FR-DRS-27: the quantity filled so far, FIX CumQty. Open: quantity - remaining. FILLED: quantity.
+   * CANCELED and REJECTED: the engine zeroes remainingQuantity (their LeavesQty), so the fill is the
+   * one before this update, {@code before} (0 for an order with no earlier state, null if unknown).
+   * Every partial fill is its own update ahead of the cancel, so {@code before} is exact.
+   */
+  public static Integer filled(String status, Integer quantity, Integer remaining, Integer before) {
+    if ("FILLED".equals(status)) { return quantity; }
+    if (OPEN.contains(status)) { return quantity == null || remaining == null ? null : quantity - remaining; }
+    return before;
   }
 
   static boolean newer(OrderUpdate old, OrderUpdate next) {

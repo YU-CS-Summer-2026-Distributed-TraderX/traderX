@@ -189,7 +189,7 @@ public final class ProjectionTransitionService {
             if(!RunRegistry.UNKNOWN.equals(scope)) require(OrderProjectionService.digest(expected).equals(row.getEventDigest()),"RUN_ORDER_EVENT_MISMATCH");
             else {
                 ObjectNode a=mapper.valueToTree(row),b=mapper.valueToTree(OrderFeedHandler.toRow(expected));
-                for(String field:List.of("traceId","createdAt","updatedAt","eventDigest")) {a.remove(field);b.remove(field);}
+                for(String field:List.of("traceId","createdAt","updatedAt","eventDigest","filledQuantity")) {a.remove(field);b.remove(field);}
                 require(a.equals(b),"RUN_LEGACY_ORDER_STATE_MISMATCH");
             }
         }

@@ -60,6 +60,10 @@ public class OrderRow implements Serializable {
   @Column(name = "lastfillquantity")
   private Integer lastFillQuantity;
 
+  /** FR-DRS-27: quantity filled so far (FIX CumQty). A CANCELED row's remainingquantity is 0. */
+  @Column(name = "filledquantity")
+  private Integer filledQuantity;
+
   /**
    * The order's derived W3C trace id (brief 07) — persisted so a trace can be named for ANY order,
    * not only one the asking client submitted. Written once off the NEW update and preserved by
@@ -196,6 +200,14 @@ public class OrderRow implements Serializable {
 
   public void setLastExecutionPrice(BigDecimal lastExecutionPrice) {
     this.lastExecutionPrice = lastExecutionPrice;
+  }
+
+  public Integer getFilledQuantity() {
+    return filledQuantity;
+  }
+
+  public void setFilledQuantity(Integer filledQuantity) {
+    this.filledQuantity = filledQuantity;
   }
 
   public Integer getLastFillQuantity() {

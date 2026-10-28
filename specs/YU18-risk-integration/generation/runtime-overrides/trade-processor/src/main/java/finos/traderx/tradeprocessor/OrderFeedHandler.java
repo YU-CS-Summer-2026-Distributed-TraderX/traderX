@@ -236,6 +236,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     row.setStatus(u.getStatus());
     row.setLastExecutionPrice(u.getLastExecutionPrice());
     row.setLastFillQuantity(u.getLastFillQuantity());
+    row.setFilledQuantity(u.getFilledQuantity());
     row.setTraceId(u.getTraceId());
     // YU18 (FR-OT33): an untyped order is read as what the engine inferred from its price —
     // LIMIT GTC above zero, MARKET IOC otherwise — so every row names a type and a TIF.

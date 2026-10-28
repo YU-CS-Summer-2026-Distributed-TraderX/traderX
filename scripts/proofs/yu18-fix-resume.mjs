@@ -9,7 +9,7 @@
 //      ResendRequest from the first unread number: exactly S2's and S3's reports and S3's fill, at their
 //      original numbers, PossDupFlag=Y, OrigSendingTime set. No report reaches the client twice.
 //   4. On B: cancel S2 by OrigClOrdID alone (B rebuilt ClOrdID -> order from the stored reports).
-//   5. On B: OrderStatusRequest answers from the read model (S2 Canceled, S3 Filled), not "unavailable".
+//   5. On B: OrderStatusRequest answers from the read model (S2 Canceled CumQty 0, S3 Filled CumQty 4), not "unavailable".
 //   6. On A, while B holds the session: a Logon continuing the numbers is refused (Logout naming the
 //      other gateway), and B's session keeps working.
 import net from 'node:net';
@@ -146,7 +146,7 @@ try {
 
   console.log('\n=== 5. replica B: OrderStatusRequest from the read model (FR-FIX04) ===');
   const s3 = resent.find((m) => m['11'] === S3);
-  for (const [cl, id, want] of [[S2, c2['37'], '4'], [S3, s3['37'], '2']]) {
+  for (const [cl, id, want, cum] of [[S2, c2['37'], '4', '0'], [S3, s3['37'], '2', '4']]) {   // CumQty: FR-DRS-27
     let st;
     for (let attempt = 0; attempt < 10; attempt++) {   // the read model trails the engine by a moment
       const mark = b.rx.length;
@@ -155,7 +155,7 @@ try {
       if (st['39'] === want) break;
       await sleep(1000);
     }
-    if (st['39'] !== want || st['37'] !== id) fail(`status of ${cl}: OrdStatus=${st['39']} OrderID=${st['37']} "${st['58'] || ''}", want ${want} / ${id}`);
+    if (st['39'] !== want || st['37'] !== id || st['14'] !== cum) fail(`status of ${cl}: OrdStatus=${st['39']} OrderID=${st['37']} CumQty=${st['14']} "${st['58'] || ''}", want ${want} / ${id} / ${cum}`);
     ok(`H ${cl} -> ExecType=I OrdStatus=${st['39']} OrderID=${st['37']} LeavesQty=${st['151']} CumQty=${st['14']}`);
   }
   result('status_ok', 1);

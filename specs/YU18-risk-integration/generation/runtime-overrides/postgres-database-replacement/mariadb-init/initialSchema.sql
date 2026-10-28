@@ -68,6 +68,8 @@ CREATE TABLE orderbook (
   updatedat DATETIME NOT NULL,
   lastexecutionprice DECIMAL(18,3),
   lastfillquantity INTEGER,
+  -- FR-DRS-27: quantity filled so far, FIX CumQty. remainingquantity is 0 once CANCELED.
+  filledquantity INTEGER,
   -- YU18 order types (FR-OT33): type, TIF and typed parameters; PENDING_TRIGGER and
   -- SUSPENDED are live statuses. stopprice is a TRAILING_STOP's CURRENT level.
   ordertype VARCHAR(16),

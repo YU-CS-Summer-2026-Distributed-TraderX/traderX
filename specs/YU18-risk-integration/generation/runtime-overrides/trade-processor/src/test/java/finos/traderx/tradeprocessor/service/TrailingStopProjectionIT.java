@@ -114,6 +114,33 @@ class TrailingStopProjectionIT {
     assertEquals(0,new BigDecimal("102.500000").compareTo(row.getStopPrice()),"level at trigger kept");
   }
 
+  OrderUpdate limit(String id, long updatedAt, int remaining, String status) {
+    var e=new OrderUpdate();e.setId(id);e.setAccountId(1001);e.setSecurity("IBM");e.setSide("Buy");
+    e.setQuantity(10);e.setRemainingQuantity(remaining);e.setLimitPrice(BigDecimal.TEN);e.setStatus(status);
+    e.setCreatedAt(1000L);e.setUpdatedAt(updatedAt);
+    return e;
+  }
+
+  /** FR-DRS-27: the engine zeroes a CANCELED order's remainingquantity; its fill survives the cancel. */
+  @Test void aCanceledOrderKeepsWhatItFilled() {
+    var p=projection();
+    p.persist(limit("2-1",2000,10,"NEW"));
+    p.persist(limit("2-1",3000,6,"PARTIALLY_FILLED"));
+    p.persist(limit("2-1",4000,0,"CANCELED"));
+    assertEquals(4,orders.findById("2-1").orElseThrow().getFilledQuantity(),"single-update path");
+    p.persistAll(java.util.List.of(limit("2-2",2000,10,"NEW"),limit("2-2",3000,7,"PARTIALLY_FILLED"),
+        limit("2-2",4000,0,"CANCELED")));
+    assertEquals(3,orders.findById("2-2").orElseThrow().getFilledQuantity(),"batch path");
+    p.persist(limit("2-3",2000,10,"NEW"));
+    p.persist(limit("2-3",4000,0,"CANCELED"));
+    assertEquals(0,orders.findById("2-3").orElseThrow().getFilledQuantity(),"canceled unfilled");
+    // A row written before the column existed: its open state still names the fill.
+    p.persist(limit("2-4",3000,8,"PARTIALLY_FILLED"));
+    jdbc.update("UPDATE orderbook SET filledquantity=NULL WHERE orderid='2-4'");
+    p.persist(limit("2-4",4000,0,"CANCELED"));
+    assertEquals(2,orders.findById("2-4").orElseThrow().getFilledQuantity(),"pre-column row");
+  }
+
   @Test void legacyScopeShowsEachRatchetInArrivalOrder() {
     var p=projection();
     p.persist(trail("1-7",2000,"98.000000",false,"PENDING_TRIGGER"));
