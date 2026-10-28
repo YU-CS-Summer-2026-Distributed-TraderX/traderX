@@ -1,7 +1,7 @@
 import { TestBed, fakeAsync, tick, discardPeriodicTasks } from '@angular/core/testing';
 import { ADMIN_TABS, FEATURES, TRADER_TABS } from './features';
 import { INSTRUMENTS, USERS } from './fixtures';
-import { STALE_AFTER_MS, avgAfterFill, crosses, freshnessOf, valueOf } from './desk';
+import { STALE_AFTER_MS, actionOutcome, avgAfterFill, crosses, freshnessOf, valueOf } from './desk';
 import { SESSION_KEY, Session, accountKey, canUse, chooseAccount, prefsKey, readPrefs, readSession, userById } from './session';
 import { plain, OrdersPage, MarketsPage } from './trader';
 import { Desk } from './desk';
@@ -243,3 +243,13 @@ describe('gateway order capabilities',()=>{
    t.submit();resolve({ok:true,text:'Order accepted'});tick();expect(t.qty()).toBeUndefined();expect(t.limit()).toBeUndefined();expect(t.result()?.ok).toBeTrue();discardPeriodicTasks();
   }));
  });
+describe('order action outcome (FR-CUI-19)',()=>{
+ it('shows a pre-send server refusal as refused, and only a post-send failure as unknown',()=>{
+  const refused=actionOutcome(503,{error:'Current run could not be confirmed. Nothing sent.',sent:false},'orderRef');
+  expect(refused.ok).toBeFalse();expect(refused.text).toBe('Refused: Current run could not be confirmed. Nothing sent.');
+  for(const [status,body] of [[504,{error:'Outcome unknown. Check orders before sending another request.'}],[502,{}],[0,null]] as [number,any][])
+   expect(actionOutcome(status,body,'orderRef').text).toMatch(/^Outcome unknown/);
+  expect(actionOutcome(200,{orderRef:9},'orderRef')).toEqual({ok:true,text:'Order accepted · 9.'});
+  expect(actionOutcome(409,{error:'Active run changed. Nothing sent.',sent:false},'canceled').text).toBe('Refused: Active run changed. Nothing sent.');
+ });
+});

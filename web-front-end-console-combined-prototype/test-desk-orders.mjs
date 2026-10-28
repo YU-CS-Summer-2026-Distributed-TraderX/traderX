@@ -42,6 +42,17 @@ test('all seven order payloads retain their fields and idempotency key',async()=
 test('ambiguous committed outcome sends exactly once and stays unknown',async()=>{
  const r=rig({timeout:true});const result=await deskOrderAction(r.upstream,[11],'replace',body);
  assert.equal(result.status,504);assert.match(result.body.error,/Outcome unknown/);assert.equal(r.writes.length,1);
+ assert.equal(result.body.sent,undefined);
+});
+
+test('every refusal before dispatch says nothing was sent, including an unconfirmed run (FR-CUI-19)',async()=>{
+ const down=rig();const upstream=async(path,options)=>path.endsWith('/run/status')?{status:503,body:{}}:down.upstream(path,options);
+ const result=await deskOrderAction(upstream,[11],'orders',body);
+ assert.equal(result.status,503);assert.equal(result.body.sent,false);assert.match(result.body.error,/Nothing sent/);assert.equal(down.writes.length,0);
+ for(const [accounts,b,overrides] of [[[12],body,{}],[[11],body,{run:{phase:'SEALED'}}],[[11],body,{switch:true}]]) {
+  const r=rig(overrides);const refused=await deskOrderAction(r.upstream,accounts,'cancel',b);
+  assert.equal(refused.body.sent,false);assert.equal(r.writes.length,0);
+ }
 });
 
 test('every live status can be cancelled, including a suspended pegged order',async()=>{

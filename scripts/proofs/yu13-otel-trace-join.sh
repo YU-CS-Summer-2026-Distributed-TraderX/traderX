@@ -112,13 +112,14 @@ ref_before="${ref_before:-0}"
 # trace-join proof that never books is weaker than it claims. Since ADR-066 the band follows the
 # feed, so the live price is exactly what the book admits.
 TICKER="${TICKER:-AAPL}"
+ACCOUNT="${ACCOUNT:-22214}"
 PX="${PX:-$(${K} exec deploy/price-publisher -- wget -qO- "http://localhost:18100/prices/${TICKER}" 2>/dev/null \
   | python3 -c "import sys,json;print(round(json.load(sys.stdin)['price'],2))" 2>/dev/null)}"
 PX="${PX:-150.0}"
 echo "[run] submitting ${ORDERS} orders tagged ${TAG} (${TICKER} @ ${PX})"
 for i in $(seq 1 "${ORDERS}"); do
   code="$(curl "${AUTH[@]}" -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":22214,\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":${PX},\"clientOrderId\":\"${TAG}-${i}\"}")" \
+    -d "{\"accountId\":${ACCOUNT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":${PX},\"clientOrderId\":\"${TAG}-${i}\"}")" \
     || fail "order ${i} was not acked"
   [[ "${code}" == 2* ]] || fail "order ${i} was refused (HTTP ${code}) — the join below would be over rejections, not orders"
 done
@@ -131,7 +132,7 @@ echo "[run] waiting for the asynchronous exporter to flush"
 sleep "${FLUSH_WAIT:-8}"
 
 vlog "   tempo=${TEMPO_URL}  matcher=${MATCHER_URL}  member=${MEMBER_POD}  tag=${TAG}  orders=${ORDERS}"
-TAG="${TAG}" ORDERS="${ORDERS}" TEMPO_URL="${TEMPO_URL}" PROOF_VERBOSE="${VERBOSE}" python3 - <<'PY'
+TAG="${TAG}" ORDERS="${ORDERS}" ACCOUNT="${ACCOUNT}" KEY_SCOPED="${KEY_SCOPED:-1}" TEMPO_URL="${TEMPO_URL}" PROOF_VERBOSE="${VERBOSE}" python3 - <<'PY'
 import base64, json, os, sys, urllib.error, urllib.request
 
 VERBOSE = os.environ.get("PROOF_VERBOSE") == "1"
@@ -153,13 +154,22 @@ def mix(x):                                   # OrderTrace.mix (splitmix64 final
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & M
     return (z ^ (z >> 31)) & M
 
+def scope_key(k, account):                   # ClusterGatewayMain.Pending.scopeKey (ENGINE-REVIEW G1, YU18 on)
+    if k == 0 or account == 0 or os.environ.get("KEY_SCOPED", "1") == "0":   # KEY_SCOPED=0 for a YU13-YU17 gateway
+        return k
+    h = (k ^ ((0x9e3779b97f4a7c15 * account) & M)) & M
+    h ^= h >> 29
+    h = (h * 0xbf58476d1ce4e5b9) & M
+    h ^= h >> 32
+    return h or 1
+
 tag, orders = os.environ["TAG"], int(os.environ["ORDERS"])
 tempo = os.environ["TEMPO_URL"]
 failures = []
 
 for i in range(1, orders + 1):
     clordid = f"{tag}-{i}"
-    key = client_order_key(clordid)
+    key = scope_key(client_order_key(clordid), int(os.environ["ACCOUNT"]))   # ADR-060 §1 trace key
     if (mix(key ^ SAMPLE_SALT) & int(os.environ["OTEL_SAMPLE_MASK"])) != 0:
         print(f"[skip] {clordid} is not in the head sample")
         continue

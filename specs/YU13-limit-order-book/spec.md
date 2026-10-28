@@ -128,6 +128,12 @@ repair was and what it proves.
   schema change SHALL be made on tracing's behalf.
 - FR-TR03: The member SHALL derive that key before the sequenced generator overwrites `orderRef`,
   so both tiers hash identical input and independently reach the same trace id.
+- FR-TR08: The trace key SHALL be the function in ADR-060 §1a, so a black-box caller who knows an
+  order's ClOrdID and account can predict its trace id, consensus span id and head-sampling verdict:
+  64-bit FNV-1a over the ClOrdID's UTF-16 code units (0 for an empty id, 1 if the hash is 0), from
+  YU18 scoped by the account (ENGINE-REVIEW G1), and with no client key the mixed target `orderRef`
+  (a CANCEL).
+  Only orders the gateway submits (NEW, REPLACE, CANCEL) are inside the one-trace contract of FR-TR01.
 - FR-TR04: A rejected order SHALL be traced whatever the sampling verdict said, with both tiers
   reaching that decision independently from committed data — error sampling is decided at the
   head, because a collector's tail sampling cannot recover a span head sampling never emitted.

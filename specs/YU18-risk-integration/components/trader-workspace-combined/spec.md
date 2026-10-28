@@ -54,7 +54,11 @@ is still a demo identity and does not establish production authentication or ben
   replacement editor changes LIMIT total quantity and limit price only; total quantity must exceed
   filled quantity. Other live types retain cancellation. No automatic retry follows an uncertain
   mutation result. Server reads can refuse safely before sending; transport failure after sending
-  remains an unknown outcome.
+  remains an unknown outcome. The Desk server SHALL mark every refusal it makes before dispatch
+  `sent:false` (an unconfirmed run answers `503`, a changed run `409`), and the Desk SHALL show such a
+  refusal as `Refused: <reason>` whatever its HTTP status. A response with no status, or a 5xx without
+  `sent:false`, SHALL be shown as an unknown outcome (`Outcome unknown. Check orders ...`);
+  the Desk server's own post-dispatch timeout answers `504` without `sent:false`.
 - FR-CUI-20: Clear account rows and disable actions when a finite read deadline expires, including
   transports that ignore cancellation. Account/run changes fence late reads and preflight replies;
   a newly observed run clears the ticket/editor. Historical views are read-only even if their scope
@@ -65,6 +69,17 @@ is still a demo identity and does not establish production authentication or ben
   Existing password-checked Demo console operator access is retained. Direct backend/internal Aeron
   access, production authentication, secondary tools and arbitrary NATS subscription authorization
   remain outside this local Desk order-management contract.
+  *Hosted profile (`DESK_DEMO_PROFILE=1`, the CompSci Desk):* every sign-in SHALL require the operator
+  password, so every hosted session holds the admin role and the Demo console operator session. The
+  projection-read membership rule above does not apply there: a hosted session reads every account's
+  positions, trades and orders. Desk order mutations still go through the workspace route and SHALL
+  still require owned membership (FR-CUI-17).
+
+**Unmanaged runs, including the hosted CompSci Desk.** The CompSci render serves an unmanaged run
+(`legacy-unknown`, no registered ACTIVE descriptor), so by FR-CUI-17 the hosted Desk SHALL refuse every
+submit, cancel and replace before sending, shown as `Refused: ... Nothing sent.` (FR-CUI-19). Order entry
+on that tier is the Demo console and FIX. The acceptance half of FR-CUI-16, FR-CUI-18 and the mutation
+paths of FR-CUI-19 are proven on a managed rig only.
 
 Managed configuration uses the existing RI-06 offline provisioning, durable transition and recovery
 contracts. Merely attaching a descriptor to a retained unmanaged rig is not supported. No retained

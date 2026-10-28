@@ -157,7 +157,7 @@ fi
 # ----- choose ClOrdIDs on both sides of the head verdict, before submitting anything ------------
 # Both are chosen to be OUTSIDE the head sample. One will be rejected (unknown account) and one
 # accepted, so the only difference between them is the outcome.
-read -r REJECT_CLORDID ACCEPT_CLORDID <<<"$(TAG="${TAG}" MASK="${MASK}" python3 - <<'PY'
+read -r REJECT_CLORDID ACCEPT_CLORDID <<<"$(TAG="${TAG}" MASK="${MASK}" ACCOUNTS="${UNKNOWN_ACCOUNT} ${SEEDED_ACCOUNT}" KEY_SCOPED="${KEY_SCOPED:-1}" python3 - <<'PY'
 import os
 M = (1 << 64) - 1
 SAMPLE_SALT = 0x2545F4914F6CDD1D
@@ -174,13 +174,23 @@ def mix(x):
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & M
     return (z ^ (z >> 31)) & M
 
+def scope_key(k, account):                   # ClusterGatewayMain.Pending.scopeKey (ENGINE-REVIEW G1, YU18 on)
+    if k == 0 or account == 0 or os.environ.get("KEY_SCOPED", "1") == "0":   # KEY_SCOPED=0 for a YU13-YU17 gateway
+        return k
+    h = (k ^ ((0x9e3779b97f4a7c15 * account) & M)) & M
+    h ^= h >> 29
+    h = (h * 0xbf58476d1ce4e5b9) & M
+    h ^= h >> 32
+    return h or 1
+
 tag, mask = os.environ["TAG"], int(os.environ["MASK"])
+accounts = [int(a) for a in os.environ["ACCOUNTS"].split()]   # reject, then accept
 picked = []
 i = 0
 while len(picked) < 2:
     i += 1
     cid = f"{tag}-{i}"
-    if (mix(client_order_key(cid) ^ SAMPLE_SALT) & mask) != 0:   # NOT in the head sample
+    if (mix(scope_key(client_order_key(cid), accounts[len(picked)]) ^ SAMPLE_SALT) & mask) != 0:   # NOT in the head sample
         picked.append(cid)
 print(picked[0], picked[1])
 PY
@@ -258,7 +268,7 @@ ok "one rejected order and one accepted order, both outside the head sample"
 echo "[run] waiting for the asynchronous exporter and promtail to flush"
 sleep "${FLUSH_WAIT:-12}"
 
-REJECT_CLORDID="${REJECT_CLORDID}" ACCEPT_CLORDID="${ACCEPT_CLORDID}" \
+REJECT_CLORDID="${REJECT_CLORDID}" ACCEPT_CLORDID="${ACCEPT_CLORDID}" SEEDED_ACCOUNT="${SEEDED_ACCOUNT}" UNKNOWN_ACCOUNT="${UNKNOWN_ACCOUNT}" KEY_SCOPED="${KEY_SCOPED:-1}" \
 TEMPO_URL="${TEMPO_URL}" LOKI_URL="${LOKI_URL}" GRAFANA_URL="${GRAFANA_URL}" \
 GRAFANA_USER="${GRAFANA_USER}" GRAFANA_PASSWORD="${GRAFANA_PASSWORD}" PROOF_VERBOSE="${VERBOSE}" python3 - <<'PY'
 import base64, json, os, sys, time, urllib.error, urllib.parse, urllib.request
@@ -280,12 +290,21 @@ def mix(x):                                   # OrderTrace.mix (splitmix64 final
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & M
     return (z ^ (z >> 31)) & M
 
-def trace_id(clordid):                        # OrderTrace.traceIdHex, independently
-    k = client_order_key(clordid)
+def scope_key(k, account):                   # ClusterGatewayMain.Pending.scopeKey (ENGINE-REVIEW G1, YU18 on)
+    if k == 0 or account == 0 or os.environ.get("KEY_SCOPED", "1") == "0":   # KEY_SCOPED=0 for a YU13-YU17 gateway
+        return k
+    h = (k ^ ((0x9e3779b97f4a7c15 * account) & M)) & M
+    h ^= h >> 29
+    h = (h * 0xbf58476d1ce4e5b9) & M
+    h ^= h >> 32
+    return h or 1
+
+def trace_id(clordid, account):               # OrderTrace.traceIdHex, independently (ADR-060 §1 key)
+    k = scope_key(client_order_key(clordid), account)
     return f"{mix(k) or 1:016x}{mix(k ^ TRACE_SALT) or 1:016x}"
 
-def consensus_span(clordid):
-    return f"{mix(client_order_key(clordid) ^ CLUSTER_SALT) or 1:016x}"
+def consensus_span(clordid, account):
+    return f"{mix(scope_key(client_order_key(clordid), account) ^ CLUSTER_SALT) or 1:016x}"
 
 def get(url, timeout=15, auth=None):
     req = urllib.request.Request(url)
@@ -299,8 +318,8 @@ tempo, loki, grafana = os.environ["TEMPO_URL"], os.environ["LOKI_URL"], os.envir
 failures = []
 
 # --- 1. the rejected order IS in Tempo, whole, despite failing the head sample ------------------
-predicted = trace_id(reject_id)
-predicted_parent = consensus_span(reject_id)
+predicted = trace_id(reject_id, int(os.environ["UNKNOWN_ACCOUNT"]))
+predicted_parent = consensus_span(reject_id, int(os.environ["UNKNOWN_ACCOUNT"]))
 try:
     if VERBOSE:
         print(f"      GET {tempo}/api/traces/{predicted}   (predicted from the ClOrdID)", file=sys.stderr)
@@ -348,7 +367,7 @@ if doc:
               f"{predicted_parent} — escalated at the head, on both sides, with nothing carried")
 
 # --- 2. the accepted order outside the sample is NOT traced (escalation, not trace-everything) ---
-control = trace_id(accept_id)
+control = trace_id(accept_id, int(os.environ["SEEDED_ACCOUNT"]))
 try:
     if VERBOSE:
         print(f"      GET {tempo}/api/traces/{control}   (the ACCEPTED control — must 404)", file=sys.stderr)

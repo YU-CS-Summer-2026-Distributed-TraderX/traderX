@@ -52,6 +52,7 @@ last section).
 | API explorer | `specs/008-pricing-awareness-market-data/spec.md` | `pipeline/install-generated-api-explorer.sh` | `tg:api-explorer`, `cand:Deployment/api-explorer` | |
 | Edge proxy | `specs/002-edge-proxy-uncontainerized/spec.md` | `pipeline/generate-state-002-edge-proxy-uncontainerized.sh` | `tg:kubernetes-runtime/manifests/base/edge-proxy-deployment.yaml`, `cand:Deployment/edge-proxy` | |
 | Operator console | `specs/YU18-risk-integration/components/managed-run-ui/spec.md`, `specs/YU18-risk-integration/maintenance/console-sessions/spec.md` | `web-front-end-console/server.mjs` | `root:web-front-end-console`, `cand:Deployment/web-front-end-console` | Root-owned (see Gaps) |
+| Desk order outcome (FR-CUI-19) | `specs/YU18-risk-integration/components/trader-workspace-combined/spec.md` | `web-front-end-console/desk-orders.mjs`, `web-front-end-console-combined-prototype/src/app/desk.ts` | `root:web-front-end-console`, `root:web-front-end-console-combined-prototype` | A pre-dispatch refusal carries `sent:false` and is shown refused. Tests: `web-front-end-console-combined-prototype/test-desk-orders.mjs`, `src/app/workspace.spec.ts` |
 | Hosted Desk | `specs/YU18-risk-integration/components/trader-workspace-combined/spec.md`, `specs/YU18-risk-integration/maintenance/compsci-gke-admission/spec.md` | `scripts/gcp-compsci/render-desk-deployment.py` | `root:web-front-end-console-combined-prototype`, `root:scripts/gcp-compsci/Dockerfile.desk` | Derived from the admitted console Deployment |
 
 ## Stores, messaging and observability

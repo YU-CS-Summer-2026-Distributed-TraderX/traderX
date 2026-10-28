@@ -53,3 +53,10 @@ after correction 16 Node tests and 40 Angular tests pass, plus production build.
 statuses, account/run mismatches and unsupported replacement types still refuse. No engine changes
 or live-rig rerun; prior live evidence describes 43ceaf9e, and this correction has source/browser-test
 evidence only.
+
+Proof audit round 3 (2026-10-28): suspect 16, a refusal the Desk server made before sending
+(`503 Current run could not be confirmed. Nothing sent.`) was shown as `Outcome unknown`. The server now
+marks every pre-dispatch refusal `sent:false` and the Desk shows it as `Refused: <reason>`
+(`actionOutcome` in `desk.ts`). Before the fix the new Node test fails (9 of 10 pass); after it 10 Node
+tests and 42 Angular tests pass. Spec gaps 19 and 20 closed in FR-CUI-21 (hosted profile) and the
+unmanaged-run paragraph. Not re-run live.

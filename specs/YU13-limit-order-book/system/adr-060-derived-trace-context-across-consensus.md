@@ -43,6 +43,38 @@ existed on `/metrics` and reached no dashboard.
    Sampling is still decided at ingress in the sense that matters — it is a property of the order,
    fixed before the order is offered. It simply needs no carriage.
 
+1a. **The key, exactly** (FR-TR08). All arithmetic is unsigned 64-bit, wrapping; `>>>` is a logical
+   shift. The gateway computes the key once and writes it to the sequenced `priceTicks` slot; the
+   member reads that slot, so the account scoping is never repeated on the member.
+
+   ```
+   fnv1a(clOrdId)   = h := 0xcbf29ce484222325; for each UTF-16 code unit c: h := (h ^ c) * 0x100000001b3
+                      0 for a null or empty id; 1 if h is 0                   (ClusterGatewayMain.clientOrderKey)
+   scope(k, acct)   = k if k = 0 or acct = 0, else
+                      h := k ^ (0x9e3779b97f4a7c15 * acct); h ^= h >>> 29; h *= 0xbf58476d1ce4e5b9;
+                      h ^= h >>> 32; 1 if h is 0                              (Pending.scopeKey, ENGINE-REVIEW G1)
+   key              = scope(fnv1a(clOrdId), accountId)            NEW / REPLACE carrying a ClOrdID (YU18)
+                      fnv1a(clOrdId)                              the same, YU13-YU17 (no scope step)
+                      splitmix64(orderRef)                        no client key and orderRef > 0 (a CANCEL;
+                                                                  a REPLACE without a ClOrdID)
+                      0                                           otherwise: never traced
+   splitmix64(x)    = z := x + 0x9E3779B97F4A7C15; z := (z ^ z>>>30) * 0xBF58476D1CE4E5B9;
+                      z := (z ^ z>>>27) * 0x94D049BB133111EB; z ^ z>>>31
+   TRACE_SALT = 0x5851F42D4C957F2D   CLUSTER_SALT = 0x14057B7EF767814F   SAMPLE_SALT = 0x2545F4914F6CDD1D
+   ```
+
+   Each id half and the span id is replaced by 1 if it is 0 (W3C forbids all-zero ids). The binary
+   order path supplies its own 64-bit key in place of `fnv1a`, scoped the same way on
+   YU18. The scope step is YU18's ENGINE-REVIEW G1 (the engine's idempotency table is venue-global),
+   applied before the key reaches the log, so on YU18 trace ids moved with it. The `yu13-otel-*` proofs
+   predicted the unscoped key until 2026-10-28 (proof audit spec gap 18); they now scope by default and
+   take `KEY_SCOPED=0` for a YU13-YU17 gateway.
+
+   Only orders the gateway submits and traces are inside the one-trace contract. The leader also emits
+   traces with no gateway root (observed 2026-10-28: 1,798, almost all `order_ref 0`). Which inputs
+   produce them has not been pinned down; symbol registration (template 7) returns before the
+   derivation, so it is not one of them.
+
 2. **The derivation is one-way and read-only.** It consumes a committed field and produces an id
    that is never written back, never encoded into an output event, and never branched on by the
    engine. Delete the tracing classes and every member still emits byte-identical output. This is

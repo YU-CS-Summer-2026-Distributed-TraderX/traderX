@@ -117,6 +117,13 @@ as FR-CUI-17 requires, so its acceptance half joins the managed-run tier gap (sp
 
 ### Findings, round 3
 
+**After round 3 (2026-10-28, not re-run live):** suspect 16 fixed (the Desk server marks a pre-send
+refusal `sent:false`; the Desk shows `Refused: <reason>`, FR-CUI-19). Spec gap 18 closed: ADR-060 §1a and
+FR-TR08 define the key, which is account-scoped (ENGINE-REVIEW G1); both `yu13-otel-*` proofs predicted
+the unscoped key and now derive the scoped one (checked against the Java functions on four ClOrdID/account
+pairs). Spec gaps 19 and 20 closed in FR-CUI-21 (hosted profile) and the unmanaged-run paragraph of the
+trader-workspace spec.
+
 ### New suspects (round 3)
 
 16. **FR-CUI-19: the Desk shows a server refusal that sent nothing as "Outcome unknown".** On the hosted Desk

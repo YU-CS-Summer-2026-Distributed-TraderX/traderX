@@ -345,9 +345,7 @@ export class Desk {
     const target=orderAction?'/desk-api/orders/'+url.split('/').pop():url;
     const payload=orderAction?{...(body as object),accountId:account,projectionScope:scope}:body;
     const r=await this.api.load<any>(target,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(12000)});
-    const ok=r.status>=200 && r.status<300 && !!r.body?.[expected] && !r.body?.reason;
-    const text=ok ? `${expected==='orderRef'?'Order accepted':expected==='parentOrderId'?'Algo parent accepted':expected==='canceled'?'Order cancelled':'Order changed'}${r.body?.orderRef?' · '+r.body.orderRef:''}.`
-      : r.status===0 || r.status>=500 ? 'Outcome unknown. Check orders before submitting again; this request will not be retried.' : r.body?.reason || r.body?.error || `Request refused (HTTP ${r.status}).`;
+    const {ok,text}=actionOutcome(r.status,r.body,expected);
     if(generation===this.session.generation() && this.ctx.isCurrent(token)) {this.log(text,ok);this.reload();}
     return {ok,text};
     } finally {this.actionBusy.set(false);}
@@ -421,6 +419,14 @@ function seedMarks(s: Scenario): Record<string, Mark> {
   return out;
 }
 
+// FR-CUI-19: a refusal the Desk server made before dispatch (sent:false) sent nothing, whatever its status.
+export function actionOutcome(status:number,body:any,expected:'orderRef'|'canceled'|'replaced'|'parentOrderId'):{ok:boolean;text:string} {
+  const ok=status>=200 && status<300 && !!body?.[expected] && !body?.reason;
+  const text=ok ? `${expected==='orderRef'?'Order accepted':expected==='parentOrderId'?'Algo parent accepted':expected==='canceled'?'Order cancelled':'Order changed'}${body?.orderRef?' · '+body.orderRef:''}.`
+    : body?.sent===false ? `Refused: ${body.error ?? `HTTP ${status}`}`
+    : status===0 || status>=500 ? 'Outcome unknown. Check orders before submitting again; this request will not be retried.' : body?.reason || body?.error || `Request refused (HTTP ${status}).`;
+  return {ok,text};
+}
 export function reasonText(reason: string | undefined): string {
   if (!reason) return 'no reason given';
   return REASON_HINT[reason] ? `${REASON_HINT[reason]} (${reason})` : reason;

@@ -3,7 +3,8 @@
 // Match RestingOrder.isOpen and the console's LIVE_STATUSES: suspension is reversible.
 const live = new Set(['NEW','PARTIALLY_FILLED','PENDING_TRIGGER','SUSPENDED']);
 export async function deskOrderAction(upstream, accounts, action, body) {
-  const refuse=(status,error)=>({status,body:{error}});
+  // sent:false marks a refusal made before dispatch; the Desk shows it as refused, never as an unknown outcome.
+  const refuse=(status,error)=>({status,body:{error,sent:false}});
   if (!['orders','cancel','replace'].includes(action)) return refuse(404,'Unknown order action.');
   if (!Number.isSafeInteger(body.accountId) || !accounts.includes(body.accountId)) return refuse(403,'This account does not belong to this workspace.');
   if (typeof body.projectionScope !== 'string' || !body.projectionScope) return refuse(409,'A confirmed current run is required.');
@@ -40,7 +41,7 @@ export async function deskOrderAction(upstream, accounts, action, body) {
   payload.expectedProjectionScope=scope;
   // No retry: a timeout can follow a committed command.
   try {return await upstream(`/order-matcher/${action}`,{method:'POST',body:payload});}
-  catch {return refuse(504,'Outcome unknown. Check orders before sending another request.');}
+  catch {return {status:504,body:{error:'Outcome unknown. Check orders before sending another request.'}};}
 }
 
 export function deskProxyTarget(rawUrl) {
