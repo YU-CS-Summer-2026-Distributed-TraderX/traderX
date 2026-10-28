@@ -162,6 +162,8 @@ gateway dropped every session at once. Production (roll 4) has the same cliff at
    discard-old on the live stream and the running code keeps working: `nats stream edit KV_FIX_SESSIONS --discard
    old`. That removes the cluster-wide drop. It does not bound growth: the oldest stored reports go first, and a
    session idle since the morning may lose its sequence record and resume at 1.
+   Applied on production `traderx` 2026-10-28, 1:21 pm ET (rollout record §13a), the interim until a roll
+   ships the ring above.
 6. **ADR-090's order records** (`FIX_EXACTLY_ONCE=jetstream`, opt-in, not on production) follow the same rule
    since ADR-090 §4a (FR-XOD-13). They form a ring per account in their own bucket, `FIX_ORDERS` (discard-old),
    so they never evict this bucket's records. A resend whose record has aged out, whether overwritten by the ring

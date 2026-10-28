@@ -557,3 +557,20 @@ With Account(1) both work.
 
 Spend: build VMs 8:52–9:00 am and 9:46–10:36 am ET, both deleted. Two side rehearsals (pools r4-engine and
 r4-support), all deleted, no disks left; about $4 in total. Evidence: shared notes `roll4-20261028/00b31d33/`.
+
+## 13a. `KV_FIX_SESSIONS` set to discard-old on `traderx` (2026-10-28, 1:21 pm ET)
+
+Approved by yaakov. The interim for ADR-086 §6a.5 until a roll ships the per-session ring (`b0bcd313`, FR-GFS-14/15):
+roll 4's bucket was discard-new, so at the 1 GiB cap (about 4M stored messages in one FIX day) every gateway would
+drop every FIX session at once. One stream config change, nothing else; no pod restarted.
+
+| Step | Result |
+|---|---|
+| Before | Full stream config saved (rollback: the same config with `discard` new). Discard new, 1 GiB, max age 7 d, one revision per key, R1, file. 4 messages, 856 B. |
+| Edit (1:21:22 pm) | `$JS.API.STREAM.UPDATE.KV_FIX_SESSIONS` with the saved config and `discard` old (no `nats` CLI on the NATS image; the same request `nats stream edit --discard old` sends). No error. |
+| After | `/jsz` config differs from before in `discard` only. 4 messages, 856 B. Gateway and NATS pods unchanged (no restart). |
+| FIX (1:22–1:23 pm) | Logon (141=Y) accepted. A first Buy 1 MSFT @ 300 was refused `39=8 PRICE_COLLAR` (outside the collar, nothing booked). Buy 1 MSFT @ 370 (42422) acked `39=0` (`ord-25`), then canceled `39=4`. The bucket's sequence range moved on and still holds 4 keys after the session (the Logon's reset purged the previous one). |
+| Logs | Loki since 12:21 pm (before the edit): gateway 27 lines, 2 FIX logons, 0 `ERROR`, 0 `lease or store lost`. |
+
+A gateway restart keeps the setting: `ensureBucket` creates only a missing bucket.
+
