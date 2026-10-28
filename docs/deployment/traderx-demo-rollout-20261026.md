@@ -509,3 +509,51 @@ epoch (557 initialization enables only), so replaying `enabled=true` for the uni
 
 Spend: build VM 7:59–8:14 pm ET, deleted (≈ $0.15). Rollback record (71 objects + DB dump) and the admission
 evidence: shared notes `roll3-20261027/`, `admission-40d93f6b-20261027/`.
+
+## 13. Fourth production roll of `traderx`, to `00b31d33` (2026-10-28, 11:05–11:13 am ET)
+
+Approved by yaakov for `00b31d33`, without ADR-087 §4 step 6 (the destructive disk-loss and minority proofs).
+It carries:
+- the control-stream republish (ADR-085);
+- FIX password redaction (FR-ERH-S3);
+- `/ready` gated on election CLOSED (FR-GMR-08), and a SIGTERM during the startup election exiting 143;
+- FIX fill reports on the durable order stream (ADR-084);
+- retained member claims (ADR-087) and persistent FIX sessions (ADR-086);
+- recon prices at 6 dp and SQL-refused sides counted as missing (FR-DRS-26, FR-DRS-02);
+- a canceled order keeping its fill (ADR-088, `orderbook.filledquantity`);
+- the Desk's pre-send refusal label (FR-CUI-19).
+
+It stops before `b044d98b` (ADR-089, an engine change).
+
+From `40d93f6b` it changes no apply-path code. The order-matcher changes are limited to:
+- ClusterNodeMain and ClusterGatewayMain;
+- FixGatewayAcceptor, FixSessionStore and OrderStatusSource;
+- ClusterRecon (the read-only `/recon` replay) and logback.xml.
+
+So the one-member-at-a-time window ran mixed images safely.
+
+| Step | Result |
+|---|---|
+| Candidate | Built on a VM from an empty render; 14 images, amd64, labelled `00b31d33`. `test_prepare` 35/35, coverage 47/47. `measure-admission --build-records`: admitted, 12 payloads byte-identical, 19 refusal controls pass. Every phase passed a server dry-run. |
+| Rehearsal | Side namespace started at production's `40d93f6b` state, then the same `roll4.sh`: ROLL PASS. 17 affected proofs pass on the candidate, including `yu18-fix-resume` step 5 (CumQty 0/4) and `yu05-recon` with a bond cross (field mismatch 0). |
+| Rollback record (11:05) | Every Deployment, the StatefulSet, the `database-init-sql` ConfigMap, pods, claims and image IDs. |
+| Members, ADR-087 §4 (11:05:52–11:08:35) | Orphan delete, then the StatefulSet with `OnDelete`. Members 0, 1, 2 one at a time, each behind a snapshot barrier (298 → 299 → 300 → 301). Every old pod exited **143**. Each member returned Ready on `data-order-matcher-cluster-N` (Bound, `order-matcher-archive`) at applied 2395 with the same hashes, and its ephemeral claim was gone. The StatefulSet was re-applied unchanged (3/3 at one revision). |
+| Database (11:08:44–11:09:34) | `database-init-sql` applied, `eod-price-db` restarted, `schema-migrate` applied 900-migrations. `orderbook.filledquantity` is present and the 20 existing rows are kept. |
+| Rest (11:09:34–11:11:43) | Image-only Deployments, trade-processor after the migration. |
+| Gateway (11:11:56) | `FIX_SESSION_STORE=jetstream`: `KV_FIX_SESSIONS` and `KV_FIX_SESSION_LEASE` created. Daily reset at 17:00 New York. Fill feed on `TRADERX_FEED`. No FIX session was logged on, so the one-time reset affected none. |
+| Console and Desk (11:11:57–11:12:59) | Console replaced with batch custody and the risk image; Desk on `00b31d33`. |
+| After | Members agree; book and position hashes unchanged. Applied 2395 → 3461 (+1066, the new gateway's control replay, NFR-CFR-01). SQL trades, positions and orderbook fingerprints unchanged; durable ack floors unchanged. |
+| Running images | 17 private containers on exactly the pushed digests, 0 stale. |
+| FIX (11:14–11:17) | Wrong and missing password: Logout `58=invalid credentials`. With the pod's password: Sell 1 MSFT @ 380.66 (22214) and Buy (42422) acked, and both fill reports (`39=2`, `14=1`, `31=380.66`) arrived on the session (ADR-084). A resting Buy @ 370 was canceled (`39=4`). OrderStatusRequest: the filled order `39=2 CumQty=1`; the canceled order by OrderID `39=4 CumQty=0` (ADR-088). Read model: `1-21`/`1-22` FILLED `filledquantity` 1, `1-23` CANCELED 0. Console `/fixorder` signed out: 401. |
+| Logs | Loki `{namespace="traderx"}` since 10:50 am: 0 lines containing `554=`; 4 `invalid credentials` lines (Loki ships the gateway). |
+| Recon | matched 18, missing 0, mismatch 0. |
+| Edge | `demo.yaakovseif.dev` and `desk.yaakovseif.dev` 200; `/grafana` → 301 `/grafana/`. The Desk bundle carries the `Refused:` label. |
+| Members after FIX | Agree at 3466, same hashes on all three. |
+
+Found on the way: a FIX OrderCancelRequest or OrderStatusRequest without Account (1) uses the session's default
+account. The engine refuses the foreign cancel, and the reject reads `order already terminal`
+(`CxlRejReason=TOO_LATE_TO_CANCEL`), not an ownership refusal. The OrderStatusRequest answers `unknown order`.
+With Account(1) both work.
+
+Spend: build VMs 8:52–9:00 am and 9:46–10:36 am ET, both deleted. Two side rehearsals (pools r4-engine and
+r4-support), all deleted, no disks left; about $4 in total. Evidence: shared notes `roll4-20261028/00b31d33/`.
