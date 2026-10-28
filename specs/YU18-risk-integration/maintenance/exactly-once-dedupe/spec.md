@@ -111,10 +111,13 @@ unflagged frame is unchanged, and seq 0 is a protocol error.
 
 ### Local triad (`tests/run_local_triad.sh`)
 
-- **Arm and pass condition:** `xs` (= `xo` + `plan.sequenced`), 400/s, with one gateway kill and one leader kill.
-  HxNativeReplay (allowance 0) must report `duplicateKeys == 0`.
-- **Negative control:** arm `xn` (unsequenced) on an image whose key window is cut to 4,096 keys (≈ 10 s at 400/s,
-  shorter than the 12 s AMBIGUOUS reap). It must show `duplicateKeys > 0`, or the pair is INCONCLUSIVE.
+- **Arm and pass condition:** `xs` (= `xo` + `plan.sequenced`), with one gateway kill and one leader kill.
+  HxNativeReplay (allowance 0) must report `duplicateKeys == 0`. Result: passed at 400/s and at 1,600/s; at
+  1,600/s, 2,056 resends reached committed sequences and none booked twice (ADR-090 Evidence).
+- **Negative control:** arm `xn` (unsequenced) on an image whose key window is cut short (4,096, then 64 keys). It
+  must show `duplicateKeys > 0`, or the pair is INCONCLUSIVE. Result: INCONCLUSIVE on one Docker host, because
+  the faults stall admission, so the window never moves between an original and its resend. Row 17 at 400K/s
+  carries the control.
 - The loadgen half alone: `tests/test_loadgen_sequenced.mjs` (stub engine with the stream rule; its negative
   control is an 8-id window, which double-books).
 

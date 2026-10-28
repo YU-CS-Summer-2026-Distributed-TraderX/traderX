@@ -1599,8 +1599,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `recovery-identity FR-RI08` | CI |  |  | local custody; offline tests |
 | YU18 | `recovery-identity FR-RI09` | CI |  |  | local custody; offline tests |
 | YU18 | `FR-XOD-01` | CI |  |  | ExactlyOnceStreamTest: contiguous books, an unknown stream starts at 1 (fails with the gate off); live: CLOUD-QUEUE row 17 |
-| YU18 | `FR-XOD-02` | LIVE |  |  | ExactlyOnceStreamTest; live: row 17 arm xs (trades == accepted, strict replay allowance 0) |
-| YU18 | `FR-XOD-03` | LIVE |  |  | ExactlyOnceStreamTest: a resend 262,145 keys behind the window is the original (the unsequenced control books twice), beyond-ring DUPLICATE; live: row 17 (duplicateKeys 0, resendsOfCommitted > 0; xn must show > 0) |
+| YU18 | `FR-XOD-02` | LIVE |  |  | ExactlyOnceStreamTest; local triad xs 40,600 = 40,600, strict replay allowance 0 (ADR-090 Evidence); 400K: row 17 |
+| YU18 | `FR-XOD-03` | LIVE |  |  | ExactlyOnceStreamTest: a resend 262,145 keys behind the window is the original (the unsequenced control books twice), beyond-ring DUPLICATE; local triad xs at 1,600/s: 2,056 resends of committed orders, duplicateKeys 0; 400K: row 17 (xn must show > 0) |
 | YU18 | `FR-XOD-04` | CI |  |  | ExactlyOnceStreamTest: a gap is refused OUT_OF_SEQUENCE(next) with byte-identical state |
 | YU18 | `FR-XOD-05` | CI |  |  | ExactlyOnceStreamTest: the sequenced resend survives a flushed key table |
 | YU18 | `FR-XOD-06` | CI |  |  | ExactlyOnceStreamTest: W carried per T_STREAM, a snapshot of another W refused |

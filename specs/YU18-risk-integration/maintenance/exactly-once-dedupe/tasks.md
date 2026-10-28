@@ -12,7 +12,8 @@
       negative control) (FR-XOD-12).
 - [x] Loadgen `plan.sequenced` and HxNativeReplay `duplicateKeys`/`resendsOfCommitted`; arms `xs`/`xn`
       (`exactly-once-sequenced.patch`, the hxb harness, not this repo).
-- [ ] Local triad: `xs` passes and `xn` fails.
+- [x] Local triad `xs`: 400/s and 1,600/s valid, strict replay `duplicateKeys` 0, `resendsOfCommitted` 2,056 at
+      1,600/s. `xn` was inconclusive on one Docker host (ADR-090 Evidence); the 400K control is row 17.
 - [ ] CLOUD-QUEUE row 17 "exactly-once at 400K/s", with NFR-XOD-01/02.
 - [ ] NFR-XOD-03 A/B before `FIX_EXACTLY_ONCE` is enabled on any rig.
 - [ ] Ship in a `traderx` rollout (yaakov approves): snapshot barrier, whole-cluster stop, then gateways.

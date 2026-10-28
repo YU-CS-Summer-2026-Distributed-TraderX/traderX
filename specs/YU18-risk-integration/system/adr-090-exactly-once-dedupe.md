@@ -202,5 +202,32 @@ members are never rolled one at a time:
 
 ## Evidence
 
-The implementation fills this in: the unit tests (FR-XOD-01..10), the local triad replay, and the CLOUD-QUEUE row
-"exactly-once at 400K/s" (the pack spec's Cloud proof section).
+Implemented as `f815003d` (2026-10-28). Unit tests ran in an empty-root render:
+
+- `ExactlyOnceStreamTest` 12/12. Its negative control is an unsequenced resend arriving 262,145 keys after the
+  original, and that resend books twice. With the gate disabled in the rendered tree, the four behaviour cases
+  fail.
+- `BinarySequencedFrameTest` 1/1.
+- `FixExactlyOnceIT` 3/3, including an unsequenced control that submits twice.
+- The full order-matcher suite: 840 run, 0 failed, 6 skipped.
+- On the head merged with `39971df0`, the suite ran 842, with 1 failure: `ThreeMemberClusterTest` timed out at
+  120 s in the full run. Run alone it passed 2 of 2 times, and it passed in the 840-test run.
+
+**Local triad.** These runs used the hxb harness's own Docker triad, with the real controller, control, analysis
+and strict HxNativeReplay (allowance 0). Arm `xs` (`plan.sequenced`) ran on an amd64 cluster-node built from this
+change, through a gateway kill and a leader kill:
+
+| Rate | Orders offered = accepted | Strict native replay | `duplicateKeys` | `resendsOfCommitted` | OUT_OF_SEQUENCE / go-backs |
+|---|---|---|---|---|---|
+| 400/s | 10,600 = 10,600 | pass; its negative control fails | 0 | 0 | 392 / 15 |
+| 1,600/s | 40,600 = 40,600 | pass; its negative control fails | 0 | **2,056** | 1,607 / 24 |
+
+At 1,600/s, 2,056 resends reached a sequence that had already committed. Each was answered with its original
+order, and none was booked twice.
+
+The unsequenced local arm `xn` is held to a key window cut to 4,096, then 64 keys, so that it would book the same
+resends twice. It recorded `duplicateKeys` 0 in every run, with 0, 2 and 4 resends reaching a committed order. On
+one Docker host the faults stall admission as a whole, so no new keys push a stranded key out of the window before
+its resend arrives. The failing controls are therefore the unit-level one above and the loadgen stub
+(`test_loadgen_sequenced.mjs`, whose 8-id window double-books 20). The 400K/s volume that does move the window
+between an original and its resend is CLOUD-QUEUE row 17 (`xs` / `xn`).
