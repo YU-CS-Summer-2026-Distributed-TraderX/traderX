@@ -32,10 +32,9 @@ class Rendering(unittest.TestCase):
                          {'cloud.google.com/gke-nodepool':'engine-pool'})
 
     def test_member_archive_storageclass_is_rendered(self):
-        # Members claim a generic ephemeral volume of this class; a render without it leaves them Pending.
+        # Members claim a retained volume of this class; a render without it leaves them Pending.
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')
-        claimed={v['ephemeral']['volumeClaimTemplate']['spec']['storageClassName']
-                 for v in engine['spec']['template']['spec'].get('volumes',[]) if 'ephemeral' in v}
+        claimed={t['spec']['storageClassName'] for t in engine['spec']['volumeClaimTemplates']}
         self.assertEqual(claimed,{'order-matcher-archive'})
         sc=[d for d in self.docs if d['kind']=='StorageClass']
         self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive'])
@@ -214,6 +213,24 @@ class Rendering(unittest.TestCase):
         module.podspec(engine)['containers'][0]['command']=['/bin/sh','-c',
             'java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!']
         with self.assertRaises(AssertionError): module.validate(docs)
+
+    def test_member_log_outlives_its_pod(self):
+        # FR-GMR-01 (ADR-087): a retained claim per member, or one scale-down destroys a majority of the logs.
+        engine=next(d for d in self.docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+        self.assertEqual([t['metadata']['name'] for t in engine['spec']['volumeClaimTemplates']],['data'])
+        self.assertEqual(engine['spec']['persistentVolumeClaimRetentionPolicy'],{'whenScaled':'Retain','whenDeleted':'Retain'})
+        # the shape this replaced: /data as a generic ephemeral volume, deleted with the pod
+        docs=copy.deepcopy(self.docs)
+        engine=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+        template=engine['spec'].pop('volumeClaimTemplates')[0]
+        module.podspec(engine)['volumes'].append({'name':'data','ephemeral':{'volumeClaimTemplate':{'spec':template['spec']}}})
+        with self.assertRaises(AssertionError): module.validate(docs)
+        for policy in ({'whenScaled':'Delete','whenDeleted':'Retain'},{'whenScaled':'Retain','whenDeleted':'Delete'},None):
+            docs=copy.deepcopy(self.docs)
+            engine=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+            if policy: engine['spec']['persistentVolumeClaimRetentionPolicy']=policy
+            else: engine['spec'].pop('persistentVolumeClaimRetentionPolicy')
+            with self.assertRaises(AssertionError, msg=str(policy)): module.validate(docs)
 
     def test_projection_pulls_the_durable_feed(self):
         tp=next(d for d in self.docs if d['metadata']['name']=='trade-processor' and module.podspec(d))

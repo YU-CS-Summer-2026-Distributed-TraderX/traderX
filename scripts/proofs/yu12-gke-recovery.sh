@@ -216,13 +216,18 @@ assert_order_effects "${OPR_BASE}" "${OPR_PRE}" 3 "${OPT_BASE}" "${OPT_PRE}" 2 \
   "the state this proof is about to destroy and rebuild was never actually built"
 echo "  operator refs ${OPR_BASE} -> ${OPR_PRE} (3 orders), trade legs ${OPT_BASE} -> ${OPT_PRE} (one cross)"
 
-step "2. destroy a FOLLOWER — emptyDir, so it returns with an EMPTY disk"
+step "2. destroy a FOLLOWER and its disk, so it returns with an EMPTY disk"
 LDR="$(leader)" || fail "no leader found"
 VICTIM=""
 for m in 0 1 2; do [[ "${m}" != "${LDR}" ]] && { VICTIM="${m}"; break; }; done
 VICTIM_POD="order-matcher-cluster-${VICTIM}"
 VICTIM_UID="$(member_pod_uid "${VICTIM}")"
-echo "  leader is member ${LDR}; destroying follower ${VICTIM_POD}"
+# The member's claim is RETAINED where the StatefulSet declares volumeClaimTemplates (ADR-087): a pod delete
+# alone brings it back WITH its disk, a tail replay rather than the empty-disk rebuild this step is about. Delete
+# the claim first (--wait=false: pvc-protection holds it until the pod is gone), as yu16-book-grid.sh does.
+BACKING="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.volumeClaimTemplates[*].metadata.name}' 2>/dev/null)"
+[[ -n "${BACKING}" ]] && ${K} delete pvc "${BACKING}-${VICTIM_POD}" --wait=false >/dev/null
+echo "  leader is member ${LDR}; destroying follower ${VICTIM_POD}${BACKING:+ and its claim ${BACKING}-${VICTIM_POD}}"
 ${K} delete pod "${VICTIM_POD}" --wait=true >/dev/null
 # `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
 # does not exist it returns `NotFound` IMMEDIATELY, and the --timeout never applies at all. The line

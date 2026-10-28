@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # yu18-minority-no-commit.sh — YU12 FR-AC12 on the live cluster: a minority does not elect a leader,
-# extend the committed log, or admit orders. The minority is made by taking the two higher ordinals away
-# (StatefulSet scaled to 1): member 0 is then alone, and from where it stands a dead majority and a
-# partitioned one are the same thing. DESTRUCTIVE (the cluster loses quorum for ~1 min), disposable rigs.
+# extend the committed log, or admit orders, and the majority's return restores admission (FR-AC11/13).
+# The minority is made by FREEZING members 1 and 2 (SIGSTOP on their JVMs; SIGCONT to return them): member 0
+# is then alone, and from where it stands a dead majority and a partitioned one are the same thing, while
+# the two keep their logs. Scaling the StatefulSet to 1 used to make the minority, and on a tier whose member
+# disks are deleted with their pods that destroyed a majority of the logs: it tested disk loss, not quorum
+# loss (suspect #15; yu18-member-disk-survives.sh is that proof). DESTRUCTIVE (the cluster loses quorum for
+# ~1 min), disposable rigs.
 #
 #   1. control: with 3 members an order is acked and every member's applied moves (so 3 can mean something)
-#   2. scale to 1; for WINDOW s (default 45, several election timeouts) member 0 never reports LEADER and
+#   2. freeze 1 and 2; for WINDOW s (default 45, several election timeouts) member 0 never reports LEADER and
 #      its applied/engineApplied never move
 #   3. an order sent in the window is not acked as accepted, and member 0's applied still has not moved
-#   4. scale back to 3: one leader, the three agree on applied, and a fresh order is acked again
+#   4. resume 1 and 2: one leader, the three agree on applied, and a fresh order is acked again
 #   5. the window's order: reported (re-submitted after quorum or not) — FR-AC12 constrains the window only
 #
 # Usage: CTX=<ctx> NS=<ns> DESTRUCTIVE=1 [WINDOW=45 ACCT=22214] bash scripts/proofs/yu18-minority-no-commit.sh
@@ -23,7 +27,10 @@ J=(-H 'Content-Type: application/json' -H "Authorization: Bearer ${ADMIN}")
 h0() { mget 0 /health | jget '[d.get("role"), d.get("applied"), d.get("engineApplied")]' | tr -d '[]",' ; }
 applied_all() { local m s=""; for ((m=0; m<MEMBERS; m++)); do s+="$(member_applied "${m}") "; done; echo "${s% }"; }
 rest() { code -m 20 -X POST "${GW}/orders" "${J[@]}" -d "{\"accountId\":${ACCT},\"ticker\":\"${T}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":$1}"; }
-restore() { "${K[@]}" scale sts "${STS}" --replicas=3 >/dev/null 2>&1; }
+# signal <STOP|CONT> <member>: the member's JVM, not PID 1 (the launch shell, which forwards only TERM/INT).
+signal() { "${K[@]}" exec -c "${MEMBER_CONTAINER:-cluster-node}" "${STS}-$2" -- sh -c \
+  "for p in /proc/[0-9]*; do [ \"\$(cat \$p/comm 2>/dev/null)\" = java ] && kill -$1 \${p#/proc/}; done; true"; }
+restore() { signal CONT 1 >/dev/null 2>&1; signal CONT 2 >/dev/null 2>&1; }
 trap 'restore; _lib_yu18_cleanup' EXIT
 
 step "1. control: three members admit"
@@ -35,9 +42,8 @@ for i in $(seq 1 20); do A1="$(applied_all)"; read -r -a a <<<"${A1}"; read -r -
 (( a[0] > b[0] && a[0] == a[1] && a[1] == a[2] )) || fail "control: applied ${A0} -> ${A1}"
 ok "acked $(body); applied ${A0} -> ${A1}"
 
-step "2. member 0 alone for ${WINDOW} s"
-"${K[@]}" scale sts "${STS}" --replicas=1 >/dev/null
-"${K[@]}" wait --for=delete pod "${STS}-1" "${STS}-2" --timeout=180s >/dev/null 2>&1 || fail "members 1 and 2 did not go"
+step "2. member 0 alone for ${WINDOW} s (members 1 and 2 frozen, disks kept)"
+signal STOP 1 || fail "could not freeze member 1"; signal STOP 2 || fail "could not freeze member 2"
 read -r R0 P0 E0 <<<"$(h0)"; echo "    member 0 at the start: role ${R0} applied ${P0} engineApplied ${E0}"
 ORDER_C=""; t0=${SECONDS}; leader_seen=""; moved=""
 while (( SECONDS - t0 < WINDOW )); do
@@ -55,9 +61,8 @@ done
 [[ "${ORDER_C}" == 200 && "${ORDER_B}" == *'"kind":1'* ]] && fail "an order was acked accepted while member 0 was alone: ${ORDER_B} (FR-AC12: SHALL NOT admit orders)"
 ok "never LEADER, applied ${P0} and engineApplied ${E0} unchanged for ${WINDOW} s; the window's order answered ${ORDER_C}"
 
-step "4. quorum back"
-restore
-"${K[@]}" rollout status sts "${STS}" --timeout=600s >/dev/null || fail "the members did not come back"
+step "4. quorum back (members 1 and 2 resumed)"
+signal CONT 1 || fail "could not resume member 1"; signal CONT 2 || fail "could not resume member 2"
 for i in $(seq 1 90); do
   roles="$(for ((m=0; m<MEMBERS; m++)); do mget "${m}" /health | jget 'd.get("role")'; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')"
   A2="$(applied_all)"; read -r -a a <<<"${A2}"

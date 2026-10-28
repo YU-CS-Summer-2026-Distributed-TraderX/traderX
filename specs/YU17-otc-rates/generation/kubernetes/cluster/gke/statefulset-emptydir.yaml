@@ -22,6 +22,15 @@ spec:
   serviceName: order-matcher-cluster
   replicas: 3
   podManagementPolicy: Parallel
+  # A MEMBER'S DISK OUTLIVES ITS POD (ADR-087; the file name is historical). Until 2026-10-27 /data was
+  # a generic ephemeral volume, deleted with the pod, so `scale --replicas=1` or two pod deletes at once
+  # threw away a MAJORITY of the logs: two empty members could then elect one of themselves and commit
+  # on an empty history, and the member that kept the real log could never rejoin (proof-audit suspect
+  # #15). Retain on both: scaling down and deleting the StatefulSet keep the claims, so a returning
+  # member reads its own log. Wiping a member is now an explicit `kubectl delete pvc data-<pod>`.
+  persistentVolumeClaimRetentionPolicy:
+    whenScaled: Retain
+    whenDeleted: Retain
   selector:
     matchLabels:
       app: order-matcher-cluster
@@ -64,9 +73,11 @@ spec:
                   app: order-matcher-cluster
               topologyKey: kubernetes.io/hostname
       initContainers:
-        # DR restore: when RESTORE_FROM_GCS=1, member-0 seeds its (emptyDir) /data from the
-        # latest GCS backup before the JVM starts; members 1 & 2 come up empty and rejoin member-0
-        # via the proven catch-up. No-op on normal boot. Uses the journal-archive HMAC creds.
+        # DR restore: when RESTORE_FROM_GCS=1, member-0 seeds an EMPTY /data from the latest GCS
+        # backup before the JVM starts; members 1 & 2 come up empty and rejoin member-0 via the
+        # proven catch-up. No-op on normal boot, and on a disk that already holds a log (the claims
+        # are retained, ADR-087): a total-loss restore deletes the three claims first.
+        # Uses the journal-archive HMAC creds.
         - name: restore-from-gcs
           image: google/cloud-sdk:latest
           # Init containers participate in pod QoS classification. Equal CPU/memory request and
@@ -341,23 +352,29 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Gi
-        - name: data
-          # The Aeron consensus log + archive live here, on a DEDICATED disk (storageclass.yaml):
-          # the boot-disk emptyDir this used to be shared the node's ext4 journal with kubelet,
-          # container logs and image layers, and at 400K/s every between-snapshot spike was the
-          # leader's archive write() waiting in that journal (STALLS.md). A generic ephemeral
-          # volume keeps the emptyDir LIFECYCLE the tier relies on - created with the pod, deleted
-          # with it, so a replaced member starts empty and rejoins by catch-up, and the purge
-          # sidecar stays unwired for the same reason (kustomization.yaml) - while the bytes
-          # land on their own volume. Under bench load the archive grows ~10-20 MB/s at ~100k
-          # orders/s (~33 MB/s at 300K); a full volume is ENOSPC on the recorder, not an
-          # eviction. ponytail: 32Gi (the rig's size) buys ~15-30 min of sustained flood; the
-          # real bound is archive segment purge-after-snapshot if runs go longer than that.
-          ephemeral:
-            volumeClaimTemplate:
-              spec:
-                accessModes: ["ReadWriteOnce"]
-                storageClassName: order-matcher-archive
-                resources:
-                  requests:
-                    storage: 32Gi
+  # The Aeron consensus log + archive live here, on a DEDICATED disk per member (storageclass.yaml):
+  # the boot-disk emptyDir this used to be shared the node's ext4 journal with kubelet, container
+  # logs and image layers, and at 400K/s every between-snapshot spike was the leader's archive
+  # write() waiting in that journal (STALLS.md). One claim per ordinal, data-order-matcher-cluster-N,
+  # kept across pod restarts, reschedules and scale-downs (retention policy above).
+  #
+  # RE-ATTACH. The disk is zonal ReadWriteOnce and binds WaitForFirstConsumer, so it is created in
+  # the zone of the member's first node; the pool is single-zone, so a rescheduled member (node
+  # drain, repair, anti-affinity onto a spare node) attaches the same disk on its new node. The
+  # attach waits for the old node's detach: seconds after a normal pod delete, up to the ~6 min
+  # attach-detach timeout if the old node vanished without detaching. The nodeSelector and the
+  # taint toleration are unchanged and do not interact with the claim.
+  #
+  # GROWTH. The archive is no longer reset by a pod replacement, so it grows for the life of the
+  # claim: ~10-20 MB/s at ~100k orders/s under bench load (~33 MB/s at 300K), little at demo
+  # rates. A full volume is ENOSPC on the recorder, not an eviction. ponytail: 32Gi; the bound is
+  # archive segment purge-after-snapshot (ADR-079 §6), still unwired on this tier.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: order-matcher-archive
+        resources:
+          requests:
+            storage: 32Gi

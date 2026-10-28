@@ -255,11 +255,18 @@ echo "  S+ (operator)   = refs ${SPLUS_OPR}, trade legs ${SPLUS_OPT}"
 assert_observed_rate "$(( SECONDS - RUN_T0 ))" "disaster recovery (pre-destroy window)"
 PRESSURE_PRE="$(pressure_row)"
 
-step "3. DESTROY the whole cluster (scale 0 wipes every emptyDir) and restore from GCS"
+step "3. DESTROY the whole cluster (scale 0, every member disk deleted) and restore from GCS"
 stop_pf
 ${K} scale statefulset/${STS} --replicas=0 >/dev/null
 ${K} wait --for=delete "pod/${STS}-0" "pod/${STS}-1" "pod/${STS}-2" --timeout=300s >/dev/null 2>&1 || true
-echo "  all members gone — every disk is gone with them (emptyDir)"
+# Retained claims (ADR-087) survive the scale to 0, and the restore initContainer skips a disk that already
+# holds a log, so a total-loss restore deletes them; an emptyDir/ephemeral tier has none to delete.
+BACKING="$(${K} get sts ${STS} -o jsonpath='{.spec.volumeClaimTemplates[*].metadata.name}' 2>/dev/null)"
+if [[ -n "${BACKING}" ]]; then
+  ${K} delete pvc "${BACKING}-${STS}-0" "${BACKING}-${STS}-1" "${BACKING}-${STS}-2" --wait=true >/dev/null \
+    || fail "could not delete the members' claims: this would test a restart, not a restore"
+fi
+echo "  all members gone — every disk is gone with them${BACKING:+ (claims ${BACKING}-${STS}-0..2 deleted)}"
 ${K} set env statefulset/${STS} RESTORE_FROM_GCS=1 --containers=restore-from-gcs >/dev/null
 ${K} scale statefulset/${STS} --replicas=3 >/dev/null
 echo "  restore armed; member-0 seeds /data from latest.tgz, members 1 & 2 rejoin empty"

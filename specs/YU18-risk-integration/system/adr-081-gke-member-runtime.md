@@ -7,6 +7,9 @@ renders them through `scripts/gcp-compsci/prepare.py`.
 
 ## 1. Member `/data` on a dedicated archive volume (858319c3, 951ed3c9)
 
+> The lifecycle below (deleted with the pod) is superseded by [ADR-087](adr-087-member-persistent-volumes.md):
+> the same disk and class, now a retained per-member claim.
+
 **Context.** At 400K orders/s every between-snapshot member spike (22–27 ms) was the leader's Aeron
 archive `write()` blocked in the ext4 journal of the node boot disk, which the archive shared with
 kubelet, container logs and image layers. Aeron bounds commit by the leader's recorded position, so the

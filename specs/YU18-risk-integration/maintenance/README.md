@@ -32,6 +32,6 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Engine-review hardening](engine-review-hardening/README.md) | Integrated 2026-10-27: S1–S6 (ADR-082), F1–F11 |
 | [Console sessions](console-sessions/README.md) | Integrated 2026-10-26 |
 | [Control feed republish](control-feed-republish/README.md) | Code 2026-10-27 (`3b10e7e2`), not deployed; production repaired by hand (ADR-085) |
-| [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081) |
+| [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, code only (ADR-087) |
 
 Future fixes, including feed reconnect, belong here. Update the parent RI issue, bounded task record and live-rig queue as appropriate. A directory is not a service or deployment; follow [state pack layout](../../../docs/spec-kit/state-components.md) and the project task lifecycle.

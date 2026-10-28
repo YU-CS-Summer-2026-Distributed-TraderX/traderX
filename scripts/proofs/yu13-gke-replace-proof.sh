@@ -666,8 +666,13 @@ VICTIM="$(${K} get pods -l app=order-matcher-cluster \
 # answers truthfully about the wrong cluster. DESTRUCTIVE=1 says the operator accepted destroying a
 # member; it does not say they accepted destroying THIS one.
 echo "  cluster: ${CTX}   namespace: ${NS}"
-echo "  DESTROYING ${VICTIM} — emptyDir, so it comes back with an EMPTY disk and rebuilds from"
-echo "  the snapshot plus the log tail. This is the restore boundary."
+# The member's claim is RETAINED where the StatefulSet declares volumeClaimTemplates (ADR-087): a pod delete
+# alone brings it back WITH its disk, a tail replay rather than the empty-disk rebuild this step is about. Delete
+# the claim first (--wait=false: pvc-protection holds it until the pod is gone), as yu16-book-grid.sh does.
+BACKING="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.volumeClaimTemplates[*].metadata.name}' 2>/dev/null)"
+[[ -n "${BACKING}" ]] && ${K} delete pvc "${BACKING}-${VICTIM}" --wait=false >/dev/null
+echo "  DESTROYING ${VICTIM}${BACKING:+ and its claim ${BACKING}-${VICTIM}} — it comes back with an EMPTY disk and"
+echo "  rebuilds from the snapshot plus the log tail. This is the restore boundary."
 ${K} delete pod "${VICTIM}" --wait=true >/dev/null
 # `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
 # does not exist it returns `NotFound` IMMEDIATELY, and the --timeout never applies at all. The line

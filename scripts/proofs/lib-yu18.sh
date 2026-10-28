@@ -13,7 +13,8 @@
 #   . "$(dirname "$0")/lib-yu18.sh"      then: pf GW svc/order-matcher 18110; mint true '[]'; sql "..."
 #
 # Overridable: GATEWAY_TARGET (svc/order-matcher:18110), TP_TARGET (deploy/trade-processor:18091),
-# DB_DEPLOY (eod-price-db), DB_CONTAINER (mariadb), MEMBERS (3).
+# DB_DEPLOY (eod-price-db), DB_CONTAINER (mariadb), MEMBERS (3). BEARER: a JWT the operator minted, used by
+# mint() instead of trade-processor's dev-token route, for a rig that runs only the cluster tier.
 set -uo pipefail
 : "${CTX:?set CTX to the kube context (no default: see lib-yu18.sh)}"
 : "${NS:?set NS to the namespace (no default: see lib-yu18.sh)}"
@@ -62,6 +63,7 @@ secret() { # secret <name> <key>
 # mint <admin true|false> <accounts JSON array> [subject] — a JWT from trade-processor's dev-token
 # route, which signs with the same AUTH_JWT_SECRET the gateway verifies (ADR-025, ADR-082 S1).
 mint() {
+  [[ -n "${BEARER:-}" ]] && { printf '%s\n' "${BEARER}"; return 0; }
   [[ -n "${TP:-}" ]] || pf TP "${TP_TARGET:-deploy/trade-processor}" 18091
   local master r
   master="${AUTH_MASTER_SECRET:-$(secret auth-secrets dev-token-master-secret)}"

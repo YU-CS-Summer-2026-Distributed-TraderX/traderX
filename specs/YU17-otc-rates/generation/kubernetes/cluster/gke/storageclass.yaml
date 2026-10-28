@@ -8,8 +8,7 @@
 # counted 0 journal waits in all four dedicated-volume arms, against 5-6 per 3 minutes on the
 # boot disk. lazytime made no further difference, so it is not set here.
 #
-# THIS IS THE RIG'S VOLUME: hyperdisk-balanced, ext4, 32Gi, one per member, generic ephemeral
-# (created with the pod, deleted with it), exactly `hxb-arch-hd` in
+# THIS IS THE RIG'S VOLUME: hyperdisk-balanced, ext4, 32Gi, one per member, exactly `hxb-arch-hd` in
 # independent-baseline/stall-probe/storageclasses.yaml. The one deliberate difference is
 # volumeBindingMode: the rig's pods were nodeName-bound with no scheduler, so it bound
 # Immediate inside allowedTopologies; these members are scheduled (nodeSelector + anti-affinity),
@@ -30,4 +29,6 @@ parameters:
   type: hyperdisk-balanced
   csi.storage.k8s.io/fstype: ext4
 volumeBindingMode: WaitForFirstConsumer
+# The disk goes when its claim does. The members' claims are retained by the StatefulSet (ADR-087), so a
+# member disk is lost only to an explicit `kubectl delete pvc` or a namespace delete.
 reclaimPolicy: Delete

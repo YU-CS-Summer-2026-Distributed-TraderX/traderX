@@ -177,9 +177,10 @@ on disk, even where a later upload succeeded, so the archive never has a hole be
 holds. Size the purge sidecar at 2.5 CPU. Its pod then needs member CPU + 2.5, so **run members on
 c4d-standard-16 when the purge sidecar runs.** An SMT-off c4d-standard-8 shows only 4 cores.
 
-**The purge is still not wired into the GKE tier, deliberately.** That tier's members use `emptyDir`.
-Any pod replacement (rollout, node drain, eviction) starts on an empty disk, and once the log is purged
-it cannot rejoin until an operator restores the offloaded segments and runs `--attach` (ADR-079 §3;
+**The purge is still not wired into the GKE tier, deliberately.** That tier's members keep their log on a
+retained per-member claim (ADR-087), so a pod replacement (rollout, node drain, eviction) keeps its disk; but
+a member whose disk is lost or explicitly wiped starts empty, and once the log is purged it cannot rejoin
+until an operator restores the offloaded segments and runs `--attach` (ADR-079 §3;
 proven on the rig: 30 segments, 4 GB, back in under a minute per member). Enabling it is the
 deployment's decision. Its inputs would be an `archive-offload` Secret (URI + HMAC, never inline) and
 c4d-standard-16 members.

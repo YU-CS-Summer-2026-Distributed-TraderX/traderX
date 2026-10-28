@@ -77,9 +77,10 @@ namespace: traderx
 # `gcloud container node-pools create --system-config-from-file` when creating blp-c4d-tuned-pool,
 # not a Kubernetes object. Listing it here fails the whole build with "missing Resource metadata".
 #
-# statefulset.yaml (PVC variant) is kept for reference only; the ephemeral-volume variant
-# (statefulset-emptydir.yaml, historically a boot-disk emptyDir, since 2026-10-26 a dedicated
-# Hyperdisk with the same pod lifecycle) is what runs.
+# statefulset.yaml (the older PVC variant) is kept for reference only; statefulset-emptydir.yaml is what
+# runs. Its name is historical: a boot-disk emptyDir, then (2026-10-26) a dedicated Hyperdisk deleted with
+# its pod, and since 2026-10-27 a retained per-member claim on that Hyperdisk class (ADR-087), because a
+# volume deleted with its pod lets one scale-down destroy a majority of the logs.
 #
 # Applied separately by the deploy, NOT part of this kustomization (kustomize cannot reference a
 # file outside its root; referencing it in place keeps exactly one copy of the schema):
@@ -89,14 +90,16 @@ namespace: traderx
 # a missing allow surfaces as a marker ack timeout, not a connection error (T-LOB16). It is enforced
 # only on a Dataplane V2 / network-policy-enabled cluster; CLUSTER_CLIENT_SECRET is what closes the
 # ingress either way.
-# ARCHIVE PURGE is not wired here, deliberately (ADR-079 §6): these members are emptyDir, so a replaced pod
-# starts empty and cannot rejoin a purged cluster until its offloaded segments are restored and attached.
+# ARCHIVE PURGE is not wired here, deliberately (ADR-079 §6): a member whose disk is lost or wiped starts
+# empty and cannot rejoin a purged cluster until its offloaded segments are restored and attached. The
+# claims are retained now (ADR-087), so the archive grows for the life of the claim instead of resetting
+# with each replaced pod.
 # Enabling it means a 2.5-CPU ArchivePurgeMain sidecar per member (members on c4d-standard-16) and an
 # archive-offload Secret for the URI + HMAC, never inline.
 resources:
   - networkpolicy.yaml
-  # The members' archive volume (STALLS.md): a dedicated Hyperdisk per member, generic ephemeral
-  # so the emptyDir lifecycle above still holds. Cluster-scoped, so it survives a namespace delete;
+  # The members' archive volume (STALLS.md): a dedicated Hyperdisk per member, one retained claim per
+  # ordinal (ADR-087). Cluster-scoped, so it survives a namespace delete;
   # on an N2 pool read the machine-type trap in the file before applying.
   - storageclass.yaml
   - statefulset-emptydir.yaml

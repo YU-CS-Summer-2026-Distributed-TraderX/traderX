@@ -196,6 +196,15 @@ def validate(docs):
                     require(re.search(r"trap '[^']*kill -TERM \"\$pid\"[^']*' TERM", script) is not None
                             and 'exit "$status"' in script,
                             'member shell does not forward SIGTERM to the JVM (FR-GMR-04)')
+        # FR-GMR-01 (ADR-087): a member's log outlives its pod. A /data volume deleted with the pod lets one
+        # scale-down or two pod deletes destroy a majority of the logs; two empty members can then elect one of
+        # themselves and commit on an empty history (proof-audit suspect #15).
+        if doc['kind'] == 'StatefulSet' and doc['metadata']['name'] == 'order-matcher-cluster':
+            claims = {t['metadata']['name'] for t in doc['spec'].get('volumeClaimTemplates', [])}
+            retention = doc['spec'].get('persistentVolumeClaimRetentionPolicy', {})
+            require('data' in claims and all(v['name'] != 'data' for v in pod.get('volumes', []))
+                    and retention.get('whenScaled') == 'Retain' and retention.get('whenDeleted') == 'Retain',
+                    'member /data is not a retained per-member claim (FR-GMR-01, ADR-087)')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
@@ -221,9 +230,9 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
         docs.extend(read(path))
     # Explicit inherited cluster manifests; generated runtime service overrides
     # compose afterward. Sandbox, backups and seeding jobs are separate scopes.
-    # The members' /data is a generic ephemeral volume of class order-matcher-archive
-    # (statefulset-emptydir.yaml); without the class the claims never bind and the members stay
-    # Pending. It was applied by hand on traderx-demo (2026-10-26); rendered here since.
+    # The members' /data is a retained per-member claim of class order-matcher-archive
+    # (statefulset-emptydir.yaml, ADR-087); without the class the claims never bind and the members
+    # stay Pending. It was applied by hand on traderx-demo (2026-10-26); rendered here since.
     for name in ['storageclass.yaml', 'statefulset-emptydir.yaml', 'gateway.yaml', 'nats.yaml',
                  'eod-price-db.yaml', 'eod-chain.yaml', 'risk-extract.yaml',
                  'reference-data.yaml', 'execution-algo-engine.yaml']:

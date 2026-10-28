@@ -30,7 +30,7 @@ import java.util.List;
  * role, applied sequence, trades, and snapshot count; {@code /ready} is 200 once the service
  * has started, its Aeron election has CLOSED (it has caught up and joined the live log) AND it
  * is within {@code CLUSTER_READY_MAX_LAG} of its furthest-ahead peer — the gate that makes k8s
- * rolling restarts safe on emptyDir members (FR-GMR-08).
+ * rolling restarts safe on members that rejoin by catch-up (FR-GMR-08).
  */
 public final class ClusterNodeMain {
     /** This member's CLUSTER_ELECTION_STATE code, published by the election-phase watcher; -1 until read. */
@@ -39,6 +39,15 @@ public final class ClusterNodeMain {
     static final java.util.concurrent.atomic.AtomicLong INGRESS_REJECTED = new java.util.concurrent.atomic.AtomicLong();
     /** Set once the shutdown signal arrives: from then on a consensus-module termination is part of the close. */
     static final java.util.concurrent.atomic.AtomicBoolean STOPPING = new java.util.concurrent.atomic.AtomicBoolean();
+
+    // FR-GMR-09 (ADR-087): never cache a FAILED lookup. The JDK keeps one for 10 s (java.security), so a survivor that
+    // looked up a deleted peer kept failing for up to 10 s after the replacement pod's name resolved, while the new pod
+    // could already reach it: the window in which two restarted members can elect each other without it (suspect #15).
+    // It also made the second-started pod's awaitDns wait exactly 10 x 1 s. Here, not in main(): a class initialiser
+    // runs before anything in this JVM resolves a name, and the JDK reads the setting once, at its first lookup.
+    static {
+        java.security.Security.setProperty("networkaddress.cache.negative.ttl", "0");
+    }
 
     public static void main(final String[] args) throws Exception {
         final int memberId = memberId();
