@@ -55,7 +55,8 @@ proof bug is left open. Round-1 suspects 1, 2, 3 and 6 are closed on this tip. T
 | Proof | Covers | Result on 40d93f6b |
 |---|---|---|
 | [`yu18-operator-recovery.sh`](yu18-operator-recovery.sh) | FR-ER08; FR-ER01/06, NFR-ER02 refusals where reachable | PASS (FR-ER08 + no write); refusals SKIP: tier-closed |
-| [`yu18-fix-session.sh`](yu18-fix-session.sh) + `.mjs` | FR-ERH-S3, FR-FIX04/05/10/11/12 | FAIL: S3, FIX10, FIX12(b) and the effect end pass; suspects 7–10 |
+| [`yu18-fix-session.sh`](yu18-fix-session.sh) + `.mjs` | FR-ERH-S3, FR-FIX04/05/10/11/12 | FAIL: S3, FIX10, FIX12(b) and the effect end pass; suspects 7–10. PASS on fp-7ea8db5c (ADR-086 rig, 2026-10-28) |
+| [`yu18-fix-resume.sh`](yu18-fix-resume.sh) + `.mjs` | FR-FIX04/11/12(d) across replicas, ADR-086 | added after round 2; PASS on fp-7ea8db5c, and `NEGATIVE=1` without the store fails it (B's Logon at 1) |
 | [`yu18-market-order.sh`](yu18-market-order.sh) | FR-LOB04/05 | FAIL: suspect 11 (PRICE_MISSING arm); the rest passes |
 | [`yu18-cdm-instruments.sh`](yu18-cdm-instruments.sh) | FR-CDM07/08/23/24 | PASS (both arms) |
 | [`yu18-swap-capacity.sh`](yu18-swap-capacity.sh) | FR-OTC09 | PASS: 8 + 4088 = 4096, then CAPACITY ×4 |
@@ -139,6 +140,10 @@ and checkpoints unchanged.
    Logon came back at `MsgSeqNum 1` (it had sent up to 7). A clean Logout reconnect does the same. So no
    ResendRequest can re-deliver the earlier reports. TD-AC01 puts session state "on the gateway instance",
    and this was the same instance.
+   **CLOSED 2026-10-28 (ADR-086):** sessions persist in JetStream and resume on any replica;
+   `yu18-fix-session` and `yu18-fix-resume` pass on `fp-7ea8db5c`. Suspect 7 closed by the same change
+   (`ORDER_READMODEL_URL` on the GKE gateway), suspect 10 by refusing an unresolvable ticker as
+   `UNKNOWN_SECURITY` instead of answering nothing.
 10. **FR-FIX12(c) — an unknown symbol is not answered.** `D` with `55=ZZNOSUCH9` gets no message of any kind
     in 20 s. The gateway logs `FIX order <clOrdId> ambiguous (no committed ack)`, i.e. it classed an
     application reject as outcome (d). The spec wants `ExecutionReport OrdStatus=Rejected`. (b) is correct:
@@ -767,15 +772,15 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU10 | `FR-FIX01` | LIVE | yu10-fix-session |  |  |
 | YU10 | `FR-FIX02` | LIVE | yu10-fix-session |  |  |
 | YU10 | `FR-FIX03` | LIVE | yu13-cancel-ingress |  | yu13-fix-cancel.mjs |
-| YU10 | `FR-FIX04` | LIVE |  | yu18-fix-session | FAILS: suspect 7 (no read model on the GKE gateway) |
+| YU10 | `FR-FIX04` | LIVE |  | yu18-fix-session, yu18-fix-resume | suspect 7 FIXED by ADR-086 (`ORDER_READMODEL_URL`); PASS on fp-7ea8db5c, not yet on traderx |
 | YU10 | `FR-FIX05` | LIVE | yu10-fix-session | yu18-fix-session | suspect 8 FIXED by ADR-084 (step 4 passes on `traderx-fixf`; not yet on traderx) |
 | YU10 | `FR-FIX06` | LIVE | yu13-cancel-ingress |  | yu13-fix-cancel.mjs |
 | YU10 | `FR-FIX07` | LIVE | yu10-fix-session |  | logon; superseded by ERH-S3 FIX_SESSION_AUTH |
 | YU10 | `FR-FIX08` | LIVE | yu10-fix-session |  | logon; superseded by ERH-S3 FIX_SESSION_AUTH |
 | YU10 | `FR-FIX09` | LIVE | yu10-fix-session |  |  |
 | YU10 | `FR-FIX10` | LIVE |  | yu18-fix-session | resend answers the ORIGINAL order (spec says "rejected": spec gap 13) |
-| YU10 | `FR-FIX11` | LIVE |  | yu18-fix-session | FAILS: suspect 9 (sequence restarts at 1 on reconnect) |
-| YU10 | `FR-FIX12` | LIVE |  | yu18-fix-session | (b) PASS; (c) FAILS: suspect 10 (unknown symbol answered nothing) |
+| YU10 | `FR-FIX11` | LIVE |  | yu18-fix-session, yu18-fix-resume | suspect 9 FIXED by ADR-086 (JetStream session store, any replica); PASS on fp-7ea8db5c, not yet on traderx |
+| YU10 | `FR-FIX12` | LIVE |  | yu18-fix-session, yu18-fix-resume | (b) PASS; (c) suspect 10 FIXED (UNKNOWN_SECURITY reject); (d) reconcile via status + resend; PASS on fp-7ea8db5c, not yet on traderx |
 | YU10 | `FR-FIX13` | LIVE | yu10-fix-session |  |  |
 | YU11 | `FR-AR01` | CI |  |  | dual-transport replication retired by YU12 Aeron Cluster |
 | YU11 | `FR-AR02` | CI |  |  | dual-transport replication retired by YU12 Aeron Cluster |

@@ -123,8 +123,15 @@ try {
   ok(`resent ClOrdID answered without a new order (${dupKind})`); result('dup_answer', dupKind);
 
   console.log('\n=== 3. FR-FIX04: OrderStatusRequest answers from the read model ===');
-  s.send('H', [`11=${S1}`, `37=${n1['37']}`, `55=${TICKER}`, '54=2']);
-  const st1 = await er(s, S1, (m) => m['150'] === 'I', 'status (ExecType=I)');
+  // The read model trails the engine (status is off-consensus): ask until it shows the order, up to 10 s.
+  let st1;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const mark = s.rx.length;
+    s.send('H', [`11=${S1}`, `37=${n1['37']}`, `1=${B}`, `55=${TICKER}`, '54=2']);   // Account: S1's owner, or the default account is searched
+    st1 = await s.wait((m) => s.rx.indexOf(m) >= mark && m['35'] === '8' && m['11'] === S1 && m['150'] === 'I', 'status (ExecType=I)');
+    if (st1['39'] === '0') break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
   if (st1['39'] !== '0' || st1['37'] !== n1['37']) suspect(`status of the resting Sell: OrdStatus=${st1['39']} OrderID=${st1['37']} Text="${st1['58'] || ''}", want 0 / ${n1['37']} (FR-FIX04)`);
   else ok(`H -> ExecType=I OrdStatus=0 (New) OrderID=${st1['37']} LeavesQty=${st1['151'] || '?'}`);
 
@@ -141,8 +148,15 @@ try {
   }
   if (!fs1) suspect(`no fill ExecutionReport for the resting Sell ${S1} (FR-FIX05: the resting side is a FIX order of this session too)`);
   else ok(`resting Sell ${S1}: fill ExecutionReport OrdStatus=${fs1['39']}`);
-  s.send('H', [`11=${S1}`, `37=${n1['37']}`, `55=${TICKER}`, '54=2']);
-  const st2 = await s.wait((m) => m['35'] === '8' && m['11'] === S1 && m['150'] === 'I' && m !== st1, 'second status of S1');
+  // The read model trails the engine (status is off-consensus): ask until it shows the fill, up to 10 s.
+  let st2;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const mark = s.rx.length;
+    s.send('H', [`11=${S1}`, `37=${n1['37']}`, `1=${B}`, `55=${TICKER}`, '54=2']);   // Account: S1's owner, or the default account is searched
+    st2 = await s.wait((m) => s.rx.indexOf(m) >= mark && m['35'] === '8' && m['11'] === S1 && m['150'] === 'I', 'second status of S1');
+    if (st2['39'] === '2') break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
   if (st2['39'] !== '2') suspect(`status of the filled Sell: OrdStatus=${st2['39']} OrderID=${st2['37']} Text="${st2['58'] || ''}", want 2 (Filled) (FR-FIX04)`);
   else ok('H after the cross -> OrdStatus=2 (Filled)');
 
@@ -160,8 +174,8 @@ try {
   else ok(`(b) D without Side(54) -> Reject(3) RefTagID=${r2['371'] || '?'} "${r2['58'] || ''}"`);
 
   console.log('\n=== 6. FR-FIX11: session state survives a reconnect; ResendRequest re-delivers ===');
-  // TD-AC01 (YU12): session state lives on the gateway INSTANCE, so this reconnect must reach the same
-  // one — the wrapper's port-forward pins a single pod for its whole life.
+  // The wrapper's port-forward pins one pod, so this is the same-replica reconnect; yu18-fix-resume
+  // proves the cross-replica one (ADR-086).
   const lastIn = Math.max(...s.rx.map((m) => Number(m['34'])));
   const firstEr = Math.min(...s.rx.filter((m) => m['35'] === '8').map((m) => Number(m['34'])));
   // An abrupt drop, not a Logout: the counterparty case FR-FIX11 exists for (and a clean Logout may

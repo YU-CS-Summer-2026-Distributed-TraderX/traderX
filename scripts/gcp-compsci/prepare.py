@@ -172,6 +172,13 @@ def validate(docs):
             env = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
             require(env.get('CONTROL_FEED_SUBSCRIBER') == '1', 'gateway does not subscribe to the control feed (YU04)')
             require(env.get('FIX_FILL_FEED', '1') != '0', 'FIX sessions would get no fill reports (FR-FIX05, ADR-084)')
+            # ADR-086: FIX sessions resume on any replica (FR-FIX11), and status requests have a read model
+            # (FR-FIX04), so a reconnecting client can recover what it missed.
+            if 'FIX_ACCEPTOR_PORT' in env:
+                require(env.get('FIX_SESSION_STORE') == 'jetstream',
+                        'FIX sessions restart at MsgSeqNum 1 on reconnect (FR-FIX11, ADR-086)')
+                require((env.get('ORDER_READMODEL_URL') or '').startswith('http://trade-processor:'),
+                        'FIX order status has no read model (FR-FIX04)')
         # FR-DRS-25: the production projection replays an outage from the stream, and the stream outlives NATS.
         if doc['metadata']['name'] == 'trade-processor' and pod:
             env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}

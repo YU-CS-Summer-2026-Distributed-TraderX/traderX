@@ -17,7 +17,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 ACCT_A="${ACCT_A:-22214}"; ACCT_B="${ACCT_B:-42422}"
 T="$(mint_ticker)"; PX=50
 pf GW "${GATEWAY_TARGET:-svc/order-matcher}" "${GATEWAY_PORT:-18110}"
-pf FIXP "${FIX_TARGET:-svc/order-matcher-gw-fix}" 18130 tcp  # one pod for the life of the forward (TD-AC01)
+pf FIXP "${FIX_TARGET:-svc/order-matcher-gw-fix}" 18130 tcp  # one pod for the life of the forward; yu18-fix-resume crosses replicas
 PW="$(secret auth-secrets fix-session-password)"; [[ -n "${PW}" ]] || fail "auth-secrets has no fix-session-password (FR-ERH-S3: GKE sources it there)"
 trades_all() { local m s=""; for ((m=0; m<MEMBERS; m++)); do s+="$(mget "${m}" /health | jget 'd.get("trades")') "; done; echo "${s% }"; }
 orders() { sql "SELECT COUNT(*) FROM orderbook WHERE security='${T}'"; }

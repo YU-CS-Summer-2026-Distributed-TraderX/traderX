@@ -71,6 +71,11 @@
   QuickFIX/J file store on the FIX data directory of the existing `lmax-runtime-data` volume,
   surviving pod restarts; `PersistMessages` is enabled so `ResendRequest` re-delivers stored
   ExecutionReports after a reconnect.
+  *Gateway tier (YU12+, ADR-086):* the acceptor runs on stateless gateway replicas, so the store is
+  JetStream (`FIX_SESSION_STORE=jetstream`), not a file: sequence numbers and sent messages persist
+  across reconnects, gateway restarts and replicas; a lease lets one replica serve a session at a time,
+  and a Logon on another replica while it is live is refused with Logout. Retention is the daily session
+  (00:00 UTC), with a 7-day, 1 GiB backstop that fails closed.
 - FR-FIX12: Admission outcomes SHALL be distinguished: (a) pre-publish failure (ring claim
   timeout, ledger unavailable) → session-level reject, no order exists; (b) malformed or
   unsupported message → session `Reject (35=3)`; (c) application rejection (risk screen, unknown
@@ -78,6 +83,9 @@
   produces NO reject message — the outcome is reported by the eventual ExecutionReport, and the
   counterparty reconciles with `OrderStatusRequest` or a same-`ClOrdID` retry, which the
   duplicate rule answers deterministically.
+  *Gateway tier (YU12+, ADR-086):* `OrderStatusRequest` reads the order read model
+  (`ORDER_READMODEL_URL`, trade-processor), and the eventual report reaches the session on whichever
+  replica it reconnects to: stored and resent, or reported after the Logon (ADR-084 fills).
 - FR-FIX13: The kind runtime SHALL expose the acceptor port on the order-matcher Service plus a
   NodePort for external test clients; no ingress or public exposure of the FIX port exists in
   this state, and the deployed session profile is plaintext TCP inside the cluster boundary.

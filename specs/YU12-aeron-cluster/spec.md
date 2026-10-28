@@ -103,6 +103,8 @@ YU11 recovery proof invariants, parented on `YU11-aeron-replication`
 - TD-AC01: The gateway tier is a stateless-forward deployment; its counterparty FIX session state
   lives only on the gateway instance, so gateway loss drops counterparty sessions to reconnect
   while cluster order state is unaffected.
+  *Retired from YU18 by ADR-086:* with `FIX_SESSION_STORE=jetstream` session state lives in JetStream and
+  a session resumes on any gateway replica. Unset, the in-memory behaviour above remains.
 - TD-AC02: All cluster members deploy in one zone; the snapshot/log persistent volumes are the
   durability authority for zone-level loss.
 

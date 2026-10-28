@@ -34,8 +34,9 @@ metadata:
 spec:
   selector:
     app: cluster-gateway
-  # FIX sessions are stateful per CompID (each replica is its own acceptor with its own sequence
-  # numbers) — a client bouncing between pods breaks the session. Keep FIX pinned here.
+  # FIX sessions persist in JetStream (ADR-086, FIX_SESSION_STORE below), so a reconnect may land on
+  # any replica and resume its numbers. Affinity stays: a client that keeps one pod never waits on a
+  # session lease handover, which a reconnect to another pod does (up to the old owner's release).
   sessionAffinity: ClientIP
   sessionAffinityConfig:
     clientIP:
@@ -177,6 +178,18 @@ spec:
                   key: fix-session-password
             - name: FIX_SESSION_AUTH
               value: "CLIENT1:$(FIX_SESSION_PASSWORD):*"
+            # ADR-086 (FR-FIX11): session numbers and sent messages live in JetStream (bucket
+            # FIX_SESSIONS on nats:4222), with a lease so one replica serves a session at a time. A
+            # reconnect to ANY replica resumes and can ResendRequest what it missed. Unset = in-memory
+            # sessions that restart at MsgSeqNum 1 on every reconnect (TD-AC01).
+            - name: FIX_SESSION_STORE
+              value: "jetstream"
+            # FR-FIX04 / suspect 7: OrderStatusRequest (H) and OrderMassStatusRequest (AF) read the
+            # order read model the REST blotter reads (GET /accounts/{id}/orders on trade-processor).
+            # Unset, every status request answered "order status unavailable (no read model
+            # configured)", and a recovering client had no way to learn what it missed.
+            - name: ORDER_READMODEL_URL
+              value: "http://trade-processor:18091"
             # OTEL-01: tracing knobs, present-but-off on GKE. The benchmark that proves this
             # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
             # deployed default and the "on" arm must be reachable without a rebuild. Flip

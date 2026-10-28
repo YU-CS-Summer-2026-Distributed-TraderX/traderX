@@ -175,6 +175,18 @@ class Rendering(unittest.TestCase):
         module.podspec(gw)['containers'][0]['env'].append({'name':'FIX_FILL_FEED','value':'0'})
         with self.assertRaises(AssertionError): module.validate(docs)
 
+    def test_fix_sessions_persist_and_status_has_a_read_model(self):
+        # ADR-086: FR-FIX11 resume on any replica, FR-FIX04 status from the read model; either one dropped is refused.
+        gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        env=module.podspec(gw)['containers'][0]['env']
+        self.assertIn({'name':'FIX_SESSION_STORE','value':'jetstream'},env)
+        self.assertIn({'name':'ORDER_READMODEL_URL','value':'http://trade-processor:18091'},env)
+        for name in ('FIX_SESSION_STORE','ORDER_READMODEL_URL'):
+            docs=copy.deepcopy(self.docs)
+            gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+            env=module.podspec(gw)['containers'][0]['env']; env[:]=[e for e in env if e['name']!=name]
+            with self.assertRaises(AssertionError, msg=name): module.validate(docs)
+
     def member_script(self, docs=None):
         engine=next(d for d in (docs or self.docs) if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
         return module.podspec(engine)['containers'][0]['command']

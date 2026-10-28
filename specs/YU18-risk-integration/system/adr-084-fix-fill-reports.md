@@ -58,9 +58,11 @@ Adding either to the egress would be a wire change for every member and gateway.
 ## Consequences
 
 - No engine, wire, snapshot or consensus change. A gateway rolls on its own.
-- Fill reports are as durable as the FIX session: ephemeral (TD-AC01). A counterparty that reconnects
-  to another gateway, or after a gateway restart, gets no fill report for an order placed before;
-  `OrderStatusRequest (H)` answers it. Unsolicited cancels (an STP cancel of a resting order) are
+- Fill reports are as durable as the FIX session. With in-memory sessions (TD-AC01) a counterparty that
+  reconnects to another gateway, or after a gateway restart, gets no fill report for an order placed
+  before; `OrderStatusRequest (H)` answers it. With `FIX_SESSION_STORE=jetstream` (ADR-086, the GKE
+  gateway) a fill is stored under the session's lease and reaches the session on any replica, resent
+  or reported after the Logon. Unsolicited cancels (an STP cancel of a resting order) are
   still not reported; such an entry just expires.
 - The feed is best effort, like the egress. A bridge drop delays a report to the order's next update,
   and the last fill can be lost. The bridge's own drop and 429 counters (ADR-083) say when.

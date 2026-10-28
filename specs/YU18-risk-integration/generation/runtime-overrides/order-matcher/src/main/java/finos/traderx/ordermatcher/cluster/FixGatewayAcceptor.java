@@ -58,8 +58,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * property: when the cluster leader dies and the submitter reconnects to the new leader, this
  * acceptor and its live sessions are never touched, so the counterparty stays logged on.
  *
- * Ephemeral by design (TD-AC01): a {@link MemoryStoreFactory} holds session state, so gateway
- * loss drops sessions to ordinary reconnect while cluster order state is unaffected. Deferred
+ * Session state is in-memory (TD-AC01) unless {@code FIX_SESSION_STORE=jetstream}: then ADR-086's
+ * {@link FixSessionStore} keeps sequence numbers and sent messages in JetStream, a lease keeps each
+ * session on one gateway at a time, and a counterparty can resume, and ResendRequest, on any replica.
+ * Deferred
  * (not needed to prove session survival): the amortized submit-batch of the parent state's
  * in-process acceptor, and JWT entitlement (risk/entitlement is decided inside the cluster, not at
  * this tier).
@@ -92,6 +94,10 @@ public final class FixGatewayAcceptor {
     private final int defaultAccountId;
     private final List<String> compIds;
     private final AtomicLong execSeq = new AtomicLong();
+    /** ADR-086: ExecIDs stay unique when a session moves between replicas or a gateway restarts. */
+    private static final String EXEC_ID_PREFIX = Long.toString(System.currentTimeMillis(), 36)
+        + Integer.toString(java.util.concurrent.ThreadLocalRandom.current().nextInt(1296), 36) + "-";
+    private FixSessionStore sessionStore;
 
     /**
      * ClOrdID → orderRef, so a counterparty can cancel by OrigClOrdID (41) alone, as FIX 4.4
@@ -99,10 +105,9 @@ public final class FixGatewayAcceptor {
      * that one stayed invisible until 33M orders. Eviction only costs the OrigClOrdID convenience;
      * OrderID (37) still resolves, because this gateway mints it as {@code ord-<orderRef>}.
      *
-     * <p>ponytail: gateway-local and therefore best-effort — a counterparty that reconnects onto a
-     * different gateway replica, or comes back after a gateway restart, must cancel by OrderID.
-     * The durable cross-gateway version is the engine's replicated clientOrderKey table, which is
-     * a separate decision (see the ClOrdID-suppression work).
+     * <p>With persistent sessions (ADR-086) a gateway rebuilds a session's entries from its stored
+     * reports when it takes the session's lease, so OrigClOrdID resolves on any replica for today's
+     * orders. In-memory sessions keep it gateway-local: after a move, cancel by OrderID.
      */
     private static final int CLORDID_MAP_CAPACITY = 65_536;
     private final Map<String, Integer> refByClOrdId = Collections.synchronizedMap(
@@ -191,7 +196,19 @@ public final class FixGatewayAcceptor {
 
     private final FixSessionAuth auth;
 
+    /** ADR-086: persist sessions in this store (tests); otherwise {@code FIX_SESSION_STORE} decides. */
+    FixGatewayAcceptor withSessionStore(final FixSessionStore store) {
+        this.sessionStore = store;
+        return this;
+    }
+
     public void start() throws Exception {
+        if (sessionStore == null && "jetstream".equals(System.getenv("FIX_SESSION_STORE"))) {
+            final String nats = System.getenv().getOrDefault("NATS_ADDRESS",
+                "nats://" + System.getenv().getOrDefault("NATS_BROKER_HOST", "nats") + ":4222");
+            sessionStore = new FixSessionStore(nats,
+                System.getenv().getOrDefault("HOSTNAME", "gateway") + "/" + EXEC_ID_PREFIX);
+        }
         final SessionSettings settings = new SessionSettings();
         final Properties defaults = new Properties();
         defaults.setProperty("ConnectionType", "acceptor");
@@ -199,8 +216,12 @@ public final class FixGatewayAcceptor {
         defaults.setProperty("StartTime", "00:00:00");
         defaults.setProperty("EndTime", "00:00:00");
         defaults.setProperty("HeartBtInt", "30");
-        defaults.setProperty("ResetOnLogon", "Y");
-        defaults.setProperty("PersistMessages", "N"); // ephemeral (TD-AC01)
+        // ADR-086: persistent sessions keep their numbers across reconnects and replicas; RefreshOnLogon
+        // rereads the store, which another replica may have advanced since this one last held it.
+        final boolean persistent = sessionStore != null;
+        defaults.setProperty("ResetOnLogon", persistent ? "N" : "Y");
+        defaults.setProperty("PersistMessages", persistent ? "Y" : "N"); // in-memory: TD-AC01
+        defaults.setProperty("RefreshOnLogon", persistent ? "Y" : "N");
         // ENGINE-REVIEW S3: TLS on the session when a keystore is configured (QuickFIX/J native SSL).
         final String keystore = System.getenv("FIX_SSL_KEYSTORE");
         if (keystore != null && !keystore.isBlank()) {
@@ -217,16 +238,118 @@ public final class FixGatewayAcceptor {
             final SessionID sid = new SessionID("FIX.4.4", serverCompId, compId);
             settings.setString(sid, "BeginString", "FIX.4.4");
         }
-        acceptor = new ThreadedSocketAcceptor(new App(), new MemoryStoreFactory(), settings,
+        if (persistent) {
+            sessionStore.onAcquired = this::adopt;
+            sessionStore.onLost = sid -> {
+                final Session session = sessionOf(sid);
+                try {
+                    if (session != null) {
+                        session.disconnect("FIX session lease lost to another gateway", true);
+                    }
+                } catch (final java.io.IOException e) {
+                    log.warn("FIX session {}: disconnect after lease loss failed: {}", sid, e.toString());
+                }
+            };
+        }
+        acceptor = new ThreadedSocketAcceptor(new App(),
+            persistent ? sessionStore : new MemoryStoreFactory(), settings,
             RedactingLog::new, new DefaultMessageFactory());
         acceptor.start();
-        log.info("FIX gateway acceptor on :{} for {} CompID(s)", port, compIds.size());
+        log.info("FIX gateway acceptor on :{} for {} CompID(s), sessions {}", port, compIds.size(),
+            persistent ? "in JetStream (ADR-086)" : "in memory");
     }
 
     public void stop() {
         if (acceptor != null) {
             acceptor.stop();
         }
+        if (sessionStore != null) {
+            sessionStore.close();
+        }
+    }
+
+    /**
+     * This acceptor's own Session for {@code sid}. Not {@code Session.lookupSession}/{@code sendToTarget}:
+     * QuickFIX/J's registry is JVM-global, so with two acceptors in one JVM (FixSessionPersistenceIT's
+     * two replicas) a reply would go to whichever registered the SessionID last.
+     */
+    private Session sessionOf(final SessionID sid) {
+        for (final Session s : acceptor.getManagedSessions()) {
+            if (s.getSessionID().equals(sid)) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * ADR-086 §3: this gateway just took {@code sid}'s lease. The session's stored outbound log is its
+     * order index: rebuild ClOrdID → orderRef (so a cancel by OrigClOrdID resolves on whichever replica
+     * the counterparty reconnected to), and every open order's reported CumQty into {@link #tracked}
+     * (ADR-084), so this gateway reports the fills nobody has told the session about yet and never one
+     * it has. Fills that arrived while the order was untracked here are in the early ring and replay now.
+     *
+     * <p>ponytail: an adopted entry learns its epoch from its next feed update. A fresh cluster epoch is a
+     * wipe of the venue, and purging {@code FIX_SESSIONS} belongs to that wipe, or today's refs would
+     * name the new epoch's orders.
+     */
+    private void adopt(final SessionID sid, final List<String> sent) {
+        final Map<Integer, Message> last = new LinkedHashMap<>();
+        for (final String raw : sent) {
+            try {
+                final Message m = new Message();
+                m.fromString(raw, null, false);
+                if (!"8".equals(m.getHeader().getString(35)) || !m.isSetField(ClOrdID.FIELD)
+                    || !m.isSetField(OrderID.FIELD) || !m.getString(OrderID.FIELD).startsWith("ord-")
+                    || m.getChar(ExecType.FIELD) == ExecType.ORDER_STATUS) {
+                    continue;   // a status answer reports the read model; it tells the session no fill
+                }
+                final int ref = Integer.parseInt(m.getString(OrderID.FIELD).substring(4));
+                final String key = sid.getTargetCompID() + '\001' + m.getString(ClOrdID.FIELD);
+                if (m.getChar(ExecType.FIELD) == ExecType.CANCELED) {
+                    refByClOrdId.remove(key);
+                } else {
+                    refByClOrdId.put(key, ref);
+                }
+                last.remove(ref);   // re-insert: iteration follows each order's latest report
+                last.put(ref, m);
+            } catch (final Exception e) {
+                // not an order report; nothing to adopt
+            }
+        }
+        int open = 0;
+        synchronized (feedLock) {
+            for (final Map.Entry<Integer, Message> e : last.entrySet()) {
+                try {
+                    final Message m = e.getValue();
+                    final char status = m.getChar(OrdStatus.FIELD);
+                    Tracked t = tracked.get(e.getKey());
+                    if (status != OrdStatus.NEW && status != OrdStatus.PARTIALLY_FILLED) {
+                        if (t != null && t.session.equals(sid)) {
+                            tracked.remove(e.getKey());
+                        }
+                        continue;
+                    }
+                    if (t == null) {
+                        t = new Tracked(sid, m.getString(ClOrdID.FIELD),
+                            m.isSetField(Symbol.FIELD) ? m.getString(Symbol.FIELD) : "",
+                            m.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B');
+                        tracked.put(e.getKey(), t);
+                    } else if (!t.session.equals(sid)) {
+                        continue;
+                    }
+                    t.clOrdId = m.getString(ClOrdID.FIELD);
+                    t.cumQty = (int) m.getDouble(CumQty.FIELD);
+                    t.notional = t.cumQty * (m.isSetField(AvgPx.FIELD) ? m.getDouble(AvgPx.FIELD) : 0d);
+                    replayEarly(e.getKey(), t);
+                    open++;
+                } catch (final FieldNotFound ignore) {
+                    // a report without Side/CumQty/OrdStatus is not one this acceptor wrote
+                }
+            }
+        }
+        log.info("FIX session {}: adopted {} order(s), {} open, from {} stored message(s)",
+            sid, last.size(), open, sent.size());
     }
 
     /**
@@ -267,11 +390,17 @@ public final class FixGatewayAcceptor {
 
         @Override
         public void onLogon(final SessionID sessionId) {
+            if (sessionStore != null) {
+                sessionStore.live(sessionId, true);
+            }
             log.info("FIX logon: {}", sessionId.getTargetCompID());
         }
 
         @Override
         public void onLogout(final SessionID sessionId) {
+            if (sessionStore != null) {
+                sessionStore.live(sessionId, false);
+            }
             log.info("FIX logout: {}", sessionId.getTargetCompID());
         }
 
@@ -293,9 +422,23 @@ public final class FixGatewayAcceptor {
                     if (!auth.logonAllowed(compId, password)) {
                         throw new RejectLogon("invalid credentials");
                     }
+                    // ADR-086: one gateway per live session. Wait briefly for a previous owner (a
+                    // client that just dropped) to let go; the lease is taken only after the password.
+                    if (sessionStore != null && !acquire(sessionId)) {
+                        throw new RejectLogon("session is live on another gateway");
+                    }
                 }
             } catch (final FieldNotFound ignore) {
                 // non-logon admin message
+            }
+        }
+
+        private boolean acquire(final SessionID sessionId) {
+            try {
+                return sessionStore.acquireForLogon(sessionId, 5_000);
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
             }
         }
 
@@ -304,6 +447,10 @@ public final class FixGatewayAcceptor {
 
         @Override
         public void fromApp(final Message message, final SessionID sessionId) {
+            // ADR-086: an answer that completes after its client left must still find the lease.
+            if (sessionStore != null) {
+                sessionStore.requestStarted(sessionId);
+            }
             try {
                 final String msgType = message.getHeader().getString(35);
                 if ("D".equals(msgType)) {
@@ -319,6 +466,10 @@ public final class FixGatewayAcceptor {
                 }
             } catch (final FieldNotFound ignore) {
                 // malformed; QuickFIX/J session layer already validated structure
+            } finally {
+                if (sessionStore != null) {
+                    sessionStore.requestEnded(sessionId);
+                }
             }
         }
 
@@ -507,7 +658,7 @@ public final class FixGatewayAcceptor {
             }
             final ExecutionReport report = new ExecutionReport(
                 new OrderID("ord-" + orderRef),
-                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
                 new ExecType(ExecType.REPLACED),
                 new OrdStatus(filled ? OrdStatus.FILLED : OrdStatus.NEW),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
@@ -628,7 +779,7 @@ public final class FixGatewayAcceptor {
                                              final String security) {
             final ExecutionReport report = new ExecutionReport(
                 new OrderID(orderRef > 0 ? "ord-" + orderRef : "NONE"),
-                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
                 new ExecType(ExecType.ORDER_STATUS),
                 new OrdStatus(ordStatus),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
@@ -691,7 +842,7 @@ public final class FixGatewayAcceptor {
                                       final int orderRef, final OrderCancelRequest cancel) {
             final ExecutionReport report = new ExecutionReport(
                 new OrderID("ord-" + orderRef),
-                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
                 new ExecType(ExecType.CANCELED),
                 new OrdStatus(OrdStatus.CANCELED),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
@@ -742,11 +893,12 @@ public final class FixGatewayAcceptor {
         }
 
         private void send(final Message message, final SessionID sessionId, final String clOrdId) {
-            try {
-                Session.sendToTarget(message, sessionId);
-            } catch (final quickfix.SessionNotFound e) {
+            final Session session = sessionOf(sessionId);
+            if (session == null) {
                 log.warn("FIX session gone before response for {}", clOrdId);
+                return;
             }
+            session.send(message);
         }
 
         private void sendReport(final SessionID sessionId, final String clOrdId, final String ticker,
@@ -761,7 +913,7 @@ public final class FixGatewayAcceptor {
                 : filled ? ExecType.FILL : canceled ? ExecType.CANCELED : ExecType.NEW;
             final ExecutionReport report = new ExecutionReport(
                 new OrderID(result.accepted() ? "ord-" + result.orderRef() : "NONE"),
-                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
                 new ExecType(execType),
                 new OrdStatus(ordStatus),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
@@ -786,7 +938,7 @@ public final class FixGatewayAcceptor {
                                      final char side, final int qty, final String text) {
             final ExecutionReport report = new ExecutionReport(
                 new OrderID("NONE"),
-                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
                 new ExecType(ExecType.REJECTED),
                 new OrdStatus(OrdStatus.REJECTED),
                 new Side(side == 'S' ? Side.SELL : Side.BUY),
@@ -830,13 +982,18 @@ public final class FixGatewayAcceptor {
         synchronized (feedLock) {
             final Tracked t = new Tracked(session, clOrdId, symbol, side);
             tracked.put(ref, t);
-            for (int i = 0; i < EARLY_CAPACITY; i++) {   // oldest first
-                final int k = (earlyNext + i) % EARLY_CAPACITY;
-                if (earlyRef[k] == ref && earlyMsg[k] != null) {
-                    final byte[] m = earlyMsg[k];
-                    earlyMsg[k] = null;
-                    applyUpdate(ref, t, m);
-                }
+            replayEarly(ref, t);
+        }
+    }
+
+    /** Under {@link #feedLock}: apply the early ring's fills for {@code ref}, oldest first. */
+    private void replayEarly(final int ref, final Tracked t) {
+        for (int i = 0; i < EARLY_CAPACITY; i++) {
+            final int k = (earlyNext + i) % EARLY_CAPACITY;
+            if (earlyRef[k] == ref && earlyMsg[k] != null) {
+                final byte[] m = earlyMsg[k];
+                earlyMsg[k] = null;
+                applyUpdate(ref, t, m);
             }
         }
     }
@@ -873,13 +1030,21 @@ public final class FixGatewayAcceptor {
         if (cum <= t.cumQty) {
             return;
         }
+        // ADR-086 §3: a fill is stored only under its session's lease. Live on another gateway: that one
+        // adopted this order from the stored log and reports it. Live nowhere: take the lease now, so the
+        // fill is sequenced when it happens and resent on the client's ResendRequest. Taking it resyncs t
+        // from the log (adopt), which may already hold this fill.
+        if (sessionStore != null && !sessionStore.held(t.session)
+            && (!sessionStore.acquire(t.session) || cum <= t.cumQty)) {
+            return;
+        }
         final int lastQty = cum - t.cumQty;
         final double lastPx = p.path("lastExecutionPrice").asDouble();
         t.notional += lastQty * lastPx;
         t.cumQty = cum;
         final ExecutionReport report = new ExecutionReport(
             new OrderID("ord-" + ref),
-            new ExecID(String.valueOf(execSeq.incrementAndGet())),
+            new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
             new ExecType(ExecType.TRADE),
             new OrdStatus(leaves == 0 ? OrdStatus.FILLED : OrdStatus.PARTIALLY_FILLED),
             new Side(t.side == 'S' ? Side.SELL : Side.BUY),
@@ -891,9 +1056,10 @@ public final class FixGatewayAcceptor {
         report.set(new OrderQty(qty));
         report.set(new LastQty(lastQty));
         report.set(new LastPx(lastPx));
-        try {
-            Session.sendToTarget(report, t.session);
-        } catch (final quickfix.SessionNotFound e) {
+        final Session session = sessionOf(t.session);
+        if (session != null) {
+            session.send(report);
+        } else {
             log.warn("FIX session gone before fill report for {}", t.clOrdId);
         }
         if (leaves == 0) {
