@@ -3632,6 +3632,30 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             ackHistory.registered(p.requestId);
             pending.put(p.requestId, p);
             byOffer.addLast(p);
+            if (byOffer.size() > 2 * max) {
+                dropAnswered();
+            }
+        }
+
+        /**
+         * Owner thread: forget the entries their ack already completed, keeping offer (= deadline)
+         * order. Without it an answered order stayed here until its deadline, so the queue held
+         * rate x (ACK_TIMEOUT + 2 s) orders, not the window: 266,633 at 22K/s on f15hx, ~110 MB of a
+         * 155 MB live heap (ADR-092, FR-FGM-06). At most {@code max} are still pending, so each pass
+         * frees at least {@code max}: constant work per offer, no allocation.
+         */
+        private void dropAnswered() {
+            for (int n = byOffer.size(); n > 0; n--) {
+                final PendingOrder h = byOffer.pollFirst();
+                if (pending.containsKey(h.requestId)) {
+                    byOffer.addLast(h);
+                }
+            }
+        }
+
+        /** Test seam: entries the deadline queue holds, answered or not. */
+        int queued() {
+            return byOffer.size();
         }
 
         /**

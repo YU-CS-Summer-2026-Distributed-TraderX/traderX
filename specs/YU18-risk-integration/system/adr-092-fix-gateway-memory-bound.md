@@ -2,7 +2,7 @@
 
 Status: accepted 2026-10-28 (coordinator queue; yaakov chose "1+2": bound the inbound path with backpressure, and
 fix why gateways fall behind, starting with the fill-feed retry loop). Pack:
-[FIX gateway memory](../maintenance/fix-gateway-memory/spec.md) (FR-FGM-01..05). Builds on ADR-084 and ADR-086.
+[FIX gateway memory](../maintenance/fix-gateway-memory/spec.md) (FR-FGM-01..06). Builds on ADR-084 and ADR-086.
 
 ## Context
 
@@ -37,6 +37,13 @@ jnats logged two SEVERE lines per attempt: 900–2,200 per gateway. Measured loc
 in total, left no thread and no retained heap. It was noise, not load. Why the 4 gateways fell behind at +24 min is
 not established by f15ho's evidence (GC logs and control samples only).
 
+**f15hx** (the same hour with 4 GiB heaps, nothing fell behind) found a term that grows with rate, not with
+sessions. Heap after GC was flat at 660–720 MB; class histograms at +10/+20/+40 min had the same 155 MB live set.
+~110 MB of it was 266,633 orders that had already been answered: `PendingOrder`, its future and `ExecResult`, and
+~3 Strings each. The gateway's in-flight window (`GATEWAY_MAX_INFLIGHT`, 4,096) was not what held them. The
+deadline queue (`Inflight.byOffer`) kept every offered order until its reap deadline, 12 s after the offer, even
+once its ack had completed it: 22K orders/s × 12 s ≈ 264K. Every ingress path shares it, binary included.
+
 ## Decision
 
 1. **A slow consumer is dropped, not buffered** (FR-FGM-01).
@@ -62,12 +69,16 @@ not established by f15ho's evidence (GC logs and control samples only).
    FIX heap ≤ ~100 MB fixed + ~2 MB × connected sessions
 
    - Fixed: two 65,536-entry maps and a 4,096-entry ring (~30 MB), plus up to 64 MB of fill-feed messages buffered
-     by jnats's default pending limit.
+     by jnats's default pending limit, plus ≤ 8,192 orders in the deadline queue (~3.4 MB; FR-FGM-06).
    - Per session: 256 × 2.5 KB inbound plus 2,048 × 0.7 KB unread.
    - Example: 64 sessions ≈ 230 MB.
    - Neither term depends on how long a session has run, how many orders it has sent, or the FIX day. The 17:00
      reset changes nothing: no term grows between resets.
-5. **The fill feed backs off** (FR-FGM-05).
+5. **Answered orders leave the deadline queue** (FR-FGM-06). Once it holds more than 2 × the window, answered
+   entries are dropped in place, keeping offer order. At most a window's worth is still pending, so each pass frees
+   at least that much: constant work per order, no allocation. The queue holds ≤ 2 × `GATEWAY_MAX_INFLIGHT`
+   (8,192) orders, whatever the rate.
+6. **The fill feed backs off** (FR-FGM-05).
    - Retries go from 1 s to 60 s, with one WARN for the outage, `traderx_fix_fill_feed_connect_failures_total`,
      and `traderx_fix_fill_feed_subscribed`.
    - jnats's per-attempt logging is silent until the feed first subscribes, then logs as before.

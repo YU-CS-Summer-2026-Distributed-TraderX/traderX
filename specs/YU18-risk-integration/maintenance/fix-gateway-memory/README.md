@@ -7,9 +7,10 @@ lane. Decision:
 
 Sources (YU18 `generation/runtime-overrides/order-matcher/.../cluster/`):
 - `FixGatewayAcceptor.java`: `MAX_QUEUED_WRITES`, `INBOUND_QUEUE`, and the streaming `adopt`.
-- `ClusterGatewayMain.java`: `retryFillFeed`, `QuietUntilSubscribed`, and the fill-feed metrics.
+- `ClusterGatewayMain.java`: `retryFillFeed`, `QuietUntilSubscribed`, the fill-feed metrics, and
+  `Inflight.dropAnswered`.
 - `FixSessionStore.java`: `SentLog`, and the streaming `scan`.
-- Tests: `FixGatewayMemoryBoundTest.java`, `FillFeedRetryTest.java`.
+- Tests: `FixGatewayMemoryBoundTest.java`, `FillFeedRetryTest.java`, `InflightRetentionTest.java`.
 
 Settings: `FIX_MAX_QUEUED_WRITES` (2,048), `FIX_INBOUND_QUEUE` (256).
 

@@ -25,6 +25,10 @@ Status: new 2026-10-28. Scope: what a FIX session can make a gateway hold on its
   outage (not one per attempt, and no per-attempt jnats record before it first subscribes), count each failure in
   `traderx_fix_fill_feed_connect_failures_total`, and report `traderx_fix_fill_feed_subscribed` 0/1 in `/metrics`.
 
+- FR-FGM-06: The gateway's ack-deadline queue SHALL hold at most 2 × `GATEWAY_MAX_INFLIGHT` orders. An order its
+  ack has answered SHALL NOT be kept until its reap deadline. An order still unanswered SHALL be reaped at its own
+  deadline, in offer order, as before.
+
 ## Acceptance
 
 | Case | FR | Where | Expected |
@@ -39,3 +43,5 @@ Status: new 2026-10-28. Scope: what a FIX session can make a gateway hold on its
 | fill feed comes up on attempt 3 | 05 | `FillFeedRetryTest.aFeedThatComesUp…` | subscribed; 2 counted |
 | jnats per-attempt logging | 05 | `FillFeedRetryTest.aFailedConnectAttempt…` | 0 records (before: 5 for 5 attempts) |
 | adoption of a stored day | 03 | `FixSessionPersistenceIT` | open orders tracked, fills after takeover reported once (unchanged behaviour) |
+| 6,400 orders, each answered at once, window 64 | 06 | `InflightRetentionTest.answeredOrdersAreNot…` | ≤ 128 queued (before: 6,400) |
+| one stranded order among 640 answered | 06 | `InflightRetentionTest.aStrandedOrder…` | reaped at its own deadline, then the next; all permits back |

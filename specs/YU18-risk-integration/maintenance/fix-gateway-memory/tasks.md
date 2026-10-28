@@ -11,5 +11,9 @@
       the limit, back to 39 MB once the sessions were dropped and MINA's 60 s timeout released them, flat after.
       Before the fix, 16 such sessions grew linearly (+55 MB over 112K answers) until MINA's timeout.
 - [ ] f15ho hour re-run on the fixed image (FIX-tail lane): heap after GC flat; slow-consumer drops, if any, counted.
-- [ ] Why 4 of 18 gateways fell behind at +24 min: f15hx histograms and thread samples (FIX-tail lane).
+- [x] f15hx histograms (FIX-tail lane): live set flat at 155 MB, ~110 MB of it answered orders held 12 s in the
+      ack-deadline queue (rate × 12 s, not the 4,096 window). Bounded to 2 × the window (FR-FGM-06).
+- [ ] Why 4 of 18 gateways fell behind at +24 min. f15hx thread samples cannot say: nothing fell behind there,
+      all 18 gateways look the same, and the owner thread spins on egress while orders are in flight, so its
+      0.92 cores is not saturation. Needs an hour that falls behind, with samples.
 - [ ] ADR-090's per-FIX-day order index (`FIX_EXACTLY_ONCE=jetstream`) bounded by its owner before that mode runs at rate.
