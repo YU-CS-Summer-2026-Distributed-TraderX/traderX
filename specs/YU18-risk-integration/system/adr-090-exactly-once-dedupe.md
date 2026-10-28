@@ -3,7 +3,8 @@
 Status: approved by yaakov 2026-10-28 (option c) and implemented on `traderX-risk-integration`; not deployed. The
 as-built notes in §4 record where the implementation narrowed the proposal and why. Amended 2026-10-28: the
 FIX order records are a ring per account, in the store and in the heap, and a resend the ring may have lost is
-refused, never booked (§4a, FR-XOD-13).
+refused, never booked (§4a, FR-XOD-13). At 400K/s (CLOUD-QUEUE row 17, arm `xs`, image `f815003d`), a key-level check
+of the full member log found 0 keys booked twice among 14,679,944 acceptances (Evidence).
 Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..13 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
@@ -271,6 +272,22 @@ the bucket, so the same problem remained. This amendment replaces it.
   ordinal.
 
 ## Evidence
+
+**CLOUD-QUEUE row 17, arm `xs`** (400K/s, 16 × 72 sequenced sessions, a gateway kill then a leader kill,
+image `f815003d`):
+- The strict native replay first reported `duplicateKeys` 2,431 and failed. That counter was the number of
+  booked refs with no client receipt. It reads as "booked twice" only on a run that completes.
+- This run was cancelled 1.7 s after the leader kill, with 256,923 orders still pending at the clients. A
+  sequenced loadgen also took the ref-less DUPLICATE (FR-XOD-03) as fatal, or recorded it with no receipt.
+- HxKeyCheck counted acceptances per key over the full member log, through `appliedSeq` 14,680,923:
+  - **0 keys were booked twice** among 14,679,944 acceptances, all of them sequenced `ORDER_NEW` applies;
+  - its negative control, one injected second acceptance, was caught;
+  - 14,679,944 = 14,677,513 receipts + the 2,431, each a distinct key booked once whose ack had not arrived
+    when the run was cancelled.
+- A local triad on the same image with W = 4 reproduced the harness signature. The loadgen stopped on a
+  ref-less DUPLICATE for an order already answered, and the replay reported 13 unreceipted refs. In a stub
+  engine with a 4-answer window, all 600 orders executed exactly once, and the old loadgen recorded 16 of
+  them as rejected with no receipt.
 
 Implemented as `f815003d` (2026-10-28). Unit tests ran in an empty-root render:
 
