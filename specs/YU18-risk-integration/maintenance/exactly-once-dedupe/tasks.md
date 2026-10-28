@@ -10,6 +10,8 @@
 - [x] `ExactlyOnceStreamTest` (12), including the negative control on today's key table; `BinarySequencedFrameTest`.
 - [x] FIX: inbound order records, resubmit by ClOrdID, catch-up on `OUT_OF_SEQUENCE`, `FixExactlyOnceIT` (3, with its
       negative control) (FR-XOD-12).
+- [x] FIX order records bounded in the heap: an answered-request floor, a ClOrdID window, and the `K.c.*` index
+      for resends past it (FR-XOD-13, ADR-090 §4a). `FixExactlyOnceIT` case 4 fails on the unbounded store.
 - [x] Loadgen `plan.sequenced` and HxNativeReplay `duplicateKeys`/`resendsOfCommitted`; arms `xs`/`xn`
       (`exactly-once-sequenced.patch`, the hxb harness, not this repo).
 - [x] Local triad `xs`: 400/s and 1,600/s valid, strict replay `duplicateKeys` 0, `resendsOfCommitted` 2,056 at

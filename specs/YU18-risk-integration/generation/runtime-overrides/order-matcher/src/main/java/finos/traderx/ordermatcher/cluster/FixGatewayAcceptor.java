@@ -576,7 +576,12 @@ public final class FixGatewayAcceptor {
             final OrderSubmitter.ExecResult result;
             if (sessionStore != null && sessionStore.sequenceOrders) {
                 try {
-                    result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString());
+                    final quickfix.Message.Header h = order.getHeader();
+                    final boolean mayBeResend = h.isSetField(quickfix.field.PossResend.FIELD)
+                        && h.getBoolean(quickfix.field.PossResend.FIELD)
+                        || h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD);
+                    result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString(),
+                        mayBeResend);
                 } catch (final java.io.IOException e) {
                     // FR-XOD-12: not stored, so not submitted; the store has already ended the session
                     log.warn("FIX order {} not stored, not submitted: {}", clOrdId, e.toString());
@@ -620,14 +625,15 @@ public final class FixGatewayAcceptor {
          * today is resubmitted at its stored sequence, so the engine answers it with the original order; a new one is
          * stored first (create-if-absent under the lease) and only then submitted. OUT_OF_SEQUENCE means an earlier
          * stored order never reached the engine (its gateway died between store and submit): those go first, in
-         * order, each answered, and then this one again.
+         * order, each answered, and then this one again. FR-XOD-13: a ClOrdID older than the store's heap window is
+         * found only when the message says it may be a resend (PossResend/PossDup).
          */
         private OrderSubmitter.ExecResult submitSequenced(final SessionID sid, final String clOrdId, final int accountId,
                                                           final String ticker, final char side, final int qty,
-                                                          final Object mapped, final String raw) throws java.io.IOException {
-            final long[] stored = sessionStore.orderSeq(sid, clOrdId);
-            final long seq = stored != null && stored[0] == accountId ? stored[1]
-                : sessionStore.recordOrder(sid, accountId, clOrdId, raw);
+                                                          final Object mapped, final String raw,
+                                                          final boolean mayBeResend) throws java.io.IOException {
+            final long stored = sessionStore.orderSeq(sid, accountId, clOrdId, mayBeResend);
+            final long seq = stored > 0 ? stored : sessionStore.recordOrder(sid, accountId, clOrdId, raw);
             OrderSubmitter.ExecResult r = submitAt(sid, clOrdId, accountId, ticker, side, qty, mapped, seq);
             if (r != null && !r.accepted() && r.riskReason() == OUT_OF_SEQUENCE) {
                 for (long s = Integer.toUnsignedLong(r.orderRef()); s >= 1 && s < seq; s++) {
@@ -644,10 +650,16 @@ public final class FixGatewayAcceptor {
                                                    final String ticker, final char side, final int qty,
                                                    final Object mapped, final long seq) {
             final long stream = sessionStore.orderStream(sid);
-            return mapped instanceof OrderSubmitter.TypedOrder typed
+            final OrderSubmitter.ExecResult r = mapped instanceof OrderSubmitter.TypedOrder typed
                 ? submitter.submitSequencedOrder(qualify(sid, clOrdId), accountId, ticker, side, qty, 0L, typed, stream, seq)
                 : submitter.submitSequencedOrder(qualify(sid, clOrdId), accountId, ticker, side, qty, (Long) mapped, null,
                     stream, seq);
+            // FR-XOD-13: an answer says what the engine expects next; nothing below it can be asked for again
+            if (r != null && (r.accepted() || r.riskReason() != STREAM_LIMIT)) {
+                sessionStore.answeredBelow(sid, accountId,
+                    !r.accepted() && r.riskReason() == OUT_OF_SEQUENCE ? Integer.toUnsignedLong(r.orderRef()) : seq + 1);
+            }
+            return r;
         }
 
         /** FR-XOD-12 catch-up: submit and answer the stored order at {@code seq}; false stops the catch-up. */
@@ -1347,6 +1359,7 @@ public final class FixGatewayAcceptor {
 
     private static final int DUPLICATE = finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal();
     private static final int OUT_OF_SEQUENCE = finos.traderx.ordermatcher.risk.RiskReason.OUT_OF_SEQUENCE.ordinal();
+    private static final int STREAM_LIMIT = finos.traderx.ordermatcher.risk.RiskReason.STREAM_LIMIT.ordinal();
     private static final finos.traderx.ordermatcher.risk.RiskReason[] REASONS =
         finos.traderx.ordermatcher.risk.RiskReason.values();
 

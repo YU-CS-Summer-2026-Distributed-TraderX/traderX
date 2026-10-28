@@ -47,6 +47,11 @@ import java.util.function.Consumer;
  * submitted, so a resend of its ClOrdID on any replica is resubmitted at the same sequence and the engine books it
  * once. The stream is the session key and its creation time, so the day reset starts new streams at 1.
  *
+ * <p>ADR-090 amendment (FR-XOD-13): the heap holds a bounded part of the day. ClOrdIDs: the last {@link #orderWindow}
+ * stored; each is also indexed at {@code K.c.<account>.<hex ClOrdID>} = seq, durable before its record is evicted, so a
+ * PossResend/PossDup of an older ClOrdID is found there. Raw messages: only those the engine has not answered (seq at or
+ * above its expected next), which is all the go-back-N catch-up can ask for.
+ *
  * <p>QuickFIX/J stores a message before it sends it and does not send when the store throws
  * ({@code Session.sendRaw}), so an IOException here is how a refused write stays off the wire.
  */
@@ -86,6 +91,8 @@ final class FixSessionStore implements MessageStoreFactory {
     private volatile boolean available;
     /** ADR-090 (FR-XOD-12): keep the inbound order records; set by the acceptor before any Logon. */
     volatile boolean sequenceOrders;
+    /** FR-XOD-13: ClOrdIDs a session keeps in the heap; a resend needs one more lookup past it. */
+    volatile int orderWindow = Integer.parseInt(System.getenv().getOrDefault("FIX_EXACTLY_ONCE_WINDOW", "8192"));
 
     FixSessionStore(final String natsUrl, final String owner) throws InterruptedException {
         this.owner = owner;
@@ -239,11 +246,39 @@ final class FixSessionStore implements MessageStoreFactory {
         }
     }
 
-    /** {account, seq} of a ClOrdID this session stored today, or null. */
-    long[] orderSeq(final SessionID sid, final String clOrdId) {
+    /**
+     * The sequence {@code account}'s ClOrdID was stored at today, or 0. Past the heap window only a possible resend
+     * (PossResend/PossDup) is looked up in the index: FIX forbids reusing a ClOrdID without one.
+     */
+    long orderSeq(final SessionID sid, final int account, final String clOrdId, final boolean mayBeResend)
+            throws IOException {
         final Store store = stores.get(sid);
         synchronized (store) {
-            return store.orderSeqs.get(clOrdId);
+            final long[] s = store.orderSeqs.get(clOrdId);
+            if (s != null && s[0] == account) {
+                return s[1];
+            }
+            return mayBeResend ? store.indexedSeq(account, clOrdId) : 0;
+        }
+    }
+
+    /** FR-XOD-13: the engine expects {@code floor} next on this stream; stored requests below it are dropped. */
+    void answeredBelow(final SessionID sid, final int account, final long floor) {
+        final Store store = stores.get(sid);
+        synchronized (store) {
+            final java.util.TreeMap<Long, String> raws = store.orderRaws.get(account);
+            if (raws != null) {
+                raws.headMap(floor).clear();
+            }
+        }
+    }
+
+    /** {ClOrdIDs, raw requests} this session holds in the heap (FR-XOD-13's bound). */
+    int[] heldOrders(final SessionID sid) {
+        final Store store = stores.get(sid);
+        synchronized (store) {
+            return new int[] { store.orderSeqs.size(),
+                store.orderRaws.values().stream().mapToInt(Map::size).sum() };
         }
     }
 
@@ -259,7 +294,8 @@ final class FixSessionStore implements MessageStoreFactory {
     String storedOrder(final SessionID sid, final int account, final long seq) {
         final Store store = stores.get(sid);
         synchronized (store) {
-            return store.orderRaws.get(account + "." + seq);
+            final java.util.TreeMap<Long, String> raws = store.orderRaws.get(account);
+            return raws == null ? null : raws.get(seq);
         }
     }
 
@@ -362,6 +398,10 @@ final class FixSessionStore implements MessageStoreFactory {
         return b.toString();
     }
 
+    /** FR-XOD-13: one stored order in a session's heap window, and its ClOrdID index write. */
+    private record Recent(String clOrdId, int account, long seq, java.util.concurrent.CompletableFuture<?> indexed) {
+    }
+
     private final class Store implements MessageStore {
         final SessionID sid;
         final String key;
@@ -376,10 +416,12 @@ final class FixSessionStore implements MessageStoreFactory {
         boolean live;
         int inFlight;
         long lastUse;
-        // ADR-090: today's K.o.* records, reloaded with the session
+        // ADR-090: today's K.o.* records, reloaded with the session. FR-XOD-13: only the last orderWindow ClOrdIDs
+        // (oldest first in `recent`) and the requests the engine has not answered.
         final Map<String, long[]> orderSeqs = new java.util.HashMap<>();
+        final java.util.ArrayDeque<Recent> recent = new java.util.ArrayDeque<>();
         final Map<Integer, Long> nextOrderSeq = new java.util.HashMap<>();
-        final Map<String, String> orderRaws = new java.util.HashMap<>();
+        final Map<Integer, java.util.TreeMap<Long, String>> orderRaws = new java.util.HashMap<>();
 
         Store(final SessionID sid) {
             this.sid = sid;
@@ -531,22 +573,82 @@ final class FixSessionStore implements MessageStoreFactory {
             loadOrders();
         }
 
-        /** ADR-090: this FIX day's order records. ponytail: the whole day per load, as scan(); checkpoint if Logon slows. */
+        /**
+         * ADR-090: this FIX day's order records. ponytail: the whole day is READ per load, as scan(); FR-XOD-13 keeps
+         * only the window of it. Records older than the window were indexed before their successors were stored; the
+         * window itself is indexed again here, since the gateway that stored it may have died before its writes landed.
+         */
         private void loadOrders() throws IOException {
-            orderSeqs.clear();
-            nextOrderSeq.clear();
-            orderRaws.clear();
+            clearOrders();
             if (!sequenceOrders || kv == null) {
                 return;
             }
-            for (final String v : scan(key + ".o.>")) {
+            scan(key + ".o.>", v -> {
                 final int nl = v.indexOf('\n');
                 final String[] f = v.substring(0, nl).split(" ", 3);
                 final int account = Integer.parseInt(f[0]);
                 final long seq = Long.parseLong(f[1]);
-                orderSeqs.put(f[2], new long[] { account, seq });
-                orderRaws.put(account + "." + seq, v.substring(nl + 1));
+                if (recent.size() >= orderWindow) {
+                    final Recent old = forget(recent.removeFirst());
+                    final java.util.TreeMap<Long, String> raws = orderRaws.get(old.account());
+                    if (raws != null) {
+                        raws.remove(old.seq());   // ponytail: adoption keeps the window's requests only; a gateway
+                    }                             // has far fewer than a window in flight
+                }
+                remember(account, seq, f[2], v.substring(nl + 1), null);
                 nextOrderSeq.merge(account, seq + 1, Math::max);
+            });
+            for (int i = recent.size(); i > 0; i--) {
+                final Recent r = recent.removeFirst();
+                recent.addLast(new Recent(r.clOrdId(), r.account(), r.seq(), index(r.account(), r.clOrdId(), r.seq())));
+            }
+        }
+
+        private void clearOrders() {
+            orderSeqs.clear();
+            recent.clear();
+            nextOrderSeq.clear();
+            orderRaws.clear();
+        }
+
+        private void remember(final int account, final long seq, final String clOrdId, final String raw,
+                              final java.util.concurrent.CompletableFuture<?> indexed) {
+            orderSeqs.put(clOrdId, new long[] { account, seq });
+            orderRaws.computeIfAbsent(account, a -> new java.util.TreeMap<>()).put(seq, raw);
+            recent.addLast(new Recent(clOrdId, account, seq, indexed));
+        }
+
+        private Recent forget(final Recent r) {
+            final long[] s = orderSeqs.get(r.clOrdId());
+            if (s != null && s[0] == r.account() && s[1] == r.seq()) {
+                orderSeqs.remove(r.clOrdId());
+            }
+            return r;
+        }
+
+        /** FR-XOD-13: {@code K.c.<account>.<hex ClOrdID>} = seq, written without waiting; joined before eviction. */
+        private java.util.concurrent.CompletableFuture<?> index(final int account, final String clOrdId, final long seq) {
+            try {
+                return nats.jetStream().publishAsync("$KV." + BUCKET + "." + indexKey(account, clOrdId),
+                    Long.toString(seq).getBytes(StandardCharsets.UTF_8));
+            } catch (final IOException e) {
+                return java.util.concurrent.CompletableFuture.failedFuture(e);
+            }
+        }
+
+        private String indexKey(final int account, final String clOrdId) {
+            return key + ".c." + account + "." + java.util.HexFormat.of().formatHex(clOrdId.getBytes(StandardCharsets.UTF_8));
+        }
+
+        long indexedSeq(final int account, final String clOrdId) throws IOException {
+            if (kv == null) {
+                return 0;
+            }
+            try {
+                final KeyValueEntry e = kv.get(indexKey(account, clOrdId));
+                return e == null || e.getValue() == null ? 0 : Long.parseLong(e.getValueAsString());
+            } catch (final JetStreamApiException e) {
+                throw new IOException(e);
             }
         }
 
@@ -555,6 +657,17 @@ final class FixSessionStore implements MessageStoreFactory {
                 throw new IOException("FIX session " + sid + ": lease not held; order not stored");
             }
             final long seq = nextOrderSeq.getOrDefault(account, 1L);
+            if (recent.size() >= orderWindow) {
+                // FR-XOD-13: the evicted ClOrdID's index is durable before any later record is: whatever lies outside
+                // the last orderWindow records in the store is findable by its ClOrdID.
+                final Recent old = recent.peekFirst();
+                try {
+                    old.indexed().get(5, TimeUnit.SECONDS);
+                } catch (final Exception e) {
+                    throw dropped(new IOException("FIX session " + sid + ": ClOrdID index not written; order not stored", e));
+                }
+                forget(recent.removeFirst());
+            }
             try {
                 kv.create(key + ".o." + account + "." + seq,
                     (account + " " + seq + " " + clOrdId + "\n" + raw).getBytes(StandardCharsets.UTF_8));
@@ -571,8 +684,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 throw dropped(e);
             }
             nextOrderSeq.put(account, seq + 1);
-            orderSeqs.put(clOrdId, new long[] { account, seq });
-            orderRaws.put(account + "." + seq, raw);
+            remember(account, seq, clOrdId, raw, index(account, clOrdId, seq));
             return seq;
         }
 
@@ -605,12 +717,6 @@ final class FixSessionStore implements MessageStoreFactory {
                 ticker.execute(() -> onLost.accept(sid));
             }
             return e;
-        }
-
-        private List<String> scan(final String subject) throws IOException {
-            final List<String> out = new ArrayList<>();
-            scan(subject, out::add);
-            return out;
         }
 
         /** Each stored value under {@code subject}, oldest first, handed over as it arrives. */
@@ -753,6 +859,8 @@ final class FixSessionStore implements MessageStoreFactory {
                     PurgeOptions.subject("$KV." + BUCKET + "." + key + ".m.>"));
                 nats.jetStreamManagement().purgeStream("KV_" + BUCKET,   // ADR-090: the day's order records
                     PurgeOptions.subject("$KV." + BUCKET + "." + key + ".o.>"));
+                nats.jetStreamManagement().purgeStream("KV_" + BUCKET,   // FR-XOD-13: their ClOrdID index
+                    PurgeOptions.subject("$KV." + BUCKET + "." + key + ".c.>"));
             } catch (final JetStreamApiException e) {
                 throw new IOException(e);
             }
@@ -760,9 +868,7 @@ final class FixSessionStore implements MessageStoreFactory {
             target = 1;
             writeSeq(1);
             sender = 1;
-            orderSeqs.clear();
-            nextOrderSeq.clear();
-            orderRaws.clear();
+            clearOrders();
         }
 
         @Override

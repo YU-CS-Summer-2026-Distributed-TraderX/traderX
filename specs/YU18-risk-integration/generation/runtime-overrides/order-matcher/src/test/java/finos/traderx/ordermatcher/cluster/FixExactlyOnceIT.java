@@ -35,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -199,6 +200,51 @@ class FixExactlyOnceIT {
         assertEquals("s1", first.get("11"), "the stored order is answered first: " + first);
         assertEquals("s2", second.get("11"));
         assertEquals(Map.of("CLIENT7\u0001s1", 1, "CLIENT7\u0001s2", 1), venue.booked, "each booked once, in order");
+        c2.close();
+    }
+
+    /**
+     * FR-XOD-13: 30 orders through a window of 8. The heap keeps 8 ClOrdIDs and no answered request, and a PossResend
+     * of an evicted ClOrdID, on this replica and on the one that adopts the session, is still the original order.
+     * Fails on a store that keeps the whole day (30 ClOrdIDs, 30 requests).
+     */
+    @Test
+    void theDaysOrdersAreBoundedAndAnEvictedResendIsStillTheOriginal() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a-C8", "CLIENT8", true);
+        final int b = startGateway(venue, "gw-b-C8", "CLIENT8", true);
+        stores.get("gw-a-C8").orderWindow = 8;
+        stores.get("gw-b-C8").orderWindow = 8;
+        final SessionID sid = new SessionID("FIX.4.4", "TRADERX", "CLIENT8");
+        final Client c1 = new Client(a, "CLIENT8");
+        assertEquals("A", c1.logon().get("35"));
+        for (int i = 1; i <= 30; i++) {
+            c1.order("o" + i, "");
+            assertEquals("ord-" + i, c1.awaitType("8").get("37"));
+        }
+        assertArrayEquals(new int[] { 8, 0 }, stores.get("gw-a-C8").heldOrders(sid), "{ClOrdIDs, requests} held");
+        c1.order("o1", "97=Y\u0001");
+        assertEquals("ord-1", c1.awaitType("8").get("37"), "an evicted ClOrdID resent is the original");
+        c1.rst();
+        Thread.sleep(3_000);   // A lets the lease go
+
+        final Client c2 = new Client(b, "CLIENT8");
+        c2.out = 33;           // Logon, 30 orders, 1 resend
+        assertEquals("A", c2.logon().get("35"));
+        c2.order("o2", "97=Y\u0001");
+        final Map<String, String> er;
+        while (true) {         // the adopted session's stored reports come back first
+            final Map<String, String> m = c2.awaitType("8");
+            if ("o2".equals(m.get("11")) && !"Y".equals(m.get("43"))) {
+                er = m;
+                break;
+            }
+        }
+        assertEquals("ord-2", er.get("37"), "adopted: an evicted ClOrdID resent is the original");
+        assertTrue(stores.get("gw-b-C8").heldOrders(sid)[0] <= 8, "adopted window");
+        for (int i = 1; i <= 30; i++) {
+            assertEquals(1, venue.booked.get("CLIENT8\u0001o" + i), "o" + i + " booked once");
+        }
         c2.close();
     }
 

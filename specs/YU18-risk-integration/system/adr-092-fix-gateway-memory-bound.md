@@ -85,5 +85,6 @@ not established by f15ho's evidence (GC logs and control samples only).
   `FIX_MAX_QUEUED_WRITES` only together with the heap.
 - **Backpressure moves lag into the client and into sibling sessions on the same I/O thread.** The gateway's own
   latency metrics do not show it, so read client-observed latency for a FIX arm.
-- **Excluded:** ADR-090's per-FIX-day order index (`FIX_EXACTLY_ONCE=jetstream`, opt-in). It keeps every stored
-  order's sequence and raw message in the store's heap until the day resets. It belongs to ADR-090's owner.
+- **Excluded:** ADR-090's per-FIX-day order index (`FIX_EXACTLY_ONCE=jetstream`, opt-in). As first built, it kept
+  every stored order's sequence and raw message in the store's heap until the day reset. ADR-090 §4a
+  (FR-XOD-13) now bounds it: a window of ClOrdIDs, plus the requests the engine has not answered.

@@ -1,8 +1,9 @@
 # ADR-090: Exactly-once order entry at 400K/s: per-stream contiguous sequences
 
 Status: approved by yaakov 2026-10-28 (option c) and implemented on `traderX-risk-integration`; not deployed. The
-as-built notes in §4 record where the implementation narrowed the proposal and why.
-Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..12 and
+as-built notes in §4 record where the implementation narrowed the proposal and why. Amended 2026-10-28: the
+FIX gateway's heap holds a bounded part of the day's order records (§4a, FR-XOD-13).
+Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..13 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
 (`independent-baseline/results-20261025-open/STALLS.md` §4, the 1-hour 400K/s `xp` arm) and the
@@ -175,6 +176,35 @@ members are never rolled one at a time:
   - Until this is enabled, FIX uses the key table as it does today. The extra JetStream write per order gets its
     own latency A/B (NFR-XOD-03).
 
+### 4a. Amendment: the FIX order records are bounded in the heap (FR-XOD-13)
+
+As first built, `FixSessionStore` kept every stored order of the FIX day in the heap, as a ClOrdID index entry and
+its raw request (about 130 B plus the message per order), until the 17:00 reset. ADR-092 found this and left it
+to this ADR. At 400K/s it has no bound within the day. Two things need the records, and each needs only part of
+them:
+
+- **Go-back-N** asks for the stored requests `e .. seq-1` after `OUT_OF_SEQUENCE(e)`, and `e` is the engine's
+  expected next. A request below the engine's next has been committed and can never be asked for again. So every
+  answer from the engine moves a per-account floor: `seq + 1` for an answer to `seq`, or `e` for `OUT_OF_SEQUENCE(e)`.
+  A `STREAM_LIMIT` refusal and an ambiguous answer leave the floor where it is. Raw requests below the floor are
+  dropped. The heap holds only the requests the engine has not answered.
+- **A ClOrdID resend** needs the ClOrdID's sequence. The heap keeps the last `FIX_EXACTLY_ONCE_WINDOW` (default
+  8,192) ClOrdIDs per session. Each stored order is also indexed in the bucket at
+  `K.c.<account>.<hex ClOrdID> = seq`. This write is asynchronous and adds no wait to the order. Before a ClOrdID
+  leaves the heap window, its index write is confirmed; otherwise the next order is not stored. So every record
+  outside the last window has a durable index. A gateway that adopts the session reads the day and keeps the last
+  window, with its requests. It writes the window's index again, because the gateway that died may not have
+  finished it.
+- **Past the window**, a ClOrdID is looked up in the index only when the NewOrderSingle carries `PossResend=Y` or
+  `PossDupFlag=Y`. FIX does not allow a ClOrdID to be reused without one of those flags, and the ADR-091 client
+  sets `97=Y` on every resend. Inside the window, a resend without the flag is still answered with the original
+  order, as before. This narrows §4's "whether or not it carries `PossResend=Y`" to the window.
+- **The day reset** purges `K.c.*` together with `K.o.*`.
+
+The heap per session is then the window plus the unanswered requests, whatever the day's volume. That is an
+estimated 2–3 MB at the default window, from about 300 B per ClOrdID entry; this figure was not measured. The
+store on disk gains one small record per order, which the day reset purges.
+
 ### 5. How the 400K/s proof shows it
 
 - **Loadgen.** The hand-over's `plan.exactlyOnce` gains `plan.sequenced`. Each session is one stream
@@ -209,6 +239,11 @@ Implemented as `f815003d` (2026-10-28). Unit tests ran in an empty-root render:
   fail.
 - `BinarySequencedFrameTest` 1/1.
 - `FixExactlyOnceIT` 3/3, including an unsequenced control that submits twice.
+- Amendment (FR-XOD-13): `FixExactlyOnceIT` 4/4. The new case sends 30 orders through a window of 8. The heap
+  holds 8 ClOrdIDs and no requests. A `PossResend` of an evicted ClOrdID, on the same replica and on the
+  replica that adopts the session, is answered with the original order, and each order is booked once.
+  - On the store as first built, the case fails with 30 ClOrdIDs held.
+  - With the index lookup disabled, it fails because the evicted resend books again, as `ord-31`.
 - The full order-matcher suite: 840 run, 0 failed, 6 skipped.
 - On the head merged with `39971df0`, the suite ran 842, with 1 failure: `ThreeMemberClusterTest` timed out at
   120 s in the full run. Run alone it passed 2 of 2 times, and it passed in the 840-test run.

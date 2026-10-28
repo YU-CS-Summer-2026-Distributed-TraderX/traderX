@@ -35,7 +35,8 @@ See ADR-090 for the bound, the options and the sizing.
    `xs` and `xn` in `render.py`.
 7. **FIX** (FR-XOD-12, enabled separately). `FixSessionStore` keeps the inbound order records, and
    `FixGatewayAcceptor` sequences a NewOrderSingle through them, catching up on `OUT_OF_SEQUENCE`. Run the
-   NFR-XOD-03 A/B before it is turned on.
+   NFR-XOD-03 A/B before it is turned on. The heap keeps the unanswered requests and a ClOrdID window, and
+   resends past the window are looked up in the `K.c.*` index (FR-XOD-13).
 
 Steps 1–5 land as one engine change and one image. Step 6 is hxb-only. Step 7 is gateway-only, so it can land
 later without touching the core.

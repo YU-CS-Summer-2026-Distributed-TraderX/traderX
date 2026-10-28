@@ -6,7 +6,7 @@ Decision: [ADR-090](../../system/adr-090-exactly-once-dedupe.md).
 Sources (YU18 `generation/runtime-overrides/order-matcher/`): `risk/StreamDedupe.java`, `risk/BlpRiskState.java`,
 `cluster/MatchingEngineClusteredService.java` (gate, format 14), `lmax/AeronReplicationCodec.java` (tail),
 `cluster/BinaryGatewayAcceptor.java` (YU18 override: the NEW flags byte), `cluster/ClusterGatewayMain.java`,
-`cluster/FixGatewayAcceptor.java` and `cluster/FixSessionStore.java` (FR-XOD-12). Tests: `ExactlyOnceStreamTest`,
+`cluster/FixGatewayAcceptor.java` and `cluster/FixSessionStore.java` (FR-XOD-12, bounded by FR-XOD-13). Tests: `ExactlyOnceStreamTest`,
 `BinarySequencedFrameTest`, `FixExactlyOnceIT`. Harness half (hxb loadgen `plan.sequenced`, HxNativeReplay
 `duplicateKeys`/`resendsOfCommitted`, arms `xs`/`xn`): side-session notes `exactly-once-sequenced.patch`.
 

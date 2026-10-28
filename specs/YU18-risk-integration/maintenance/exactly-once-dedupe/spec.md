@@ -63,6 +63,17 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
     (which purges `K.o.*`) starts new streams.
   - A failed or fenced store write SHALL keep the order off the cluster and SHALL end the session, as in
     FR-GFS-02.
+- FR-XOD-13: With FR-XOD-12 enabled, a FIX session's heap SHALL hold a bounded part of the FIX day's order
+  records:
+  - It SHALL hold the raw requests the engine has not answered. Each answer moves a per-account floor: `seq + 1`
+    for an answer to `seq`, or `e` for `OUT_OF_SEQUENCE(e)`. A `STREAM_LIMIT` refusal and an ambiguous answer do
+    not move it.
+  - It SHALL hold the last `FIX_EXACTLY_ONCE_WINDOW` (default 8,192) ClOrdIDs.
+  - Every stored order SHALL be indexed at `K.c.<account>.<hex ClOrdID>`. Its index write SHALL be confirmed
+    before its ClOrdID leaves the window.
+  - A NewOrderSingle with `PossResend=Y` or `PossDupFlag=Y` whose ClOrdID is not in the window SHALL be looked up
+    in that index.
+  - The day reset SHALL purge the index.
 
 ## Non-functional
 
@@ -108,6 +119,13 @@ unflagged frame is unchanged, and seq 0 is a protocol error.
   once;
 - an order a replica stored and never submitted is answered first, in order, when the next order meets the gap;
 - negative control: unsequenced, the same resend reaches the venue twice.
+
+It also covers FR-XOD-13, with 30 orders through a window of 8:
+
+- the heap holds 8 ClOrdIDs and no requests;
+- a `PossResend` of an evicted ClOrdID is answered with the original order, both on the same replica and after
+  another replica adopts the session;
+- the test fails on a store that keeps the whole day.
 
 ### Local triad (`tests/run_local_triad.sh`)
 

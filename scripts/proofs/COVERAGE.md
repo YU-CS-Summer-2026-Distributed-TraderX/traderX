@@ -1610,6 +1610,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-XOD-10` | CI |  |  | ExactlyOnceStreamTest: flag and tail must agree; a reused slot keeps no tail |
 | YU18 | `FR-XOD-11` | CI |  |  | BinarySequencedFrameTest |
 | YU18 | `FR-XOD-12` | CI |  |  | FixExactlyOnceIT (3: resend on the other replica answered with the original, stored-never-submitted caught up in order, unsequenced control submits twice); NFR-XOD-03 A/B before enabling |
+| YU18 | `FR-XOD-13` | CI |  |  | FixExactlyOnceIT case 4: 30 orders through a window of 8 hold 8 ClOrdIDs and 0 requests; an evicted PossResend is the original, on the same replica and after adoption. Fails on the unbounded store (30 held), and with the index lookup off (books ord-31) |
 | YU18 | `NFR-XOD-01` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: leader snapshot halt |
 | YU18 | `NFR-XOD-02` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: p50/p99 |
 | YU18 | `NFR-XOD-03` | LIVE |  |  | implemented (ADR-090), FIX opt-in off; pending: fix-session-latency.mjs vs ADR-086 baseline |
