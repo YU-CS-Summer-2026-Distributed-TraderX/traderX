@@ -1341,7 +1341,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 // thread never builds a String; FIX/REST NEW resolves its ticker exactly as before.
                 final int securityId = p.ticker != null ? resolveSecurityId(p.ticker) : p.securityId;
                 if (securityId < 0) {
-                    p.future.complete(null); // unresolvable ticker: ambiguous, exactly as the old sync path
+                    // Never offered, so not ambiguous: refuse as the risk gate would (FR-FIX12(c), audit
+                    // suspect 10). A null here sent FIX silence, a REST 504, and fed noAckStreak, so junk
+                    // tickers from any client counted against this gateway's readiness.
+                    p.future.complete(new ExecResult(false, 0, OutputEvent.KIND_ORDER_REJECTED,
+                        (byte) RiskReason.UNKNOWN_SECURITY.ordinal()));
                     inflight.release();
                     return;
                 }
