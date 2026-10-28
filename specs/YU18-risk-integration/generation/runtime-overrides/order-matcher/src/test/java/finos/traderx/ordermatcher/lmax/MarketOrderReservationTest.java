@@ -11,7 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ADR-089 / FR-LOB04: a market order reserves at the worse of the mark and the opposite best. The observable is
+ * ADR-089 / FR-LOB04: a market order reserves at the larger of the mark and the opposite best, on both sides
+ * (the gate's notional is gross, so larger is conservative for a Sell too). The observable is
  * the order-notional cap, set between qty x mark and qty x best: the price the gate sized the order at decides
  * which side of the cap it lands on. Its own class, not LimitOrderBookTest: that file is the YU17 layer, which
  * also renders YU17, whose engine keeps ADR-051's mark-first rule.
@@ -34,14 +35,24 @@ class MarketOrderReservationTest {
         assertEquals((byte) RiskReason.ORDER_NOTIONAL.ordinal(), end.riskReason);
     }
 
-    @Test void sellAgainstABidBelowTheMarkIsSizedAtTheBid() {
-        engine(QTY * (PX150 - 10 * CENT));                // cap: $149.90 a share
+    @Test void sellAgainstABidAboveTheMarkIsSizedAtTheBid() {
+        engine(QTY * (PX150 + 10 * CENT));                // cap: $150.10 a share for 100
+        tick(PX150);
+        rests(limit(ACCT2, InputEvent.SIDE_BUY, QTY / 2, PX150 + 20 * CENT));    // half, so the bid fits the cap
+        var end = last(market(ACCT, InputEvent.SIDE_SELL, QTY));
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, end.kind,
+            "sized at the $150.00 mark it passes the cap and sells 50 at $150.20, a notional above it");
+        assertEquals((byte) RiskReason.ORDER_NOTIONAL.ordinal(), end.riskReason);
+    }
+
+    @Test void aBidBelowTheMarkLeavesTheSellAtTheMark() {
+        engine(QTY * (PX150 - 10 * CENT));                // cap: $149.90 a share for 100
         tick(PX150);
         rests(limit(ACCT2, InputEvent.SIDE_BUY, QTY, PX150 - 20 * CENT));
         var end = last(market(ACCT, InputEvent.SIDE_SELL, QTY));
-        assertEquals(OutputEvent.KIND_ORDER_FILLED, end.kind,
-            "sized at the $149.80 bid it fills; sized at the $150.00 mark it was refused ORDER_NOTIONAL");
-        assertEquals(PX150 - 20 * CENT, end.lastExecPx);
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, end.kind,
+            "max(mark, bid) is the $150.00 mark; the first ADR-089 draft's min() sized it at the $149.80 bid and filled it");
+        assertEquals((byte) RiskReason.ORDER_NOTIONAL.ordinal(), end.riskReason);
     }
 
     @Test void emptyOppositeSideStillUsesTheMark() {

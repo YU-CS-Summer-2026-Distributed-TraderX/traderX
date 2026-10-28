@@ -41,8 +41,8 @@
   of a market order SHALL price it at the security's mark — the last trade price, or before the
   first trade the mark a price tick seeded (FR-LOB05, ADR-051) — falling back to the opposite best;
   with none available the order SHALL reject PRICE_MISSING. From YU18 (ADR-089) the reference SHALL
-  be the worse of the mark and the opposite best: a Buy at max(mark, best ask), a Sell at
-  min(mark, best bid); with one of them absent, the other; with neither, PRICE_MISSING.
+  be the larger of the mark and the opposite best, on both sides: a Buy at max(mark, best ask), a Sell
+  at max(mark, best bid); with one of them absent, the other; with neither, PRICE_MISSING.
 - FR-LOB05: Price ticks SHALL NOT trigger fills. A tick SHALL update risk price-freshness state
   and SHALL seed the security's mark only while no trade has printed; once the book trades, the
   last trade price is the mark (ADR-051).

@@ -1063,7 +1063,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU13 | `FR-LOB01` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB02` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB03` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
-| YU13 | `FR-LOB04` | LIVE | yu18-market-order |  | suspect 11 closed as a spec gap (562c25c8); YU18 reservation at the worse of mark and opposite best (ADR-089) is unit-pinned by `MarketOrderReservationTest`, no live run yet |
+| YU13 | `FR-LOB04` | LIVE | yu18-market-order |  | suspect 11 closed as a spec gap (562c25c8); YU18 reservation at the larger of mark and opposite best, both sides (ADR-089 as amended) is unit-pinned by `MarketOrderReservationTest`, no live run yet |
 | YU13 | `FR-LOB05` | LIVE | yu18-market-order |  |  |
 | YU13 | `FR-LOB06` | LIVE | yu13-readmodel-effect-end yu13-stp-and-replace |  |  |
 | YU13 | `FR-LOB07` | LIVE | yu17-keyed-ack-correlation |  |  |

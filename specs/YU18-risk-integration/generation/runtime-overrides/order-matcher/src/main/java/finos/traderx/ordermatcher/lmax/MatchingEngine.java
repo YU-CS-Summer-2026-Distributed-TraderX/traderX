@@ -893,7 +893,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // Authoritative pre-trade decision + reservation, in sequence order, BEFORE the order can
         // enter the executable book (ADR-018 / FR-IMRG12/13). A rejection stays journaled and
         // addressable for audit but never rests, matches, or reserves (FR-IMRG23). Market orders
-        // validate and reserve at the worse of the mark and the opposite best (ADR-089) — an
+        // validate and reserve at the larger of the mark and the opposite best (ADR-089) — an
         // unpriced empty market fails closed as PRICE_MISSING.
         if (risk != null) {
             long decideStart = System.nanoTime();
@@ -940,22 +940,19 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     }
 
     /**
-     * Reference price for validating/reserving a market order (ADR-089, amending ADR-051): the worse of
-     * the mark (last trade, or a tick-seeded mark before the first print) and the opposite best, so a
-     * market Buy against asks above the mark is no longer sized at the mark and filled above its own
-     * notional. Buy: max(mark, best ask); Sell: min(mark, best bid). One side missing: the other.
-     * Neither: Px.NONE, which the risk gate refuses as PRICE_MISSING. Every market-order reservation
-     * routes here (MARKET via both admission paths, and a fired STOP / TRAILING_STOP).
+     * Reference price for validating/reserving a market order (ADR-089, amending ADR-051): the larger of
+     * the mark (last trade, or a tick-seeded mark before the first print) and the opposite best, on BOTH
+     * sides. The gate's notional is gross for a Sell as for a Buy, so the larger price is the conservative
+     * one either way; a market order is no longer sized below the top of the book it walks. One side
+     * missing: the other. Neither: Px.NONE, which the risk gate refuses as PRICE_MISSING. Every
+     * market-order reservation routes here (MARKET via both admission paths, a fired STOP / TRAILING_STOP).
      */
     private long marketValidationPx(LimitBook book, int securityId, byte side) {
-        final boolean buy = side == InputEvent.SIDE_BUY;
-        final int slot = buy ? book.bestAskSlot() : book.bestBidSlot();
+        final int slot = side == InputEvent.SIDE_BUY ? book.bestAskSlot() : book.bestBidSlot();
         final long best = slot == LimitBook.NO_LEVEL ? Px.NONE : book.priceAt(slot);
-        final long mark = lastPxBySecurity[securityId];
-        if (mark == Px.NONE || best == Px.NONE) {
-            return mark == Px.NONE ? best : mark;
-        }
-        return buy ? Math.max(mark, best) : Math.min(mark, best);
+        // Px.NONE is 0 and real prices are strictly positive, so max() is also the one-missing and
+        // neither-present rows of ADR-089's table.
+        return Math.max(lastPxBySecurity[securityId], best);
     }
 
     // ----- matching (YU13: genuine crossing, price-time priority) -------------------------
@@ -2111,8 +2108,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * — release, then decide with client key 0 so every check really runs and nothing enters the
      * idempotency store — then execute as an aggressor. Refusal ends REJECTED with nothing
      * reserved. D5 (approved): a STOP / TRAILING_STOP is re-decided as a MARKET order at
-     * marketValidationPx — the worse of the mark the latching print just set and the opposite best
-     * (ADR-089) — which does NOT bound the fill price beyond the best level (FR-OT16 limitation).
+     * marketValidationPx — the larger of the mark the latching print just set and the opposite
+     * best (ADR-089) — which does NOT bound the fill price beyond the best level (FR-OT16 limitation).
      */
     private void fireTrigger(RestingOrder o, InputEvent e) {
         final int s = o.securityId;

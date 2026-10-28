@@ -1,6 +1,6 @@
-# ADR-089: A market order reserves at the worse of the mark and the opposite best
+# ADR-089: A market order reserves at the larger of the mark and the opposite best
 
-Status: accepted 2026-10-28 (yaakov); code only. This is a deterministic-core change, so it ships only in a roll
+Status: accepted 2026-10-28 (yaakov), amended the same day (§2.1: a Sell takes the larger price too); code only. This is a deterministic-core change, so it ships only in a roll
 of its own (§4) and NOT in rollout 4. Requirement: YU13 FR-LOB04 (amended for YU18). Amends the
 reservation half of YU13 [ADR-051](../../YU13-limit-order-book/system/adr-051-last-trade-price-output.md):
 the mark keeps its meaning, but it is no longer the market order's reference on its own.
@@ -22,9 +22,21 @@ unbounded: a stale tick, or a thin book far from the last print, makes it as lar
 | Side | Mark and opposite best | Only one | Neither |
 |---|---|---|---|
 | Buy | `max(mark, best ask)` | that one | `Px.NONE` → PRICE_MISSING |
-| Sell | `min(mark, best bid)` | that one | `Px.NONE` → PRICE_MISSING |
+| Sell | `max(mark, best bid)` | that one | `Px.NONE` → PRICE_MISSING |
 
-The reference is the side's worse execution price of the two, i.e. its expected fill at the top of the book.
+The reference is the larger of the two prices on either side. The gate's notional (`reservedNotional`,
+the order-notional and concentration caps) is gross, `quantity × price`, for a Sell exactly as for a Buy, so
+the larger price is always the conservative one. `Px.NONE` is 0 and real prices are strictly positive, so the
+implementation is a single `Math.max(mark, best)`, which also yields the "only one" and "neither" columns.
+### 2.1 Correction (2026-10-28)
+
+The first version of this ADR (b044d98b) sized a Sell at `min(mark, best bid)`, its worse execution price,
+by symmetry with the Buy. That reads the reference as an expected fill, but the reference only feeds a gross
+notional. So a Sell into a bid below the mark reserved less credit than ADR-051 had, and passed a cap the
+mark would have refused, while a Sell into a bid above the mark was still sized at the mark and filled at a
+notional above its cap. Both are the defect this ADR exists to remove, so yaakov amended the rule to `max` on
+both sides. The brief that specified `min` was the error, not the implementation.
+
 Every market-order reservation routes through this one function:
 
 - `MARKET` on the legacy admission path (`onNewOrder`) and on the typed path (`admitImmediate`, including IOC);
@@ -40,10 +52,9 @@ the mark.
 
 - A market Buy into asks above the mark is now sized at the best ask. Where that crosses a cap it is refused
   (ORDER_NOTIONAL, CREDIT_LIMIT, CONCENTRATION_LIMIT) instead of being filled above it.
-- **A market Sell is sized LOWER than before** when the best bid is below the mark, because the reference is its
-  expected fill. `reservedNotional` is gross notional on both sides, so such a Sell now reserves less credit,
-  and passes a notional cap that the mark would have refused. This is the decided rule, stated here so that
-  nobody reads it as an accident.
+- A market Sell into bids above the mark (a market that has moved up since the last print) is now sized at
+  the best bid, and is refused where that crosses a cap. A Sell into bids below the mark keeps the mark, as
+  under ADR-051. No market order ever reserves less than ADR-051 had it reserve.
 - The reference is the top of the book only. A market order larger than the best level still walks deeper
   levels at prices it was not sized at (as FR-OT16 already records for stops). Sizing the whole walk is a
   separate decision.
@@ -70,11 +81,13 @@ Never one member at a time.
 
 `MarketOrderReservationTest` (YU18 layer, `lmax`) on an empty-root render:
 
-- `buyAgainstAnAskAboveTheMarkIsSizedAtTheAsk`, `sellAgainstABidBelowTheMarkIsSizedAtTheBid`: both fail on the
-  ADR-051 engine. The Buy is accepted, fills the 50 resting at $150.20 and cancels the rest, where the rule
-  refuses it ORDER_NOTIONAL. The Sell is refused ORDER_NOTIONAL, where the rule fills it at $149.80.
+- `buyAgainstAnAskAboveTheMarkIsSizedAtTheAsk`, `sellAgainstABidAboveTheMarkIsSizedAtTheBid`: each is accepted
+  on the ADR-051 engine (sized at the $150.00 mark, it trades 50 at $150.20 and cancels the rest), where the
+  rule refuses it ORDER_NOTIONAL. The Sell case also fails on b044d98b, whose `min` kept the mark.
+- `aBidBelowTheMarkLeavesTheSellAtTheMark`: refused at the mark on the ADR-051 engine and here. It fails on
+  b044d98b, which sized it at the $149.80 bid and filled it.
 - `emptyOppositeSideStillUsesTheMark` (both sides) and `anAskBelowTheMarkLeavesTheBuyAtTheMark`: controls
-  that pass on both engines.
+  that pass on every version.
 - Each case first asserts that its opposite order really rests. The first draft rested 100 at $150.20, over
   the same cap, so the ask was refused and the Buy case measured the mark-only fallback on both engines: it
   "failed before the fix" and failed after it, for a reason that had nothing to do with the rule.
