@@ -232,7 +232,11 @@ class AeronClusterSpikeTest {
         // recoveries and never restarted.
         acks.clear();
         offerSellOrder(COUNTER, 100 * PX, 60);
-        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_FILLED) == 7); // 6 resting + the aggressor
+        // 6 resting + the aggressor filled, and all 12 bookings arrived: each side's order update is written
+        // BEFORE its TradeBooked (OutputPublisher.emitFillWithTradeAndPosition), so the 7th FILLED can be
+        // polled while TradeBooked 14 is still behind it. A restarted counter would book 12 ending at 12.
+        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_FILLED) == 7
+            && countKind(OutputEvent.KIND_TRADE_BOOKED) == 12);
         final long maxTradeSeq = acks.stream()
             .filter(a -> a[1] == OutputEvent.KIND_TRADE_BOOKED)
             .mapToLong(a -> a[2]).max().orElse(-1);

@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the kubelet's SIGKILL: the archive and media driver were never closed. Runs a real one-member node in a child JVM.
  * The exit code is the point: on one member the old code still died, but by the consensus-terminated {@code halt(70)}
  * (not a clean close, and on a 3-member GKE pod that path never fired). 143 = 128 + SIGTERM, the JVM's normal exit.
+ * The signal lands inside the startup election on purpose: there, closing the service under a waiting consensus
+ * module ends that agent with a termination, and the termination hook used to halt(70) mid-close.
  */
 class ClusterNodeShutdownTest {
     @Test
@@ -45,7 +47,9 @@ class ClusterNodeShutdownTest {
         reader.start();
         try {
             final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
-            while (!snapshot(out).contains("Cluster node up") && node.isAlive() && System.nanoTime() < deadline) Thread.sleep(100);
+            // Signal as soon as "up" is printed: the one-member election is then still running (it closes ~50 ms
+            // later), the window where a TERM used to end in the consensus module's halt(70) instead of 143.
+            while (!snapshot(out).contains("Cluster node up") && node.isAlive() && System.nanoTime() < deadline) Thread.sleep(2);
             assertTrue(snapshot(out).contains("Cluster node up"), () -> "node never came up:\n" + snapshot(out));
 
             // SIGTERM, as the kubelet sends. Through the handle: Process.destroy() also closes our end of the

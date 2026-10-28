@@ -34,6 +34,8 @@ import java.util.List;
 public final class ClusterNodeMain {
     /** Cluster sessions refused for bad or missing credentials (ClusterClientAuth); exported on /metrics. */
     static final java.util.concurrent.atomic.AtomicLong INGRESS_REJECTED = new java.util.concurrent.atomic.AtomicLong();
+    /** Set once the shutdown signal arrives: from then on a consensus-module termination is part of the close. */
+    static final java.util.concurrent.atomic.AtomicBoolean STOPPING = new java.util.concurrent.atomic.AtomicBoolean();
 
     public static void main(final String[] args) throws Exception {
         final int memberId = memberId();
@@ -95,6 +97,13 @@ public final class ClusterNodeMain {
                     ClusterClientAuth.authenticator(clientSecret, INGRESS_REJECTED));
             }
             contexts.consensusModule().terminationHook(() -> {
+                if (STOPPING.get()) {
+                    // A SIGTERM during the election (it runs on after "Cluster node up") closes the service
+                    // under a consensus module still waiting on it, which ends that agent with a termination.
+                    // The close below is already under way: halting here would exit 70 with nothing closed.
+                    System.err.println("Consensus module terminated during shutdown; continuing the clean close");
+                    return;
+                }
                 System.err.println("Consensus module terminated; exiting for pod restart");
                 Runtime.getRuntime().halt(70);
             });
@@ -138,6 +147,7 @@ public final class ClusterNodeMain {
             System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
                 + " portBase=" + portBase + " baseDir=" + baseDir);
             barrier.await();
+            STOPPING.set(true);
             System.out.println("Cluster node stopping: shutdown signal received");
             health.stop(0);
             CloseHelper.quietCloseAll(container, driver);
