@@ -98,7 +98,7 @@ counts lost acks, not stream advance.)
 **W = 256** (`EXACTLY_ONCE_STREAM_WINDOW`) is kept. A ring that covered the resend delay at 400K/s would need
 W ≈ 16K, which is about 670 MB presized at 8,192 streams, or 170 MB at 2,048 with up to ~260 MB of snapshot.
 That brings back the snapshot-walk tail this ADR removes. Past W, a resend's answer is the ref-less DUPLICATE,
-and that answer is its receipt (FR-XOD-03).
+and that answer is its receipt (FR-XOD-03). No status path can find the order by its key yet: ADR-093 (proposed) closes that.
 - Alternative, not adopted: **W = 2,048** gives the original ref back for about 6 s of stream at 347/s. It costs
   about 40 MB presized at 2,048 streams and up to ~33 MB of snapshot. Adopt it only after its snapshot halt has
   been measured on hxb against W = 256.
