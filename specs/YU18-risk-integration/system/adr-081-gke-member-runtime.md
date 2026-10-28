@@ -48,6 +48,13 @@ terminated in 10 seconds" until the kubelet's SIGKILL. Its archive and media dri
 **Decision.** Cleanup runs on the main thread after `await()`, inside try-with-resources. The barrier
 closes and the JVM exits 143 (128 + SIGTERM), inside the pod's 10 s grace period.
 
+**A signal during the startup election (e3adcf9b).** `Cluster node up` is logged before the startup election
+closes. A SIGTERM inside that window closed the service while the consensus module still waited on it; the
+agent ended with an `AgentTerminationException` and its termination hook halted the JVM with 70 mid-close
+(4 of 25 runs beside 32 CPU hogs). `ClusterNodeMain` now marks the node stopping when the signal arrives, and
+from then on the hook logs and returns, so the close finishes and the JVM exits 143. Outside a shutdown the hook
+still halts 70, because a consensus module that terminates on its own needs a pod restart.
+
 ## 4. Pod logs reach Loki (c8c8ac31)
 
 **Context.** The CompSci profile shipped Loki without a log shipper. The collector has no logs

@@ -19,7 +19,10 @@
   so a crash harness can SIGKILL it from `kubectl exec`), that shell SHALL forward TERM and INT to the
   JVM and SHALL exit with the JVM's status. The CompSci render (`prepare.py`) SHALL refuse a member shell
   that does not. Without forwarding, `sh` as PID 1 has no handler, and every delete or roll ends in
-  SIGKILL (137) after the grace period.
+  SIGKILL (137) after the grace period. This SHALL hold for a SIGTERM that lands before the startup election
+  has closed: once the shutdown signal has arrived, the consensus module's termination hook SHALL log and
+  return instead of halting, so the close completes. Outside a shutdown, a terminated consensus module SHALL
+  still halt the JVM with status 70 so the pod restarts.
 - FR-GMR-05: The CompSci render SHALL include promtail (ConfigMap, ServiceAccount, ClusterRole,
   ClusterRoleBinding, DaemonSet). It SHALL name the cluster-scoped pair `promtail-<namespace>`, scrape
   `/var/log/pods/<namespace>_*`, and tolerate the `traderx-engine` taint.
@@ -58,7 +61,8 @@
 ## Success Criteria
 
 - SC-GMR-01: `ClusterNodeShutdownTest` passes: a real one-member node in a child JVM exits 143 within
-  30 s of SIGTERM.
+  30 s of SIGTERM. The test signals as soon as `Cluster node up` is logged, which is inside the startup
+  election, so every run exercises the election window (the pre-fix build exits 70 in 4 of 20 quiet runs).
 - SC-GMR-02: `test_prepare` passes against an empty-root render, including
   `test_member_archive_storageclass_is_rendered` and `test_promtail_ships_this_namespace_from_every_node`.
 - SC-GMR-03: An empty-root CompSci candidate contains the StorageClass, the promtail DaemonSet and

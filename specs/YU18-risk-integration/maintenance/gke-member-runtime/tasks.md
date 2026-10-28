@@ -4,6 +4,7 @@
 - [x] StorageClass emitted by the CompSci render.
 - [x] `-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50` on both StatefulSet variants.
 - [x] `ClusterNodeMain` closes the barrier and exits 143; `ClusterNodeShutdownTest`.
+- [x] A SIGTERM during the startup election exits 143, not halt(70) (e3adcf9b); the test signals inside the election.
 - [x] Promtail in the CompSci render.
 - [x] Admission population 21 images / 24 slots, defined once in `admit.py`.
 - [x] `/ready` refuses until the member's election is CLOSED (FR-GMR-08); `ReadinessDiagnosticsTest`.
