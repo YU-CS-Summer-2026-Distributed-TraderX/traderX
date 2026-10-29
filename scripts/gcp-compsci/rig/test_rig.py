@@ -93,6 +93,19 @@ class Up(unittest.TestCase):
     def test_members_that_disagree_are_refused(self):
         self.refused('G0', M2='100 100 5 11 23 7')
 
+    def test_a_cold_restore_with_no_engine_event_since_passes_g0_and_g4(self):
+        # Production 2026-10-29: restored from snapshots into an idle cluster, every member reported engineApplied -1.
+        rc, out, _ = run('rig_up', M='100 -1 5 11 22 7')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G0 ok', out)
+        rc, out, _ = run('rig_up', M='100 -1 5 11 22 7', BASELINE='100 100 5 11 22 7')   # baseline taken while live
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G4 ok', out)
+
+    def test_an_engine_behind_the_log_is_refused(self):
+        self.refused('G0', M='100 99 5 11 22 7')
+        self.refused('G0', M2='100 -1 5 11 22 7')   # one member restored idle, the others not: they disagree
+
     def test_a_replay_from_zero_that_differs_is_refused(self):
         self.refused('G1', REINDEX='{"replayedAppliedSeq":100,"indexedTrades":4}')
 

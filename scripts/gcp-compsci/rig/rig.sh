@@ -299,7 +299,9 @@ restore_gate(){
   [ "$(cut -d' ' -f1-5 <<<"$m0")" = "$(cut -d' ' -f1-5 <<<"$m1")" ] && [ "$(cut -d' ' -f1-5 <<<"$m0")" = "$(cut -d' ' -f1-5 <<<"$m2")" ] \
     || die "G0: the members disagree (gateways stay at 0): $EVIDENCE/gate-members.txt"
   read -r a e t oh ph _ <<<"$m0"
-  [ "$a" -gt 0 ] && [ "$a" = "$e" ] || die "G0: applied $a, engineApplied $e"
+  # engineApplied is the engine's blpSeq: equal to applied once an engine event has applied, and -1 on a member
+  # restored from its snapshot into an idle cluster, which has applied no engine event since (ClusterNodeMain /health).
+  [ "$a" -gt 0 ] && { [ "$e" = "$a" ] || [ "$e" = -1 ]; } || die "G0: applied $a, engineApplied $e"
   note "G0 ok: applied $a, trades $t, hashes $oh $ph on all three"
   token=$(admin_token); [ -n "$token" ] || die "G1: could not mint an admin token in trade-processor"
   for i in 0 1 2; do
@@ -340,7 +342,7 @@ restore_gate(){
   note "G3 ok: read model unchanged"
   base=$(kc get configmap rig-shutdown-baseline -o jsonpath='{.data.members}' 2>/dev/null || true)
   if [ -n "$base" ]; then
-    [ "$(cut -d' ' -f1-5 <<<"$base")" = "$(cut -d' ' -f1-5 <<<"$m0")" ] \
+    [ "$(cut -d' ' -f1,3-5 <<<"$base")" = "$(cut -d' ' -f1,3-5 <<<"$m0")" ] \
       || die "G4: shutdown baseline '$base' != restored '$m0'"
     note "G4 ok: equals the shutdown baseline"
   else

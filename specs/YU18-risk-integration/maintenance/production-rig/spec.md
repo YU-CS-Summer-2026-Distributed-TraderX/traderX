@@ -39,11 +39,11 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 
   | Check | Holds when |
   |---|---|
-  | G0 | all three members report the same applied, engineApplied, trades, order hash and position hash, and applied = engineApplied > 0 |
+  | G0 | all three members report the same applied, engineApplied, trades, order hash and position hash; applied > 0; and engineApplied = applied, or -1 (restored from the snapshot into an idle cluster, no engine event since) |
   | G1 | each member's `/recon/full-history/reindex` reports `replayedAppliedSeq` = applied and `indexedTrades` = trades |
   | G2 | each member's `/recon/shadow-state` is `complete` at the same applied and equals its `/health?digest=1` on bookHash, positionHash, openOrders, positions and digestTrades |
   | G3 | the read model's trades, positions and orderbook md5s equal those read before the members started, and its NEW / PARTIALLY_FILLED rows equal the members' openOrders |
-  | G4 | when `rig-shutdown-baseline` exists, the members' applied, engineApplied, trades and hashes equal it |
+  | G4 | when `rig-shutdown-baseline` exists, the members' applied, trades and hashes equal it (not engineApplied, which a restore resets to -1) |
 - **FR-PRG-04:** The smoke order SHALL go through a gateway over FIX from `web-front-end-console`.
   - It is a resting Buy 1 two percent under the mark (inside the collar), acked New, then cancelled.
   - The order's `orderbook` row SHALL reach CANCELED within 60 s.
@@ -122,6 +122,8 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | rendered candidate | 05, 06, 07 | `test_prepare` rig tests | pools and tolerations, gateway shape, member ZGC heap and pinned cap; 3 fail on the previous renderer |
 | broken candidates | 05, 06, 07 | same | gateway on default-pool, a replica count, no anti-affinity, 250m CPU, 30 s grace, no drain delay, the G1 shape, the bench's 6 GB heap, no `MAX_ACTIVE_BOOKS`: each refused |
 | up order | 01, 03 | `test_rig.Up.test_gateways_start_only_after…` | gateways 0 → pools → members → `rig-gate` → gateways → ILB → smoke |
+| cold restore into an idle cluster | 03 | `test_rig.Up.test_a_cold_restore_with_no_engine_event_since_passes_g0_and_g4` | engineApplied -1 passes G0 and G4; fails on the previous G0 with production's exact refusal |
+| an engine behind the log, or one member restored idle | 03 | `test_rig.Up.test_an_engine_behind_the_log_is_refused` | REFUSED G0 |
 | each gate check failing | 03 | `test_rig.Up.*refused*` | REFUSED Gn; no gateway scaled up; no `rig-gate` |
 | a past partial restore in a member's error log | 03 | `test_rig.Up.test_a_member_that_once_restored_partially…` | REFUSED G-pre for each of the three messages; no member started |
 | error log unreadable, or members running | 03 | `test_rig.Up.test_an_unreadable…`, `…not_read_while_members_run` | refused |

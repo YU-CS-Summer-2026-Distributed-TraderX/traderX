@@ -24,6 +24,9 @@
 - [x] 5a population declared (2026-10-29): tip `9c63c4ca`, exception `order-matcher-cluster` → `cluster-node-member`
       from `c562bbab`. Admitted: 13 payloads equal to independent reference builds, 22 images / 24 slots, 23 controls
       including the four population refusals on the measured pack.
+- [x] First production `up` (2026-10-29, 1:22–1:30 pm ET): pools, G-pre (both mark files, 3 members clean), members 3
+      Ready, then REFUSED G0 on `engineApplied -1`. The members agreed (applied 3469, trades 18, both hashes); -1 is
+      the documented reading after a restore into an idle cluster. G0 and G4 corrected; gateways never started.
 - [ ] Rehearsal on production (yaakov: "Rehearse on production"), needing his approval in session and a spend
       projection:
       - `pools`;

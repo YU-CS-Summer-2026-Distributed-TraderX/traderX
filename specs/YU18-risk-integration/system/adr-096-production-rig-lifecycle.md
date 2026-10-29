@@ -85,7 +85,7 @@ reference never comes from a snapshot.
 | Check | Holds when |
 |---|---|
 | G-pre | before any member starts: each member claim's error logs, in both the consensus module's and the service container's mark file, read in a read-only pod, have no "snapshot corrupt", "NEWER" or "unknown snapshot record type". Production's 00b31d33 skipped a refused snapshot record silently (Aeron's `Image.poll` swallows the handler's exception), so such a line means that member once came up partial, and the bring-up stops before anything else runs |
-| G0 | the three members agree on applied, engineApplied, trades and both hashes |
+| G0 | the three members agree on applied, engineApplied, trades and both hashes. engineApplied equals applied, or is -1 on a member restored into an idle cluster: it is the engine's sequence, which only an engine event sets (production's first `up`, 2026-10-29, refused on the earlier `applied = engineApplied`) |
 | G1 | each member's replay from log position 0 (`/recon/full-history/reindex`) reaches its applied with its trade count |
 | G2 (check A) | each member's strict full-log replay into a fresh shadow (`/recon/shadow-state`, FR-ERH-F13) is `complete` at the same applied and equals `/health?digest=1`: book hash, position hash, open orders, positions, trades |
 | G3 (check B) | the read model's md5s are unchanged since before the members started, and its open rows equal the members' open orders |
