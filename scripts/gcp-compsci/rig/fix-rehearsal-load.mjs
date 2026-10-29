@@ -21,6 +21,7 @@ const cfg = {
   creds: flag('--creds'), px: flag('--px'), ticker: flag('--ticker', 'MSFT'), rate: Number(flag('--rate', 50)),
   secs: Number(flag('--secs', 60)), host: flag('--host', '10.90.0.41'), port: Number(flag('--port', 18130)),
   out: flag('--out', 'results.json'), maxInFlight: Number(flag('--max-in-flight', 5000)),
+  drainSecs: Number(flag('--drain-secs', 60)),   // after sending stops: wait this long for answers
 };
 if (!cfg.creds || !cfg.px) { console.log('usage: --creds FILE --px PRICE'); process.exit(2); }
 const creds = JSON.parse(fs.readFileSync(cfg.creds, 'utf8'));
@@ -136,8 +137,12 @@ setTimeout(() => {   // stop sending, then wait for every answer (at most 60 s),
   const wait = setInterval(() => {
     const left = sessions.reduce((a, x) => a + x.open.size, 0);
     const rest = sessions.reduce((a, x) => a + x.resting.size, 0);
-    if (left === 0 && rest > 0 && !cancelled) { cancelled = true; sessions.forEach((x) => x.cancelResting()); return; }
-    if ((left === 0 && rest === 0) || Date.now() - t0 > 60_000) {
+    // Sweep once every answer is in, or halfway through the wait: an order that is never answered must not leave
+    // the others resting (production 2026-10-29: 3 refused at the session layer left one order on the book).
+    if (rest > 0 && !cancelled && (left === 0 || Date.now() - t0 > cfg.drainSecs * 500)) {
+      cancelled = true; sessions.forEach((x) => x.cancelResting()); return;
+    }
+    if ((left === 0 && rest === 0) || Date.now() - t0 > cfg.drainSecs * 1000) {
       clearInterval(wait); clearInterval(progress); closing = true;
       sessions.forEach((x) => x.stop());
       setTimeout(() => { const r = report(true); process.exit(r.unanswered === 0 && r.duplicateAnswers === 0 && r.restingAtEnd === 0 ? 0 : 1); }, 1000);

@@ -27,19 +27,20 @@
 - [x] First production `up` (2026-10-29, 1:22–1:30 pm ET): pools, G-pre (both mark files, 3 members clean), members 3
       Ready, then REFUSED G0 on `engineApplied -1`. The members agreed (applied 3469, trades 18, both hashes); -1 is
       the documented reading after a restore into an idle cluster. G0 and G4 corrected; gateways never started.
-- [ ] Rehearsal on production (yaakov: "Rehearse on production"), needing his approval in session and a spend
-      projection:
-      - `pools`;
-      - `up` on the backport build (G0–G4 pass);
-      - `gateways.sh 2 → 4 → 2` with FIX clients connected through the internal LB: new connections reach the new
-        gateways, every drained gateway ends `inflight=0`, resume times recorded;
-      - autoscale up under load and back down with no order lost (every order answered once, recon mismatch 0);
-      - `down` with three exit-143 members and zero instances.
+- [x] Rehearsal on production, 2026-10-29 1:22–4:02 pm ET (ADR-096 Evidence, production rehearsal): pools, up and the
+      restore gate, ILB spread, grow/shrink with live FIX sessions, autoscale up and down (at a 15% target for the run;
+      60% restored), exactly-once over 3,498,116 orders. `down` follows.
+- [ ] FIX session store: a `ResetSeqNumFlag=Y` Logon racing the lease handover is undone by the store load (ADR-086;
+      CLIENT4/6/8 wedged 50 minutes). FIX session lane.
+- [ ] Autoscale signal: 7 FIX sessions cannot reach 60% CPU; evaluate the in-flight gauge (§3) or more sessions.
+- [ ] Read model under load: the orderbook projection is about 1.2K rows/s (one UPDATE per order event); the
+      downstream redesign's partitions or `ORDER_FEED_PERSIST=false` (G3 must then read the in-memory view).
 - [ ] Production run in rollout 5a (yaakov approves in session).
 - [x] Load clients CLIENT2–CLIENT8 (FR-PRG-11), opt-in in the render, each on its own test account; passwords in
       Secret `fix-test-clients` and `~/traderx-private/fix-test-clients.json` only. `test_prepare` 46/46.
 - [ ] Clean up the rehearsal's load: yaakov approved real load on dedicated test accounts, leaving their trades in
-      production's database to clear later. Accounts 9900002–9900008, CompIDs CLIENT2–CLIENT8; the ET time window is
-      recorded here when the run happens. Then delete exactly those accounts' orders, trades and positions, render
+      production's database to clear later. Accounts 9900002–9900008, CompIDs CLIENT2–CLIENT8; window 2026-10-29
+      1:51 pm (accounts created) to 4:02 pm ET (last leftover order cancelled): 3,498,113 orderbook rows, their trades
+      and positions, all on those accounts. Plus the smoke orders on 42422 and the TLS smoke's two orders (42422/22214). Then delete exactly those accounts' orders, trades and positions, render
       without `--fix-test-clients`, and delete Secret `fix-test-clients`.
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

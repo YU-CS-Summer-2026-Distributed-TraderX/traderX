@@ -108,6 +108,31 @@ class Drain(unittest.TestCase):
                             '127.0.0.1', '--port', str(srv.getsockname()[1]), '--out', str(Path(d, 'r.json'))], capture_output=True, timeout=60)
             sent = json.loads(Path(d, 'r.json').read_text())['sent']
         self.assertTrue(8 <= sent <= 11, sent)
+    def test_an_unanswered_order_does_not_leave_the_others_resting(self):
+        # Production 2026-10-29: 3 orders refused at the session layer kept the sweep from firing; one order rested on.
+        srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
+        seen = {'cancels': 0}
+        def acceptor():
+            conn, _ = srv.accept(); n = [1]; orders = [0]
+            def reply(fields):
+                conn.sendall(frame([fields[0], ('34', n[0]), ('52', '20261029-18:00:00.000')] + fields[1:])); n[0] += 1
+            for f in messages(conn):
+                if f['35'] == 'A': reply([('35', 'A')])
+                if f['35'] == 'D':
+                    orders[0] += 1
+                    if orders[0] > 1: reply([('35', '8'), ('11', f['11']), ('39', '0')])   # the first is never answered
+                if f['35'] == 'F': seen['cancels'] += 1; reply([('35', '8'), ('11', f['11']), ('41', f['41']), ('39', '4')])
+                if f['35'] == '5': reply([('35', '5')]); conn.close(); return
+        threading.Thread(target=acceptor, daemon=True).start()
+        with tempfile.TemporaryDirectory() as d:
+            creds = Path(d, 'creds.json'); creds.write_text(json.dumps({'CLIENT2': {'account': '9900002', 'password': 'p'}}))
+            r = subprocess.run(['node', str(LOAD), '--creds', str(creds), '--px', '1.00', '--rate', '20', '--secs', '1',
+                                '--drain-secs', '4', '--host', '127.0.0.1', '--port', str(srv.getsockname()[1]),
+                                '--out', str(Path(d, 'r.json'))], capture_output=True, text=True, timeout=60)
+            result = json.loads(Path(d, 'r.json').read_text())
+        self.assertEqual(r.returncode, 1, r.stdout)   # an unanswered order still fails the run
+        self.assertEqual((result['unanswered'], result['restingAtEnd']), (1, 0))
+        self.assertEqual(seen['cancels'], result['sent'] - 1)
 
 if __name__ == '__main__':
     unittest.main()

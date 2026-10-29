@@ -226,3 +226,38 @@ workload, including the gateway's `cluster-node`, runs the tip.
   - Writing the tests found a precedence bug in the "missing" report, fixed before landing.
 - **Codec (§6): `rig/codec-compat.sh`, `c562bbab` members' render against the tip render.** 42 encodings over 19
   command types, 518 checks, 0 failures, both controls fired. Both sides build on Aeron 1.51.0.
+
+## Evidence (production rehearsal, 2026-10-29, rollout 5a)
+
+yaakov: "Rehearse on production". Members `cluster-node-member` from `c562bbab`, everything else from `9c63c4ca`
+(§6, admitted: 13 payloads equal to independent builds, 23 controls). Applied at 1:21 pm ET, production at 0 nodes.
+
+- **Restore gate, passed at 1:44 pm** (after two corrections, below). All three members: applied 3469, engineApplied -1
+  (restored into an idle cluster), trades 18, order hash 0, position hash -266474940576343402. G1 replay from 0 reaches
+  3469 / 18 trades; G2 shadow-state equals each digest; G3 read model unchanged, 0 open rows, SQL trade sides exactly
+  1..18; G-pre clean on both mark files of all three claims.
+- **Corrected live, each with a test that fails on the old code:**
+  - G-pre: `ClusterTool errors` never reaches the service mark file (it throws on the absent driver first).
+  - G0/G4: engineApplied is -1 after a cold restore; G4 no longer compares it.
+  - G3: also checks the SQL trade-side count, not only md5-unchanged.
+  - The smoke: SendingTime format, and the gateway's Logout answer.
+  - The shrink report counted every earlier logout of the drained gateway.
+- **Grow and shrink with live FIX sessions** (7 load CompIDs, FR-PRG-11/12, 140/s): 2 → 4 → 2 → 1 → 2. Every drained
+  gateway ended `inflight=0` and only its own node left. At 2 → 1, CLIENT3/4/7/8 resumed on the remaining gateway in
+  575–595 ms (the client measured the same); 65,353 orders, each answered once.
+- **Internal LB** spreads new connections: 20 raw connections from the client VM landed 8 / 12.
+- **Autoscale.** At the real target (60%) nothing scaled: 7 FIX sessions top out near 3.2K orders/s, where each session
+  meets the gateway's slow-consumer guard (ADR-092) with gateway CPU at 23%. With the target set to 15% for the run:
+  up 2 → 3 at 3:00 pm (a node added, Ready in about a minute); down 3 → 2 at 3:37 pm, 31 minutes after CPU fell; the
+  emptied node removed by 3:48 pm. 60% restored at 4:00 pm.
+- **Exactly-once:** 3,498,116 orders over 9 runs. For each test account the SQL rows equal the orders sent minus the
+  ones refused at the session layer (3, below), all distinct, none left open. One live slow-consumer disconnect resumed
+  on the other gateway: ResendRequest, GapFill, 4,993 resends, 1 restated as a duplicate.
+- **Findings:**
+  - **CPU is a weak signal for FIX gateways:** per-session ingress saturates first. The in-flight gauge (§3) is the
+    candidate.
+  - **The read model lags under load:** the orderbook projection writes one UPDATE per order event, about 1.2K/s, so a
+    3.2K/s burst left it about 1M rows behind for minutes. It is latency-bound across nodes, not DB capacity.
+  - **A reset Logon racing the FIX lease handover is undone (ADR-086):** the store load restored the previous sequence
+    (180146) after `ResetSeqNumFlag=Y`. CLIENT4/6/8 were wedged for 50 minutes, every re-logon "MsgSeqNum too low";
+    their one order each never reached the engine. Routed to the FIX session lane.
