@@ -48,7 +48,7 @@ let sending = true;
 
 function session(index) {
   const s = {index, sent: 0, accepted: 0, rejected: 0, ambiguous: 0, protocolErrors: 0, duplicates: 0, unexpected: 0,
-             acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, filledOnEntry: 0, rejectReasons: {}, closed: false};
+             acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, rejectReasons: {}, closed: false};
   const open = new Map();            // seq -> side, until the first ack
   const answered = new Set();
   let seq = 0, buf = Buffer.alloc(0), credit = 0, up = false;
@@ -77,7 +77,7 @@ function session(index) {
       const side = open.get(q);
       if (side === undefined) { s.unexpected++; continue; }
       open.delete(q); answered.add(q);
-      if (status === 1) { s.accepted++; side === 0 ? s.acceptedBuys++ : s.acceptedSells++; if (kind === 4) s.filledOnEntry++; }
+      if (status === 1) { s.accepted++; side === 0 ? s.acceptedBuys++ : s.acceptedSells++; }
       else if (status === 0) { s.rejected++; s.rejectReasons[`kind${kind}:risk${risk}`] = (s.rejectReasons[`kind${kind}:risk${risk}`] ?? 0) + 1; }
       else if (status === 2) s.ambiguous++;
       else s.protocolErrors++;
@@ -108,8 +108,7 @@ const report = (final) => {
   const sum = (k) => rows.reduce((a, x) => a + x[k], 0);
   const out = {nonce: NONCE, startedAt: started.toISOString(), at: new Date().toISOString(), final, ticker: cfg.ticker,
                securityId: SECURITY, px: cfg.px, ...Object.fromEntries(['sent', 'accepted', 'rejected', 'ambiguous',
-               'protocolErrors', 'duplicates', 'unexpected', 'unanswered', 'acceptedBuys', 'acceptedSells', 'balanceOrders',
-               'filledOnEntry'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
+               'protocolErrors', 'duplicates', 'unexpected', 'unanswered', 'acceptedBuys', 'acceptedSells', 'balanceOrders'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
                closedSessions: rows.filter((x) => x.closed && !final).length, sessions: rows};
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
   console.log(`${out.at} sent=${out.sent} accepted=${out.accepted} rejected=${out.rejected} unanswered=${out.unanswered} `

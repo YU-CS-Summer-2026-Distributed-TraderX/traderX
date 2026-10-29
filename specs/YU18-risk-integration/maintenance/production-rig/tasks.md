@@ -47,5 +47,6 @@
       without `--fix-test-clients`, and delete Secret `fix-test-clients`.
 - [x] Binary load for the throughput run (FR-PRG-16, 2026-10-29): `rig/binary-load.mjs` + `binary-load.sh`, offline
       against a scripted gateway. Before production: a `loadgen-pool`, an image with node 20 the pool can pull, the
-      risk policy's position limit at or above each buy account's peak (the run's total orders ÷ 8), and a kind run.
+      risk policy's position limit at or above each buy account's peak (the run's total orders ÷ 8). Kind run done:
+      every accepted order traded (members' trade sides rose by exactly the accepted count).
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.
