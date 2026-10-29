@@ -21,8 +21,9 @@
 - [x] Declared two-commit population for 5a (FR-PRG-10): members `cluster-node-member` from `c562bbab`, the rest
       from the tip. Every stage refuses neither-commit images and undeclared mixes; `test_population` 23/23,
       `test_prepare` 42/42. The tip's ingress decodes on the members' codec (`rig/codec-compat.sh`, 518 checks).
-- [ ] Declare the 5a population in `population.json` once the tip images are built: `imageSourceCommit` = the tip
-      they are built from, exception `order-matcher-cluster` → `cluster-node-member` from `c562bbab`.
+- [x] 5a population declared (2026-10-29): tip `9c63c4ca`, exception `order-matcher-cluster` → `cluster-node-member`
+      from `c562bbab`. Admitted: 13 payloads equal to independent reference builds, 22 images / 24 slots, 23 controls
+      including the four population refusals on the measured pack.
 - [ ] Rehearsal on production (yaakov: "Rehearse on production"), needing his approval in session and a spend
       projection:
       - `pools`;

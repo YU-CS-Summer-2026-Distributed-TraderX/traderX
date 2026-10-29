@@ -80,7 +80,8 @@ Use the explicit `scripts/gcp-compsci/admit.py` companion below; the inherited
 admission path and its refusal rules remain unchanged.
 
 `admit.py` admits only images built from the commits `scripts/gcp-compsci/population.json` declares
-(ADR-096 §6): `imageSourceCommit` for every private image (`00b31d33` since the fourth roll on 2026-10-28;
+(ADR-096 §6): `imageSourceCommit` for every private image (`9c63c4ca` with the members on `c562bbab` for rollout 5a on
+2026-10-29; `00b31d33` from the fourth roll on 2026-10-28;
 `40d93f6b`, `b28fd9f3` and `9e0fd80b` before it), and per workload at most one exception built from its own commit
 into its own image repository. Its measured evidence is produced by `measure-admission.py`: on a checkout of exactly the default commit,
 rendered with that commit's `SOURCE_DATE_EPOCH` and its GitHub origin, run

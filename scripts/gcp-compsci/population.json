@@ -1,6 +1,12 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 §6. The reviewed image population: imageSourceCommit builds every private image unless a workload names an exception (its own image repository and reviewed commit). Production traderx today: 00b31d33, no exception.",
-  "imageSourceCommit": "00b31d33f4e0dd329d8151b929beba24c90086d3",
-  "workloads": {}
+  "note": "ADR-096 \u00a76. Rollout 5a: the members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 9c63c4ca.",
+  "imageSourceCommit": "9c63c4caa67afd8433bf060f2626cc4d493a0369",
+  "workloads": {
+    "order-matcher-cluster": {
+      "image": "cluster-node-member",
+      "component": "order-matcher",
+      "sourceCommit": "c562bbab65f703a0edbbffd5cea98f54bf40b844"
+    }
+  }
 }
