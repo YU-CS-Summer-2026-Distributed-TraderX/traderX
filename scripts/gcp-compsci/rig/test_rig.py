@@ -375,21 +375,36 @@ class Down(unittest.TestCase):
     def test_gateways_then_barrier_then_members_then_pools(self):
         rc, out, calls = run('rig_down')
         self.assertEqual(rc, 0, out)
-        order = [first(calls, p) for p in (r'scale deploy/cluster-gateway --replicas=0', r'delete svc order-matcher-gw-ilb',
+        order = [first(calls, p) for p in (r'delete job binary-load', r'scale deploy/cluster-gateway --replicas=0',
+                                           r'delete svc order-matcher-gw-ilb',
                                            r'order-matcher-cluster-1 .*ClusterTool /data/cluster snapshot',
                                            r'create configmap rig-shutdown-baseline',
                                            r'scale statefulset/order-matcher-cluster --replicas=0',
+                                           r'resize .*loadgen-pool --num-nodes 0',
                                            r'resize .*gateway-pool --num-nodes 0', r'resize .*default-pool --num-nodes 0',
                                            r'instances stop traderx-client-1')]
         self.assertNotIn(None, order, out)
         self.assertEqual(order, sorted(order), out)
-        self.assertIn('JAVA_TOOL_OPTIONS=-Xmx128m', calls[order[2]], 'ClusterTool must not inherit the 6g pre-touched heap')
+        self.assertIn('JAVA_TOOL_OPTIONS=-Xmx128m', calls[order[3]], 'ClusterTool must not inherit the 6g pre-touched heap')
 
     def test_a_member_that_did_not_exit_143_still_ends_at_zero_but_fails(self):
         rc, out, calls = run('rig_down', EXITS='143 137 143')
         self.assertEqual(rc, 3, out)
         self.assertIn('member 1 did not exit 143', out)
         self.assertIsNotNone(first(calls, r'resize .*default-pool --num-nodes 0'), 'pools left billing')
+
+
+class Loadgen(unittest.TestCase):
+    """FR-PRG-16: loadgen-pool is sized only by `rig.sh loadgen N`, within 0..16."""
+    def test_the_pool_is_resized_and_waited_for(self):
+        rc, out, calls = run('rig_loadgen 12')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'resize traderx-demo --node-pool loadgen-pool --num-nodes 12'), out)
+
+    def test_a_count_outside_0_to_16_is_refused_before_any_call(self):
+        for n in ('17', '-1', 'x', ''):
+            rc, out, calls = run(f'rig_loadgen "{n}"')
+            self.assertEqual(rc, 2, out); self.assertIsNone(first(calls, r'resize'), n)
 
 
 class InstanceCheck(unittest.TestCase):
@@ -403,7 +418,7 @@ class InstanceCheck(unittest.TestCase):
         self.assertEqual(self.check('echo "ERROR: gcloud crashed" >&2; return 1'), 'rc=1')
 
     def test_an_instance_in_any_pool_is_found(self):
-        for pool in ('default-pool', 'engine-pool', 'nats-pool', 'gateway-pool'):
+        for pool in ('default-pool', 'engine-pool', 'nats-pool', 'gateway-pool', 'loadgen-pool'):
             body = f'case "$*" in *"{pool}-"*) echo gke-traderx-demo-{pool}-abc-1;; esac'
             self.assertEqual(self.check(body), 'rc=1', pool)
 

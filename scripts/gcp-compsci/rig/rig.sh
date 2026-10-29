@@ -2,6 +2,7 @@
 # ADR-096: the production rig (namespace traderx on traderx-demo) up at bench parity and back down to zero.
 #
 #   scripts/gcp-compsci/rig/rig.sh pools|up|down|status [--dry-run]
+#   scripts/gcp-compsci/rig/rig.sh loadgen N          loadgen-pool to N nodes for binary-load.sh (FR-PRG-16), 0..16
 #     GATEWAYS=N      gateways, one per gateway-pool node, 1..18 (default 2)
 #     AUTOSCALE=on    gateways also scale on CPU between GATEWAYS and 18 (default off)
 #
@@ -89,7 +90,7 @@ ilb_has_ip(){ [ -n "$(kc get svc order-matcher-gw-ilb -o jsonpath='{.status.load
 # so `down` once reported "no rig node instance left" with default-pool still RUNNING (2026-10-29). A failed query is
 # not an empty one.
 no_rig_instances(){ local p out
-  for p in $RIG_POOLS; do
+  for p in $RIG_POOLS loadgen-pool; do
     out=$(gc compute instances list --filter="name~^gke-${CLUSTER}-${p}-" --format='value(name)') || return 1
     [ -z "$out" ] || return 1
   done; }
@@ -134,6 +135,12 @@ rig_pools(){
     do_ gcloud container node-pools create gateway-pool "${common[@]}" --machine-type c4d-standard-8 \
       --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-gateway=true:NoSchedule \
       --node-labels traderx-role=gateway --system-config-from-file "$HERE/node-gateway.yaml"
+  fi
+  if [ "$DRY" = 0 ] && pool_exists loadgen-pool; then note "loadgen-pool present"; else
+    # FR-PRG-16: the binary load's own nodes, tainted so nothing else lands there; at 0 until `rig.sh loadgen N`.
+    do_ gcloud container node-pools create loadgen-pool "${common[@]}" --machine-type c4d-standard-8 \
+      --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-loadgen=true:NoSchedule \
+      --node-labels traderx-role=loadgen
   fi
   if [ "$DRY" = 0 ] && engine_has_sysctls; then note "engine-pool sysctls present"; else
     [ "$DRY" = 1 ] || [ "$(pool_size engine-pool)" = 0 ] \
@@ -492,7 +499,8 @@ member_exit_codes(){ # stop the members and require each to exit 143 (FR-GMR-04)
 rig_down(){
   preflight
   note "rig down: context=$CTX namespace=$NS evidence=$EVIDENCE"
-  step "gateways to 0 first (each drains: FIX sessions log out and resume elsewhere, in-flight orders answered)"
+  step "binary load stopped (FR-PRG-16), then gateways to 0 (each drains: FIX sessions resume elsewhere, in-flight answered)"
+  do_ kubectl --context "$CTX" -n "$NS" delete job binary-load --ignore-not-found --wait=true
   autoscale_off
   do_ kubectl --context "$CTX" -n "$NS" scale deploy/cluster-gateway --replicas=0
   wait_for 180 "no gateway pod" no_pods cluster-gateway
@@ -527,6 +535,8 @@ rig_down(){
     do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=0
   fi
   step "every rig pool to 0; $CLIENT_VM stopped"
+  { [ "$DRY" = 1 ] || pool_exists loadgen-pool; } && do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool \
+    --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   for p in gateway-pool nats-pool engine-pool default-pool; do
     do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   done
@@ -586,6 +596,17 @@ rig_status(){
   kc get configmap rig-gate -o jsonpath='{.data.status} {.data.at}{"\n"}' 2>/dev/null || note "no gate record"
 }
 
+# FR-PRG-16: size the binary load's pool. `rig.sh pools` creates it at 0; `down` returns it to 0.
+rig_loadgen(){
+  local n=$1
+  [[ "$n" =~ ^([0-9]|1[0-6])$ ]] || die "loadgen N: N is 0..16"
+  preflight
+  [ "$DRY" = 1 ] || pool_exists loadgen-pool || die "loadgen-pool is missing: run 'rig.sh pools' first"
+  step "loadgen-pool to $n nodes"
+  do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool --num-nodes "$n" --zone "$ZONE" --project "$PROJECT" --quiet
+  [ "$DRY" = 1 ] || wait_for 900 "loadgen-pool: $n nodes Ready" pool_ready loadgen-pool "$n"
+}
+
 main(){
   local action=${1:-}; shift || true
   [ "${1:-}" = --dry-run ] && DRY=1
@@ -596,7 +617,8 @@ main(){
     status) rig_status;;
     unprojected) rig_unprojected "${1:-}";;
     member-disk) rig_member_disk "${1:-}";;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B|member-disk SIZE [--dry-run]" >&2; exit 64;;
+    loadgen) rig_loadgen "${1:-}";;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

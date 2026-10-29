@@ -127,7 +127,10 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
     its accepted buys and sells on the other side until they are equal; a session still unbalanced at the boundary
     SHALL stop the pod (exit 1) before the roles swap. A pod that exits 0 leaves nothing of its own resting;
   - exit 1 on any order unanswered, answered twice, ambiguous or unbalanced, and log one `RESULT` line.
-  `binary-load.sh --apply` SHALL refuse unless the restore gate covers the running members.
+  `binary-load.sh --apply` SHALL refuse unless the restore gate covers the running members. `rig.sh pools` SHALL
+  create `loadgen-pool` (c4d-standard-8, tainted `traderx-loadgen`) at 0 nodes, and `rig.sh loadgen N` (0..16) SHALL
+  size it. `rig.sh down` SHALL delete the Job before the gateways go, return `loadgen-pool` to 0, and count it in the
+  zero-instance check. The pods run the candidate's `web-front-end-console` image (node 20), so no new image is built.
 - **FR-PRG-15:** For a full-throughput hour, `prepare.py --throughput-members` SHALL render the bench's 450K member
   settings (`CLUSTER_EGRESS_COALESCE`, `CLUSTER_SNAPSHOT_PACKED`, `CLUSTER_SNAPSHOT_RING`, all `true`), keeping the
   heap and the pinned book cap. `rig.sh member-disk SIZE` SHALL grow the three member claims (allowing expansion on

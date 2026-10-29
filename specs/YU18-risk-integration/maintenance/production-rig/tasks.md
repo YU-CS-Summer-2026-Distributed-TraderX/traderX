@@ -46,7 +46,8 @@
       and positions, all on those accounts. Plus the smoke orders on 42422 and the TLS smoke's two orders (42422/22214). Then delete exactly those accounts' orders, trades and positions, render
       without `--fix-test-clients`, and delete Secret `fix-test-clients`.
 - [x] Binary load for the throughput run (FR-PRG-16, 2026-10-29): `rig/binary-load.mjs` + `binary-load.sh`, offline
-      against a scripted gateway. Before production: a `loadgen-pool`, an image with node 20 the pool can pull, and
+      against a scripted gateway. `rig.sh pools` creates `loadgen-pool`,
+      `rig.sh loadgen N` sizes it, the pods use the candidate's console image (node 20.19.2). Before production:
       `--phase-secs` short enough that one phase's buys per account (aggregate rate ÷ 2 ÷ 4 × phase) stay under the
       position limit; the policy itself stays as it is. Kind run done:
       every accepted order traded (members' trade sides rose by exactly the accepted count).

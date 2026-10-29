@@ -3,9 +3,9 @@
 # a restarted pod would hide its first attempt's unanswered orders).
 #
 #   scripts/gcp-compsci/rig/binary-load.sh PODS IMAGE [--apply] -- CLIENT ARGS...
-#   e.g. binary-load.sh 20 node:20.18.0-alpine --apply -- --ticker MSFT --px 412.50 --sessions 16 --rate 1250 --secs 3600
+#   e.g. binary-load.sh 20 "$CONSOLE_IMAGE" --apply -- --ticker MSFT --px 412.50 --sessions 16 --rate 1250 --secs 3600
 #
-# IMAGE is any image with node >= 20 on the PATH. Without --apply it prints the manifest. With --apply it refuses
+# IMAGE: the candidate's web-front-end-console reference (node 20, already in the registry). Nodes: `rig.sh loadgen N`. Without --apply it prints the manifest. With --apply it refuses
 # unless the restore gate covers the running members, then creates the Job. Results: one RESULT line per pod
 # (`kubectl logs -l job-name=binary-load | grep ^RESULT`); the run is clean when every pod exited 0.
 set -euo pipefail
@@ -34,6 +34,7 @@ spec:
     spec:
       restartPolicy: Never
       nodeSelector: {cloud.google.com/gke-nodepool: loadgen-pool}
+      tolerations: [{key: traderx-loadgen, operator: Equal, value: "true", effect: NoSchedule}]
       containers:
       - name: load
         image: $IMAGE
