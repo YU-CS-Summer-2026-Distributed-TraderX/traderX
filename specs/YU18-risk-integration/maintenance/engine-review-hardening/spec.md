@@ -47,6 +47,13 @@
 - FR-ERH-F11: The FIX ClOrdID ledger SHALL hold at most 65,536 entries, evicting the eldest, and SHALL
   rehydrate only the file's last 65,536 records. An ambiguous order SHALL be recorded as
   `ORDER_REF_UNKNOWN` and resolved by its retry.
+- FR-ERH-F12: Restore and replay SHALL fail closed on the real Aeron path, not only in the codec.
+  - `Image.poll` catches a fragment handler's exception, records it in the client's error log and keeps polling.
+  - `loadSnapshot` SHALL keep the first refused record and throw it, so a member never starts on a partial
+    restore. (Before this, a refused record was skipped and the load reached END without it; a refused header
+    left the load waiting forever.) A record larger than one snapshot message SHALL be reassembled before it is read.
+  - `ClusterRecon`'s archive replay SHALL do the same, so an incomplete replay never becomes a witness. This has
+    held since 3f8db417.
 
 ## Success Criteria
 
