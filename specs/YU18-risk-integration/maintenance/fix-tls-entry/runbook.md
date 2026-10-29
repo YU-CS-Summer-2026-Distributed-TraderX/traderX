@@ -1,7 +1,8 @@
 # FIX TLS entry runbook (production `traderx` on traderx-demo)
 
 Decision: [ADR-095](../../system/adr-095-external-fix-tls-entry.md). Every step below writes to production or to DNS, so
-each one is the rollout session's, with yaakov's approval. Nothing here has run on production yet.
+each one is the rollout session's, with yaakov's approval. Run on production 2026-10-29: every step but DNS
+([tasks](tasks.md)).
 
 Names: Service `fix-tls-external`, Secret `fix-tls`, address `traderx-fix-tls` (us-east1), host `fix.yaakovseif.dev`,
 port 18143, CompID `EXTQFJ` on accounts 22214 and 42422.
