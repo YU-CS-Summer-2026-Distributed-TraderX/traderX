@@ -406,6 +406,8 @@ autoscale_on(){
 }
 
 # ---- smoke order ---------------------------------------------------------------------------------------------------
+members_bridged(){ kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' \
+  | tr ' ' '\n' | grep -qx TRADE_BRIDGE_NATS_URL; }
 smoke(){
   step "smoke: a FIX order and its cancel through a gateway, then its row in the read model"
   if [ "$DRY" = 1 ]; then note "would run: fix-smoke.mjs in web-front-end-console (resting buy inside the collar, cancel)"
@@ -416,7 +418,11 @@ smoke(){
   echo "$out" > "$EVIDENCE/smoke.txt"
   grep -q '^NEW ' <<<"$out" && grep -q '^CANCELED ' <<<"$out" || die "smoke: no New + Canceled pair: $EVIDENCE/smoke.txt"
   ref=$(awk '/^NEW /{print $2}' <<<"$out")
-  wait_for 60 "orderbook row for order $ref CANCELED (the read model, FR-PRG-04)" row_status_is "$ref" CANCELED
+  if members_bridged; then
+    wait_for 60 "orderbook row for order $ref CANCELED (the read model, FR-PRG-04)" row_status_is "$ref" CANCELED
+  else   # FR-PRG-14: members rendered without bridges never feed the read model; the FIX answers are the effect end
+    note "smoke: members run without bridges (FR-PRG-14): order $ref New and Canceled over FIX; no read-model row expected"
+  fi
 }
 
 # ---- up / down -----------------------------------------------------------------------------------------------------

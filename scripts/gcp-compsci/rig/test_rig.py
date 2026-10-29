@@ -32,6 +32,7 @@ kubectl(){
     *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
     *"get configmap rig-shutdown-baseline"*) echo "${BASELINE:-}";;
     *"get configmap rig-unprojected"*) echo "${UNPROJECTED:-}";;
+    *"get sts order-matcher-cluster -o jsonpath={.spec.template.spec.containers[0].env[*].name}"*) echo "${MEMBER_ENV:-JAVA_TOOL_OPTIONS TRADE_BRIDGE_NATS_URL}";;
     *"get pvc data-order-matcher-cluster-"*"requests.storage"*) echo "${PVC_SIZE:-32Gi}";;
     *"get storageclass order-matcher-archive"*) echo "${SC_EXPAND:-}";;
     *"create configmap"*) echo 'kind: ConfigMap';;
@@ -133,6 +134,13 @@ class Up(unittest.TestCase):
             self.assertIn('the members booked 5 trade sides', out)
         rc, out, _ = run('rig_up')
         self.assertIn('G3 ok: the read model holds trade sides 1..5, each once', out)
+
+    def test_without_bridges_the_smoke_ends_at_the_fix_answers(self):
+        rc, out, calls = run('rig_up', MEMBER_ENV='JAVA_TOOL_OPTIONS CLUSTER_EGRESS_COALESCE')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('members run without bridges (FR-PRG-14)', out)
+        rc, out, _ = run('rig_up')   # with bridges the read-model row is still required
+        self.assertIn('CANCELED (the read model, FR-PRG-04)', out)
 
     def test_a_failed_smoke_script_is_refused_with_its_output_kept(self):
         # Production 2026-10-29: the script exited 1 under set -e with no REFUSED line and no evidence.

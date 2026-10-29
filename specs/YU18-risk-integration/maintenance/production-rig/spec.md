@@ -122,6 +122,8 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   the bench's 400K hours ran. The run's trade sides then never reach SQL. `rig.sh unprojected A-B` SHALL record that
   range (the members' `trades` before and after), appending, never removing. G3 SHALL then require SQL to hold exactly
   1..trades minus every recorded range, each number once, with none inside a range.
+  With the members rendered without bridges, the smoke (FR-PRG-04) SHALL end at the FIX answers (New, Canceled) and
+  say so, instead of waiting for a read-model row that cannot come.
 - **FR-PRG-13:** A throughput run MAY open the gateways' binary entry (`prepare.py --binary-port`). It SHALL be a
   ClusterIP Service only, because binary frames carry the account and have no logon. While the population declares
   the members from an older commit, every gateway SHALL run `BINARY_SEQUENCED=refuse`: a NEW with the sequenced flag
@@ -179,6 +181,7 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | throughput member settings | 15 | `test_prepare.Population.test_throughput_members_get_the_bench_settings` | the three switches on; heap and book cap unchanged; off by default |
 | member disks | 15 | `test_rig.MemberDisk` | StorageClass patched before any claim (skipped when already expandable); a shrink, a bare number, a smaller size: refused with no patch |
 | an unprojected window | 14 | `test_rig.Up.test_a_recorded_unprojected_window_is_excluded_exactly`, `…test_recording_a_window_appends…`; the query checked on mariadb:11.4 | sides 3–4 excluded passes; window not excluded, a row inside it, one missing: each refused; malformed ranges refused |
+| smoke without bridges | 14 | `test_rig.Up.test_without_bridges_the_smoke_ends_at_the_fix_answers` | ends at New + Canceled and says so; with bridges the read-model row is still required |
 | members without bridges | 14 | `test_prepare.Population.test_a_throughput_run_can_render_the_members_without_bridges` | default keeps `TRADE_BRIDGE_NATS_URL`; `--no-bridges` removes it |
 | sequenced binary in front of older members | 13 | `BinarySequencedFrameTest.refusedSequencing…`, `test_prepare.Population.test_older_members_get_a_gateway_that_refuses_sequenced_binary` | flagged NEW answered protocol-error, nothing submitted, unflagged unchanged; the render carries the switch and refuses without it; the test fails on the previous acceptor |
 | binary entry | 13 | `test_prepare.Population.test_the_binary_entry_is_in_cluster_only` | env + port + ClusterIP Service; a LoadBalancer refused |
