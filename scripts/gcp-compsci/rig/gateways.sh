@@ -73,24 +73,7 @@ shrink(){
   for p in $(kc get pods -l app=cluster-gateway -o name); do
     kc logs --timestamps --since-time="$t0" "$p" > "$EVIDENCE/remaining-${p#pod/}.log" 2>&1
   done
-  python3 - "$EVIDENCE" <<'EOF' | tee "$EVIDENCE/fix-resume.txt"
-import glob, re, sys
-from datetime import datetime
-def ts(line): return datetime.fromisoformat(line.split(' ', 1)[0].replace('Z', '+00:00')[:26] + '+00:00')
-out, back = [], []
-for f in glob.glob(sys.argv[1] + '/drained-*.log'):
-    out += [(ts(l), m.group(1)) for l in open(f) if (m := re.search(r'FIX logout: (\S+)', l))]
-for f in glob.glob(sys.argv[1] + '/remaining-*.log'):
-    back += [(ts(l), m.group(1)) for l in open(f) if (m := re.search(r'FIX logon: (\S+)', l))]
-if not out: print('no FIX session was logged on at the drained gateways'); sys.exit(0)
-worst = 0
-for t, comp in sorted(out):
-    nxt = min((b for b, c in back if c == comp and b >= t), default=None)
-    if nxt is None: print(f'{comp}: logged out {t:%H:%M:%S.%f}Z, not back on a remaining gateway yet'); continue
-    ms = (nxt - t).total_seconds() * 1000; worst = max(worst, ms)
-    print(f'{comp}: logout -> logon on a remaining gateway {ms:.0f} ms')
-print(f'sessions {len(out)}, worst resume {worst:.0f} ms')
-EOF
+  python3 "$HERE/fix-resume.py" "$EVIDENCE" | tee "$EVIDENCE/fix-resume.txt"
   mig=$(basename "$(gc container node-pools describe gateway-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(instanceGroupUrls)' | tr ';' '\n' | head -1)")
   for node in $(kubectl --context "$CTX" get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name | sed 's#node/##'); do
     if [ -z "$(kc get pods -l app=cluster-gateway --field-selector spec.nodeName="$node" -o name)" ]; then

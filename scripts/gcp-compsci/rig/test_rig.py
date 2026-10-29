@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -301,6 +302,25 @@ class Up(unittest.TestCase):
         rc, out, _ = run(body)
         self.assertEqual(rc, 2, out)
         self.assertIn('one per node does not hold', out)
+
+
+class Resume(unittest.TestCase):
+    """FR-PRG-06: the shrink's logout -> logon report, on the real logs of production's 2 -> 1 drain (2026-10-29)."""
+    def test_only_the_drains_logouts_are_reported(self):
+        fixture = Path(__file__).with_name('fixtures') / 'resume-20261029'
+        drained = (fixture / 'drained-cluster-gateway-qlxrz.log').read_text()
+        self.assertGreater(drained.count('FIX logout:'), 4)   # the gateway's earlier logouts are in its log too
+        out = subprocess.run([sys.executable, str(RIG.with_name('fix-resume.py')), str(fixture)],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertIn('sessions 4, worst resume 595 ms', out)
+        self.assertEqual(sorted(l.split(':')[0] for l in out.splitlines() if 'logout -> logon' in l),
+                         ['CLIENT3', 'CLIENT4', 'CLIENT7', 'CLIENT8'])
+
+    def test_a_drained_log_without_its_drain_is_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, 'drained-x.log').write_text('2026-10-29T17:58:00.758Z x -- FIX logout: CLIENT7\n')
+            out = subprocess.run([sys.executable, str(RIG.with_name('fix-resume.py')), d], capture_output=True, text=True).stdout
+        self.assertIn('no GATEWAY-DRAIN begin', out)
 
 
 class Down(unittest.TestCase):

@@ -146,6 +146,7 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | Pending members at bring-up | 01 | `test_rig.Up.test_members_are_held_at_zero…` | StatefulSet to 0 before any pool resize |
 | re-run on a gated rig | 01 | `test_rig.Up.test_a_rerun_on_a_gated_rig…` | nothing scaled to 0, no G-pre, no gate; gateways to N |
 | build without check A | 03 | `test_rig.Up.test_a_build_without_check_a…` | refused on `traderx`, opt-out ignored there; skipped only in a side namespace |
+| shrink resume report | 06 | `test_rig.Resume` on production's 2 → 1 drain logs | only logouts after `GATEWAY-DRAIN begin`: 4 sessions, worst 595 ms; without that filter the real log reports 22 sessions, worst 805 s |
 | gateways sharing a node | 06 | `test_rig.Up.test_gateways_sharing_a_node…` | refused |
 | down order | 02 | `test_rig.Down.test_gateways_then_barrier…` | gateways 0 → LB → barrier (ClusterTool with -Xmx128m) → baseline → members → pools → VM |
 | a member exits 137 | 02 | `test_rig.Down.test_a_member_that_did_not_exit_143…` | exit 3, pools still at 0 |
