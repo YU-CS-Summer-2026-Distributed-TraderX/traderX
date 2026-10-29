@@ -137,6 +137,47 @@ class Up(unittest.TestCase):
         self.assertIn('REFUSED', out)
         self.assertIn('smoke: the FIX script failed', out)
 
+    def test_the_smoke_script_against_a_fake_acceptor(self):
+        # The real fix-smoke.mjs through Logon, New, Cancel and Logout. The acceptor refuses a bad SendingTime(52) and
+        # answers the Logout, as production's gateway did on 2026-10-29.
+        import http.server, socket, threading
+        SOH = '\x01'
+        def frame(fields):
+            body = SOH.join(f'{k}={v}' for k, v in fields) + SOH
+            head = f'8=FIX.4.4{SOH}9={len(body)}{SOH}'
+            return (head + body + f'10={sum((head + body).encode()) % 256:03d}{SOH}').encode()
+        def acceptor(srv, reject_logon):
+            conn, _ = srv.accept(); buf = b''
+            while True:
+                data = conn.recv(4096)
+                if not data: return
+                buf += data
+                while (e := buf.find(b'\x0110=')) >= 0 and (cut := buf.find(b'\x01', e + 1)) >= 0:
+                    m, buf = buf[:cut + 1].decode(), buf[cut + 1:]
+                    f = dict(kv.split('=', 1) for kv in m.split(SOH) if kv)
+                    if not re.fullmatch(r'\d{8}-\d\d:\d\d:\d\d\.\d{3}', f['52']) or reject_logon:
+                        conn.sendall(frame([('35', '5'), ('58', 'Invalid Logon message')])); return
+                    reply = {'A': [('35', 'A')], 'D': [('35', '8'), ('11', f.get('11')), ('39', '0'), ('37', 'ord-7')],
+                             'F': [('35', '8'), ('11', f.get('11')), ('39', '4'), ('37', 'ord-7')], '5': [('35', '5')]}[f['35']]
+                    conn.sendall(frame(reply))
+                    if f['35'] == '5': return
+        class Price(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200); self.end_headers(); self.wfile.write(b'{"price": 100.0}')
+            def log_message(self, *a): pass
+        http_srv = http.server.HTTPServer(('127.0.0.1', 0), Price)
+        threading.Thread(target=http_srv.serve_forever, daemon=True).start(); self.addCleanup(http_srv.shutdown)
+        for reject, code, want in ((False, 0, ['NEW 7 MSFT @ 98.00', 'CANCELED 7', 'OK']), (True, 1, ['FAIL refused'])):
+            srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
+            threading.Thread(target=acceptor, args=(srv, reject), daemon=True).start()
+            r = subprocess.run(['node', '-', '42422', 'MSFT'], stdin=RIG.with_name('fix-smoke.mjs').open(), capture_output=True,
+                               text=True, timeout=30, env={**os.environ, 'FIX_SESSION_PASSWORD': 'not-printed-pw',
+                               'FIX_HOST': '127.0.0.1', 'FIX_PORT': str(srv.getsockname()[1]),
+                               'PRICE_URL': f'http://127.0.0.1:{http_srv.server_address[1]}'})
+            self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+            for line in want: self.assertIn(line, r.stdout)
+            self.assertNotIn('not-printed-pw', r.stdout + r.stderr)
+
     def test_the_smoke_sends_a_fix_sending_time(self):
         # Production 2026-10-29: 52=20261029-174539.540Z was refused as an invalid Logon.
         line = next(l for l in RIG.with_name('fix-smoke.mjs').read_text().splitlines() if l.startswith('const t = '))

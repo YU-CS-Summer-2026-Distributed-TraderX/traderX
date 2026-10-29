@@ -8,7 +8,7 @@ import net from 'node:net';
 const [account = '42422', ticker = 'MSFT'] = process.argv.slice(2);
 const pw = process.env.FIX_SESSION_PASSWORD;
 if (!pw) { console.log('FAIL no FIX_SESSION_PASSWORD in this pod'); process.exit(2); }
-const quote = await (await fetch(`http://price-publisher:18100/prices/${ticker}`)).json();
+const quote = await (await fetch(`${process.env.PRICE_URL || 'http://price-publisher:18100'}/prices/${ticker}`)).json();
 const px = (Math.floor(quote.price * 0.98 * 100) / 100).toFixed(2);
 const cl = `rig-${Date.now()}`;
 
@@ -21,8 +21,8 @@ const frame = (fields) => {
   return `${head}${body}10=${String(sum).padStart(3, '0')}${SOH}`;
 };
 const show = (m) => m.replace(/\x01554=[^\x01]*/g, '|554=********').replace(/\x01/g, '|');
-let seq = 1, buf = '', ref = null;
-const sock = net.connect(18130, process.env.FIX_HOST || 'order-matcher-gw-fix');
+let seq = 1, buf = '', ref = null, canceled = false;
+const sock = net.connect(Number(process.env.FIX_PORT || 18130), process.env.FIX_HOST || 'order-matcher-gw-fix');
 const send = (type, fields) => {
   const m = frame([['35', type], ['49', 'CLIENT1'], ['56', 'TRADERX'], ['34', seq++], ['52', t()], ...fields]);
   console.log('SENT', show(m)); sock.write(m);
@@ -45,9 +45,11 @@ sock.on('data', (chunk) => {
       console.log(`NEW ${ref} ${ticker} @ ${px}`);
       send('F', [['41', cl], ['11', `${cl}-c`], ['1', account], ['55', ticker], ['54', 1], ['60', t()]]);
     } else if (f['35'] === '8' && f['11'] === `${cl}-c` && f['39'] === '4') {
-      console.log(`CANCELED ${ref}`);
+      console.log(`CANCELED ${ref}`); canceled = true;
       send('5', []);
       setTimeout(() => done(0, 'OK'), 300);
+    } else if (f['35'] === '5' && canceled) {
+      done(0, 'OK');   // the gateway's answer to our Logout
     } else if (f['35'] === '8' && f['39'] === '8' || f['35'] === '9' || f['35'] === '5' || f['35'] === '3') {
       done(1, 'FAIL refused: ' + show(m));
     }
