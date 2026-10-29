@@ -1,7 +1,7 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76. Rollout 5a: the members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 9c63c4ca.",
-  "imageSourceCommit": "9c63c4caa67afd8433bf060f2626cc4d493a0369",
+  "note": "ADR-096 \u00a76. Rollout 5a: the members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 59b0db21.",
+  "imageSourceCommit": "59b0db2132495612b21bbcebb07f169f91d40f7e",
   "workloads": {
     "order-matcher-cluster": {
       "image": "cluster-node-member",
