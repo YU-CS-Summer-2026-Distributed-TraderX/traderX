@@ -316,8 +316,13 @@ final class FixSessionStore implements MessageStoreFactory {
      * is refused at once (within one renewal, ~0.5 s; it waited 5 s). A holder that has stopped renewing is dead, or
      * draining a client that just left: wait up to {@code waitMillis} for it to lapse or let go, and take it then, so
      * a client resuming after a gateway died gets in on its first Logon, about one TTL after the last renewal.
+     *
+     * <p>FR-GFS-17: {@code reset} is the Logon's ResetSeqNumFlag. QuickFIX/J has already reset the session when this
+     * runs, but only in this replica's cache if the lease was held elsewhere then, and taking the lease rereads the
+     * stored day. So the reset is applied again here, under the lease, before anything is sent.
      */
-    boolean acquireForLogon(final SessionID sid, final long waitMillis) throws InterruptedException {
+    boolean acquireForLogon(final SessionID sid, final long waitMillis, final boolean reset)
+            throws InterruptedException {
         final Store store = stores.get(sid);
         final long deadline = System.currentTimeMillis() + waitMillis;
         long seen = -1;
@@ -327,7 +332,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 got = store.tryAcquire();
             }
             if (got) {
-                return adopted(store);
+                return (!reset || resetUnderLease(store)) && adopted(store);
             }
             final KeyValueEntry holder = store.holder();
             if (holder != null) {
@@ -341,6 +346,25 @@ final class FixSessionStore implements MessageStoreFactory {
                 return false;
             }
             Thread.sleep(100);
+        }
+    }
+
+    /** FR-GFS-17: the Logon asked for a reset; the lease is ours, so the stored day goes. False: refuse the Logon. */
+    private boolean resetUnderLease(final Store store) {
+        synchronized (store) {
+            if (store.sender == 1 && store.target == 1) {
+                return true;   // reset already, here or by the replica that last held it
+            }
+            try {
+                log.info("FIX session {}: Logon asked for a reset; stored sender {} target {} reset under the lease",
+                    store.sid, store.sender, store.target);
+                store.wipe();
+                return true;
+            } catch (final IOException e) {
+                log.warn("FIX session {}: reset after acquiring failed: {}", store.sid, e.toString());
+                store.release();
+                return false;
+            }
         }
     }
 
@@ -1057,6 +1081,11 @@ final class FixSessionStore implements MessageStoreFactory {
             if (created > seen) {
                 return;   // another replica reset it since we last read it (every timer resets at midnight)
             }
+            wipe();
+        }
+
+        /** Under the lease: purge the day's messages and order rings, and store 1/1 (fenced). */
+        void wipe() throws IOException {
             try {
                 nats.jetStreamManagement().purgeStream("KV_" + BUCKET,
                     PurgeOptions.subject("$KV." + BUCKET + "." + key + ".m.>"));

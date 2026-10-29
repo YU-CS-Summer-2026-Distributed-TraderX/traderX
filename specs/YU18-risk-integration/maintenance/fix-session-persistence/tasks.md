@@ -18,5 +18,8 @@
       Measured 3,147 ms locally (was ~12 s on GKE, xof).
 - [x] Production before the next roll: `nats stream edit KV_FIX_SESSIONS --discard old` (yaakov approves; §6a.5).
       Applied on `traderx` 2026-10-28, 1:21 pm ET; rollout record §13a.
+- [x] A reset Logon wins over the stored day (FR-GFS-17, ADR-086 §6c): the 10-29 rehearsal wedged CLIENT4/6/8
+      for 50 min on "MsgSeqNum too low, expecting 180146". The reset is applied again under the lease.
+- [ ] Ship FR-GFS-17 at the next bring-up (rollout chat).
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

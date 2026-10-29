@@ -434,6 +434,71 @@ class FixSessionPersistenceIT {
         c2.close();
     }
 
+    /** A client that sent three orders and logged out; the session's lease stays with A, draining, for ~1 s. */
+    private Client dayOnA(final int a, final String compId, final boolean resetLogon) throws Exception {
+        final Client c1 = new Client(a, compId);
+        assertEquals("A", (resetLogon ? c1.logonReset() : c1.logon()).get("35"));
+        for (int i = 0; i < 3; i++) {
+            c1.order("o" + i, '2', 10);
+            assertEquals("o" + i, c1.awaitType("8").get("11"));
+        }
+        c1.send("5", "58=bye");
+        c1.awaitType("5");
+        c1.close();
+        return c1;
+    }
+
+    private static void assertResetServed(final Client c2) throws IOException {
+        final Map<String, String> logon = c2.logonReset();
+        assertEquals("A", logon.get("35"), logon.toString());
+        assertEquals("1", logon.get("34"), "a reset Logon is answered at 1, not at the stored day: " + logon);
+        c2.order("after", '2', 10);   // 34=2: "MsgSeqNum too low, expecting <stored>" before FR-GFS-17
+        assertEquals("after", c2.awaitType("8").get("11"));
+        c2.close();
+    }
+
+    /**
+     * FR-GFS-17 (10-29 rehearsal: CLIENT4/6/8 wedged 50 min). A reset Logon reaches B while A still holds the lease
+     * from the client's last connection; B's reset touched only its cache, and taking the lease reread the old day.
+     */
+    @Test
+    void aResetLogonWinsOverALeaseReleasedDuringIt() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT8");
+        final int b = startGateway(venue, "gw-b", "CLIENT8");
+        dayOnA(a, "CLIENT8", false);
+        assertResetServed(new Client(b, "CLIENT8"));
+    }
+
+    /** FR-GFS-17, lease free: B's reset takes the lease and wipes the day A's own reset Logon started. */
+    @Test
+    void aResetLogonWinsWithTheLeaseFree() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT9");
+        final int b = startGateway(venue, "gw-b", "CLIENT9");
+        dayOnA(a, "CLIENT9", true);
+        Thread.sleep(2_000);   // A lets the lease go
+        assertResetServed(new Client(b, "CLIENT9"));
+    }
+
+    /** FR-GFS-17's control: without ResetSeqNumFlag, B resumes the stored numbers through the same handover. */
+    @Test
+    void aLogonWithoutResetStillResumesTheStoredSequence() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT10");
+        final int b = startGateway(venue, "gw-b", "CLIENT10");
+        final Client c1 = dayOnA(a, "CLIENT10", false);
+        final Client c2 = new Client(b, "CLIENT10");
+        c2.out = c1.out;
+        final Map<String, String> logon = c2.logon();
+        assertEquals("A", logon.get("35"), logon.toString());
+        assertEquals(Integer.parseInt(c1.lastIn.get("34")) + 1, Integer.parseInt(logon.get("34")),
+            "B continues A's numbering after the Logout");
+        c2.order("after", '2', 10);
+        assertEquals("after", c2.awaitType("8").get("11"));
+        c2.close();
+    }
+
     private static String now() {
         return ZonedDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss.SSS"));
     }
@@ -458,6 +523,11 @@ class FixSessionPersistenceIT {
 
         Map<String, String> logon() throws IOException {
             send("A", "98=0\u0001108=30");
+            return read();
+        }
+
+        Map<String, String> logonReset() throws IOException {
+            send("A", "98=0\u0001108=30\u0001141=Y");
             return read();
         }
 

@@ -204,6 +204,36 @@ gateway-2 accepted it at +12.1 s, once the lease lapsed and a retry came.
 8. **Not done: breaking the lease when the owner's TCP is known gone.** Only the owner learns that, and a dead
    owner cannot act on it; a live one already releases 1 s after its client leaves.
 
+### 6c. Amendment 2026-10-29: a reset Logon wins over the stored day (FR-GFS-17)
+
+Production rehearsal, 10-29 3:06 pm ET: CLIENT4, 6 and 8 logged on with ResetSeqNumFlag=Y. QuickFIX/J logged
+"resetting sequence numbers to 1", and 2.3 s later the gateway took the lease and served the previous run's
+sequence (CLIENT4: 180146). The client's first order (34=2) got "MsgSeqNum too low, expecting 180146" and a
+disconnect, and every reset Logon after it was refused the same way for 50 minutes (~2,500 per CompID).
+
+1. **Why.** QuickFIX/J rereads the store and resets the session before `fromAdmin`, where the lease is taken. With
+   the lease free, the reset takes it and wipes the stored day. With the lease still held by the gateway that served
+   the last connection (draining it for up to 1 s after its client left), the reset cannot take it, so it moves
+   only this replica's cache. When the holder let go, taking the lease reread the stored day over the reset.
+2. **Decision.** The Logon's ResetSeqNumFlag is passed to the lease acquisition. Once the lease is held, a stored
+   day that is not at 1/1 is wiped under it (its messages and ADR-090 order rings purged, `K.seq` written as 1/1
+   by compare-and-set), before adoption and before the Logon is answered. It runs after the reread, under the
+   lease and the fence, so no lease timing can undo it. With the lease free, the day is already at 1/1 here and
+   nothing more is written. A Logon without the flag is unchanged and resumes the stored sequence. If the wipe
+   fails, the lease is released and the Logon refused, so the client retries.
+3. **Why it lasted 50 minutes.** Each refused session's gateway kept the lease draining for 1 s after the
+   disconnect, and the client retried about every 1.2 s, on any gateway. So the next reset Logon usually met a
+   held lease again, the same race.
+4. **Recovery without a roll**, before this amendment, short of the 17:00 reset:
+   - Delete the session's sequence record: `nats kv del FIX_SESSIONS <K>.seq`, for example
+     `FIX_2E4_2E4_3ATRADERX-_3ECLIENT4.seq`. The next acquisition reads 1/1. A gateway still holding the old
+     revision is fenced on its next write.
+   - Alternatively, have the client wait more than ~2 s between reset Logons, so it meets a free lease; its reset
+     then wipes the day as designed.
+   - These follow from the code (the free-lease reset is `aResetLogonWinsWithTheLeaseFree`, green before the
+     amendment too); neither was exercised on the rehearsal.
+   - With FR-GFS-17 none is needed: the first reset Logon wins.
+
 ### 7. NATS outage: no FIX without its store
 
 QuickFIX/J sends nothing it could not store, so without NATS no FIX message can go out. The gateway makes

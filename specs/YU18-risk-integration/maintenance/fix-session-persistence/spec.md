@@ -72,6 +72,10 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   while the holder is not seen renewing as live, up to TTL + 1 s, and accepted as soon as the lease is free. A
   live owner stalled past the TTL SHALL keep its sessions unless another gateway took one meanwhile. An existing
   lease bucket SHALL be moved to the TTL when a gateway connects.
+- FR-GFS-17: A Logon with ResetSeqNumFlag=Y SHALL be answered at MsgSeqNum 1 and expect 2 next, whatever the
+  stored day and whether the lease was held elsewhere, free, or released while it waited. The reset SHALL be stored
+  under the lease (messages and order rings purged, the sequence record written as 1/1 by compare-and-set) before
+  the Logon is answered. A Logon without the flag SHALL resume the stored sequence as before (ADR-086 §6c).
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
@@ -98,6 +102,9 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | owner dies (no renewals, client cut off); client's first Logon on B | 16 | `FixSessionPersistenceIT.aDeadOwners…` | accepted at 3,147 ms (TTL 3 s); before: refused after 5.2 s, TTL 10 s |
 | Logon on B while A serves the session | 03, 16 | `FixSessionPersistenceIT.aSecondReplicaRefuses…` | Logout `live on another gateway` in < 1.5 s (0.66 s); before: 5,167 ms |
 | A stalls 4 s, nobody takes over | 04, 16 | `FixSessionPersistenceIT.aStalledOwner…` | A keeps the session and answers; before: session closed |
+| reset Logon on B while A still drains the lease from the last connection | 17 | `FixSessionPersistenceIT.aResetLogonWinsOverALease…` | Logon answered at 1, next order answered; before: answered at 34=6, the stored day, then "MsgSeqNum too low" |
+| reset Logon on B, lease free, A's own reset Logon started the day | 17 | `FixSessionPersistenceIT.aResetLogonWinsWithTheLeaseFree` | Logon answered at 1, next order answered; green before too (QuickFIX/J's refresh runs first) |
+| Logon without reset on B through the same handover | 17 | `FixSessionPersistenceIT.aLogonWithoutReset…` | B continues A's numbering after the Logout (control, unchanged) |
 | A stalls, B takes over, A resumes | 04 | `FixSessionPersistenceIT.anExpiredOwnerIsFenced…` | unchanged: A answers nothing, submits nothing |
 | bucket created discard-new at 64 KiB, 2,000 messages | 15 | `FixSessionStoreBoundIT.aFullBucket…` | moved to discard-old; no write fails, session not lost (before: `maximum bytes exceeded [10077]`, the f15s cliff) |
 | f15s, 864 sessions at 20K/s, store on | 14, 15 | GKE arm (FIX-tail lane) | before: bucket full at 12 min (3,999,940 keys), every gateway dropped every session |

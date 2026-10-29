@@ -540,7 +540,9 @@ public final class FixGatewayAcceptor {
                     if (sessionStore != null && !sessionStore.available()) {
                         throw new RejectLogon("FIX session store unavailable; retry later");
                     }
-                    if (sessionStore != null && !acquire(sessionId)) {
+                    final boolean reset = message.isSetField(quickfix.field.ResetSeqNumFlag.FIELD)
+                        && message.getBoolean(quickfix.field.ResetSeqNumFlag.FIELD);
+                    if (sessionStore != null && !acquire(sessionId, reset)) {
                         throw new RejectLogon(sessionStore.available() ? "session is live on another gateway"
                             : "FIX session store unavailable; retry later");
                     }
@@ -558,9 +560,9 @@ public final class FixGatewayAcceptor {
             }
         }
 
-        private boolean acquire(final SessionID sessionId) {
+        private boolean acquire(final SessionID sessionId, final boolean reset) {
             try {
-                return sessionStore.acquireForLogon(sessionId, FixSessionStore.LOGON_WAIT_MILLIS);
+                return sessionStore.acquireForLogon(sessionId, FixSessionStore.LOGON_WAIT_MILLIS, reset);
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
