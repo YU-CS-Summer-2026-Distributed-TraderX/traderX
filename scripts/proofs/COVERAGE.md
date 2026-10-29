@@ -1534,6 +1534,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-PRG-07` | CI |  |  | FixSessionPersistenceIT.aDrainingGateway…: answer stored after the Logout, resent on resume; negative control (old stop) fails; full-gateway drain live pending |
 | YU18 | `FR-PRG-08` | LIVE |  |  | internal LB spread across new gateways: not yet run live |
 | YU18 | `FR-PRG-09` | LIVE |  |  | HPA/pool autoscaler under load, scale-down with no order lost: not yet run live |
+| YU18 | `FR-PRG-16` | CI |  |  | test_binary_load: a scripted gateway with a one-price book ends empty after 1-in-7 risk rejects (control: balancing off leaves it non-empty); unknown ticker refused before any order; unanswered and double answers fail the run; Job render (loadgen-pool, Indexed, never restarted); live pending (throughput run) |
 | YU18 | `FR-PRG-15` | CI |  |  | test_prepare throughput member settings + test_rig MemberDisk; live pending (throughput run) |
 | YU18 | `FR-PRG-14` | CI |  |  | test_rig unprojected window (exact exclusion, refusals, append) + test_prepare --no-bridges; G3 query run on mariadb:11.4; live pending (throughput run) |
 | YU18 | `FR-PRG-13` | CI |  |  | BinarySequencedFrameTest refusal + test_prepare binary-guard and ClusterIP-only tests; live binary pending (throughput run) |

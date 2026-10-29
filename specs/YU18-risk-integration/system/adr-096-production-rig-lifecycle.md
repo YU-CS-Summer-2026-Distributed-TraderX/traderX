@@ -175,6 +175,8 @@ workload, including the gateway's `cluster-node`, runs the tip.
   - The tip sends no sequenced message while `FIX_EXACTLY_ONCE` is off and binary sequencing is refused: with the
     members on an older commit, every gateway runs `BINARY_SEQUENCED=refuse` (FR-PRG-13), so a binary client that
     sets the flag gets a protocol error instead of reaching a member that cannot read it.
+  - The throughput run's binary load (FR-PRG-16) sends only unflagged frames, never resends, and balances its own
+    accepted buys and sells at one price, so the members see nothing they cannot read and the book ends as it began.
 
 ## Consequences
 
