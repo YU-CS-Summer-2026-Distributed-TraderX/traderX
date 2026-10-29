@@ -27,7 +27,16 @@ FIX_TLS = {'port': 18143, 'compId': 'EXTQFJ', 'accounts': '22214|42422'}
 # ADR-096 (FR-PRG-11): the rehearsal's load clients, opt-in (--fix-test-clients). Each CompID trades only its own
 # dedicated test account; passwords from Secret fix-test-clients (provision-fix-test-clients.py). The production-rig
 # clean-up task removes them, their accounts and their trades.
-FIX_TEST_CLIENTS = {f'CLIENT{n}': str(9900000 + n) for n in range(2, 9)}
+FIX_TEST_ACCOUNTS = [str(9900000 + n) for n in range(2, 9)]
+
+
+def load_clients(count=7):
+    """CLIENT2..CLIENT<count+1>, round-robin over the seven test accounts (a throughput run needs many sessions:
+    each tops out near 460 orders/s, FR-PRG-11)."""
+    return {f'CLIENT{n}': FIX_TEST_ACCOUNTS[(n - 2) % len(FIX_TEST_ACCOUNTS)] for n in range(2, count + 2)}
+
+
+FIX_TEST_CLIENTS = load_clients()
 BUCKETS = {
     'traderx-505400-risk-extracts': f'{PROJECT}-traderx-risk-extracts',
     'traderx-505400-order-matcher-journal-archive': f'{PROJECT}-traderx-journal-archive',
@@ -148,16 +157,16 @@ def configure_private_runtime(docs):
                     c.setdefault('env', []).append({'name': 'JAVA_TOOL_OPTIONS', 'value': jvm_options})
 
 
-def add_fix_test_clients(docs):
+def add_fix_test_clients(docs, clients=FIX_TEST_CLIENTS):
     for doc in docs:
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
             c = podspec(doc)['containers'][0]
             env = {e['name']: e for e in c['env']}
             auth = env['FIX_SESSION_AUTH']; c['env'].remove(auth)   # $(VAR) expands only earlier entries
-            for compid, account in FIX_TEST_CLIENTS.items():
+            for compid, account in clients.items():
                 secret_env(c, 'FIX_TEST_PASSWORD_' + compid[6:], 'fix-test-clients', compid.lower())
                 auth['value'] += f',{compid}:$(FIX_TEST_PASSWORD_{compid[6:]}):{account}'
-            env['FIX_SESSION_COMPIDS']['value'] += ',' + ','.join(FIX_TEST_CLIENTS)
+            env['FIX_SESSION_COMPIDS']['value'] += ',' + ','.join(clients)
             c['env'].append(auth)
 
 
@@ -553,8 +562,9 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     raw = raw.replace('.traderx.svc.', f'.{NAMESPACE}.svc.')  # member/ingress FQDNs follow the namespace
     docs = list(yaml.safe_load_all(raw))
     configure_private_runtime(docs)
-    if fix_test_clients:
-        add_fix_test_clients(docs)
+    clients = load_clients(7 if fix_test_clients is True else int(fix_test_clients or 0)) if fix_test_clients else {}
+    if clients:
+        add_fix_test_clients(docs, clients)
     declared = population.load(population_path)
     refuse_sequenced_binary(docs, declared)
     if binary_port:
@@ -618,7 +628,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
                   'imageSourceCommit':json.loads(published_path.read_text())['sourceCommit'],
                   'exceptionPublishedSha256':[hashlib.sha256(Path(x).read_bytes()).hexdigest() for x in exception_published or []]},
               'population':population.load(population_path),
-              'fixTestClients':FIX_TEST_CLIENTS if fix_test_clients else None,
+              'fixTestClients':clients or None,
               'remainingGates':['review per-image payload evidence and compatible admission',
                   'provision scoped storage credentials and private application secrets',
                   'verify node resource fit','server dry-run and live end-to-end proof']}
@@ -635,7 +645,8 @@ if __name__=='__main__':
     p.add_argument('--public-lock',type=Path)
     p.add_argument('--population',type=Path,help='the reviewed population (ADR-096 §6); default population.json')
     p.add_argument('--exception-published',type=Path,action='append',help="an exception build's published inventory")
-    p.add_argument('--fix-test-clients',action='store_true',help='the rehearsal load CompIDs CLIENT2-8 (FR-PRG-11)')
+    p.add_argument('--fix-test-clients',nargs='?',const=7,type=int,default=0,
+                   help='N load CompIDs CLIENT2.. on the test accounts (default 7; FR-PRG-11)')
     p.add_argument('--binary-port',type=int,help='in-cluster binary entry for a throughput run (FR-PRG-13)')
     p.add_argument('--no-bridges',action='store_true',help="members' NATS bridges off for a throughput run (FR-PRG-14)")
     p.add_argument('--throughput-members',action='store_true',help="the bench's 450K member settings (FR-PRG-15)")

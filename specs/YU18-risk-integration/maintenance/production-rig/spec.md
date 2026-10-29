@@ -106,11 +106,12 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
     - a missing exception image, two digests for one image name, and an exception without its own derivation.
   - The members' commit SHALL decode the tip gateway's unflagged ingress byte for byte, shown with both sides' real
     compiled codec (`rig/codec-compat.sh`).
-- **FR-PRG-11:** The rehearsal's load clients SHALL be opt-in (`prepare.py --fix-test-clients`): CompIDs CLIENT2–CLIENT8,
-  each bound to exactly one dedicated test account (9900002–9900008), each password a variable from Secret
+- **FR-PRG-11:** The rehearsal's load clients SHALL be opt-in (`prepare.py --fix-test-clients [N]`, default 7): CompIDs
+  CLIENT2…CLIENT<N+1>, round-robin over the seven dedicated test accounts (9900002–9900008), each bound to exactly one, each password a variable from Secret
   `fix-test-clients` defined before `FIX_SESSION_AUTH`. `validate()` SHALL refuse any CompID other than CLIENT1 that
   may trade every account (`*`) or whose password is not Secret-backed. `provision-fix-test-clients.py` SHALL keep the
-  passwords only in that Secret and a mode-0600 file outside the checkout, and print none. The default render SHALL
+  passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
+  CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
 - **FR-PRG-15:** For a full-throughput hour, `prepare.py --throughput-members` SHALL render the bench's 450K member
   settings (`CLUSTER_EGRESS_COALESCE`, `CLUSTER_SNAPSHOT_PACKED`, `CLUSTER_SNAPSHOT_RING`, all `true`), keeping the
@@ -181,6 +182,7 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | members without bridges | 14 | `test_prepare.Population.test_a_throughput_run_can_render_the_members_without_bridges` | default keeps `TRADE_BRIDGE_NATS_URL`; `--no-bridges` removes it |
 | sequenced binary in front of older members | 13 | `BinarySequencedFrameTest.refusedSequencing…`, `test_prepare.Population.test_older_members_get_a_gateway_that_refuses_sequenced_binary` | flagged NEW answered protocol-error, nothing submitted, unflagged unchanged; the render carries the switch and refuses without it; the test fails on the previous acceptor |
 | binary entry | 13 | `test_prepare.Population.test_the_binary_entry_is_in_cluster_only` | env + port + ClusterIP Service; a LoadBalancer refused |
+| load clients scaled | 11 | `test_prepare.FixTestClients.test_a_throughput_run_scales…`, `…test_the_provisioner_grows_without_rotating` | 200 CompIDs over the same 7 accounts, CLIENT2–8 unchanged; 7 → 20 keeps the first seven passwords; 5 refused |
 | load clients rendered | 11 | `test_prepare.FixTestClients` | CLIENT2–8 each on its account, Secret-backed and ordered before the auth list; none in the default render |
 | unbound or literal load client | 11 | same | `*` account, literal password, password after the list, non-Secret password: each refused; dropping the check fails the test |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

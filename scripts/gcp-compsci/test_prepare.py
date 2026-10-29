@@ -451,6 +451,28 @@ class FixTestClients(unittest.TestCase):
         self.assertEqual(self.plan['requiredSecretKeys']['fix-test-clients'],[f'client{n}' for n in range(2,9)])
         self.assertEqual(self.plan['fixTestClients']['CLIENT8'],'9900008')
 
+    def test_a_throughput_run_scales_the_clients_over_the_same_accounts(self):
+        clients=module.load_clients(200)
+        self.assertEqual(len(clients),200)
+        self.assertEqual({k:clients[k] for k in module.FIX_TEST_CLIENTS},module.FIX_TEST_CLIENTS)   # CLIENT2..8 unchanged
+        self.assertEqual(set(clients.values()),set(module.FIX_TEST_ACCOUNTS))
+        self.assertEqual(clients['CLIENT9'],'9900002')
+
+    def test_the_provisioner_grows_without_rotating(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.chmod(d,0o700)
+            prov=[__import__('sys').executable,str(Path(__file__).with_name('provision-fix-test-clients.py')),'--private-dir',d]
+            subprocess.run(prov,capture_output=True,check=True)
+            first=json.loads((Path(d)/'fix-test-clients.json').read_text())
+            r=subprocess.run(prov+['--count','20'],capture_output=True,text=True,check=True)
+            grown=json.loads((Path(d)/'fix-test-clients.json').read_text())
+            self.assertEqual(len(grown),20)
+            self.assertEqual({c:grown[c] for c in first},first)   # existing passwords kept
+            self.assertEqual((Path(d)/'fix-test-clients.json').stat().st_mode&0o777,0o600)
+            for v in grown.values(): self.assertNotIn(v['password'],r.stdout+r.stderr)
+            r=subprocess.run(prov+['--count','5'],capture_output=True,text=True)   # shrinking would drop CompIDs
+            self.assertNotEqual(r.returncode,0)
+
     def test_the_default_render_has_no_test_clients(self):
         with tempfile.TemporaryDirectory() as d:
             module.prepare(Path(d)/'c','test-candidate','10.93.0.10')
