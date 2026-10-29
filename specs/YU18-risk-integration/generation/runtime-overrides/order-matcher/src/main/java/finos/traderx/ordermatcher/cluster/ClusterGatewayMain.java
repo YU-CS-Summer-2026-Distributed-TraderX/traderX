@@ -492,6 +492,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 env("FIX_TARGET_COMP_ID", "TRADERX"),
                 Integer.parseInt(env("FIX_DEFAULT_ACCOUNT", "11")), compIds,
                 FixSessionAuth.fromEnv(env("FIX_SESSION_AUTH", "")));   // S3: COMPID:password:acct|acct,...
+            final String tlsPort = env("FIX_TLS_PORT", "");   // ADR-095: the external TLS entry's own socket
+            if (!tlsPort.isEmpty()) {
+                fix.withTls(Integer.parseInt(tlsPort), Arrays.asList(env("FIX_TLS_COMPIDS", "").split(",")),
+                    env("FIX_SSL_KEYSTORE", ""), env("FIX_SSL_KEYSTORE_PASSWORD", ""));
+            }
             fix.start();
             fixAcceptor = fix;
             startFillFeed(fix);

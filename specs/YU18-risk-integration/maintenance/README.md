@@ -35,6 +35,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Control feed republish](control-feed-republish/README.md) | Code 2026-10-27 (`3b10e7e2`); on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-085) |
 | [Exactly-once client](exactly-once-client/README.md) | Venue contract and FIX restatement integrated 2026-10-28; binary client proven locally (ADR-091) |
 | [FIX gateway memory](fix-gateway-memory/README.md) | Integrated 2026-10-28: slow-consumer limit, bounded inbound queue, streaming adoption, fill-feed backoff (ADR-092) |
+| [FIX TLS entry](fix-tls-entry/README.md) | Built and proven on kind 2026-10-29: TLS-only socket for the external CompID, /32-allowlisted L4 Service, pinned client (ADR-095); not on production |
 | [FIX session persistence](fix-session-persistence/README.md) | Integrated 2026-10-28; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-086) |
 | [Exactly-once dedupe](exactly-once-dedupe/README.md) | Proposed 2026-10-28 (ADR-090), awaiting approval; not implemented |
 | [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, on production since roll 4 (ADR-087) |

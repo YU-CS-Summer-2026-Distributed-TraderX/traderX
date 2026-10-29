@@ -136,7 +136,9 @@ class Rendering(unittest.TestCase):
         env=module.podspec(gw)['containers'][0]['env']; names=[e['name'] for e in env]
         self.assertEqual(env[names.index('FIX_SESSION_PASSWORD')]['valueFrom']['secretKeyRef'],
                          {'name':'auth-secrets','key':'fix-session-password'})
-        self.assertEqual(env[names.index('FIX_SESSION_AUTH')]['value'],'CLIENT1:$(FIX_SESSION_PASSWORD):*')
+        self.assertEqual(env[names.index('FIX_SESSION_AUTH')]['value'],
+                         'CLIENT1:$(FIX_SESSION_PASSWORD):*,EXTQFJ:$(FIX_EXT_PASSWORD):22214|42422')
+        self.assertLess(names.index('FIX_EXT_PASSWORD'),names.index('FIX_SESSION_AUTH'))
         self.assertLess(names.index('FIX_SESSION_PASSWORD'),names.index('FIX_SESSION_AUTH'))
         console=next(d for d in self.docs if d['metadata']['name']=='web-front-end-console' and module.podspec(d))
         self.assertIn({'name':'FIX_SESSION_PASSWORD','valueFrom':{'secretKeyRef':{'name':'auth-secrets','key':'fix-session-password'}}},
@@ -152,6 +154,29 @@ class Rendering(unittest.TestCase):
             if mutate=='drop-auth': env[:]=[e for e in env if e['name']!='FIX_SESSION_AUTH']
             if mutate=='literal-auth': next(e for e in env if e['name']=='FIX_SESSION_AUTH')['value']='CLIENT1:guessable:*'
             if mutate=='dev-opt-out': env.append({'name':'ALLOW_DEV_SECRETS','value':'true'})
+            with self.assertRaises(AssertionError,msg=mutate): module.validate(docs)
+
+    def test_external_fix_compid_is_tls_only_from_the_secret(self):
+        # ADR-095: EXTQFJ on its own TLS socket, its keystore and password from Secret fix-tls; no public Service here.
+        gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        pod=module.podspec(gw); c=pod['containers'][0]; env={e['name']:e for e in c['env']}
+        self.assertEqual((env['FIX_TLS_PORT']['value'],env['FIX_TLS_COMPIDS']['value']),('18143','EXTQFJ'))
+        self.assertNotIn('EXTQFJ',env['FIX_SESSION_COMPIDS']['value'].split(','))
+        for var,key in (('FIX_EXT_PASSWORD','external-password'),('FIX_SSL_KEYSTORE_PASSWORD','keystore-password')):
+            self.assertEqual(env[var]['valueFrom']['secretKeyRef'],{'name':'fix-tls','key':key})
+        self.assertIn({'name':'fix-tls','secret':{'secretName':'fix-tls','items':[{'key':'keystore.p12','path':'keystore.p12'}]}},
+                      pod['volumes'])
+        self.assertIn({'name':'fix-tls','containerPort':18143},c['ports'])
+        plan=__import__('json').loads((self.output/'plan.json').read_text())
+        self.assertEqual(plan['requiredSecretKeys']['fix-tls'],['external-password','keystore-password'])
+        for mutate in ('compid-on-plaintext','literal-password','no-accounts','keystore-not-secret'):
+            docs=copy.deepcopy(self.docs)
+            gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+            pod=module.podspec(gw); env={e['name']:e for e in pod['containers'][0]['env']}
+            if mutate=='compid-on-plaintext': env['FIX_SESSION_COMPIDS']['value']+=',EXTQFJ'
+            if mutate=='literal-password': env['FIX_SESSION_AUTH']['value']=env['FIX_SESSION_AUTH']['value'].replace('$(FIX_EXT_PASSWORD)','guess')
+            if mutate=='no-accounts': env['FIX_SESSION_AUTH']['value']=env['FIX_SESSION_AUTH']['value'].replace(':22214|42422',':*')
+            if mutate=='keystore-not-secret': pod['volumes']=[v for v in pod['volumes'] if v['name']!='fix-tls']
             with self.assertRaises(AssertionError,msg=mutate): module.validate(docs)
 
     def test_edge_redirects_stay_relative(self):

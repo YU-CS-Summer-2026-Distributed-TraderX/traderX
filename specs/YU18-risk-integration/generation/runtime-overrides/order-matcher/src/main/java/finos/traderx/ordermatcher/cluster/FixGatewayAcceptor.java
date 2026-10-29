@@ -212,6 +212,33 @@ public final class FixGatewayAcceptor {
 
     private final FixSessionAuth auth;
 
+    /** ADR-095: CompIDs served only on a second, TLS-only socket (the external entry); empty = none. */
+    private int tlsPort;
+    private List<String> tlsCompIds = List.of();
+    private String tlsKeystore;
+    private String tlsKeystorePassword;
+
+    /**
+     * ADR-095 (FR-FTL-01/02): serve {@code tlsCompIds} on {@code tlsPort} over TLS, and only there. QuickFIX/J binds
+     * each session to one acceptor socket, so these CompIDs are unknown on the plaintext port and the plaintext
+     * CompIDs are unknown here. The keystore is PKCS12 (the format {@code keytool} and openssl both write).
+     */
+    FixGatewayAcceptor withTls(final int port, final List<String> compIds, final String keystore,
+                               final String keystorePassword) {
+        if (keystore == null || keystore.isBlank()) {
+            throw new IllegalStateException("FIX_TLS_PORT needs FIX_SSL_KEYSTORE (ADR-095): no plaintext fallback");
+        }
+        if (compIds.isEmpty() || compIds.stream().anyMatch(String::isBlank)
+            || compIds.stream().anyMatch(this.compIds::contains)) {
+            throw new IllegalStateException("FIX_TLS_COMPIDS must name CompIDs not on the plaintext port (ADR-095): " + compIds);
+        }
+        this.tlsPort = port;
+        this.tlsCompIds = compIds;
+        this.tlsKeystore = keystore;
+        this.tlsKeystorePassword = keystorePassword == null ? "" : keystorePassword;
+        return this;
+    }
+
     /** ADR-086: persist sessions in this store (tests); otherwise {@code FIX_SESSION_STORE} decides. */
     FixGatewayAcceptor withSessionStore(final FixSessionStore store) {
         this.sessionStore = store;
@@ -249,9 +276,10 @@ public final class FixGatewayAcceptor {
         defaults.setProperty("PersistMessages", persistent ? "Y" : "N"); // in-memory: TD-AC01
         defaults.setProperty("RefreshOnLogon", persistent ? "Y" : "N");
         defaults.setProperty("MaxScheduledWriteRequests", String.valueOf(MAX_QUEUED_WRITES));   // ADR-092
-        // ENGINE-REVIEW S3: TLS on the session when a keystore is configured (QuickFIX/J native SSL).
+        // ENGINE-REVIEW S3: TLS on the session when a keystore is configured (QuickFIX/J native SSL). With ADR-095's
+        // second socket the keystore is that socket's alone and the main port stays plaintext.
         final String keystore = System.getenv("FIX_SSL_KEYSTORE");
-        if (keystore != null && !keystore.isBlank()) {
+        if (tlsCompIds.isEmpty() && keystore != null && !keystore.isBlank()) {
             defaults.setProperty("SocketUseSSL", "Y");
             defaults.setProperty("SocketKeyStore", keystore);
             defaults.setProperty("SocketKeyStorePassword", System.getenv().getOrDefault("FIX_SSL_KEYSTORE_PASSWORD", ""));
@@ -264,6 +292,16 @@ public final class FixGatewayAcceptor {
         for (final String compId : compIds) {
             final SessionID sid = new SessionID("FIX.4.4", serverCompId, compId);
             settings.setString(sid, "BeginString", "FIX.4.4");
+        }
+        for (final String compId : tlsCompIds) {   // ADR-095: per-session settings give this socket its own port
+            final SessionID sid = new SessionID("FIX.4.4", serverCompId, compId);
+            settings.setString(sid, "BeginString", "FIX.4.4");
+            settings.setString(sid, "SocketAcceptPort", String.valueOf(tlsPort));
+            settings.setString(sid, "SocketUseSSL", "Y");
+            settings.setString(sid, "SocketKeyStore", tlsKeystore);
+            settings.setString(sid, "SocketKeyStorePassword", tlsKeystorePassword);
+            settings.setString(sid, "KeyStoreType", "PKCS12");
+            settings.setString(sid, "EnabledProtocols", "TLSv1.3,TLSv1.2");
         }
         if (persistent) {
             sessionStore.onAcquired = this::adopt;
@@ -289,6 +327,9 @@ public final class FixGatewayAcceptor {
         acceptor.start();
         log.info("FIX gateway acceptor on :{} for {} CompID(s), sessions {}", port, compIds.size(),
             persistent ? "in JetStream (ADR-086)" : "in memory");
+        if (!tlsCompIds.isEmpty()) {
+            log.info("FIX TLS acceptor on :{} for {} CompID(s) (ADR-095)", tlsPort, tlsCompIds.size());
+        }
     }
 
     /** ResendRequest messages answered by GapFill because they were past the stored window (ADR-086, FR-GFS-14). */
@@ -471,7 +512,7 @@ public final class FixGatewayAcceptor {
             try {
                 if ("A".equals(message.getHeader().getString(35))) {
                     final String compId = sessionId.getTargetCompID();
-                    if (!compIds.contains(compId)) {
+                    if (!compIds.contains(compId) && !tlsCompIds.contains(compId)) {
                         throw new RejectLogon("unknown CompID");
                     }
                     final String password = message.isSetField(quickfix.field.Password.FIELD)

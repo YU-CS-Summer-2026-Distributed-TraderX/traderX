@@ -18,6 +18,8 @@ CUSTOM_WORKLOADS = {'order-matcher-cluster','cluster-gateway','risk-extract',
                     'people-service','account-service','trade-service','trade-processor',
                     'position-service','price-publisher','reference-data','execution-algo-engine',
                     'web-front-end-angular','web-front-end-console','api-explorer'}
+# ADR-095: the external FIX-over-TLS entry. Its CompID, its accounts and its port; render-fix-tls-access.py exposes it.
+FIX_TLS = {'port': 18143, 'compId': 'EXTQFJ', 'accounts': '22214|42422'}
 BUCKETS = {
     'traderx-505400-risk-extracts': f'{PROJECT}-traderx-risk-extracts',
     'traderx-505400-order-matcher-journal-archive': f'{PROJECT}-traderx-journal-archive',
@@ -78,6 +80,21 @@ def configure_private_runtime(docs):
                 # misses is re-read from TRADERX_FEED rather than lost.
                 c['env'] = [e for e in c.get('env', []) if e['name'] != 'FIX_FILL_FEED']
                 c['env'].append({'name': 'FIX_FILL_FEED', 'value': 'jetstream'})
+                # ADR-095: a second, TLS-only socket for the external CompID. Keystore and both passwords come from
+                # Secret fix-tls (provision-fix-tls.py). Without the Secret the gateway does not start: no plaintext
+                # fallback. Nothing outside the cluster reaches the port until fix-tls-external is applied.
+                secret_env(c, 'FIX_EXT_PASSWORD', 'fix-tls', 'external-password')
+                secret_env(c, 'FIX_SSL_KEYSTORE_PASSWORD', 'fix-tls', 'keystore-password')
+                auth = next(e for e in c['env'] if e['name'] == 'FIX_SESSION_AUTH')
+                c['env'].remove(auth)   # after FIX_EXT_PASSWORD: $(VAR) expands only earlier entries
+                auth['value'] += f",{FIX_TLS['compId']}:$(FIX_EXT_PASSWORD):{FIX_TLS['accounts']}"
+                c['env'] += [auth, {'name': 'FIX_TLS_PORT', 'value': str(FIX_TLS['port'])},
+                             {'name': 'FIX_TLS_COMPIDS', 'value': FIX_TLS['compId']},
+                             {'name': 'FIX_SSL_KEYSTORE', 'value': '/etc/fix-tls/keystore.p12'}]
+                c.setdefault('ports', []).append({'name': 'fix-tls', 'containerPort': FIX_TLS['port']})
+                c.setdefault('volumeMounts', []).append({'name': 'fix-tls', 'mountPath': '/etc/fix-tls', 'readOnly': True})
+                pod.setdefault('volumes', []).append({'name': 'fix-tls', 'secret': {
+                    'secretName': 'fix-tls', 'items': [{'key': 'keystore.p12', 'path': 'keystore.p12'}]}})
             if name == 'web-front-end-angular':
                 # The inherited development image CMD names a removed script.
                 # This packaged script builds production assets and serves on WEB_SERVICE_PORT.
@@ -157,7 +174,7 @@ def validate(docs):
                     if entry['name'] in ('MARIADB_PASSWORD','MARIADB_ROOT_PASSWORD','DATABASE_DBPASS',
                         'RISK_EXTRACT_JDBC_PASSWORD','GF_SECURITY_ADMIN_PASSWORD','RISK_CONTROL_TOKEN',
                         'ADMIN_PASSWORD_HASH','AUTH_SESSION_SECRET','AUTH_JWT_SECRET','AUTH_MASTER_SECRET',
-                        'FIX_SESSION_PASSWORD'):
+                        'FIX_SESSION_PASSWORD','FIX_EXT_PASSWORD','FIX_SSL_KEYSTORE_PASSWORD'):
                         require('value' not in entry and 'secretKeyRef' in entry.get('valueFrom', {}),
                                 'private credential must use a Secret reference')
         # ADR-082: a FIX acceptor on this profile authenticates its sessions. ALLOW_DEV_SECRETS is the only
@@ -187,6 +204,18 @@ def validate(docs):
                         'FIX order status has no read model (FR-FIX04)')
                 require(re.fullmatch(r'\d\d:\d\d:\d\d', env.get('FIX_SESSION_RESET_TIME') or '') and env.get('FIX_SESSION_TIME_ZONE'),
                         'FIX session reset time and zone not pinned (FR-GFS-08)')
+            # ADR-095 (FR-FTL-01/03): the external CompID is on the TLS socket only, password-bound to named accounts,
+            # and the keystore is the Secret's.
+            if 'FIX_TLS_PORT' in env:
+                tls_ids = (env.get('FIX_TLS_COMPIDS') or '').split(',')
+                auth = env.get('FIX_SESSION_AUTH') or ''
+                mounts = {m['mountPath'] for c in pod['containers'] for m in c.get('volumeMounts', [])}
+                require(all(i and i not in (env.get('FIX_SESSION_COMPIDS') or '').split(',')
+                            and re.search(rf'(^|,){i}:\$\(FIX_EXT_PASSWORD\):\d', auth) for i in tls_ids),
+                        'external FIX CompID not TLS-only with a Secret-backed password and named accounts (ADR-095)')
+                require((env.get('FIX_SSL_KEYSTORE') or '').startswith('/etc/fix-tls/') and '/etc/fix-tls' in mounts
+                        and any(v.get('secret', {}).get('secretName') == 'fix-tls' for v in pod.get('volumes', [])),
+                        'FIX TLS keystore is not Secret fix-tls (ADR-095)')
         # FR-DRS-25: the production projection replays an outage from the stream, and the stream outlives NATS.
         if doc['metadata']['name'] == 'trade-processor' and pod:
             env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}

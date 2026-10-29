@@ -211,6 +211,14 @@ Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
   Every counterparty then logs on with `ResetSeqNumFlag=Y` (or is reset by the acceptor on its first Logon).
 - **First roll onto ADR-086** resets every live FIX session once: there is no stored state yet.
 
+## External FIX over TLS (ADR-095)
+
+Each gateway also listens on 18143, TLS only, for CompID `EXTQFJ` (accounts 22214, 42422), with the keystore and
+passwords from Secret `fix-tls`. The candidate's gateway does not start without that Secret, so create it before the
+gateway roll that carries ADR-095. `CLIENT1` stays plaintext on 18130. Nothing outside the cluster reaches 18143
+until the separately approved Service `fix-tls-external` (passthrough, /32 allowlist) is applied. Steps:
+`specs/YU18-risk-integration/maintenance/fix-tls-entry/runbook.md`.
+
 ## Order filled quantity (ADR-088)
 
 trade-processor validates the schema at start, and ADR-088 adds `orderbook.filledquantity` (FR-DRS-27). On an
