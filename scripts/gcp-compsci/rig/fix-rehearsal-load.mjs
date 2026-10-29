@@ -80,6 +80,7 @@ function session(compId, { account, password }, index) {
         }
         if (f['35'] === '1') { write('0', [['112', f['112']]]); continue; }
         if (f['35'] === '3') { s.sessionRejects++; continue; }
+        if (f['35'] === '9') { resting.delete(f['41']); s.cancelRejects = (s.cancelRejects || 0) + 1; continue; }   // not open any more
         if (f['35'] === '5') { if (!closing) sock.destroy(); continue; }
         if (f['35'] === '8' && f['11']) {
           const orig = f['41'] || f['11'];   // a cancel's report names the order in OrigClOrdID(41)

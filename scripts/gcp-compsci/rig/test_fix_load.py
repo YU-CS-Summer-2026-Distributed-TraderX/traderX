@@ -60,9 +60,12 @@ class Drain(unittest.TestCase):
                     # Resumed, not reset; at or past the last number read (what the drain cut off is asked for again).
                     if f.get('141') == 'Y' or int(f['34']) <= last: seen['errors'].append(f"resume logon seq {f['34']} after {last}")
                     reply(conn, [('35', 'A')]); reply(conn, [('35', '2'), ('7', last + 1), ('16', 0)]); continue
-                if f['35'] == 'F':   # the end-of-run sweep cancels what still rests
+                if f['35'] == 'F':   # the end-of-run sweep cancels what still rests; the first is already gone
                     seen.setdefault('cancels', []).append(f['41'])
-                    reply(conn, [('35', '8'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('150', '4')])
+                    if len(seen['cancels']) == 1:   # production 2026-10-29: an order cancelled unseen answers 35=9
+                        reply(conn, [('35', '9'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('434', '1'), ('102', '1')])
+                    else:
+                        reply(conn, [('35', '8'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('150', '4')])
                 if f['35'] == 'D':   # a resend of a key the engine already holds is restated (150=I)
                     restate = f['11'] in seen['answered']
                     if not restate: seen['answered'].add(f['11'])
@@ -79,7 +82,7 @@ class Drain(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn('not-printed-pw', r.stdout + r.stderr)
         self.assertEqual((result['unanswered'], result['duplicateAnswers'], result['reconnects'], result['restingAtEnd']), (0, 0, 1, 0))
-        self.assertEqual(result['cancelledAtEnd'], result['answered'])   # the fake leaves every order resting
+        self.assertEqual(result['cancelledAtEnd'], result['answered'] - 1)   # every order rests; one was gone already
         self.assertEqual(len(seen['cancels']), len(set(seen['cancels'])))
         self.assertEqual(result['sent'], result['answered'])
         self.assertGreaterEqual(result['sessions'][0]['resent'], 10)
