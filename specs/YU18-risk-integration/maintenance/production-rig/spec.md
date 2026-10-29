@@ -115,13 +115,17 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   carry no test client.
 - **FR-PRG-16:** The throughput run's binary load (`rig/binary-load.mjs`, run by `rig/binary-load.sh` as an Indexed
   Job on `loadgen-pool`, never restarted) SHALL:
-  - trade only the test accounts, buys from 9900002/4/6/8 and sells from 9900003/5/7 (disjoint, so no self-trade cancel);
+  - trade only the test accounts 9900002–9900008, in two sets (even, odd): at any moment one set buys and the other
+    sells, so no order can meet its own account (no self-trade cancel);
+  - swap the sets' roles every wall-clock-aligned phase (`--phase-secs`, the same on every pod), so no account
+    accumulates a position beyond one phase's buys; production's global risk policy is left as it is;
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not
     resolve;
   - send limit orders of 1 at one operator-given price, unflagged (never sequenced);
   - track every clOrdId until its first ack and never resend (a resend past the 256Ki-key window can book twice);
-  - at the end, send the difference between its accepted buys and sells on the other side until they are equal, so a
-    pod that exits 0 leaves nothing of its own resting;
+  - in each phase's closing pause (`--pause-ms`), stop sending, wait for its answers and send the difference between
+    its accepted buys and sells on the other side until they are equal; a session still unbalanced at the boundary
+    SHALL stop the pod (exit 1) before the roles swap. A pod that exits 0 leaves nothing of its own resting;
   - exit 1 on any order unanswered, answered twice, ambiguous or unbalanced, and log one `RESULT` line.
   `binary-load.sh --apply` SHALL refuse unless the restore gate covers the running members.
 - **FR-PRG-15:** For a full-throughput hour, `prepare.py --throughput-members` SHALL render the bench's 450K member

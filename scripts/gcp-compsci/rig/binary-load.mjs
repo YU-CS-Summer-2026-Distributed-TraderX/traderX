@@ -4,9 +4,12 @@
 // - the security id is resolved per run through the gateway's lookup-only /resolve (an unknown ticker is refused, never
 //   registered);
 // - every order is a limit of 1 at one operator-given price inside the collar;
-// - book-neutral: buy and sell accounts are disjoint (no self-trade cancels), so at one price the book holds exactly
-//   accepted buys minus accepted sells of ours. At the end the client sends the difference on the other side until
-//   its own counts are equal, so a pod that exits 0 leaves nothing resting. Every pod balanced = the book is back.
+// - book-neutral: at any moment buys and sells come from disjoint accounts (no self-trade cancels), so at one price the
+//   book holds exactly accepted buys minus accepted sells of ours. Before each phase boundary every session stops,
+//   waits for its answers and sends the difference on the other side until its counts are equal; at the boundary an
+//   unbalanced session stops the pod (exit 1). Every pod balanced = the book is back.
+// - position-bounded: phases are wall-clock aligned (--phase-secs, the same on every pod), and the account sets swap
+//   roles each phase, so no account accumulates a position (each phase's peak: buys per account in one phase).
 //
 // Accounting: every clOrdId (runNonce:u32 | session:u8 | seq:u24) is tracked until its first ack. There is no resend:
 // past the engine's idempotency window (256Ki keys, 0.65 s at 400K/s) a resend can book twice, and the members of
@@ -15,18 +18,19 @@
 //
 //   node binary-load.mjs --resolve http://GW:18110 --ticker MSFT --px 412.50 [--host order-matcher-gw-binary]
 //        [--port 18140] [--sessions 16] [--rate N/s per session] [--secs S] [--max-in-flight 2000] [--out results.json]
+//        [--phase-secs 60] [--pause-ms 3000]
 import fs from 'node:fs';
 import net from 'node:net';
 import crypto from 'node:crypto';
 
-export const BUY_ACCOUNTS = [9900002, 9900004, 9900006, 9900008], SELL_ACCOUNTS = [9900003, 9900005, 9900007];
+const SETS = [[9900002, 9900004, 9900006, 9900008], [9900003, 9900005, 9900007]];   // set[role] buys, set[1-role] sells
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const cfg = {
   resolve: flag('--resolve'), ticker: flag('--ticker'), px: flag('--px'), host: flag('--host', 'order-matcher-gw-binary'),
   port: Number(flag('--port', 18140)), sessions: Number(flag('--sessions', 16)), rate: Number(flag('--rate', 1000)),
   secs: Number(flag('--secs', 60)), maxInFlight: Number(flag('--max-in-flight', 2000)), out: flag('--out', 'results.json'),
-  drainSecs: Number(flag('--drain-secs', 30)),
+  phaseMs: Number(flag('--phase-secs', 60)) * 1000, pauseMs: Number(flag('--pause-ms', 3000)),
 };
 if (!cfg.resolve || !cfg.ticker || !/^\d+(\.\d{1,6})?$/.test(cfg.px ?? '')) {
   console.log('usage: --resolve URL --ticker T --px PRICE'); process.exit(2);
@@ -44,7 +48,9 @@ if (!Number.isInteger(resolved?.securityId) || resolved.securityId < 0) {
 const SECURITY = resolved.securityId;
 const NONCE = crypto.randomBytes(4).readUInt32LE(0) || 1;
 const started = new Date();
-let sending = true;
+let sending = false, role = 0;
+const GUARD_MS = 250;   // after a boundary, before sending: the other pods' clocks
+if (!(cfg.pauseMs >= 200 && cfg.phaseMs >= 2 * cfg.pauseMs + GUARD_MS)) { console.log('--phase-secs must exceed 2 x --pause-ms'); process.exit(2); }
 
 function session(index) {
   const s = {index, sent: 0, accepted: 0, rejected: 0, ambiguous: 0, protocolErrors: 0, duplicates: 0, unexpected: 0,
@@ -59,7 +65,7 @@ function session(index) {
   sock.on('error', () => {});
   const frame = (side) => {
     if (++seq > 0xffffff) throw Error('session sequence exhausted');
-    const accounts = side === 0 ? BUY_ACCOUNTS : SELL_ACCOUNTS, b = Buffer.alloc(34);
+    const accounts = SETS[side === 0 ? role : 1 - role], b = Buffer.alloc(34);
     b.writeUInt16LE(32, 0); b[2] = 1; b[3] = side;   // flags 0: never sequenced
     b.writeUInt32LE(accounts[seq % accounts.length], 6); b.writeUInt32LE(SECURITY, 10); b.writeInt32LE(1, 14);
     b.writeBigInt64LE(PX, 18); b.writeUInt32LE((index << 24 | seq) >>> 0, 26); b.writeUInt32LE(NONCE, 30);
@@ -94,7 +100,7 @@ function session(index) {
   // Book-neutral: send the difference on the other side; a rejected balance order is retried on the next round.
   const balance = () => {
     const d = s.acceptedBuys - s.acceptedSells;
-    if (d === 0 || open.size || !up) return d;
+    if (d === 0 || open.size || !up || sending) return d;
     const frames = Array.from({length: Math.min(Math.abs(d), cfg.maxInFlight)}, () => frame(d > 0 ? 1 : 0));
     s.balanceOrders += frames.length; sock.write(Buffer.concat(frames));
     return d;
@@ -117,18 +123,24 @@ const report = (final) => {
   return out;
 };
 const progress = setInterval(() => report(false), 10_000);
-setTimeout(() => {   // stop, wait for every answer, balance each session to zero, then close
-  sending = false; sessions.forEach((x) => x.stopSending());
-  const t0 = Date.now();
-  const wait = setInterval(() => {
-    const pending = sessions.reduce((a, x) => a + x.open.size, 0);
-    const left = sessions.reduce((a, x) => a + Math.abs(x.balance()), 0);
-    if ((pending === 0 && left === 0) || Date.now() - t0 > cfg.drainSecs * 1000) {
-      clearInterval(wait); clearInterval(progress); sessions.forEach((x) => x.close());
-      const o = report(true);
-      const ok = o.unanswered === 0 && o.ambiguous === 0 && o.duplicates === 0 && o.unexpected === 0
-        && o.protocolErrors === 0 && o.imbalance === 0;
-      process.exit(ok ? 0 : 1);
-    }
-  }, 200);
-}, cfg.secs * 1000);
+const deadline = Date.now() + cfg.secs * 1000;
+let phase = Math.floor(Date.now() / cfg.phaseMs);
+const finish = (why) => {
+  clearInterval(clock); clearInterval(progress); sessions.forEach((x) => { x.stopSending(); x.close(); });
+  const o = report(true);
+  if (why) console.log('STOPPED ' + why);
+  process.exit(!why && o.unanswered === 0 && o.ambiguous === 0 && o.duplicates === 0 && o.unexpected === 0
+    && o.protocolErrors === 0 && o.imbalance === 0 ? 0 : 1);
+};
+const clock = setInterval(() => {   // send inside the phase; drain and balance in its pause; check at the boundary
+  const now = Date.now(), k = Math.floor(now / cfg.phaseMs), off = now % cfg.phaseMs;
+  if (k !== phase) {
+    const bad = sessions.filter((x) => x.open.size || x.s.acceptedBuys !== x.s.acceptedSells).length;
+    if (bad) return finish(`${bad} sessions not balanced at the phase boundary (pause too short for the answers)`);
+    if (now >= deadline) return finish(null);
+    phase = k;
+  }
+  role = k % 2;
+  sending = off >= GUARD_MS && off < cfg.phaseMs - cfg.pauseMs && now < deadline;
+  if (!sending) sessions.forEach((x) => x.balance());
+}, 50);

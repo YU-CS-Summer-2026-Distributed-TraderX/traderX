@@ -10,13 +10,15 @@ import threading
 import unittest
 
 LOAD = Path(__file__).with_name('binary-load.mjs')
-BUYS, SELLS = {9900002, 9900004, 9900006, 9900008}, {9900003, 9900005, 9900007}
+SETS = ({9900002, 9900004, 9900006, 9900008}, {9900003, 9900005, 9900007})
+import collections
 
 
 class Gateway:
     """reject_every: refuse every Nth NEW (a risk reject); drop: never answer the Nth; dup: answer the Nth twice."""
     def __init__(self, test, reject_every=0, drop=0, dup=0):
-        self.book = 0                     # >0 resting buys, <0 resting sells, all at one price
+        self.book = collections.deque()   # resting (side, account), all at one price, FIFO
+        self.self_trades, self.buyers = 0, set()
         self.orders, self.errors, self.n, self.lock = 0, [], 0, threading.Lock()
         self.reject_every, self.drop, self.dup = reject_every, drop, dup
         self.srv = socket.create_server(('127.0.0.1', 0)); test.addCleanup(self.srv.close)
@@ -44,16 +46,18 @@ class Gateway:
             while len(buf) >= 34:
                 n, typ, side, flags = struct.unpack_from('<HBBB', buf)
                 acct, sec, qty, px, cid = struct.unpack_from('<IIiqQ', buf, 6); buf = buf[34:]
-                if (n, typ, flags, sec, qty, px) != (32, 1, 0, 7, 1, 412_500000) or acct not in (BUYS if side == 0 else SELLS):
+                if (n, typ, flags, sec, qty, px) != (32, 1, 0, 7, 1, 412_500000) or acct not in SETS[0] | SETS[1]:
                     self.errors.append((n, typ, side, flags, acct, sec, qty, px))
                 with self.lock:
                     self.n += 1; i = self.n
                     status = 0 if self.reject_every and i % self.reject_every == 0 else 1
                     kind = 0
                     if status == 1:
-                        crosses = self.book < 0 if side == 0 else self.book > 0
-                        self.book += 1 if side == 0 else -1
-                        kind = 4 if crosses else 0
+                        if side == 0: self.buyers.add(acct)
+                        if self.book and self.book[0][0] != side:
+                            self.self_trades += self.book.popleft()[1] == acct
+                        else:
+                            self.book.append((side, acct))
                 if i == self.drop: continue
                 ack = struct.pack('<HBBBBIQ', 16, 0x81, status, kind, 0, i, cid)
                 conn.sendall(ack * (2 if i == self.dup else 1))
@@ -63,7 +67,7 @@ class Gateway:
         out = Path(tempfile.mkdtemp()) / 'r.json'
         p = subprocess.run(['node', str(LOAD), '--resolve', f'http://127.0.0.1:{self.http.server_port}', '--ticker', ticker,
                             '--px', '412.5', '--host', '127.0.0.1', '--port', str(self.srv.getsockname()[1]), '--sessions', '4',
-                            '--rate', '500', '--secs', '2', '--drain-secs', '5', '--out', str(out), *extra],
+                            '--rate', '500', '--secs', '3', '--phase-secs', '1', '--pause-ms', '300', '--out', str(out), *extra],
                            capture_output=True, text=True, timeout=60)
         return p, json.loads(out.read_text()) if out.exists() else None
 
@@ -76,7 +80,8 @@ class BinaryLoad(unittest.TestCase):
         self.assertEqual(g.errors, [])
         self.assertGreater(r['sent'], 1000); self.assertGreater(r['rejected'], 100)
         self.assertEqual((r['unanswered'], r['duplicates'], r['imbalance']), (0, 0, 0))
-        self.assertEqual(g.book, 0)
+        self.assertEqual(len(g.book), 0); self.assertEqual(g.self_trades, 0)
+        self.assertTrue(g.buyers & SETS[0] and g.buyers & SETS[1], 'the account sets swap roles each phase')
         self.assertEqual(r['acceptedBuys'], r['acceptedSells'])
         self.assertEqual(r['securityId'], 7)
 
