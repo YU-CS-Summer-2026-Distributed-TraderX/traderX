@@ -8,6 +8,8 @@
    stubbed kubectl and gcloud, including a refusal for every check and a mutation that removes the gate.
 4. Write `gateways.sh` for grow and shrink, with exact node removal and FIX resume timing (FR-PRG-06), and the HPA
    and pool autoscaler (FR-PRG-09).
-5. Live, on a rehearsal namespace first, then on production in 5a with yaakov's approval: `pools`, `up` (gate on
+5. Declare 5a's two-commit population (FR-PRG-10): the members on the shadow-state backport, the rest on the tip,
+   refused at every stage otherwise, and the codec proven compatible on the real classes.
+6. Live, on production in 5a with yaakov's approval: `pools`, `up` (gate on
    the backport build), `gateways.sh` up and down with FIX clients connected through the internal LB, autoscale up
    under load and back down, `down` to zero instances.

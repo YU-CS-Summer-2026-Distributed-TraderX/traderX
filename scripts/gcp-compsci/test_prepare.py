@@ -1,5 +1,6 @@
 """Offline render controls: wrong project and public exposure must be rejected."""
 import copy
+import json
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -422,6 +423,49 @@ class ExplorerMetadata(unittest.TestCase):
             result,path=self.render(Path(temp),'invalid')
             self.assertNotEqual(result.returncode,0)
             self.assertFalse(path.exists())
+
+
+class Population(unittest.TestCase):
+    """ADR-096 §6: a declared exception renders onto its workload only, and validate() refuses it anywhere else."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        declared=Path(cls.temp.name)/'population.json'
+        declared.write_text(json.dumps({'schema':'traderx-compsci-population-v1','imageSourceCommit':'1'*40,
+            'workloads':{'order-matcher-cluster':{'image':'cluster-node-member','component':'order-matcher',
+                                                   'sourceCommit':'2'*40}}}))
+        cls.declared=module.population.load(declared)
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10',population_path=declared)
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def images(self,docs,name):
+        pod=module.podspec(next(d for d in docs if d['metadata']['name']==name and module.podspec(d)))
+        return {c['image'] for c in pod.get('containers',[])+pod.get('initContainers',[]) if c['image'].startswith(module.REGISTRY)}
+
+    def test_members_run_the_member_image_and_the_gateway_the_tip_image(self):
+        self.assertEqual(self.images(self.docs,'order-matcher-cluster'),{module.REGISTRY+'cluster-node-member:test-candidate'})
+        self.assertEqual(self.images(self.docs,'cluster-gateway'),{module.REGISTRY+'cluster-node:test-candidate'})
+        private={c['image'] for d in self.docs for pod in [module.podspec(d)] if pod
+                 for c in pod.get('containers',[])+pod.get('initContainers',[]) if c['image'].startswith(module.REGISTRY)}
+        self.assertEqual(len(private),13)
+
+    def test_the_member_image_on_another_workload_is_refused(self):
+        docs=copy.deepcopy(self.docs)
+        pod=module.podspec(next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d)))
+        pod['containers'][0]['image']=module.REGISTRY+'cluster-node-member:test-candidate'
+        with self.assertRaisesRegex(AssertionError,'cluster-gateway: image differs from the declared population'):
+            module.validate(docs,self.declared)
+
+    def test_members_on_the_tip_image_are_refused(self):
+        docs=copy.deepcopy(self.docs)
+        pod=module.podspec(next(d for d in docs if d['metadata']['name']=='order-matcher-cluster' and module.podspec(d)))
+        for c in pod.get('containers',[])+pod.get('initContainers',[]):
+            if c['image'].startswith(module.REGISTRY): c['image']=module.REGISTRY+'cluster-node:test-candidate'
+        with self.assertRaisesRegex(AssertionError,'order-matcher-cluster: image differs from the declared population'):
+            module.validate(docs,self.declared)
 
 
 if __name__=='__main__': unittest.main()

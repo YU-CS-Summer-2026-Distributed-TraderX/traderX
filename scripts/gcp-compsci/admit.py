@@ -10,26 +10,32 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
-# The admitted CompSci population, defined once (prepare-admission.py and admission-controls.py read it).
-# Promtail (c8c8ac31) is the ninth upstream image and the 24th container slot.
-PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 12, 9, 24
-# The reviewed image dependency: the source commit the admitted private images were built from, defined once
-# (prepare-admission.py reads it). 6156ad22 (the October 11 pack) until 2026-10-27, when traderx was rolled to
-# the YU18 tip built from 9e0fd80b, then (same day, roll 2) b28fd9f3; measure-admission.py produces the
-# evidence for exactly those digests.
-REVIEWED_IMAGE_COMMIT = '00b31d33f4e0dd329d8151b929beba24c90086d3'
-TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
-          'project':'project-compsci-484414','location':'us-east1-b',
-          'cluster':'traderx-demo','namespace':'traderx'}
 
 
 def module(name, path):
     spec=importlib.util.spec_from_file_location(name,path)
     value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
+
+
+# The reviewed image population (ADR-096 §6): scripts/gcp-compsci/population.json, or TRADERX_POPULATION. Its
+# imageSourceCommit builds every private image (prepare-admission.py and measure-admission.py read it here); a
+# workload may name an exception, its own image repository built from another reviewed commit. 6156ad22 (the
+# October 11 pack) until 2026-10-27, then 9e0fd80b, b28fd9f3, 40d93f6b and 00b31d33 (roll 4).
+population=module('admit_population',Path(__file__).with_name('population.py'))
+POPULATION=population.load(os.environ.get('TRADERX_POPULATION'))
+REVIEWED_IMAGE_COMMIT=POPULATION['imageSourceCommit']
+EXCEPTIONS=population.exceptions(POPULATION)
+# The admitted CompSci population, defined once (prepare-admission.py and admission-controls.py read it).
+# Promtail (c8c8ac31) is the ninth upstream image and the 24th container slot; each exception adds an image, not a slot.
+PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 12+len(EXCEPTIONS), 9, 24
+TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
+          'project':'project-compsci-484414','location':'us-east1-b',
+          'cluster':'traderx-demo','namespace':'traderx'}
 
 
 ri20=module('ri20_companion',ROOT/'scripts/yu15/image-admission.py')
@@ -63,6 +69,23 @@ def executable_architecture(record):
                 for case in record.get('cases',[])))
 
 
+def image_name(reference): return reference.rsplit('/',1)[1].split('@')[0]
+
+
+def check_population(plan):
+    """The compiled images' declared commits, against population.json, before any evidence is read."""
+    compiled={ref:want for ref,want in plan.get('artifacts',{}).items() if want.get('provider')=='compiled-context-v1'}
+    built={image_name(ref):want.get('sourceCommit') for ref,want in compiled.items()}
+    require(len(built)==len(compiled),'two digests for one private image name')
+    try:population.check_images(POPULATION,built,[n for n in built if n not in EXCEPTIONS])
+    except population.Refusal as error:require(False,str(error))
+    for ref,want in compiled.items():
+        exception=EXCEPTIONS.get(image_name(ref))
+        if exception:
+            require(want.get('component')==exception['component'],'exception image built from another component')
+            require(want['sourceCommit'] in plan.get('workloadDerivations',{}),'exception image without its own derivation')
+
+
 def read_evidence(folder, binding):
     require(isinstance(binding,dict) and set(binding)=={'path','sha256'},'missing evidence binding')
     path=Path(binding['path'])
@@ -86,6 +109,7 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
     require(receipt.get('contexts')==plan.get('contexts') and receipt['contexts'],'missing/different intended contexts')
     require(len(receipt['contexts'])==11,'incomplete selected build-context population')
     require(plan.get('imageSourceCommit')==REVIEWED_IMAGE_COMMIT,'unreviewed image dependency')
+    check_population(plan)
     require(ri20.sha(plan.get('imageSourceInputsSha256')),'missing original image build-input identity')
     builds=plan.get('buildSources')
     require(isinstance(builds,dict) and builds and
@@ -127,7 +151,15 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
         provider=want['provider']
         if provider=='compiled-context-v1':
             component=want.get('component')
-            if component=='web-front-end-console':
+            if image_name(ref) in EXCEPTIONS:
+                # ADR-096 §6: built from the exception's own commit, so its context is that commit's independent
+                # derivation (bound into the plan as evidence), not this checkout's generated tree.
+                other=ri20.decode(read_evidence(evidence,plan['workloadDerivations'][want['sourceCommit']]))
+                require(other.get('schema')=='traderx-generation-derivation-v1' and other.get('state')==plan['state']
+                        and other.get('role')=='fix','wrong exception derivation')
+                require(other.get('sourceInputsSha256')==want.get('sourceInputsSha256'),'exception derivation is not its image\'s build')
+                current=other['contexts'][component]
+            elif component=='web-front-end-console':
                 current=derive.provenance(root).tree_hash(root/'web-front-end-console')
                 require(current==plan.get('consoleSourceSha256'),'root console source changed')
             else:

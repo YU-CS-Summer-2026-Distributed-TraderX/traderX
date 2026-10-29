@@ -2,7 +2,7 @@
 
 Status: accepted 2026-10-29 (yaakov: rollout 5a "yes, optimized for throughput also"; client path option A; FIX store
 on and measured). Code and scripts on `traderX-risk-integration`; not yet run on production. Pack:
-[production rig](../maintenance/production-rig/spec.md) (FR-PRG-01..09).
+[production rig](../maintenance/production-rig/spec.md) (FR-PRG-01..10).
 
 ## Context
 
@@ -146,6 +146,34 @@ concurrently, so the cluster session could close while orders were in flight. It
   one.
 - **External FIX for the operator's Mac** is separate work: FIX over TLS on an allowlisted entry, ADR-095.
 
+### 6. Rollout 5a runs two declared source commits (FR-PRG-10)
+
+Rollout 5a needs the restore gate's `/recon/shadow-state` on the members, and the drain and parity on the gateways.
+The shadow-state code is backported onto the members' production build: `00b31d33` → `c562bbab`. Cherry-picking the
+gateway's tip changes onto `00b31d33` conflicts throughout. So the members run the backport, and every other
+workload, including the gateway's `cluster-node`, runs the tip.
+
+- **One reviewed file declares it:** `scripts/gcp-compsci/population.json`.
+  - `imageSourceCommit` builds every private image.
+  - A workload may name an exception: its own image repository, its component and its own full source SHA. For 5a:
+    `order-matcher-cluster` → `cluster-node-member` from `c562bbab`.
+  - The candidate never holds two digests of one image name. An exception is one more image, not one more slot.
+- **Each stage refuses an image from neither declared commit, and any undeclared mix:**
+  - `prepare.py`: a declared workload runs only its exception image, and no other workload runs one.
+  - `measure-admission.py`: the same on the rendered candidate, then each pulled image's source label against its
+    declared commit. Each exception commit gets its own independent derivation (`--exception-root`), reference build
+    and payload comparison.
+  - `admit.py`: every compiled image's `sourceCommit`, before any evidence is read. An exception image is bound to
+    its own commit's derivation, carried in the plan as evidence.
+  - `admission-controls.py`: the same refusals against the real measured pack.
+- **The codec is proven, not assumed.** `rig/codec-compat.sh` loads each side's real compiled
+  `AeronReplicationCodec`, `InputEvent` and SBE classes in separate class loaders. For every command type the members
+  know, both sides encode the same event: unflagged, SHADOW-flagged, and as an order instruction. The bytes must be
+  identical, and the members' decoder must read the tip's bytes back field for field. Symbol registration is checked
+  too. The backport changes no codec, `InputEvent` or schema file, so the members' side is `00b31d33`'s codec.
+  - Controls: a changed field is caught, and a sequenced message (ADR-090) differs.
+  - The tip sends no sequenced message while `FIX_EXACTLY_ONCE` and the binary port are off.
+
 ## Consequences
 
 - **Cost per hour at parity, list prices:**
@@ -189,3 +217,10 @@ concurrently, so the cluster session could close while orders were in flight. It
   - G-pre: each past-restore message refused, an unreadable log refused, read-only mounts.
   - Members held at 0 before any pool grows, and a gated re-run that stops nothing.
   - Mutations: with the gate removed from `up`, 14 of the 18 `up` tests fail; with G-pre removed, 10 fail.
+- **Population (§6): `test_population` 23/23 and `test_prepare` 42/42.**
+  - Each refusal is tested where it can arise: the declaration, `admit.check_population` (reached from `validate`),
+    `measure-admission`'s pull (docker stubbed) and candidate, and `prepare.validate`.
+  - Removing each of the five guards fails 1–6 tests.
+  - Writing the tests found a precedence bug in the "missing" report, fixed before landing.
+- **Codec (§6): `rig/codec-compat.sh`, `c562bbab` members' render against the tip render.** 42 encodings over 19
+  command types, 518 checks, 0 failures, both controls fired. Both sides build on Aeron 1.51.0.

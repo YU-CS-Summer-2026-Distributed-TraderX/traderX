@@ -41,6 +41,18 @@ def controls(root, folder):
     inventory_mutation('wrong platform',lambda i:i['artifacts'][0].update(platform='linux/arm64'))
     inventory_mutation('wrong inspected image ID',lambda i:i['artifacts'][0].update(imageId='sha256:'+'0'*64))
     plan_mutation('unknown per-image build',lambda p:p['artifacts'][inventory['artifacts'][0]['reference']].update(sourceCommit='0'*40))
+    # ADR-096 §6: the declared population. An image from neither declared commit, and either half of a mix.
+    compiled=[ref for ref,x in plan['artifacts'].items() if x['provider']=='compiled-context-v1']
+    default_ref=next(r for r in compiled if admit.image_name(r) not in admit.EXCEPTIONS)
+    plan_mutation('image from neither declared commit',lambda p:p['artifacts'][default_ref].update(sourceCommit='f'*40))
+    for ref in compiled:
+        exception=admit.EXCEPTIONS.get(admit.image_name(ref))
+        if exception:
+            plan_mutation('default image declared from the exception commit (undeclared mix)',
+                          lambda p:p['artifacts'][default_ref].update(sourceCommit=exception['sourceCommit']))
+            plan_mutation('exception image declared from the default commit (undeclared mix)',
+                          lambda p:p['artifacts'][ref].update(sourceCommit=admit.REVIEWED_IMAGE_COMMIT))
+            plan_mutation('exception image without its own derivation',lambda p:p.pop('workloadDerivations'))
     inventory_mutation('unbounded evidence path',lambda i:i['artifacts'][0]['payload'].update(path='../outside.json'))
     inventory_mutation('changed evidence hash',lambda i:i['artifacts'][0]['payload'].update(sha256='0'*64))
     first=inventory['artifacts'][0];old=admit.read_evidence

@@ -14,7 +14,13 @@
       restore stops the bring-up. Members are held at 0 first, because production's StatefulSet was left at 3 with
       Pending pods. A re-run on a gated rig stops nothing. `test_rig` 22/22.
 - [x] Quota: regional CPUS 3,000 (no separate C4D quota); a full rig with 18 gateways is ~196 vCPU.
-- [ ] Rehearsal on a side namespace, needing yaakov's approval and a spend projection:
+- [x] Declared two-commit population for 5a (FR-PRG-10): members `cluster-node-member` from `c562bbab`, the rest
+      from the tip. Every stage refuses neither-commit images and undeclared mixes; `test_population` 23/23,
+      `test_prepare` 42/42. The tip's ingress decodes on the members' codec (`rig/codec-compat.sh`, 518 checks).
+- [ ] Declare the 5a population in `population.json` once the tip images are built: `imageSourceCommit` = the tip
+      they are built from, exception `order-matcher-cluster` → `cluster-node-member` from `c562bbab`.
+- [ ] Rehearsal on production (yaakov: "Rehearse on production"), needing his approval in session and a spend
+      projection:
       - `pools`;
       - `up` on the backport build (G0–G4 pass);
       - `gateways.sh 2 → 4 → 2` with FIX clients connected through the internal LB: new connections reach the new

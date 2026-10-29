@@ -1,0 +1,6 @@
+{
+  "schema": "traderx-compsci-population-v1",
+  "note": "ADR-096 §6. The reviewed image population: imageSourceCommit builds every private image unless a workload names an exception (its own image repository and reviewed commit). Production traderx today: 00b31d33, no exception.",
+  "imageSourceCommit": "00b31d33f4e0dd329d8151b929beba24c90086d3",
+  "workloads": {}
+}

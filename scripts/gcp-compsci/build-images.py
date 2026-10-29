@@ -22,7 +22,7 @@ def run(command, **kwargs):
     return subprocess.run(command, check=True, **kwargs)
 
 
-def build(output, tag):
+def build(output, tag, exception=None):
     output.mkdir(parents=True, exist_ok=False)
     spec = importlib.util.spec_from_file_location('derive', ROOT / 'scripts/yu15/generation-derivation.py')
     derive = importlib.util.module_from_spec(spec); spec.loader.exec_module(derive)
@@ -30,7 +30,10 @@ def build(output, tag):
                  'sourceCommit': run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
                                      capture_output=True, text=True).stdout.strip(),
                  'published': False, 'images': {}}
-    with derive.validated(ROOT, COMPONENTS, state='YU18-risk-integration') as (contexts, receipt, log):
+    # ADR-096 §6: --exception COMPONENT=IMAGE builds that one component, at this checkout's commit, as its own
+    # repository (e.g. order-matcher=cluster-node-member on the 00b31d33 backport), for a declared workload exception.
+    only, rename = exception if exception else (None, None)
+    with derive.validated(ROOT, [only] if only else COMPONENTS, state='YU18-risk-integration') as (contexts, receipt, log):
         (output / 'derivation.json').write_text(json.dumps(receipt, indent=2) + '\n')
         shutil.copy2(log, output / 'generation.log')
         # The console is a root-owned component outside the generated-state tree.
@@ -41,8 +44,8 @@ def build(output, tag):
         console_hash = derive.provenance(ROOT).tree_hash(original)
         (output / 'console-source.json').write_text(json.dumps({'sha256': console_hash,
             'path': 'web-front-end-console', 'sourceCommit': inventory['sourceCommit']}, indent=2) + '\n')
-        for component in COMPONENTS + ['web-front-end-console']:
-            name = {'order-matcher':'cluster-node', 'web-front-end':'web-front-end-angular'}.get(component,component)
+        for component in [only] if only else COMPONENTS + ['web-front-end-console']:
+            name = rename or {'order-matcher':'cluster-node', 'web-front-end':'web-front-end-angular'}.get(component,component)
             context = contexts / component
             if component == 'web-front-end': context = context / 'angular'
             print(f'[build] {component}', flush=True)
@@ -66,6 +69,7 @@ def build(output, tag):
                 raise ValueError(f'{name}: incorrect image architecture')
             inventory['images'][name] = {'reference': reference, 'imageId': inspection['Id'],
                 'component': component, 'inspection': inspection,
+                'sourceCommit': inventory['sourceCommit'], 'sourceInputsSha256': receipt['sourceInputsSha256'],
                 'contextSha256': console_hash if component == 'web-front-end-console' else receipt['contexts'][component]}
             (output / 'images.json').write_text(json.dumps(inventory, indent=2) + '\n')
             print(f'[ok] {name}: {inspection["Id"]}', flush=True)
@@ -80,8 +84,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--exception', help='COMPONENT=IMAGE: build only that component, as that image (ADR-096 §6)')
     args = parser.parse_args()
     import re
     if not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}', args.tag):
         parser.error('invalid Docker tag')
-    build(args.output.resolve(), args.tag)
+    exception = None
+    if args.exception:
+        component, _, image = args.exception.partition('=')
+        if component not in COMPONENTS or not re.fullmatch(r'[a-z][a-z0-9-]{0,62}', image):
+            parser.error('--exception COMPONENT=IMAGE')
+        exception = (component, image)
+    build(args.output.resolve(), args.tag, exception)

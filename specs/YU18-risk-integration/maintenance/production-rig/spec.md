@@ -94,6 +94,16 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 
   `gateway-pool`'s cluster autoscaler SHALL run with min `GATEWAYS` and max 18. `gateways.sh N` on an autoscaled
   rig SHALL set both minimums to N.
+- **FR-PRG-10:** The image population SHALL be declared in `scripts/gcp-compsci/population.json`: one default source
+  commit, and per workload at most one exception (image, component, full source SHA, not the default).
+  - `prepare.py`, `measure-admission.py`, `admit.py` and `admission-controls.py` SHALL refuse:
+    - an image built from neither declared commit;
+    - a default image built from an exception's commit;
+    - an exception image built from the default commit;
+    - an exception image on another workload, or a declared workload on another image;
+    - a missing exception image, two digests for one image name, and an exception without its own derivation.
+  - The members' commit SHALL decode the tip gateway's unflagged ingress byte for byte, shown with both sides' real
+    compiled codec (`rig/codec-compat.sh`).
 
 ## Acceptance
 
@@ -117,4 +127,9 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | dry run | 01 | `test_rig.Plan` | contacts nothing; bad arguments refused |
 | gate removed from `up` (mutation) | 01, 03 | `test_rig.Up` | 14 of 18 fail |
 | G-pre removed from `up` (mutation) | 03 | `test_rig.Up` | 10 of 18 fail |
+| malformed declarations | 10 | `test_population.Declaration` | bad schema, unknown field, short SHA, exception on the default commit, duplicate image: each refused |
+| neither commit, each half of a mix, missing image | 10 | `test_population.Images`, `.Admit`, `.Measure` (pull with docker stubbed) | refused in `population.py`, `admit.check_population` and `measure-admission.pull` |
+| wrong placement | 10 | `test_population.Measure`, `test_prepare.Population` | members on the tip image, member image on the gateway: refused by `measure-admission.population` and `prepare.validate` |
+| guard removed (mutation) | 10 | same | each of the five guards removed: 1–6 tests fail |
+| tip ingress on the members' codec | 10 | `rig/codec-compat.sh` | 42 encodings over 19 command types, 518 checks, 0 failures; both controls fire |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

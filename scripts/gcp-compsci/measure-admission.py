@@ -6,6 +6,8 @@ The scripted form of the October 11 hand measurements (coordination/.../image-ad
 
   1. preflight   HEAD is admit.REVIEWED_IMAGE_COMMIT; the generated tree is rendered at it;
                  SOURCE_DATE_EPOCH is that commit's time (generated UI metadata is a context input).
+                 Each workload exception the population declares (ADR-096 §6) needs --exception-root
+                 ROOT=GENERATED: a checkout of exactly its commit and that commit's render.
   2. population  the 12 private + 9 upstream references are read FROM THE CANDIDATE, never typed in;
                  optionally (--live-context) every running traderx container must run one of them.
   3. derivation  generation-derivation.validated(): independent full-ancestry contexts + receipt.
@@ -62,6 +64,12 @@ def module(name, path):
 
 admit = module('measure_admit', HERE / 'admit.py')
 derive = admit.derive
+EXCEPTIONS = admit.EXCEPTIONS   # image -> {workload, component, sourceCommit} (ADR-096 §6)
+
+
+def component_of(name):
+    return EXCEPTIONS[name]['component'] if name in EXCEPTIONS else \
+        next((c for c, n in COMPONENTS.items() if n == name), 'web-front-end-console')
 
 
 def run(args, **kw):
@@ -115,6 +123,7 @@ def population(rendered):
         if not doc or doc.get('kind') not in ('Deployment', 'StatefulSet', 'DaemonSet', 'Job'):
             continue
         spec = doc['spec']['template']['spec']
+        mine = admit.population.workload_image(admit.POPULATION, doc['metadata']['name'])
         for c in spec.get('containers', []) + spec.get('initContainers', []):
             ref = c['image']
             if '@sha256:' not in ref:
@@ -123,9 +132,11 @@ def population(rendered):
                 name = ref[len(REGISTRY):].split('@')[0]
                 if private.setdefault(name, ref) != ref:
                     raise SystemExit(f'two digests for {name} in one candidate')
+                if (name != mine) if mine else name in EXCEPTIONS:
+                    raise SystemExit(f'{doc["metadata"]["name"]} runs {name}, not its declared population image')
             else:
                 upstream.add(ref)
-    names = set(COMPONENTS.values()) | {'web-front-end-console'}
+    names = set(COMPONENTS.values()) | {'web-front-end-console'} | set(EXCEPTIONS)
     if set(private) != names or len(upstream) != admit.UPSTREAM_IMAGES:
         raise SystemExit(f'candidate population differs: private {sorted(private)}, upstream {len(upstream)}')
     return private, sorted(upstream)
@@ -162,9 +173,15 @@ def pull(private):
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
         for name, row in ex.map(one, private.items()):
             images[name] = row
-    commits = {r['sourceCommit'] for r in images.values()}; inputs = {r['sourceInputsSha256'] for r in images.values()}
-    if commits != {admit.REVIEWED_IMAGE_COMMIT} or len(inputs) != 1 or not admit.ri20.sha(next(iter(inputs))):
-        raise SystemExit(f'images do not carry one reviewed build identity: commits {commits}, inputs {inputs}')
+    try:   # ADR-096 §6: every image from its declared commit; nothing from neither, no undeclared mix
+        admit.population.check_images(admit.POPULATION, {n: r['sourceCommit'] for n, r in images.items()},
+                                      [n for n in images if n not in EXCEPTIONS])
+    except admit.population.Refusal as error:
+        raise SystemExit(f'images do not match the declared population: {error}')
+    for commit in {r['sourceCommit'] for r in images.values()}:
+        inputs = {r['sourceInputsSha256'] for r in images.values() if r['sourceCommit'] == commit}
+        if len(inputs) != 1 or not admit.ri20.sha(next(iter(inputs))):
+            raise SystemExit(f'images built from {commit} do not carry one build identity: {inputs}')
     return images
 
 
@@ -173,7 +190,7 @@ def extract(work, images):
     def one(item):
         name, row = item
         (target / (name + '-inspection.json')).write_text(json.dumps(row['inspection'], indent=2))
-        src = ('/opt/app' if name == 'cluster-node' else '/opt/app/app.jar' if name in JAVA else
+        src = ('/opt/app' if component_of(name) == 'order-matcher' else '/opt/app/app.jar' if name in JAVA else
                '/usr/share/nginx/html/api/docs' if name == 'api-explorer' else '/app')
         cid = out(['docker', 'create', '--platform', 'linux/amd64', row['reference']]).strip()
         try:
@@ -186,8 +203,8 @@ def extract(work, images):
 
 def reference_builds(work, logs):
     contexts = work / 'contexts'; ref = work / 'reference'; ref.mkdir()
-    def gradle(component):
-        ctx = contexts / component
+    def gradle(component, ctx=None):
+        ctx = ctx or contexts / component
         with (logs / (component + '-compile.log')).open('w') as s:
             r = subprocess.run(['./gradlew', '--no-daemon', '--max-workers=2', '-q', 'clean', 'bootJar'], cwd=ctx,
                                stdout=s, stderr=subprocess.STDOUT)
@@ -226,8 +243,12 @@ def reference_builds(work, logs):
             ctx = contexts / relative
             other.append(ex.submit(docker_payload, name, ctx,
                                    'Dockerfile' if (ctx / 'Dockerfile').exists() else 'Dockerfile.compose', '/app'))
+        exceptions = {name: ex.submit(gradle, e['component'], work / 'exception-contexts' / e['sourceCommit'] / e['component'])
+                      for name, e in EXCEPTIONS.items()}
         for f in java:
             component, jar = f.result(); jars[component] = jar
+        for name, f in exceptions.items():
+            jars[name] = f.result()[1]
         for f in other:
             f.result()
     return jars
@@ -255,6 +276,11 @@ def compare_payloads(work, jars):
             compare(name, expected, tree(payloads / name))
         else:
             compare(name, expected, zip_entries(payloads / name))
+    for name in EXCEPTIONS:   # an order-matcher exception is packaged as Dockerfile.cluster packages cluster-node
+        expected = {('classes/' + k[len('BOOT-INF/classes/'):] if k.startswith('BOOT-INF/classes/')
+                     else 'lib/' + k[len('BOOT-INF/lib/'):]): v
+                    for k, v in zip_entries(jars[name]).items() if k.startswith(('BOOT-INF/classes/', 'BOOT-INF/lib/'))}
+        compare(name, expected, tree(payloads / name))
     compare('people-service', tree(ref / 'people-service'), tree(payloads / 'people-service'))
     console = work / 'contexts/web-front-end-console'
     recipe = (console / 'Dockerfile').read_text().splitlines()
@@ -319,7 +345,7 @@ def runtime(work, images):
         return (r.stdout + r.stderr), ['docker', 'run', '--network', 'none', '--entrypoint', entrypoint, *args]
     for name, row in images.items():
         ref = row['reference']; record = {'image': name, 'imageId': row['imageId']}
-        if name in JAVA:
+        if name in JAVA or name in EXCEPTIONS:
             output, cmd = run_in(ref, 'java', '-XshowSettings:properties', '-version')
             record.update(output=output, runtimeCommand=cmd)
         elif name == 'people-service':
@@ -355,9 +381,23 @@ def main():
     p.add_argument('--work', type=Path, required=True, help='new folder; everything is written here')
     p.add_argument('--build-records', type=Path, help='build-images.py --output folder of the deployed build')
     p.add_argument('--live-context', help='kubectl context whose traderx namespace must run exactly these digests')
+    p.add_argument('--exception-root', action='append', default=[],
+                   help='ROOT=GENERATED: a checkout of a declared exception commit and its render (ADR-096 §6)')
+    p.add_argument('--exception-build-records', type=Path, action='append', default=[],
+                   help='build-images.py --exception output folder of the deployed exception build')
     a = p.parse_args()
     root = a.root.resolve(); work = a.work.resolve()
     preflight(root)
+    exception_roots = {}
+    for entry in a.exception_root:
+        r, _, generated = entry.partition('=')
+        head = out(['git', '-C', r, 'rev-parse', 'HEAD']).strip()
+        if not (Path(generated) / 'code/target-generated').is_dir():
+            raise SystemExit(f'--exception-root {entry}: GENERATED is not a render')
+        exception_roots[head] = (Path(r).resolve(), Path(generated).resolve())
+    missing = {e['sourceCommit'] for e in EXCEPTIONS.values()} - set(exception_roots)
+    if missing or set(exception_roots) - {e['sourceCommit'] for e in EXCEPTIONS.values()}:
+        raise SystemExit(f'--exception-root must cover exactly the declared exception commits; missing {sorted(missing)}')
     work.mkdir(parents=True, exist_ok=False); logs = work / 'logs'; logs.mkdir(); (work / 'measurements').mkdir()
     shutil.copy2(a.rendered, work / 'candidate.yaml')
     private, upstream = population(a.rendered)
@@ -374,6 +414,22 @@ def main():
     with derive.validated(root, list(COMPONENTS), state=STATE) as (contexts, receipt, log):
         shutil.copytree(contexts, work / 'contexts', symlinks=True); shutil.copy2(log, logs / 'generation.log')
     prov.copy_context(root / 'web-front-end-console', work / 'contexts/web-front-end-console')
+    exception_receipts = {}
+    for commit, (eroot, generated) in exception_roots.items():   # each exception commit's own derivation
+        epoch = out(['git', '-C', str(eroot), 'show', '-s', '--format=%ct', 'HEAD']).strip()
+        saved = {k: os.environ.get(k) for k in ('TRADERX_GENERATED_ROOT', 'SOURCE_DATE_EPOCH')}
+        os.environ.update(TRADERX_GENERATED_ROOT=str(generated), SOURCE_DATE_EPOCH=epoch)
+        try:
+            wanted = sorted({e['component'] for e in EXCEPTIONS.values() if e['sourceCommit'] == commit})
+            with derive.validated(eroot, wanted, state=STATE) as (contexts, ereceipt, log):
+                shutil.copytree(contexts, work / 'exception-contexts' / commit, symlinks=True)
+                shutil.copy2(log, logs / f'generation-{commit[:12]}.log')
+        finally:
+            for k, v in saved.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+        exception_receipts[commit] = ereceipt
+        (work / f'derivation-{commit[:12]}.json').write_text(json.dumps(ereceipt, indent=2) + '\n')
     console_hash = prov.tree_hash(root / 'web-front-end-console')
     (work / 'derivation.json').write_text(json.dumps(receipt, indent=2) + '\n')
     build = work / 'build'
@@ -382,7 +438,7 @@ def main():
         summary['buildRecords'] = 'build-images.py output of the deployed build'
     else:
         build.mkdir()
-        inputs = next(iter(images.values()))['sourceInputsSha256']
+        inputs = next(r for n, r in images.items() if n not in EXCEPTIONS)['sourceInputsSha256']
         records = {'schema': 'traderx-compsci-local-images-v1', 'platform': 'linux/amd64',
                    'sourceCommit': admit.REVIEWED_IMAGE_COMMIT, 'published': True, 'images': {},
                    'reconstructedFrom': 'image labels (source commit, derivation input hash) + this fresh derivation; '
@@ -400,6 +456,18 @@ def main():
                                                               'sourceCommit': admit.REVIEWED_IMAGE_COMMIT}) + '\n')
         summary['buildRecords'] = 'reconstructed from image labels + fresh derivation'
     original = json.loads((build / 'images.json').read_text())
+    for folder in a.exception_build_records:   # the exception images' own build records
+        for name, row in json.loads((folder / 'images.json').read_text())['images'].items():
+            if name not in EXCEPTIONS:
+                raise SystemExit(f'{folder}: {name} is not a declared exception image')
+            original['images'][name] = row
+    for name, e in EXCEPTIONS.items():
+        if name not in original['images']:   # reconstructed, as for the default build when its host is gone
+            original['images'][name] = {'reference': images[name]['reference'], 'imageId': images[name]['imageId'],
+                                        'component': e['component'], 'sourceCommit': e['sourceCommit'],
+                                        'sourceInputsSha256': images[name]['sourceInputsSha256'],
+                                        'contextSha256': exception_receipts[e['sourceCommit']]['contexts'][e['component']]}
+    (build / 'images.json').write_text(json.dumps(original, indent=2) + '\n')
     published = {'sourceCommit': admit.REVIEWED_IMAGE_COMMIT, 'images': {
         name: {'reference': row['reference'], 'imageId': row['imageId'],
                'sourceContextSha256': original['images'][name]['contextSha256'],
@@ -425,7 +493,8 @@ def main():
     verdict = {}
     try:
         prep.package(work / 'measurements', work / 'published.json', a.public_lock, build, work / 'derivation.json',
-                     work / 'candidate.yaml', package)
+                     work / 'candidate.yaml', package,
+                     {c: work / f'derivation-{c[:12]}.json' for c in exception_receipts})
         target = []
         for key, value in admit.TARGET.items():
             target += ['--' + key, value]

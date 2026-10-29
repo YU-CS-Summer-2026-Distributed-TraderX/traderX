@@ -3,12 +3,16 @@
 import argparse
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import yaml
+
+_spec = importlib.util.spec_from_file_location('prepare_population', Path(__file__).with_name('population.py'))
+population = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(population)
 
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = 'project-compsci-484414'
@@ -140,6 +144,16 @@ def configure_private_runtime(docs):
                     c.setdefault('env', []).append({'name': 'JAVA_TOOL_OPTIONS', 'value': jvm_options})
 
 
+def apply_population(docs, declared, tag):
+    """ADR-096 §6: a workload with a declared exception runs its own image repository (built from its own commit)."""
+    for doc in docs:
+        image = population.workload_image(declared, doc['metadata']['name']) if podspec(doc) else None
+        if not image: continue
+        for c in podspec(doc).get('containers', []) + podspec(doc).get('initContainers', []):
+            if c['image'].startswith(REGISTRY):
+                c['image'] = REGISTRY + image + ':' + tag
+
+
 def pin_images(docs, published, public):
     require_ref = lambda ref: isinstance(ref,str) and re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}',ref)
     private = published['images']
@@ -176,9 +190,19 @@ def podspec(doc):
     return None
 
 
-def validate(docs):
+def validate(docs, declared=None):
     def require(value,message):
         if not value: raise AssertionError(message)
+    # ADR-096 §6: each declared exception runs on its workload and nowhere else; no other workload leaves the defaults.
+    exceptions = population.exceptions(declared or population.load())
+    for doc in docs:
+        pod = podspec(doc)
+        if not pod: continue
+        private = [c['image'][len(REGISTRY):].split('@')[0].split(':')[0]
+                   for c in pod.get('containers', []) + pod.get('initContainers', []) if c['image'].startswith(REGISTRY)]
+        mine = population.workload_image(declared or population.load(), doc['metadata']['name'])
+        require(all(name == mine for name in private) if mine else not any(name in exceptions for name in private),
+                f'{doc["metadata"]["name"]}: image differs from the declared population (ADR-096 §6)')
     require(docs, 'empty manifest population')
     ids = [(d['kind'], d['metadata']['name']) for d in docs]
     require(len(ids) == len(set(ids)), 'duplicate resource identity')
@@ -312,7 +336,7 @@ def validate(docs):
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
 
 
-def prepare(output, tag, dns, published_path=None, public_path=None):
+def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -448,10 +472,15 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
     raw = raw.replace('.traderx.svc.', f'.{NAMESPACE}.svc.')  # member/ingress FQDNs follow the namespace
     docs = list(yaml.safe_load_all(raw))
     configure_private_runtime(docs)
+    declared = population.load(population_path)
+    apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
-        pin_images(docs, json.loads(published_path.read_text()), json.loads(public_path.read_text()))
-    validate(docs)
+        published = json.loads(published_path.read_text())
+        for path in exception_published or []:   # each exception build's own inventory (build-images.py --exception)
+            published['images'].update(json.loads(Path(path).read_text())['images'])
+        pin_images(docs, published, json.loads(public_path.read_text()))
+    validate(docs, declared)
     raw = yaml.safe_dump_all(docs, sort_keys=False)
     (output / 'candidate.yaml').write_text(raw)
     secrets = {}
@@ -496,7 +525,9 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
               'imageLocks':None if not published_path else {
                   'privateSha256':hashlib.sha256(published_path.read_bytes()).hexdigest(),
                   'publicSha256':hashlib.sha256(public_path.read_bytes()).hexdigest(),
-                  'imageSourceCommit':json.loads(published_path.read_text())['sourceCommit']},
+                  'imageSourceCommit':json.loads(published_path.read_text())['sourceCommit'],
+                  'exceptionPublishedSha256':[hashlib.sha256(Path(x).read_bytes()).hexdigest() for x in exception_published or []]},
+              'population':population.load(population_path),
               'remainingGates':['review per-image payload evidence and compatible admission',
                   'provision scoped storage credentials and private application secrets',
                   'verify node resource fit','server dry-run and live end-to-end proof']}
@@ -511,8 +542,10 @@ if __name__=='__main__':
     p.add_argument('--dns-ip',required=True)
     p.add_argument('--published',type=Path)
     p.add_argument('--public-lock',type=Path)
+    p.add_argument('--population',type=Path,help='the reviewed population (ADR-096 §6); default population.json')
+    p.add_argument('--exception-published',type=Path,action='append',help="an exception build's published inventory")
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
-    prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock)
+    prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published)

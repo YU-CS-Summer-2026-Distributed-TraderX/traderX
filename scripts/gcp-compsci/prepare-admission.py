@@ -17,7 +17,7 @@ spec=importlib.util.spec_from_file_location('companion_admit',Path(__file__).wit
 admit=importlib.util.module_from_spec(spec);spec.loader.exec_module(admit)
 
 
-def package(measured, published_path, upstream_path, build_dir, derivation_path, rendered_path, output):
+def package(measured, published_path, upstream_path, build_dir, derivation_path, rendered_path, output, exception_derivations=None):
     output.mkdir(parents=True,exist_ok=False)
     evidence=output/'evidence';evidence.mkdir()
     def read(path):return admit.ri20.decode(path.read_bytes())
@@ -42,13 +42,20 @@ def package(measured, published_path, upstream_path, build_dir, derivation_path,
           'renderedSha256':admit.digest(rendered_path.read_bytes()),
           'slots':admit.ri20.slots(admit.ri20.documents(rendered_path.read_text()),'traderx'),
           'upstreamReferences':[x['reference'] for x in upstream.values()],'artifacts':{}}
+    # ADR-096 §6: each exception commit's own independent derivation, bound into the plan as evidence.
+    others={commit:read(Path(path)) for commit,path in (exception_derivations or {}).items()}
+    if others:plan['workloadDerivations']={commit:write('derivation-'+commit[:12]+'.json',receipt) for commit,receipt in others.items()}
     inventory={'schema':'traderx-compsci-inspected-artifacts-v1','artifacts':[]}
     for name,item in published['images'].items():
         old=original['images'][name];comparison=read(measured/(name+'-payload-comparison.json'))
         admit.require(comparison['passed'] and comparison['expectedFiles']>0 and comparison['actualFiles']>0,'failed/empty independent payload comparison')
         admit.require(comparison['expectedEntries']==comparison['actualEntries'],'expected/inspected payload differs')
         admit.require(old['imageId']==item['imageId'] and old['contextSha256']==item['sourceContextSha256'],'published/build mapping differs')
-        component=old['component'];context=console['sha256'] if component=='web-front-end-console' else fresh['contexts'][component]
+        component=old['component']
+        if name in admit.EXCEPTIONS:
+            admit.require(item.get('sourceCommit') in others,'exception image without its own derivation')
+            context=others[item['sourceCommit']]['contexts'][component]
+        else:context=console['sha256'] if component=='web-front-end-console' else fresh['contexts'][component]
         admit.require(context==old['contextSha256'],'source context does not match intended image')
         build_commit=item.get('sourceCommit',published['sourceCommit'])
         build_inputs=item.get('sourceInputsSha256',original_receipt['sourceInputsSha256'])
@@ -95,4 +102,7 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     for name in ['measurements','published','upstream-lock','build-records','derivation','rendered','output']:
         p.add_argument('--'+name,type=Path,required=True)
-    a=p.parse_args();package(a.measurements,a.published,a.upstream_lock,a.build_records,a.derivation,a.rendered,a.output)
+    p.add_argument('--exception-derivation',action='append',default=[],help='COMMIT=PATH: a declared exception commit\'s derivation receipt (ADR-096 §6)')
+    a=p.parse_args()
+    package(a.measurements,a.published,a.upstream_lock,a.build_records,a.derivation,a.rendered,a.output,
+            {c:Path(f) for c,_,f in (e.partition('=') for e in a.exception_derivation)})

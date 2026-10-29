@@ -20,7 +20,10 @@ Sources:
   - `rig/test_rig.py`;
   - `test_prepare.py` (`test_rig_tiers…`, `test_gateways_are_one_per_node…`,
     `test_members_run_generational_zgc_with_the_book_cap_pinned`);
-  - `FixSessionPersistenceIT.aDrainingGatewayLogsOutAndStillStoresTheAnswerInFlight`.
+  - `FixSessionPersistenceIT.aDrainingGatewayLogsOutAndStillStoresTheAnswerInFlight`;
+  - `test_population.py` and `test_prepare.Population` (FR-PRG-10).
+- `scripts/gcp-compsci/population.json` + `population.py`: the declared image population (FR-PRG-10).
+- `scripts/gcp-compsci/rig/codec-compat.sh` + `CodecCompat.java`: the tip's ingress on the members' codec.
 
 Runbook: [CompSci GKE, production rig](../../../../docs/deployment/compsci-gke.md#production-rig-adr-096).
 

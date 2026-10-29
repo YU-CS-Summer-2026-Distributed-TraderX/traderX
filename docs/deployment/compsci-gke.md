@@ -79,8 +79,10 @@ The inherited fixed-path RI20 GKE entrypoint does not consume this custom profil
 Use the explicit `scripts/gcp-compsci/admit.py` companion below; the inherited
 admission path and its refusal rules remain unchanged.
 
-`admit.py` admits only images built from `REVIEWED_IMAGE_COMMIT` (one constant in `admit.py`; `00b31d33` since
-the fourth roll on 2026-10-28; `40d93f6b`, `b28fd9f3` and `9e0fd80b` before it). Its measured evidence is produced by `measure-admission.py`: on a checkout of exactly that commit,
+`admit.py` admits only images built from the commits `scripts/gcp-compsci/population.json` declares
+(ADR-096 §6): `imageSourceCommit` for every private image (`00b31d33` since the fourth roll on 2026-10-28;
+`40d93f6b`, `b28fd9f3` and `9e0fd80b` before it), and per workload at most one exception built from its own commit
+into its own image repository. Its measured evidence is produced by `measure-admission.py`: on a checkout of exactly the default commit,
 rendered with that commit's `SOURCE_DATE_EPOCH` and its GitHub origin, run
 
 ```bash
@@ -89,8 +91,16 @@ python3 scripts/gcp-compsci/measure-admission.py --rendered <candidate.yaml> --w
 
 It reads the population from the candidate, derives the contexts independently, compares every image payload
 with an independent reference build, records OCI and runtime-architecture evidence, then runs
-`prepare-admission.py`, `admit.py` and `admission-controls.py`. Moving to a new image commit means changing the
-constant and rerunning it.
+`prepare-admission.py`, `admit.py` and `admission-controls.py`. Moving to a new image commit means changing
+`population.json` and rerunning it.
+
+A declared exception (rollout 5a: the members' `cluster-node-member` from the `c562bbab` shadow-state backport):
+- build it with `build-images.py --exception order-matcher=cluster-node-member` on a checkout of that commit;
+- render with `prepare.py --exception-published <its published.json>`;
+- measure with `--exception-root <its checkout>=<its render>` (and `--exception-build-records`).
+
+Every stage refuses an image from neither commit and any undeclared mix. Check the codec before a mixed roll:
+`scripts/gcp-compsci/rig/codec-compat.sh <members' render> <tip render>`.
 
 The candidate adds opt-in `SOURCE_DATE_EPOCH` for reproducible UI timestamps and
 preserves a credential-free origin URL in the isolated derivation repository.
@@ -235,7 +245,7 @@ kubectl -n traderx exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -uroot 
 Production is not up around the clock. `scripts/gcp-compsci/rig/rig.sh` brings it up at bench parity and takes it
 back to zero instances. `gateways.sh` sets the gateway count on a running rig. Both need `gcloud` signed in,
 `kubectl`, and `jq`. Every step prints its command with `+`; `--dry-run` prints the whole plan and contacts nothing.
-Spec: `specs/YU18-risk-integration/maintenance/production-rig/spec.md` (FR-PRG-01..09).
+Spec: `specs/YU18-risk-integration/maintenance/production-rig/spec.md` (FR-PRG-01..10).
 
 ```bash
 scripts/gcp-compsci/rig/rig.sh pools                          # once: nats-pool, gateway-pool, client VM, IAP rule, engine sysctls
