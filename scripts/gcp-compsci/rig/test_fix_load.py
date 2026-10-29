@@ -60,6 +60,9 @@ class Drain(unittest.TestCase):
                     # Resumed, not reset; at or past the last number read (what the drain cut off is asked for again).
                     if f.get('141') == 'Y' or int(f['34']) <= last: seen['errors'].append(f"resume logon seq {f['34']} after {last}")
                     reply(conn, [('35', 'A')]); reply(conn, [('35', '2'), ('7', last + 1), ('16', 0)]); continue
+                if f['35'] == 'F':   # the end-of-run sweep cancels what still rests
+                    seen.setdefault('cancels', []).append(f['41'])
+                    reply(conn, [('35', '8'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('150', '4')])
                 if f['35'] == 'D':   # a resend of a key the engine already holds is restated (150=I)
                     restate = f['11'] in seen['answered']
                     if not restate: seen['answered'].add(f['11'])
@@ -75,7 +78,9 @@ class Drain(unittest.TestCase):
         self.assertEqual(seen['errors'], [])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn('not-printed-pw', r.stdout + r.stderr)
-        self.assertEqual((result['unanswered'], result['duplicateAnswers'], result['reconnects']), (0, 0, 1))
+        self.assertEqual((result['unanswered'], result['duplicateAnswers'], result['reconnects'], result['restingAtEnd']), (0, 0, 1, 0))
+        self.assertEqual(result['cancelledAtEnd'], result['answered'])   # the fake leaves every order resting
+        self.assertEqual(len(seen['cancels']), len(set(seen['cancels'])))
         self.assertEqual(result['sent'], result['answered'])
         self.assertGreaterEqual(result['sessions'][0]['resent'], 10)
         self.assertEqual([l.get('141') for l in seen['logons']], ['Y', None])
@@ -84,6 +89,22 @@ class Drain(unittest.TestCase):
         first_resend = next(i for i, f in enumerate(seen['conn2']) if f['35'] == 'D' and f.get('97') == 'Y')
         self.assertLess(gapfill, first_resend, types[:12])
 
+    def test_the_rate_is_per_session_per_second(self):
+        # Production 2026-10-29: --rate 5 sent 100/s per session (one order per 10 ms tick at least).
+        srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
+        def acceptor():
+            conn, _ = srv.accept(); n = [1]
+            for f in messages(conn):
+                body = {'A': [('35', 'A')], 'D': [('35', '8'), ('11', f.get('11')), ('39', '2')], '5': [('35', '5')]}.get(f['35'])
+                if body: conn.sendall(frame([body[0], ('34', n[0]), ('52', '20261029-18:00:00.000')] + body[1:])); n[0] += 1
+                if f['35'] == '5': conn.close(); return
+        threading.Thread(target=acceptor, daemon=True).start()
+        with tempfile.TemporaryDirectory() as d:
+            creds = Path(d, 'creds.json'); creds.write_text(json.dumps({'CLIENT2': {'account': '9900002', 'password': 'p'}}))
+            subprocess.run(['node', str(LOAD), '--creds', str(creds), '--px', '1.00', '--rate', '5', '--secs', '2', '--host',
+                            '127.0.0.1', '--port', str(srv.getsockname()[1]), '--out', str(Path(d, 'r.json'))], capture_output=True, timeout=60)
+            sent = json.loads(Path(d, 'r.json').read_text())['sent']
+        self.assertTrue(8 <= sent <= 11, sent)
 
 if __name__ == '__main__':
     unittest.main()

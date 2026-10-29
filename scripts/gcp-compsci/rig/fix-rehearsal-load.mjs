@@ -1,6 +1,8 @@
 // ADR-096 (FR-PRG-12): the rig rehearsal's FIX load. One session per load CompID (FR-PRG-11), each trading only its own
 // test account: limit orders of 1 at one price inside the collar, alternating Buy/Sell, so the accounts cross each
-// other and the book stays small. Every ClOrdID is tracked until its first ExecutionReport.
+// other and the book stays small. No TimeInForce: the gateway's default rests (a Day order needs an open trading day,
+// FR-OT08). Every ClOrdID is tracked until its first ExecutionReport, and at the end every order still resting is
+// cancelled, so the run leaves no open test order.
 //
 // A gateway that drains logs its sessions out (FR-PRG-07). This client then reconnects through the internal LB with
 // its next MsgSeqNum (never a reset after the first Logon), answers the acceptor's ResendRequest with a GapFill, asks
@@ -34,8 +36,8 @@ function session(compId, { account, password }, index) {
   const s = { compId, account, sent: 0, answered: 0, resent: 0, restated: 0, rejected: 0, sessionRejects: 0,
               duplicateAnswers: 0, reconnects: [], rejectReasons: {} };
   const open = new Map();          // ClOrdID -> fields of the NewOrderSingle, until its first ExecutionReport
-  const answered = new Set();
-  let out = 1, inExpected = 1, sock = null, up = false, first = true, buf = '', next = 0, downAt = null, resendTimer = null;
+  const answered = new Set(), resting = new Set();   // resting: last status New / PartiallyFilled
+  let out = 1, inExpected = 1, sock = null, up = false, first = true, buf = '', next = 0, downAt = null, resendTimer = null, credit = 0;
 
   const frame = (type, fields, header = []) => {
     const seq = header.find(([k]) => k === '34')?.[1] ?? out++;
@@ -47,7 +49,7 @@ function session(compId, { account, password }, index) {
   };
   const write = (type, fields, header) => { if (sock && !sock.destroyed) sock.write(frame(type, fields, header)); };
   const order = (cl, side, resend) => write('D', [['11', cl], ['1', account], ['55', cfg.ticker], ['54', side],
-    ['38', 1], ['40', 2], ['44', cfg.px], ['59', 0], ['60', stamp()]], resend ? [['97', 'Y']] : []);
+    ['38', 1], ['40', 2], ['44', cfg.px], ['60', stamp()]], resend ? [['97', 'Y']] : []);
   const resendOpen = () => { for (const [cl, side] of open) { order(cl, side, true); s.resent++; } };
 
   const connect = () => {
@@ -80,6 +82,9 @@ function session(compId, { account, password }, index) {
         if (f['35'] === '3') { s.sessionRejects++; continue; }
         if (f['35'] === '5') { if (!closing) sock.destroy(); continue; }
         if (f['35'] === '8' && f['11']) {
+          const orig = f['41'] || f['11'];   // a cancel's report names the order in OrigClOrdID(41)
+          if (['0', '1'].includes(f['39']) && f['150'] !== 'I') resting.add(orig); else if (['2', '4', '8', 'C'].includes(f['39'])) resting.delete(orig);
+          if (f['41'] && f['39'] === '4') { s.cancelled = (s.cancelled || 0) + 1; continue; }
           if (f['150'] === 'I') s.restated++;
           if (answered.has(f['11'])) { if (f['39'] === '0' && f['150'] !== 'I') s.duplicateAnswers++; continue; }
           if (!open.has(f['11'])) continue;
@@ -99,22 +104,25 @@ function session(compId, { account, password }, index) {
   connect();
   const tick = setInterval(() => {
     if (!sending || !up || open.size >= cfg.maxInFlight) return;
-    for (let i = 0; i < cfg.rate / 100; i++) {
+    for (credit += cfg.rate / 100; credit >= 1; credit--) {
       const cl = `${RUN}-${index}-${next++}`; const side = (next + index) % 2 ? 1 : 2;
       open.set(cl, side); order(cl, side, false); s.sent++;
     }
   }, 10);
-  return { s, open, stop: () => { clearInterval(tick); if (up) write('5', []); setTimeout(() => sock.destroy(), 500); } };
+  const cancelResting = () => { for (const cl of resting) write('F', [['41', cl], ['11', `${cl}-c`], ['1', account], ['55', cfg.ticker],
+    ['54', (Number(cl.split('-').pop()) + index) % 2 ? 1 : 2], ['60', stamp()]]); };
+  return { s, open, resting, cancelResting, stop: () => { clearInterval(tick); if (up) write('5', []); setTimeout(() => sock.destroy(), 500); } };
 }
 
 const sessions = Object.entries(creds).map(([c, v], i) => session(c, v, i));
 const report = (final) => {
-  const rows = sessions.map(({ s, open }) => ({ ...s, unanswered: open.size }));
+  const rows = sessions.map(({ s, open, resting }) => ({ ...s, unanswered: open.size, restingAtEnd: resting.size }));
   const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
   const out = { run: RUN, startedAt: started.toISOString(), at: new Date().toISOString(), final, px: cfg.px,
                 ticker: cfg.ticker, sent: sum('sent'), answered: sum('answered'), unanswered: sum('unanswered'),
                 rejected: sum('rejected'), restated: sum('restated'), duplicateAnswers: sum('duplicateAnswers'),
-                reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), sessions: rows };
+                reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), restingAtEnd: sum('restingAtEnd'),
+                cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), sessions: rows };
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
   console.log(`${out.at} sent=${out.sent} answered=${out.answered} unanswered=${out.unanswered} rejected=${out.rejected} `
     + `restated=${out.restated} dupAnswers=${out.duplicateAnswers} reconnects=${out.reconnects}`);
@@ -123,13 +131,15 @@ const report = (final) => {
 const progress = setInterval(() => report(false), 10_000);
 setTimeout(() => {   // stop sending, then wait for every answer (at most 60 s), then log out
   sending = false;
-  const t0 = Date.now();
+  const t0 = Date.now(); let cancelled = false;
   const wait = setInterval(() => {
     const left = sessions.reduce((a, x) => a + x.open.size, 0);
-    if (left === 0 || Date.now() - t0 > 60_000) {
+    const rest = sessions.reduce((a, x) => a + x.resting.size, 0);
+    if (left === 0 && rest > 0 && !cancelled) { cancelled = true; sessions.forEach((x) => x.cancelResting()); return; }
+    if ((left === 0 && rest === 0) || Date.now() - t0 > 60_000) {
       clearInterval(wait); clearInterval(progress); closing = true;
       sessions.forEach((x) => x.stop());
-      setTimeout(() => { const r = report(true); process.exit(r.unanswered === 0 && r.duplicateAnswers === 0 ? 0 : 1); }, 1000);
+      setTimeout(() => { const r = report(true); process.exit(r.unanswered === 0 && r.duplicateAnswers === 0 && r.restingAtEnd === 0 ? 0 : 1); }, 1000);
     }
   }, 200);
 }, cfg.secs * 1000);
