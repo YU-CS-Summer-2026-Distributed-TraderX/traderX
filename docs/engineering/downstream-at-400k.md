@@ -528,6 +528,57 @@ burst B moved every partition on, then named exactly those ids. The receipt work
 one lane per partition the stream interleaves partitions, so "the stream has moved past this side" must be judged per
 partition subject (`PartitionHeads`); against a global head the recon had called 897 still-arriving sides MISSING.
 
+### 7.11 The orderbook writer across a network round trip (FR-DRS-28)
+
+**Finding.** In the production rehearsal on 2026-10-29 (read-only, 3:00–3:03 pm ET, a 3.2K orders/s burst), the
+row projection with the defaults (`rows`, one partition, `ORDER_FEED_PERSIST=true`) kept up on trades (~12 INSERT/s
+of ~200 rows) but wrote `orderbook` at ~1,170 statements/s, one row each, and SQL was ~1M updates behind at
+2:50 pm. The database was idle (0.5 core, ~13% IO pressure, 0.01% buffer-pool misses). trade-processor and
+`eod-price-db` are on different nodes, so each statement pays a round trip of about 1 ms.
+
+**Cause.** `persistAll` already applied 1000 updates per transaction, but every statement in it was a round trip:
+
+- The write went through JPA: one merged entity per order, flushed as one `UPDATE` or `INSERT` each
+  (~275 and ~33 per batch measured). At 1 ms the batch took ~330 ms, so the statements did not share round
+  trips.
+- In an unattributed run (`legacy-unknown`, what the CompSci render runs: it provisions no run descriptor),
+  every update to an existing order also read the run row again for the sealed-run check.
+
+So the old path cost ~1,300 statements per 1000-update batch on the production shape.
+
+**Change.** The same rules still run in memory, in arrival order, against the latest row per order. The run row is
+read once per scope per batch. Only each order's final row is written, every mapped column, by one multi-row
+`INSERT … ON DUPLICATE KEY UPDATE` per 500 orders, before the counter update, in the same transaction. The
+single-update path (`persist`, used by recovery and by the batch-refusal retry) is unchanged, and it is the
+reference the equivalence test holds the batch path to.
+
+**Measured** (`OrderBatchThroughputIT`, VM `ob-gate`, c4d-standard-8; MariaDB 11.4 in a container limited to 2
+CPUs; 1000-update batches in engine order; 45 s or 730 batches; `tc netem delay 1ms` on `docker0` for the 1 ms
+rows):
+
+| Stream | Link | Before: updates/s | statements/batch | After: updates/s | statements/batch |
+|---|---|---|---|---|---|
+| unattributed (CompSci today) | 1 ms | 929 | 1,314 | 58,315 | 7 |
+| managed (epoch-v1 run) | 1 ms | 3,017 | 586 | 38,949 | 8 |
+| unattributed | loopback | 19,799 | 1,315 | 99,649 | 7 |
+| managed | loopback | 19,594 | 587 | 57,950 | 8 |
+
+The 1 ms "before" rows reproduce the production rate. After the change a batch costs a fixed seven or eight round
+trips, so the link no longer sets the rate.
+The managed stream stays below the unattributed one because each managed update also computes its event
+digest.
+
+**Equivalence and failure.** `OrderBatchProjectionIT` compares every column of every row and the run counters,
+per-update vs batched, at batch sizes 1000, 37 and 1, on a stream that reorders updates across batches,
+redelivers about one in nine, emits several outputs per command, and mixes typed and legacy orders. It also
+covers:
+
+- a refused batch, which writes nothing;
+- a rolled-back batch, then replay from the last committed batch;
+- a sealed legacy run;
+- a child JVM killed with SIGKILL after it has executed a batch's upsert but before commit. Nothing of that
+  batch remains, and replay from the last committed batch reaches the reference.
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K

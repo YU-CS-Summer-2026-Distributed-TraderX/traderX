@@ -1,6 +1,6 @@
 # Downstream read side specification
 
-Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28). Dependencies: JetStream on the existing NATS server, the YU18 trade
+Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28; FR-DRS-28 2026-10-29). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
 ## Requirements
@@ -146,6 +146,24 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   The SQL projection SHALL derive it from the row's own previous state (column `orderbook.filledquantity`,
   added by `900-migrations.sql`), and it SHALL NOT enter the event digest.
 
+### Batched orderbook writer
+
+- FR-DRS-28: With `traderx.order-feed.persist=true`, a batch of order updates
+  (`OrderProjectionService.persistAll`) SHALL be applied in arrival order under exactly the rules of one
+  update: scoped sequence and output ordinal (a late update never rewinds an order), `ORDER_EVENT_CONFLICT`
+  on a same-position digest mismatch, the FR-DRS-27 filled quantity, trace id and client order key carried
+  forward, and the sealed legacy run's identical-state check. It SHALL then write only each order's
+  resulting row, every mapped column, in multi-row `INSERT … ON DUPLICATE KEY UPDATE` statements of at most
+  500 orders, before the run counter update, in the batch's one transaction.
+  - The `orderbook` rows and the run counters (`order_updates`, `checkpoint_seq`) SHALL equal, column for
+    column, what the same updates leave applied one per transaction (`persist`).
+  - A batch with any refused update SHALL write nothing; the feed then retries it one update at a time, as
+    before. The stream is acknowledged after the commit, so a redelivered batch changes nothing and a
+    process killed inside a batch leaves none of it.
+  - A batch SHALL issue a fixed number of statements, independent of its size up to 500 orders: the run row
+    is read once per scope per batch, for managed and unattributed (`legacy-unknown`) runs alike.
+  - No new configuration.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
 - NFR-DRS-02: No engine, ack, snapshot or wire format changes.
@@ -161,6 +179,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
 - SC-DRS-04: Live, with the default ingest queue and a 400K/s burst, the bridges' rejected ids equal
   the engine's fills minus the stream, which equal the recon's MISSING set. With the GKE queue, the
   same burst rejects 0.
+- SC-DRS-06: `OrderBatchProjectionIT` passes in an empty-root render: per-update vs batched at batch sizes
+  1000, 37 and 1 on an adversarial stream (reordering across batches, redelivery, multi-output commands,
+  typed and legacy orders; every column and the counters), a refused batch, rollback then replay, a sealed
+  legacy run, and SIGKILL inside a batch that has written uncommitted rows. Opt-in
+  `OrderBatchThroughputIT`, 1000-update batches, 1 ms added between the JVM and MariaDB: an unattributed
+  stream (the CompSci render today) goes from 929 to 58,315 updates/s, a managed one from 3,017 to 38,949.
 - SC-DRS-05: Live, `yu18-projection-effect-end.sh NEGATIVE=1` books a cross while trade-processor is scaled
   to 0. On the core feed, after it returns, SQL holds 4 of 6 sides and `missingTradeSides` is 2. On the
   production render (FR-DRS-25), SQL holds 6 of 6 sides, positions are +15/-15 and equal the rows, and

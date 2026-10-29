@@ -15,9 +15,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 public final class OrderProjectionService {
   private final OrderRepository orders; private final RunRegistry registry;
   private final ProjectionWriteLock lock; private final TransactionTemplate transactions;
+  private final org.springframework.jdbc.core.JdbcTemplate jdbc;
   public OrderProjectionService(OrderRepository orders,RunRegistry registry,ProjectionWriteLock lock,
                                 TransactionTemplate transactions) {
     this.orders=orders;this.registry=registry;this.lock=lock;this.transactions=transactions;
+    this.jdbc=registry.jdbc();
   }
   @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
   private static final com.fasterxml.jackson.databind.ObjectMapper DIGEST_MAPPER =
@@ -27,7 +29,7 @@ public final class OrderProjectionService {
     transactions.execute(status -> {
       lock.acquire();
       apply(update,registry.scope(update.getProjectionScope()),
-          orders.findById(update.getId()).orElse(null),null);
+          orders.findById(update.getId()).orElse(null),null,null);
       return null;
     });
   }
@@ -37,6 +39,11 @@ public final class OrderProjectionService {
    * findAllById, one counter UPDATE per scope - with exactly {@link #persist}'s per-update rules
    * applied in arrival order. Any refusal throws and rolls the whole batch back; the caller then
    * retries each update alone, so refusal semantics are per update as before.
+   *
+   * <p>FR-DRS-28: the rules run in memory against the latest row per order, and only each order's
+   * final row is written, by {@link #upsert} in multi-row statements: one round trip per
+   * {@link #UPSERT_ROWS} orders instead of one per order. The rows are the ones the per-update
+   * path would have left, column for column.
    */
   public void persistAll(java.util.List<OrderUpdate> updates) {
     transactions.execute(status -> {
@@ -45,21 +52,86 @@ public final class OrderProjectionService {
       java.util.Map<String,OrderRow> current=new java.util.HashMap<>();
       for (OrderRow r:orders.findAllById(updates.stream().map(OrderUpdate::getId).distinct().toList())) {current.put(r.getId(),r);}
       java.util.Map<String,long[]> applied=new java.util.HashMap<>();
+      java.util.Map<String,OrderRow> written=new java.util.LinkedHashMap<>();
       for (OrderUpdate u:updates) {
-        OrderRow saved=apply(u,runs.computeIfAbsent(u.getProjectionScope(),registry::scope),current.get(u.getId()),applied);
+        OrderRow saved=apply(u,runs.computeIfAbsent(u.getProjectionScope(),registry::scope),current.get(u.getId()),applied,written);
         if (saved!=null) {current.put(saved.getId(),saved);}
       }
-      // Flush before the shared counter row's UPDATE, for the reason in TradeService.processTrades.
-      if (entityManager!=null) {entityManager.flush();}
+      // Rows before the shared counter row's UPDATE, for the reason in TradeService.processTrades.
+      upsert(written.values());
       for (var a:applied.entrySet()) {registry.appliedBatch(a.getKey(),false,a.getValue()[0],a.getValue()[1]);}
       return null;
     });
   }
 
+  /** Orders per upsert statement: 500 x 35 parameters stays under the protocol's 65,535. */
+  static final int UPSERT_ROWS = 500;
+  private static final String[] COLUMNS = {"orderid","accountid","security","side","quantity","remainingquantity",
+      "limitprice","status","createdat","updatedat","lastexecutionprice","lastfillquantity","filledquantity","traceid",
+      "clientorderkey","ordertype","timeinforce","stopprice","displayquantity","pegreference","pegoffset","pegcap",
+      "trailamount","trailpercentbps","triggered","sessiondate","suspendreason","reason","PROJECTIONSCOPE",
+      "CLUSTEREPOCH","EVENTIDSCHEME","RUNDESCRIPTORHASH","CONSENSUSSEQUENCE","OUTPUTORDINAL","EVENTDIGEST"};
+
+  /** The final rows of a batch, every mapped column, in statements of up to {@link #UPSERT_ROWS}. */
+  private void upsert(java.util.Collection<OrderRow> rows) {
+    if (rows.isEmpty()) {return;}
+    java.util.List<OrderRow> all=new java.util.ArrayList<>(rows);
+    jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) c -> {
+      for (int from=0;from<all.size();from+=UPSERT_ROWS) {
+        java.util.List<OrderRow> chunk=all.subList(from,Math.min(all.size(),from+UPSERT_ROWS));
+        try (var ps=c.prepareStatement(upsertSql(chunk.size()))) {
+          int i=1;
+          for (OrderRow r:chunk) {i=bind(ps,i,r);}
+          ps.executeUpdate();
+        }
+      }
+      return null;
+    });
+  }
+
+  static String upsertSql(int rows) {
+    String one="("+String.join(",",java.util.Collections.nCopies(COLUMNS.length,"?"))+")";
+    StringBuilder sql=new StringBuilder("INSERT INTO orderbook(").append(String.join(",",COLUMNS)).append(") VALUES ")
+        .append(String.join(",",java.util.Collections.nCopies(rows,one))).append(" ON DUPLICATE KEY UPDATE ");
+    for (int c=1;c<COLUMNS.length;c++) {sql.append(c>1?",":"").append(COLUMNS[c]).append("=VALUES(").append(COLUMNS[c]).append(')');}
+    return sql.toString();
+  }
+
+  /** Binds one row in {@link #COLUMNS} order, with a typed NULL where the value is absent. */
+  private static int bind(java.sql.PreparedStatement ps,int i,OrderRow r) throws java.sql.SQLException {
+    str(ps,i++,r.getId());num(ps,i++,r.getAccountId());str(ps,i++,r.getSecurity());str(ps,i++,r.getSide());
+    num(ps,i++,r.getQuantity());num(ps,i++,r.getRemainingQuantity());dec(ps,i++,r.getLimitPrice());str(ps,i++,r.getStatus());
+    time(ps,i++,r.getCreatedAt());time(ps,i++,r.getUpdatedAt());dec(ps,i++,r.getLastExecutionPrice());
+    num(ps,i++,r.getLastFillQuantity());num(ps,i++,r.getFilledQuantity());str(ps,i++,r.getTraceId());
+    str(ps,i++,r.getClientOrderKey());str(ps,i++,r.getOrderType());str(ps,i++,r.getTimeInForce());dec(ps,i++,r.getStopPrice());
+    num(ps,i++,r.getDisplayQuantity());str(ps,i++,r.getPegReference());num(ps,i++,r.getPegOffset());dec(ps,i++,r.getPegCap());
+    dec(ps,i++,r.getTrailAmount());num(ps,i++,r.getTrailPercentBps());
+    if (r.getTriggered()==null) {ps.setNull(i++,java.sql.Types.BOOLEAN);} else {ps.setBoolean(i++,r.getTriggered());}
+    num(ps,i++,r.getSessionDate());str(ps,i++,r.getSuspendReason());str(ps,i++,r.getReason());
+    str(ps,i++,r.getProjectionScope());str(ps,i++,r.getClusterEpoch());str(ps,i++,r.getEventIdScheme());
+    str(ps,i++,r.getRunDescriptorHash());
+    if (r.getConsensusSequence()==null) {ps.setNull(i++,java.sql.Types.BIGINT);} else {ps.setLong(i++,r.getConsensusSequence());}
+    num(ps,i++,r.getOutputOrdinal());str(ps,i++,r.getEventDigest());
+    return i;
+  }
+  private static void str(java.sql.PreparedStatement ps,int i,String v) throws java.sql.SQLException {
+    if (v==null) {ps.setNull(i,java.sql.Types.VARCHAR);} else {ps.setString(i,v);}
+  }
+  private static void num(java.sql.PreparedStatement ps,int i,Integer v) throws java.sql.SQLException {
+    if (v==null) {ps.setNull(i,java.sql.Types.INTEGER);} else {ps.setInt(i,v);}
+  }
+  private static void dec(java.sql.PreparedStatement ps,int i,java.math.BigDecimal v) throws java.sql.SQLException {
+    if (v==null) {ps.setNull(i,java.sql.Types.DECIMAL);} else {ps.setBigDecimal(i,v);}
+  }
+  private static void time(java.sql.PreparedStatement ps,int i,java.util.Date v) throws java.sql.SQLException {
+    if (v==null) {ps.setNull(i,java.sql.Types.TIMESTAMP);} else {ps.setTimestamp(i,new java.sql.Timestamp(v.getTime()));}
+  }
+
   /** One update's rules against the current row; returns the written row, or null when nothing was
-   *  written. {@code applied} null = count this row immediately (single-update path). */
+   *  written. {@code applied} null = count this row immediately (single-update path); {@code written}
+   *  non-null = collect the row for the batch's upsert instead of writing it through JPA. */
   private OrderRow apply(OrderUpdate update,java.util.Map<String,Object> run,OrderRow old,
-                         java.util.Map<String,long[]> applied) {
+                         java.util.Map<String,long[]> applied,java.util.Map<String,OrderRow> written) {
     {
       registry.validate(update,run);
       OrderRow row=OrderFeedHandler.toRow(update);
@@ -90,22 +162,25 @@ public final class OrderProjectionService {
           }
         }
       }
+      // FR-DRS-28: the run row the caller read for this scope in this transaction, not a fresh SELECT per
+      // update: every update of an unattributed (legacy-unknown) run used to pay one round trip here.
       if(old!=null && RunRegistry.UNKNOWN.equals(row.getProjectionScope())
-          && "SEALED".equals(registry.scope(row.getProjectionScope()).get("phase")) && sameLegacyState(old,row)) return null;
+          && "SEALED".equals(run.get("phase")) && sameLegacyState(old,row)) return null;
       registry.requireWritable(update,run);
       if (row.getTraceId()==null && old!=null) {row.setTraceId(old.getTraceId());}
       if (row.getClientOrderKey()==null && old!=null) {row.setClientOrderKey(old.getClientOrderKey());}   // ADR-093
       // persist() for a row known to be absent skips merge()'s SELECT; an existing row is already
       // managed in this transaction, so merging onto it issues no read either.
-      OrderRow written;
-      if (old==null && entityManager!=null) {entityManager.persist(row);written=row;}
-      else {written=orders.save(row);}
+      OrderRow saved;
+      if (written!=null) {written.put(row.getId(),row);saved=row;}
+      else if (old==null && entityManager!=null) {entityManager.persist(row);saved=row;}
+      else {saved=orders.save(row);}
       if (applied==null) {registry.applied(update,false);}
       else if (update.getConsensusSequence()!=null) {
         long[] a=applied.computeIfAbsent(update.getProjectionScope(),k->new long[2]);
         a[0]++;a[1]=Math.max(a[1],update.getConsensusSequence());
       }
-      return written;
+      return saved;
     }
   }
   private static boolean sameLegacyState(OrderRow old,OrderRow incoming) {

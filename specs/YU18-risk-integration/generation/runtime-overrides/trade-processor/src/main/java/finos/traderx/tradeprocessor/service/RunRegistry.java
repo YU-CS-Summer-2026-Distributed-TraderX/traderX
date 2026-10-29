@@ -12,6 +12,8 @@ public final class RunRegistry {
   public static final String UNKNOWN="legacy-unknown";
   private final JdbcTemplate jdbc;
   public RunRegistry(JdbcTemplate jdbc) { this.jdbc=jdbc; }
+  /** The same template, for a projection writing in this registry's transaction (OrderProjectionService.upsert). */
+  JdbcTemplate jdbc() { return jdbc; }
   public String activeScope() {
     return jdbc.queryForObject("SELECT projection_scope FROM projection_active WHERE singleton_id=1",String.class);
   }
