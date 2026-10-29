@@ -161,6 +161,30 @@ def add_fix_test_clients(docs):
             c['env'].append(auth)
 
 
+def add_binary_port(docs, port):
+    """ADR-096 (FR-PRG-13): the throughput run's binary entry, in-cluster only (ClusterIP): binary frames carry the
+    account and have no logon, so nothing outside the cluster may reach them."""
+    gw = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway')
+    c = podspec(gw)['containers'][0]
+    c['env'] = [e for e in c['env'] if e['name'] != 'BINARY_ACCEPTOR_PORT'] + [{'name': 'BINARY_ACCEPTOR_PORT', 'value': str(port)}]
+    c.setdefault('ports', []).append({'name': 'binary', 'containerPort': port})
+    docs.append({'apiVersion': 'v1', 'kind': 'Service', 'metadata': {'name': 'order-matcher-gw-binary', 'namespace': NAMESPACE,
+                 'labels': {'app': 'cluster-gateway'}},
+                 'spec': {'type': 'ClusterIP', 'selector': {'app': 'cluster-gateway'},
+                          'ports': [{'name': 'binary', 'port': port, 'targetPort': port}]}})
+
+
+def refuse_sequenced_binary(docs, declared):
+    """ADR-096 §6: in front of members built from an older commit (pre-ADR-090), a sequenced binary NEW must never
+    reach the cluster, so the gateway refuses the flag (BINARY_SEQUENCED=refuse)."""
+    if not population.workload_image(declared, 'order-matcher-cluster'):
+        return
+    for doc in docs:
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
+            c = podspec(doc)['containers'][0]
+            c['env'] = [e for e in c['env'] if e['name'] != 'BINARY_SEQUENCED'] + [{'name': 'BINARY_SEQUENCED', 'value': 'refuse'}]
+
+
 def apply_population(docs, declared, tag):
     """ADR-096 §6: a workload with a declared exception runs its own image repository (built from its own commit)."""
     for doc in docs:
@@ -220,6 +244,14 @@ def validate(docs, declared=None):
         mine = population.workload_image(declared or population.load(), doc['metadata']['name'])
         require(all(name == mine for name in private) if mine else not any(name in exceptions for name in private),
                 f'{doc["metadata"]["name"]}: image differs from the declared population (ADR-096 §6)')
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway' \
+                and population.workload_image(declared or population.load(), 'order-matcher-cluster'):
+            genv = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
+            require(genv.get('BINARY_SEQUENCED') == 'refuse',
+                    'gateway in front of older members without BINARY_SEQUENCED=refuse (ADR-096 §6)')
+    for doc in docs:   # FR-PRG-13: the binary entry is never exposed outside the cluster
+        if doc['kind'] == 'Service' and any(pt.get('name') == 'binary' for pt in doc['spec'].get('ports', [])):
+            require(doc['spec'].get('type', 'ClusterIP') == 'ClusterIP', 'binary port exposed outside the cluster (FR-PRG-13)')
     require(docs, 'empty manifest population')
     ids = [(d['kind'], d['metadata']['name']) for d in docs]
     require(len(ids) == len(set(ids)), 'duplicate resource identity')
@@ -364,7 +396,7 @@ def validate(docs, declared=None):
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
-            fix_test_clients=False):
+            fix_test_clients=False, binary_port=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -503,6 +535,9 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     if fix_test_clients:
         add_fix_test_clients(docs)
     declared = population.load(population_path)
+    refuse_sequenced_binary(docs, declared)
+    if binary_port:
+        add_binary_port(docs, binary_port)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
@@ -576,9 +611,10 @@ if __name__=='__main__':
     p.add_argument('--population',type=Path,help='the reviewed population (ADR-096 §6); default population.json')
     p.add_argument('--exception-published',type=Path,action='append',help="an exception build's published inventory")
     p.add_argument('--fix-test-clients',action='store_true',help='the rehearsal load CompIDs CLIENT2-8 (FR-PRG-11)')
+    p.add_argument('--binary-port',type=int,help='in-cluster binary entry for a throughput run (FR-PRG-13)')
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
-            args.fix_test_clients)
+            args.fix_test_clients,args.binary_port)

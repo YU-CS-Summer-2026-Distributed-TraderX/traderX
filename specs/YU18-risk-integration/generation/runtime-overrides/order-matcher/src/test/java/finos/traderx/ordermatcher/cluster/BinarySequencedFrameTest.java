@@ -47,6 +47,20 @@ class BinarySequencedFrameTest {
     }
 
     @Test
+    void refusedSequencingAnswersAFlaggedNewWithAProtocolErrorAndSubmitsNothing() {
+        // ADR-096 §6: in front of pre-ADR-090 members a sequenced message must never reach the cluster.
+        final BinaryGatewayAcceptor acc = new BinaryGatewayAcceptor(fake, 0);
+        acc.refuseSequenced = true;
+        final UnsafeBuffer ack = new UnsafeBuffer(new byte[18]);
+        send(acc, 1, (0xABCDL << 32) | 9L, ack);
+        assertEquals(null, seen, "nothing submitted");
+        assertEquals(BinaryGatewayAcceptor.STATUS_PROTOCOL_ERROR, ack.getByte(3));
+        send(acc, 0, 42L, ack);   // an unflagged NEW is unchanged
+        assertEquals(42L, seen[0]);
+        assertEquals(1, seen.length);
+    }
+
+    @Test
     void theFlagSplitsTheKeyAndTheAckCarriesTheExpectedSequence() {
         final BinaryGatewayAcceptor acc = new BinaryGatewayAcceptor(fake, 0);
         final UnsafeBuffer ack = new UnsafeBuffer(new byte[18]);

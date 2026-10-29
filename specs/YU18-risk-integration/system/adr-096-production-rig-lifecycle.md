@@ -2,7 +2,7 @@
 
 Status: accepted 2026-10-29 (yaakov: rollout 5a "yes, optimized for throughput also"; client path option A; FIX store
 on and measured). Code and scripts on `traderX-risk-integration`; not yet run on production. Pack:
-[production rig](../maintenance/production-rig/spec.md) (FR-PRG-01..12).
+[production rig](../maintenance/production-rig/spec.md) (FR-PRG-01..13).
 
 ## Context
 
@@ -172,7 +172,9 @@ workload, including the gateway's `cluster-node`, runs the tip.
   identical, and the members' decoder must read the tip's bytes back field for field. Symbol registration is checked
   too. The backport changes no codec, `InputEvent` or schema file, so the members' side is `00b31d33`'s codec.
   - Controls: a changed field is caught, and a sequenced message (ADR-090) differs.
-  - The tip sends no sequenced message while `FIX_EXACTLY_ONCE` and the binary port are off.
+  - The tip sends no sequenced message while `FIX_EXACTLY_ONCE` is off and binary sequencing is refused: with the
+    members on an older commit, every gateway runs `BINARY_SEQUENCED=refuse` (FR-PRG-13), so a binary client that
+    sets the flag gets a protocol error instead of reaching a member that cannot read it.
 
 ## Consequences
 

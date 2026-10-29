@@ -77,6 +77,9 @@ public final class BinaryGatewayAcceptor {
     private final LongAdder decodedFrames = new LongAdder();
     private final LongAdder acknowledgedFrames = new LongAdder();
     private final GatewayLatencyDecomposition metrics; // null unless LATENCY_DECOMP=1 (LATENCY-01 Phase A)
+    /** ADR-096 §6: members older than ADR-090 cannot read a sequenced message, so BINARY_SEQUENCED=refuse answers a
+     *  flagged NEW with a protocol error before anything is submitted. Unflagged NEWs are unchanged. */
+    boolean refuseSequenced = "refuse".equals(System.getenv("BINARY_SEQUENCED"));
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
@@ -216,6 +219,9 @@ public final class BinaryGatewayAcceptor {
                 final long limitPx = in.getLong(offset + 16, LE);
                 clOrdId = in.getLong(offset + 24, LE);
                 final boolean sequenced = (in.getByte(offset + 2) & NEW_FLAG_SEQUENCED) != 0;
+                if (sequenced && refuseSequenced) {
+                    return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, clOrdId);
+                }
                 if (sequenced && (clOrdId & 0xffffffffL) == 0L) {
                     return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, clOrdId); // seq starts at 1
                 }

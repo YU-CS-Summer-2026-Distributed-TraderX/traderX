@@ -508,6 +508,33 @@ class Population(unittest.TestCase):
                  for c in pod.get('containers',[])+pod.get('initContainers',[]) if c['image'].startswith(module.REGISTRY)}
         self.assertEqual(len(private),13)
 
+    def test_older_members_get_a_gateway_that_refuses_sequenced_binary(self):
+        # ADR-096 §6: a sequenced binary NEW (ADR-090) must never reach members built before it.
+        pod=module.podspec(next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d)))
+        self.assertIn({'name':'BINARY_SEQUENCED','value':'refuse'},pod['containers'][0]['env'])
+        docs=copy.deepcopy(self.docs)
+        pod=module.podspec(next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d)))
+        pod['containers'][0]['env']=[e for e in pod['containers'][0]['env'] if e['name']!='BINARY_SEQUENCED']
+        with self.assertRaisesRegex(AssertionError,'BINARY_SEQUENCED=refuse'):
+            module.validate(docs,self.declared)
+
+    def test_the_binary_entry_is_in_cluster_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            declared=Path(d)/'population.json'
+            declared.write_text(json.dumps({'schema':'traderx-compsci-population-v1','imageSourceCommit':'1'*40,'workloads':{}}))
+            module.prepare(Path(d)/'c','test-candidate','10.93.0.10',population_path=declared,binary_port=18120)
+            docs=list(yaml.safe_load_all((Path(d)/'c/candidate.yaml').read_text()))
+            decl=module.population.load(declared)
+        c=module.podspec(next(x for x in docs if x['metadata']['name']=='cluster-gateway' and module.podspec(x)))['containers'][0]
+        self.assertIn({'name':'BINARY_ACCEPTOR_PORT','value':'18120'},c['env'])
+        self.assertIn({'name':'binary','containerPort':18120},c['ports'])
+        self.assertNotIn('BINARY_SEQUENCED',[e['name'] for e in c['env']])   # same-commit members read sequencing
+        svc=next(x for x in docs if x['kind']=='Service' and x['metadata']['name']=='order-matcher-gw-binary')
+        self.assertEqual(svc['spec']['type'],'ClusterIP')
+        svc['spec']['type']='LoadBalancer'
+        with self.assertRaisesRegex(AssertionError,'binary port exposed outside the cluster'):
+            module.validate(docs,decl)
+
     def test_the_member_image_on_another_workload_is_refused(self):
         docs=copy.deepcopy(self.docs)
         pod=module.podspec(next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d)))
