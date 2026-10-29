@@ -113,10 +113,18 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-17:** A combined run SHALL drive binary and FIX at once:
+  - `CLIENTS=N` (1..3) client VMs `traderx-client-1..N`, each created by `rig.sh pools`, started by `up`, stopped by
+    `down`, and each its own /32 in the internal LB's source ranges;
+  - both load clients SHALL take `--ramp F1,F2,… --step-secs S`, running at each fraction of `--rate` for S seconds
+    before the full rate, and log the current fraction with every progress line, so a run records its knee;
+  - the two loads trade disjoint account sets (FR-PRG-16) and SHOULD trade different tickers, so neither crosses the
+    other's orders and each one's accounting stays its own.
 - **FR-PRG-16:** The throughput run's binary load (`rig/binary-load.mjs`, run by `rig/binary-load.sh` as an Indexed
   Job on `loadgen-pool`, never restarted) SHALL:
-  - trade only the test accounts 9900002–9900008, in two sets (even, odd): at any moment one set buys and the other
-    sells, so no order can meet its own account (no self-trade cancel);
+  - trade only its own test accounts 9900010–9900017, disjoint from the FIX load's 9900002–9900008, in two sets
+    (even, odd): at any moment one set buys and the other sells, so no order can meet its own account (no self-trade
+    cancel);
   - swap the sets' roles every wall-clock-aligned phase (`--phase-secs`, the same on every pod), so no account
     accumulates a position beyond one phase's buys; production's global risk policy is left as it is;
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not

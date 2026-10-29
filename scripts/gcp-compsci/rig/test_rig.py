@@ -394,6 +394,27 @@ class Down(unittest.TestCase):
         self.assertIsNotNone(first(calls, r'resize .*default-pool --num-nodes 0'), 'pools left billing')
 
 
+class Clients(unittest.TestCase):
+    """FR-PRG-17: CLIENTS=N client VMs, each its own /32 on the internal LB; down stops every one."""
+    def test_each_client_vm_is_its_own_source_range(self):
+        rc, out, calls = run('kc(){ if [ "$1" = apply ]; then cat >> "$LOG"; else call "kc $*"; fi; }; ilb_up', CLIENTS='3')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([c.strip() for c in calls if c.strip().startswith("- ") and c.strip().endswith("/32")], ['- 10.0.0.5/32'] * 3, calls)
+        for v in ('traderx-client-1', 'traderx-client-2', 'traderx-client-3'):
+            self.assertIsNotNone(first(calls, rf'instances describe {v} .*networkIP'), v)
+        self.assertNotIn('- CLIENT_CIDR', '\n'.join(calls))
+
+    def test_down_stops_every_client_vm(self):
+        rc, out, calls = run('rig_down', CLIENTS='3')
+        self.assertEqual(rc, 0, out)
+        for v in ('traderx-client-1', 'traderx-client-2', 'traderx-client-3'):
+            self.assertIsNotNone(first(calls, rf'instances stop {v} '), v)
+
+    def test_more_than_three_is_refused(self):
+        rc, out, _ = run('true', CLIENTS='4')
+        self.assertEqual(rc, 2, out); self.assertIn('CLIENTS is 1..3', out)
+
+
 class Loadgen(unittest.TestCase):
     """FR-PRG-16: loadgen-pool is sized only by `rig.sh loadgen N`, within 0..16."""
     def test_the_pool_is_resized_and_waited_for(self):

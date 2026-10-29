@@ -1,6 +1,7 @@
 // ADR-096 (FR-PRG-16): the production throughput run's binary load, one process per loadgen pod. Production-safe by
 // construction:
-// - test accounts only: buys from 9900002/4/6/8, sells from 9900003/5/7 (prepare.FIX_TEST_ACCOUNTS); any other is refused;
+// - test accounts only, its own (9900010–9900017): disjoint from the FIX load's (9900002–9900008, prepare.FIX_TEST_ACCOUNTS),
+//   so a combined run's two loads never trade against each other's accounts;
 // - the security id is resolved per run through the gateway's lookup-only /resolve (an unknown ticker is refused, never
 //   registered);
 // - every order is a limit of 1 at one operator-given price inside the collar;
@@ -18,12 +19,12 @@
 //
 //   node binary-load.mjs --resolve http://GW:18110 --ticker MSFT --px 412.50 [--host order-matcher-gw-binary]
 //        [--port 18140] [--sessions 16] [--rate N/s per session] [--secs S] [--max-in-flight 2000] [--out results.json]
-//        [--phase-secs 60] [--pause-ms 3000]
+//        [--phase-secs 60] [--pause-ms 3000] [--ramp 0.25,0.5,0.75 --step-secs 300]
 import fs from 'node:fs';
 import net from 'node:net';
 import crypto from 'node:crypto';
 
-const SETS = [[9900002, 9900004, 9900006, 9900008], [9900003, 9900005, 9900007]];   // set[role] buys, set[1-role] sells
+const SETS = [[9900010, 9900012, 9900014, 9900016], [9900011, 9900013, 9900015, 9900017]];   // set[role] buys, set[1-role] sells
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const cfg = {
@@ -36,6 +37,11 @@ if (!cfg.resolve || !cfg.ticker || !/^\d+(\.\d{1,6})?$/.test(cfg.px ?? '')) {
   console.log('usage: --resolve URL --ticker T --px PRICE'); process.exit(2);
 }
 if (!(cfg.sessions >= 1 && cfg.sessions <= 256)) { console.log('--sessions is 1..256'); process.exit(2); }
+// --ramp F1,F2,... --step-secs S (FR-PRG-17): the rate is F1 x --rate for the first S seconds, F2 x for the next S, ...,
+// then the full rate, so a run records where the knee is instead of only failing at the target.
+const RAMP = (flag('--ramp', '') || '').split(',').filter(Boolean).map(Number), STEP_MS = Number(flag('--step-secs', 300)) * 1000;
+if (!RAMP.every((f) => f > 0 && f <= 1) || !(STEP_MS > 0)) { console.log('--ramp takes fractions in (0, 1]'); process.exit(2); }
+const T0 = Date.now(), rampFactor = () => RAMP[Math.floor((Date.now() - T0) / STEP_MS)] ?? 1;
 const [whole, frac = ''] = cfg.px.split('.');
 const PX = BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, '0'));   // limitPx x1e6
 
@@ -91,7 +97,7 @@ function session(index) {
   });
   const tick = setInterval(() => {
     if (!sending || !up) return;
-    credit += cfg.rate / 100;
+    credit += cfg.rate * rampFactor() / 100;
     const frames = [];
     for (; credit >= 1 && open.size < cfg.maxInFlight; credit--) frames.push(frame(s.sent % 2));
     credit = Math.min(credit, 1);
@@ -113,7 +119,7 @@ const report = (final) => {
   const rows = sessions.map(({s, open}) => ({...s, unanswered: open.size, imbalance: s.acceptedBuys - s.acceptedSells}));
   const sum = (k) => rows.reduce((a, x) => a + x[k], 0);
   const out = {nonce: NONCE, startedAt: started.toISOString(), at: new Date().toISOString(), final, ticker: cfg.ticker,
-               securityId: SECURITY, px: cfg.px, ...Object.fromEntries(['sent', 'accepted', 'rejected', 'ambiguous',
+               securityId: SECURITY, px: cfg.px, ramp: rampFactor(), ...Object.fromEntries(['sent', 'accepted', 'rejected', 'ambiguous',
                'protocolErrors', 'duplicates', 'unexpected', 'unanswered', 'acceptedBuys', 'acceptedSells', 'balanceOrders'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
                closedSessions: rows.filter((x) => x.closed && !final).length, sessions: rows};
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));

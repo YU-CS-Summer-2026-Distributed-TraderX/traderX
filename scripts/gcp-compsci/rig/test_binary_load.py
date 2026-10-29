@@ -10,7 +10,7 @@ import threading
 import unittest
 
 LOAD = Path(__file__).with_name('binary-load.mjs')
-SETS = ({9900002, 9900004, 9900006, 9900008}, {9900003, 9900005, 9900007})
+SETS = ({9900010, 9900012, 9900014, 9900016}, {9900011, 9900013, 9900015, 9900017})
 import collections
 
 
@@ -109,6 +109,19 @@ class BinaryLoad(unittest.TestCase):
                      '"--resolve", "http://order-matcher:18110", "--ticker", "MSFT"', 'binary-load.mjs: |'):
             self.assertIn(want, p.stdout)
         self.assertNotIn('--apply', p.stdout)
+
+    def test_a_ramp_step_scales_the_rate(self):
+        full = Gateway(self).run()[1]['sent']
+        p, r = Gateway(self).run('--ramp', '0.25', '--step-secs', '60')
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertLess(r['sent'], 0.45 * full); self.assertGreater(r['sent'], 0.1 * full); self.assertEqual(r['ramp'], 0.25)
+
+    def test_both_clients_refuse_a_ramp_fraction_outside_0_to_1(self):
+        creds = Path(tempfile.mkdtemp()) / 'c.json'; creds.write_text('{}')
+        for cmd in (['node', str(LOAD), '--resolve', 'http://127.0.0.1:9', '--ticker', 'X', '--px', '1'],
+                    ['node', str(LOAD.with_name('fix-rehearsal-load.mjs')), '--creds', str(creds), '--px', '1']):
+            p = subprocess.run(cmd + ['--ramp', '0.5,2'], capture_output=True, text=True, timeout=30)
+            self.assertEqual(p.returncode, 2, cmd[1] + p.stdout + p.stderr); self.assertIn('--ramp', p.stdout)
 
 if __name__ == '__main__':
     unittest.main()

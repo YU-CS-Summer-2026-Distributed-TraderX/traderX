@@ -29,6 +29,10 @@ AUTOSCALE=${AUTOSCALE:-off}
 MAX_GATEWAYS=18
 DEFAULT_NODES=${DEFAULT_NODES:-3}
 CLIENT_VM=${CLIENT_VM:-traderx-client-1}
+# FR-PRG-17: CLIENTS=N client VMs (traderx-client-1..N, 1..3) for a combined run's FIX load; each is its own /32 on the LB.
+CLIENTS=${CLIENTS:-1}
+[[ "$CLIENTS" =~ ^[1-3]$ ]] || { echo "CLIENTS is 1..3" >&2; exit 2; }
+CLIENT_VMS=$CLIENT_VM; for i in $(seq 2 "$CLIENTS"); do CLIENT_VMS="$CLIENT_VMS traderx-client-$i"; done
 GATE_SHADOW_PATH=${GATE_SHADOW_PATH:-/recon/shadow-state}
 EVIDENCE=${EVIDENCE:-$PWD/rig-evidence/$(date +%Y%m%d-%H%M%S)}
 DRY=0
@@ -94,7 +98,8 @@ no_rig_instances(){ local p out
     out=$(gc compute instances list --filter="name~^gke-${CLUSTER}-${p}-" --format='value(name)') || return 1
     [ -z "$out" ] || return 1
   done; }
-vm_status_is(){ [ "$(gc compute instances describe "$CLIENT_VM" --zone "$ZONE" --format='value(status)')" = "$1" ]; }
+vm_status_is(){ local v; for v in $CLIENT_VMS; do
+  [ "$(gc compute instances describe "$v" --zone "$ZONE" --format='value(status)')" = "$1" ] || return 1; done; }
 pool_instances_are(){ [ "$(pool_size "$1")" = "$2" ]; }
 pool_autoscaling(){ [ "$(gc container node-pools describe gateway-pool --cluster "$CLUSTER" --zone "$ZONE" \
   --format='value(autoscaling.enabled)' 2>/dev/null)" = True ]; }
@@ -152,19 +157,23 @@ rig_pools(){
     do_ gcloud compute firewall-rules create traderx-client-iap-ssh --project "$PROJECT" --network "$net" \
       --direction INGRESS --allow tcp:22 --source-ranges 35.235.240.0/20 --target-tags traderx-client
   fi
-  if [ "$DRY" = 0 ] && gc compute instances describe "$CLIENT_VM" --zone "$ZONE" >/dev/null 2>&1; then note "$CLIENT_VM present"; else
-    do_ gcloud compute instances create "$CLIENT_VM" --project "$PROJECT" --zone "$ZONE" --machine-type c4d-standard-8 \
-      --subnet "$sub" --no-address --image-family debian-12 --image-project debian-cloud \
-      --boot-disk-type hyperdisk-balanced --boot-disk-size 20GB --tags traderx-client --shielded-secure-boot
-    do_ gcloud compute instances stop "$CLIENT_VM" --project "$PROJECT" --zone "$ZONE"
-  fi
+  local v
+  for v in $CLIENT_VMS; do
+    if [ "$DRY" = 0 ] && gc compute instances describe "$v" --zone "$ZONE" >/dev/null 2>&1; then note "$v present"; else
+      do_ gcloud compute instances create "$v" --project "$PROJECT" --zone "$ZONE" --machine-type c4d-standard-8 \
+        --subnet "$sub" --no-address --image-family debian-12 --image-project debian-cloud \
+        --boot-disk-type hyperdisk-balanced --boot-disk-size 20GB --tags traderx-client --shielded-secure-boot
+      do_ gcloud compute instances stop "$v" --project "$PROJECT" --zone "$ZONE"
+    fi
+  done
 }
 
 require_pools(){
   [ "$DRY" = 1 ] && return 0
   for p in nats-pool gateway-pool; do pool_exists $p || die "$p is missing: run 'rig.sh pools' first"; done
   engine_has_sysctls || die "engine-pool has no sysctls: run 'rig.sh pools' while it is at 0"
-  gc compute instances describe "$CLIENT_VM" --zone "$ZONE" >/dev/null 2>&1 || die "$CLIENT_VM missing: run 'rig.sh pools'"
+  local v; for v in $CLIENT_VMS; do
+    gc compute instances describe "$v" --zone "$ZONE" >/dev/null 2>&1 || die "$v missing: run 'rig.sh pools'"; done
 }
 
 # ---- gateways held at 0 --------------------------------------------------------------------------------------------
@@ -394,11 +403,17 @@ gateways_up(){
 }
 
 ilb_up(){
-  step "internal passthrough LB to the gateways (FIX 18130, REST 18110), reachable only from $CLIENT_VM"
-  local ip='<client VM IP>'
-  [ "$DRY" = 1 ] || ip=$(gc compute instances describe "$CLIENT_VM" --zone "$ZONE" --format='value(networkInterfaces[0].networkIP)')
-  if [ "$DRY" = 1 ]; then note "would apply: $HERE/gateway-ilb.yaml with loadBalancerSourceRanges $ip/32"; else
-    sed "s#CLIENT_CIDR#$ip/32#; s#namespace: traderx#namespace: $NS#" "$HERE/gateway-ilb.yaml" | kc apply -f -
+  step "internal passthrough LB to the gateways (FIX 18130, REST 18110), reachable only from $CLIENT_VMS"
+  local v ip ranges='' y
+  for v in $CLIENT_VMS; do
+    ip='<client VM IP>'
+    [ "$DRY" = 1 ] || ip=$(gc compute instances describe "$v" --zone "$ZONE" --format='value(networkInterfaces[0].networkIP)')
+    [ "$DRY" = 1 ] || [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$v has no internal IP"
+    ranges="${ranges:+$ranges$'\n'    - }$ip/32"
+  done
+  if [ "$DRY" = 1 ]; then note "would apply: $HERE/gateway-ilb.yaml with loadBalancerSourceRanges ${ranges//$'\n'    - / }"; else
+    y=$(<"$HERE/gateway-ilb.yaml"); y=${y//- CLIENT_CIDR/- $ranges}; y=${y//namespace: traderx/namespace: $NS}
+    kc apply -f - <<<"$y"
   fi
   wait_for 300 "internal LB address" ilb_has_ip
 }
@@ -442,16 +457,16 @@ rig_up(){
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
-    do_ gcloud compute instances start "$CLIENT_VM" --zone "$ZONE" --project "$PROJECT"
+    for v in $CLIENT_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
   else
     hold_gateways
     hold_members
-    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $CLIENT_VM started"
+    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $CLIENT_VMS started"
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
-    do_ gcloud compute instances start "$CLIENT_VM" --zone "$ZONE" --project "$PROJECT"
+    for v in $CLIENT_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
     step "support workloads Ready (everything but the members and the gateways)"
     if [ "$DRY" = 1 ]; then note "would wait: every Deployment except cluster-gateway rolled out"; else
@@ -534,16 +549,16 @@ rig_down(){
     note "members not 3/3 Ready ($ready): no barrier or baseline possible; stopping them as they are"
     do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=0
   fi
-  step "every rig pool to 0; $CLIENT_VM stopped"
+  step "every rig pool to 0; $CLIENT_VMS stopped"
   { [ "$DRY" = 1 ] || pool_exists loadgen-pool; } && do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool \
     --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   for p in gateway-pool nats-pool engine-pool default-pool; do
     do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   done
-  do_ gcloud compute instances stop "$CLIENT_VM" --zone "$ZONE" --project "$PROJECT"
+  local v; for v in $CLIENT_VMS; do do_ gcloud compute instances stop "$v" --zone "$ZONE" --project "$PROJECT"; done
   step "verified with gcloud compute instances list, not the cluster's node count"
   wait_for 900 "no rig node instance left" no_rig_instances
-  wait_for 300 "$CLIENT_VM TERMINATED" vm_status_is TERMINATED
+  wait_for 300 "$CLIENT_VMS TERMINATED" vm_status_is TERMINATED
   [ "$DRY" = 1 ] || gc compute instances list --format='table(name,status,machineType.basename())' | tee "$EVIDENCE/instances-after.txt"
   [ "${DOWN_FAILED:-0}" = 0 ] || { echo "rig down: done, but a member did not exit 143 (see above)" >&2; exit 3; }
   step "rig down: done"
@@ -591,7 +606,8 @@ rig_unprojected(){
 rig_status(){
   preflight
   for p in $RIG_POOLS; do note "$p: $(pool_size $p) instance(s)"; done
-  note "$CLIENT_VM: $(gc compute instances describe "$CLIENT_VM" --zone "$ZONE" --format='value(status)' 2>/dev/null || echo absent)"
+  local v; for v in $CLIENT_VMS; do
+    note "$v: $(gc compute instances describe "$v" --zone "$ZONE" --format='value(status)' 2>/dev/null || echo absent)"; done
   kc get sts,deploy,hpa,svc order-matcher-gw-ilb 2>/dev/null | grep -E 'order-matcher|cluster-gateway|hpa|NAME' || true
   kc get configmap rig-gate -o jsonpath='{.data.status} {.data.at}{"\n"}' 2>/dev/null || note "no gate record"
 }

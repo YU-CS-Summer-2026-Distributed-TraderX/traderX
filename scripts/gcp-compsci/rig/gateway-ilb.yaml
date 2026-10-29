@@ -1,6 +1,6 @@
 # ADR-096 §5 (FR-PRG-08): the in-region client path. An internal passthrough Network LB straight to the gateway pods:
-# no proxy between the client and the gateway, not on the internet. rig.sh replaces CLIENT_CIDR with the client VM's
-# address, so the firewall rule GKE creates admits only that VM.
+# no proxy between the client and the gateway, not on the internet. rig.sh replaces CLIENT_CIDR with each client VM's
+# address (CLIENTS=N, one /32 each), so the firewall rule GKE creates admits only those VMs.
 #   externalTrafficPolicy Local: no second hop through kube-proxy; a terminating gateway's node fails the LB health
 #     check while the gateway keeps serving for GATEWAY_DRAIN_DELAY_MS (FR-PRG-07).
 #   No session affinity: each new connection hashes onto a gateway; a FIX session resumes on any of them (ADR-086).

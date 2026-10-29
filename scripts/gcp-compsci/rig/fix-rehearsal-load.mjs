@@ -10,7 +10,7 @@
 // holds and the gateway restates it (150=I, ADR-091). So a drain loses nothing and books nothing twice.
 //
 //   node fix-rehearsal-load.mjs --creds FILE --px P [--ticker MSFT] [--rate N/s per session] [--secs S]
-//        [--host 10.90.0.41] [--port 18130] [--out results.json]
+//        [--host 10.90.0.41] [--port 18130] [--out results.json] [--ramp 0.25,0.5,0.75 --step-secs 300]
 // FILE is provision-fix-test-clients.json ({CompID: {account, password}}, mode 0600). No password is printed.
 import fs from 'node:fs';
 import net from 'node:net';
@@ -31,6 +31,11 @@ const stamp = () => new Date().toISOString().replace(/-/g, '').replace('T', '-')
 const parse = (m) => Object.fromEntries(m.split(SOH).filter(Boolean).map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]));
 const RUN = `r${Date.now().toString(36)}`;
 const started = new Date();
+// --ramp F1,F2,... --step-secs S (FR-PRG-17): the rate is F1 x --rate for the first S seconds, F2 x for the next S, ...,
+// then the full rate, so a run records where the knee is instead of only failing at the target.
+const RAMP = (flag('--ramp', '') || '').split(',').filter(Boolean).map(Number), STEP_MS = Number(flag('--step-secs', 300)) * 1000;
+if (!RAMP.every((f) => f > 0 && f <= 1) || !(STEP_MS > 0)) { console.log('--ramp takes fractions in (0, 1]'); process.exit(2); }
+const T0 = Date.now(), rampFactor = () => RAMP[Math.floor((Date.now() - T0) / STEP_MS)] ?? 1;
 let sending = true, closing = false;   // sending: new orders; closing: the final Logout (no reconnect after it)
 
 function session(compId, { account, password }, index) {
@@ -106,7 +111,7 @@ function session(compId, { account, password }, index) {
   connect();
   const tick = setInterval(() => {
     if (!sending || !up || open.size >= cfg.maxInFlight) return;
-    for (credit += cfg.rate / 100; credit >= 1; credit--) {
+    for (credit += cfg.rate * rampFactor() / 100; credit >= 1; credit--) {
       const cl = `${RUN}-${index}-${next++}`; const side = (next + index) % 2 ? 1 : 2;
       open.set(cl, side); order(cl, side, false); s.sent++;
     }
@@ -120,13 +125,13 @@ const sessions = Object.entries(creds).map(([c, v], i) => session(c, v, i));
 const report = (final) => {
   const rows = sessions.map(({ s, open, resting }) => ({ ...s, unanswered: open.size, restingAtEnd: resting.size }));
   const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
-  const out = { run: RUN, startedAt: started.toISOString(), at: new Date().toISOString(), final, px: cfg.px,
+  const out = { run: RUN, startedAt: started.toISOString(), at: new Date().toISOString(), final, px: cfg.px, ramp: rampFactor(),
                 ticker: cfg.ticker, sent: sum('sent'), answered: sum('answered'), unanswered: sum('unanswered'),
                 rejected: sum('rejected'), restated: sum('restated'), duplicateAnswers: sum('duplicateAnswers'),
                 reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), restingAtEnd: sum('restingAtEnd'),
                 cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), sessions: rows };
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
-  console.log(`${out.at} sent=${out.sent} answered=${out.answered} unanswered=${out.unanswered} rejected=${out.rejected} `
+  console.log(`${out.at} ramp=${out.ramp} sent=${out.sent} answered=${out.answered} unanswered=${out.unanswered} rejected=${out.rejected} `
     + `restated=${out.restated} dupAnswers=${out.duplicateAnswers} reconnects=${out.reconnects}`);
   return out;
 };
