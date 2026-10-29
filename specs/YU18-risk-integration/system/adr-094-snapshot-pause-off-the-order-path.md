@@ -60,12 +60,16 @@ The halt is followed by a backlog drain at the cluster's spare capacity, roughly
 ### Defect found while measuring (ADR-090, landed but not deployed)
 
 - **The threshold.** A T_STREAM record is 4 + 8 × (7 + n) bytes, which exceeds the 1,376-byte snapshot payload once a stream holds more than 163 answers.
-- **Unpacked writer.** `offer` fragments the record, and `loadSnapshot` polls the Image with no `FragmentAssembler`. Restore of the member's own snapshot fails closed with "snapshot corrupt: stream 0", so recovery from it is impossible.
+- **Unpacked writer.** `offer` fragments the record, and `loadSnapshot` polled the Image with no `FragmentAssembler`. The refusal ("snapshot corrupt: stream 0") was then **swallowed**: `Image.poll` hands a handler's exception to the client's error handler and keeps polling, so the load reached END with no streams. That is a silent partial restore, not a fail-closed one.
 - **Packed writer.** The packer refuses the record, so `onTakeSnapshot` throws.
 
-Repro: `SnapshotPauseCostTest.aFullStreamSnapshotRestoresOverTheRealChannel`. The in-memory snapshot tests never fragment, which is why they pass.
+The in-memory snapshot tests never fragment and never go through `Image.poll`, which is why they pass.
 
-The fix, step 0 below, must land before any client uses sequenced streams in production, whatever else this ADR decides.
+**Step 0 is DONE**, as ADR-090 §2a / FR-XOD-18:
+- the load runs through an assembler and rethrows the first refusal;
+- the packer sends an oversized record on its own;
+- no format change;
+- it ships in the same all-members roll as ADR-090.
 
 ## (2) Options
 

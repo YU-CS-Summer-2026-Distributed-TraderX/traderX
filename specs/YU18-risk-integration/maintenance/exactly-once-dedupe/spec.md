@@ -95,6 +95,13 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
     field existed SHALL verify unchanged.
 - FR-XOD-17 (ADR-093): A FIX OrderStatusRequest whose order neither `OrderID` nor the gateway's ClOrdID map names
   SHALL be looked up in the read model by the key the gateway submits that ClOrdID under.
+- FR-XOD-18 (ADR-090 §2a): A member SHALL restore, over the real snapshot channel, every snapshot it writes, in
+  both framings, whatever a record's length.
+  - A record larger than one snapshot message SHALL be reassembled on load. A full stream is the only such record
+    today: 4 + 8 × (7 + 256) = 2,108 bytes against a 1,376-byte payload.
+  - The packed writer SHALL send such a record unpacked, as its own message, in order.
+  - A record the reader refuses SHALL fail the load. It SHALL NOT be skipped by the transport's error handler with
+    the load completing at END.
 
 ## Non-functional
 

@@ -2007,8 +2007,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         public void write(final DirectBuffer buffer, final int offset, final int length) {
             if (used + 4 + length > chunk.capacity()) {
                 flush();
-                if (4 + 4 + length > chunk.capacity()) {   // no record comes near one MTU; refuse, never split
-                    throw new IllegalStateException("snapshot record of " + length + " bytes exceeds a packed message");
+                if (4 + 4 + length > chunk.capacity()) {
+                    // FR-XOD-18: a record larger than one message (a full ADR-090 stream, 2,108 bytes) goes out on its
+                    // own, unpacked, in order; the publication fragments it and loadSnapshot's assembler rejoins it.
+                    // No record type equals T_PACKED, so the reader takes it as a single record.
+                    out.write(buffer, offset, length);
+                    return;
                 }
             }
             chunk.putInt(used, length);
@@ -2601,11 +2605,30 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     }
 
     private void loadSnapshot(final Image snapshotImage) {
+        // FR-XOD-18. Two Aeron behaviours this loop must not inherit:
+        //  - a record larger than one message (a full ADR-090 stream is 2,108 bytes) arrives as fragments, so the
+        //    handler sits behind an assembler and always sees whole messages;
+        //  - Image.poll catches a handler's exception, hands it to the client's error handler and keeps polling, so
+        //    a refused record would be logged and skipped, and the load would reach END with that state missing.
+        //    The first refusal is kept, the rest of the stream ignored, and it is rethrown here: restore fails closed.
         final boolean[] done = { false };
-        final FragmentHandler handler = (buffer, offset, length, header) ->
-            done[0] = onSnapshotMessage(buffer, offset, length);
+        final RuntimeException[] refused = { null };
+        final FragmentHandler handler = (buffer, offset, length, header) -> {
+            if (refused[0] != null || done[0]) {
+                return;
+            }
+            try {
+                done[0] = onSnapshotMessage(buffer, offset, length);
+            } catch (final RuntimeException e) {
+                refused[0] = e;
+            }
+        };
+        final io.aeron.ImageFragmentAssembler assembler = new io.aeron.ImageFragmentAssembler(handler);
         while (!done[0]) {
-            final int fragments = snapshotImage.poll(handler, 16);
+            final int fragments = snapshotImage.poll(assembler, 16);
+            if (refused[0] != null) {
+                throw refused[0];
+            }
             if (fragments == 0) {
                 if (snapshotImage.isEndOfStream()) {
                     throw new IllegalStateException("snapshot truncated: end of stream before END record");

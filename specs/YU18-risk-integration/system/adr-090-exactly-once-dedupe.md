@@ -5,7 +5,9 @@ as-built notes in §4 record where the implementation narrowed the proposal and 
 FIX order records are a ring per account, in the store and in the heap, and a resend the ring may have lost is
 refused, never booked (§4a, FR-XOD-13). At 400K/s (CLOUD-QUEUE row 17, arm `xs`, image `f815003d`), a key-level check
 of the full member log found 0 keys booked twice among 14,679,944 acceptances (Evidence).
-Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..17 and
+Amended 2026-10-29: a snapshot holding a full stream did not restore over the real channel; fixed with no
+format change (§2a, FR-XOD-18).
+Requirements: [exactly-once dedupe pack](../maintenance/exactly-once-dedupe/spec.md), FR-XOD-01..18 and
 NFR-XOD-01..03. Base requirements: YU03 FR-IMRG14 (the idempotency retention frontier), YU10 FR-FIX10
 (CompID-qualified ClOrdID), and ADR-086 §4 (FIX resend after a reconnect). Evidence: the hxb rig
 (`independent-baseline/results-20261025-open/STALLS.md` §4, the 1-hour 400K/s `xp` arm) and the
@@ -141,6 +143,45 @@ One hour is 80 times the 45 s bound. An evicted stream starts again at `next = 1
   key table. Migration is therefore a restart from the last format-13 snapshot, with no conversion step.
 - Two members fed the same log must write byte-identical format-14 snapshots, and a snapshot plus its log tail
   must equal the full replay (FR-XOD-09).
+
+### 2a. Amendment (2026-10-29): a full stream's record must survive the real snapshot channel (FR-XOD-18)
+
+Found while measuring the snapshot pause (ADR-094). Two defects let a member write a snapshot it could not restore:
+- **The record outgrew a message.** A `T_STREAM` record is 4 + 8 × (7 + n) bytes, more than one 1,376-byte
+  snapshot message once a stream holds n > 163 answers; a full ring (256) is 2,108 bytes.
+  - Unpacked, `offer` fragmented it, and `loadSnapshot` polled the Image with no assembler, so each fragment was
+    read as a whole record.
+  - Packed, the packer refused the record, so `onTakeSnapshot` threw.
+- **The refusal was swallowed.** `Image.poll` catches a handler's exception, hands it to the Aeron client's error
+  handler and keeps polling. The refused fragment was logged ("snapshot corrupt: stream 0"), the next one too
+  ("unknown snapshot record type: 0"), and the load reached END with **no streams**. That is a silent partial
+  restore, and it applies to every fail-closed check in `onSnapshotRecord`, whose tests had only run in memory.
+  A refused header instead left the load waiting forever for a header.
+
+Fix (no format change, still format 14):
+- `loadSnapshot` reads through an `ImageFragmentAssembler`, keeps the first refusal, ignores the rest of the
+  stream, and rethrows the refusal after the poll, so restore fails closed.
+- The packer flushes and sends a record larger than one message on its own, unpacked, in order. No record type
+  equals `T_PACKED`, so the reader takes it as a single record.
+
+Audit of every other record type: only `T_STREAM` can exceed a message.
+- `T_SYMBOL` is variable-length, but tickers are bounded by the wire's `SYMBOL_BYTES`.
+- Every other record is a fixed tuple of 2–17 longs (at most 140 bytes): idempotency 28 bytes, orders and order
+  extensions 124 and 140, books 28.
+- The FIX order rings (FR-XOD-13) are not member snapshot state: they live in the gateway's `FIX_ORDERS` bucket.
+
+**Roll constraint.** The fixed reader must be on every member before any member holds a stream with more than 163
+answers. In practice: ship it in the same all-members engine roll as this ADR (§3). The fix is in the same build
+as the stream table, so no deployed member ever holds a stream without it.
+
+Row 17 (`xs`) never restored a member from a snapshot, which is why it passed. Tests:
+- `SnapshotPauseCostTest.aSnapshotHoldingFullStreamsRestoresOverTheRealChannel[packed=false|true]`: three full
+  streams through `onTakeSnapshot`, the real IPC snapshot channel and the member's own `loadSnapshot(Image)`,
+  restored byte-identical. It fails before the fix: unpacked restored 0 of 3 streams; packed refused the
+  2,108-byte record.
+- `aRefusedRecordFailsTheRealChannelRestoreInsteadOfBeingSkipped`: a too-new header over the real channel must
+  make `loadSnapshot` throw its own refusal. It fails before the fix: the refusal was swallowed and the load never
+  finished.
 
 ### 3. Roll: stop the whole cluster at a snapshot barrier, then roll the gateways
 
