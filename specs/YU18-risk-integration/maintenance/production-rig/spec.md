@@ -112,6 +112,14 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   may trade every account (`*`) or whose password is not Secret-backed. `provision-fix-test-clients.py` SHALL keep the
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. The default render SHALL
   carry no test client.
+- **FR-PRG-12:** The rehearsal load (`rig/fix-rehearsal-load.mjs`) SHALL run one session per load CompID on its own
+  account, track every ClOrdID until its first ExecutionReport, and through a gateway drain:
+  - reconnect through the internal LB with its next MsgSeqNum, never a reset after the first Logon;
+  - answer the acceptor's ResendRequest with a GapFill before resending anything;
+  - resend every unanswered order with PossResend(97), so the engine dedupes it and the gateway restates it.
+
+  It SHALL end non-zero when any order is unanswered or answered as New twice, and print no password. Its per-session
+  counts are compared with the read model's rows per test account at the effect end.
 
 ## Acceptance
 
@@ -147,6 +155,7 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | wrong placement | 10 | `test_population.Measure`, `test_prepare.Population` | members on the tip image, member image on the gateway: refused by `measure-admission.population` and `prepare.validate` |
 | guard removed (mutation) | 10 | same | each of the five guards removed: 1–6 tests fail |
 | tip ingress on the members' codec | 10 | `rig/codec-compat.sh` | 42 encodings over 19 command types, 518 checks, 0 failures; both controls fire |
+| a drain mid-load | 12 | `rig/test_fix_load.Drain` (scripted acceptor) | 30 orders, 10 in flight at the Logout: resumed without reset, GapFill before the first resend, every order answered once, 1 reconnect; resending straight after the Logon fails it (the GapFill lands after 13 messages) |
 | load clients rendered | 11 | `test_prepare.FixTestClients` | CLIENT2–8 each on its account, Secret-backed and ordered before the auth list; none in the default render |
 | unbound or literal load client | 11 | same | `*` account, literal password, password after the list, non-Secret password: each refused; dropping the check fails the test |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |
