@@ -121,6 +121,7 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | same, acceptor stopped at the Logout (old hooks) | 07 | same test, negative control | nothing stored; B logs on at 3; test fails |
 | rendered candidate | 05, 06, 07 | `test_prepare` rig tests | pools and tolerations, gateway shape, member ZGC heap and pinned cap; 3 fail on the previous renderer |
 | broken candidates | 05, 06, 07 | same | gateway on default-pool, a replica count, no anti-affinity, 250m CPU, 30 s grace, no drain delay, the G1 shape, the bench's 6 GB heap, no `MAX_ACTIVE_BOOKS`: each refused |
+| smoke script failing, or a malformed SendingTime | 04 | `test_rig.Up.test_a_failed_smoke_script…`, `…test_the_smoke_sends_a_fix_sending_time` | REFUSED smoke with its output kept; 52 is `YYYYMMDD-HH:MM:SS.sss` (production refused `20261029-174539.540Z`) |
 | up order | 01, 03 | `test_rig.Up.test_gateways_start_only_after…` | gateways 0 → pools → members → `rig-gate` → gateways → ILB → smoke |
 | cold restore into an idle cluster | 03 | `test_rig.Up.test_a_cold_restore_with_no_engine_event_since_passes_g0_and_g4` | engineApplied -1 passes G0 and G4; fails on the previous G0 with production's exact refusal |
 | read model trade sides missing, duplicated, gapped or extra | 03 | `test_rig.Up.test_the_read_model_must_hold_exactly_the_members_trade_sides` | REFUSED G3; on production the query reads 18/18/18 against trades 18 |

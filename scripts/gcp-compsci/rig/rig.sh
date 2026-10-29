@@ -399,7 +399,8 @@ smoke(){
   if [ "$DRY" = 1 ]; then note "would run: fix-smoke.mjs in web-front-end-console (resting buy inside the collar, cancel)"
     note "would check: the order's orderbook row reaches CANCELED"; return 0; fi
   local out ref
-  out=$(kc exec -i deploy/web-front-end-console -c console -- node - < "$HERE/fix-smoke.mjs")
+  if ! out=$(kc exec -i deploy/web-front-end-console -c console -- node - < "$HERE/fix-smoke.mjs" 2>&1); then
+    echo "$out" > "$EVIDENCE/smoke.txt"; die "smoke: the FIX script failed: $EVIDENCE/smoke.txt"; fi
   echo "$out" > "$EVIDENCE/smoke.txt"
   grep -q '^NEW ' <<<"$out" && grep -q '^CANCELED ' <<<"$out" || die "smoke: no New + Canceled pair: $EVIDENCE/smoke.txt"
   ref=$(awk '/^NEW /{print $2}' <<<"$out")

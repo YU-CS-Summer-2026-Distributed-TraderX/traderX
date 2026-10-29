@@ -33,7 +33,7 @@ kubectl(){
     *"create configmap"*) echo 'kind: ConfigMap';;
     *"apply -f -"*) cat >/dev/null;;
     *"get pods -l app=cluster-gateway -o jsonpath"*) for i in $(seq 1 "$GATEWAYS"); do echo "node-$i"; done;;
-    *"web-front-end-console"*) printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
+    *"web-front-end-console"*) [ -n "${SMOKE_FAIL:-}" ] && { echo "FAIL refused: 58=Invalid Logon message"; return 1; }; printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
     *"get sts order-matcher-cluster -o jsonpath={.status.replicas}"*) echo "${STS_REPLICAS:-0}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec"*) echo member-image;;
     *"get sts order-matcher-cluster -o jsonpath"*) echo 3;;
@@ -129,6 +129,19 @@ class Up(unittest.TestCase):
             self.assertIn('the members booked 5 trade sides', out)
         rc, out, _ = run('rig_up')
         self.assertIn('G3 ok: the read model holds trade sides 1..5, each once', out)
+
+    def test_a_failed_smoke_script_is_refused_with_its_output_kept(self):
+        # Production 2026-10-29: the script exited 1 under set -e with no REFUSED line and no evidence.
+        rc, out, _ = run('rig_up', SMOKE_FAIL='1')
+        self.assertEqual(rc, 2, out)
+        self.assertIn('REFUSED', out)
+        self.assertIn('smoke: the FIX script failed', out)
+
+    def test_the_smoke_sends_a_fix_sending_time(self):
+        # Production 2026-10-29: 52=20261029-174539.540Z was refused as an invalid Logon.
+        line = next(l for l in RIG.with_name('fix-smoke.mjs').read_text().splitlines() if l.startswith('const t = '))
+        stamp = subprocess.run(['node', '-e', line + '\nconsole.log(t())'], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertRegex(stamp, r'^\d{8}-\d\d:\d\d:\d\d\.\d{3}$')
 
     def test_a_managed_projection_scope_is_refused_not_guessed(self):
         digest = GOOD['DIGEST'][:-1] + ',"projectionScope":"run_a"}'

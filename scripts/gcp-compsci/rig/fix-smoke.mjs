@@ -13,7 +13,7 @@ const px = (Math.floor(quote.price * 0.98 * 100) / 100).toFixed(2);
 const cl = `rig-${Date.now()}`;
 
 const SOH = '\x01';
-const t = () => new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 21);
+const t = () => new Date().toISOString().replace(/-/g, '').replace('T', '-').slice(0, 21);   // SendingTime(52): YYYYMMDD-HH:MM:SS.sss
 const frame = (fields) => {
   const body = fields.map(([k, v]) => `${k}=${v}`).join(SOH) + SOH;
   const head = `8=FIX.4.4${SOH}9=${Buffer.byteLength(body)}${SOH}`;
