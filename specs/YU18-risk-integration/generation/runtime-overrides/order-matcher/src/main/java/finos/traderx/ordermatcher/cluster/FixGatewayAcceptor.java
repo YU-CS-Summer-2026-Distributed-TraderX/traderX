@@ -342,6 +342,21 @@ public final class FixGatewayAcceptor {
         return acceptor.getQueueSize();
     }
 
+    /**
+     * FR-PRG-07: ask every logged-on session to log out and refuse new Logons here. The session store stays
+     * open, so a report for an order still in flight is stored and resent where the client resumes (ADR-086).
+     */
+    void logoutAll(final String reason) {
+        if (acceptor == null) {
+            return;
+        }
+        for (final Session s : acceptor.getManagedSessions()) {
+            if (s.isLoggedOn()) {
+                s.logout(reason);
+            }
+        }
+    }
+
     public void stop() {
         if (acceptor != null) {
             acceptor.stop();

@@ -93,6 +93,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // by key. Measured on GKE (100K orders/s, leader SIGKILL): client-visible gap 12.0s -> ~0.65s.
     // Negative = the pre-fix behaviour (strands reap at their own deadline).
     private static final long FAILOVER_REAP_MS = Long.parseLong(env("GATEWAY_FAILOVER_REAP_MS", "200"));
+    /** FR-PRG-07: how long a terminating gateway keeps serving while its load balancer deregisters it. */
+    private static final long DRAIN_DELAY_MS = Long.parseLong(env("GATEWAY_DRAIN_DELAY_MS", "0"));
+    /** FR-PRG-07: the longest a drain waits for in-flight orders; past the ack deadline they are reaped anyway. */
+    private static final long DRAIN_TIMEOUT_MS = Long.parseLong(env("GATEWAY_DRAIN_TIMEOUT_MS",
+        String.valueOf(ACK_TIMEOUT_MS + 2_000)));
     private static final long BATCH_FENCE_RETRY_MS = 5;
     // ENGINE-REVIEW S6: every JSON route materialised an unbounded request body as a tree, and
     // /orders/batch accepted any array length while holding the owner thread for the whole batch.
@@ -500,7 +505,6 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             fix.start();
             fixAcceptor = fix;
             startFillFeed(fix);
-            Runtime.getRuntime().addShutdownHook(new Thread(fix::stop));
         }
 
         // Binary order-entry fast path (lever 4), additive alongside FIX/REST. Off unless the port is
@@ -509,19 +513,69 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         if (!binPortEnv.isEmpty()) {
             binaryAcceptor = new BinaryGatewayAcceptor(this, Integer.parseInt(binPortEnv), latency);
             binaryAcceptor.start();
-            Runtime.getRuntime().addShutdownHook(new Thread(binaryAcceptor::stop));
         }
         System.out.println("GATEWAY up: http=" + httpPort + " ingress=" + ingressEndpoints
             + (fixPortEnv.isEmpty() ? "" : " fix=" + fixPortEnv)
             + (binPortEnv.isEmpty() ? "" : " bin=" + binPortEnv));
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            running = false;
-            server.stop(0);
-            probes.stop(0);
-            CloseHelper.quietCloseAll(client, driver);
-        }));
+        // ONE hook, not one per acceptor: the JVM runs hooks concurrently, so separate hooks closed the
+        // cluster client while FIX and REST orders were still in flight (ADR-096 §4).
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> drainAndStop(server, probes, driver), "gateway-drain"));
         Thread.currentThread().join();
+    }
+
+    /**
+     * FR-PRG-07 (ADR-096 §4): SIGTERM drains instead of dropping. In order:
+     * <ol>
+     *   <li>Keep serving for {@code GATEWAY_DRAIN_DELAY_MS}: the pod is terminating, so the load balancer is
+     *       deregistering its node; connections that still arrive meanwhile are served, not refused.</li>
+     *   <li>Stop new input: log every FIX session out (its store stays open, so a report for an order still in
+     *       flight is stored and resent where the client resumes, ADR-086), stop accepting binary connections, and
+     *       stop the HTTP server once its in-flight requests have their answers.</li>
+     *   <li>Wait until no order is in flight, bounded by {@code GATEWAY_DRAIN_TIMEOUT_MS}.</li>
+     *   <li>Release the FIX leases, then close the cluster session.</li>
+     * </ol>
+     */
+    private void drainAndStop(final HttpServer server, final HttpServer probes, final MediaDriver driver) {
+        final long start = System.currentTimeMillis();
+        System.out.println("GATEWAY-DRAIN begin delayMs=" + DRAIN_DELAY_MS + " inflight=" + inflight.depth());
+        sleepQuietly(DRAIN_DELAY_MS);
+        final FixGatewayAcceptor fix = fixAcceptor;
+        if (fix != null) {
+            fix.logoutAll("gateway draining; reconnect");
+        }
+        if (binaryAcceptor != null) {
+            binaryAcceptor.stop();
+        }
+        server.stop((int) Math.max(1, DRAIN_TIMEOUT_MS / 1000));   // returns once its exchanges are answered
+        final long deadline = System.currentTimeMillis() + DRAIN_TIMEOUT_MS;
+        long quietSince = 0;
+        while (System.currentTimeMillis() < deadline) {
+            if (inflight.depth() > 0) {
+                quietSince = 0;
+            } else if (quietSince == 0) {
+                quietSince = System.currentTimeMillis();
+            } else if (System.currentTimeMillis() - quietSince >= 200) {
+                break;   // nothing in flight for 200 ms: a frame read just before stop() has been answered too
+            }
+            sleepQuietly(10);
+        }
+        if (fix != null) {
+            fix.stop();
+        }
+        System.out.println("GATEWAY-DRAIN done inflight=" + inflight.depth()
+            + " elapsedMs=" + (System.currentTimeMillis() - start));
+        running = false;
+        probes.stop(0);
+        CloseHelper.quietCloseAll(client, driver);
+    }
+
+    private static void sleepQuietly(final long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     // ----- owner thread: sole cluster-client user --------------------------------------------

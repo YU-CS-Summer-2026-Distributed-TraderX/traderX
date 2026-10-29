@@ -230,6 +230,56 @@ the other way round, trade-processor refuses to start and names the column. Chec
 kubectl -n traderx exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" traderx -e "SHOW COLUMNS FROM orderbook LIKE \"filledquantity\""'
 ```
 
+## Production rig (ADR-096)
+
+Production is not up around the clock. `scripts/gcp-compsci/rig/rig.sh` brings it up at bench parity and takes it
+back to zero instances. `gateways.sh` sets the gateway count on a running rig. Both need `gcloud` signed in,
+`kubectl`, and `jq`. Every step prints its command with `+`; `--dry-run` prints the whole plan and contacts nothing.
+Spec: `specs/YU18-risk-integration/maintenance/production-rig/spec.md` (FR-PRG-01..09).
+
+```bash
+scripts/gcp-compsci/rig/rig.sh pools                          # once: nats-pool, gateway-pool, client VM, IAP rule, engine sysctls
+GATEWAYS=2 scripts/gcp-compsci/rig/rig.sh up                  # nodes, members, restore gate, gateways, internal LB, smoke order
+GATEWAYS=2 AUTOSCALE=on scripts/gcp-compsci/rig/rig.sh up     # the same, then 2..18 gateways on CPU
+scripts/gcp-compsci/rig/gateways.sh 6                         # on a running rig: grow or shrink to 6
+scripts/gcp-compsci/rig/rig.sh down                           # gateways drain, barrier + baseline, members exit 143, all to 0
+scripts/gcp-compsci/rig/rig.sh status
+```
+
+- **`pools` puts the sysctls on `engine-pool` only while it has no nodes.** GKE recreates a pool's nodes to apply
+  them. `nats-pool` is c3-standard-8 because NATS's JetStream claim is pd-balanced, which C4D cannot attach.
+- **The restore gate keeps the gateways at 0 until the restored members equal a replay of the whole log.**
+  - G0 members agree.
+  - G1 replay from 0 reaches the same applied and trades.
+  - G2 `/recon/shadow-state` equals `/health?digest=1`.
+  - G3 the read model is unchanged and its open rows equal the members' open orders.
+  - G4 the members equal the last `down`'s baseline.
+  - `REFUSED Gn` stops the bring-up; investigate before any gateway starts.
+  - A build without `/recon/shadow-state` cannot pass on `traderx`.
+- **`down` scales the gateways to 0 first, and each drains:**
+  - it keeps serving 30 s while the internal LB deregisters its node;
+  - logs its FIX sessions out (they resume on another gateway, ADR-086);
+  - waits for its in-flight orders.
+  - A member that does not exit 143 is reported, and the teardown still reaches zero.
+  - Verify with `gcloud compute instances list`, not the cluster's node count.
+- **The gateway count belongs to the rig.** The pack carries none, and the first pack apply after this change resets
+  it to 1. Run `gateways.sh` or `rig.sh up` after it.
+- **Clients in the region use `order-matcher-gw-ilb`:** FIX 18130 and REST 18110, internal, open to the client VM
+  `traderx-client-1` only. Binary is not exposed (it has no logon).
+- **Evidence:** each run writes to `rig-evidence/<time>/`. That covers the gate readings, smoke output, drained-gateway
+  logs and FIX resume times, member exit codes, and the instance list after `down`.
+
+Cost, list prices:
+
+| Shape | $/h |
+|---|---|
+| Base: members, `default-pool`, NATS, client VM, LB | ~2.30 |
+| Each gateway node | ~0.38 |
+| 2 gateways | ~3.05 |
+| 18 gateways | ~9.15 |
+
+The claims and control plane bill at zero.
+
 ## Before application deployment
 
 The companion's `compiled-context-v1` provider binds independently derived full

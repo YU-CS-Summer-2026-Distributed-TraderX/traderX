@@ -1,0 +1,27 @@
+# ADR-096 §5 (FR-PRG-08): the in-region client path. An internal passthrough Network LB straight to the gateway pods:
+# no proxy between the client and the gateway, not on the internet. rig.sh replaces CLIENT_CIDR with the client VM's
+# address, so the firewall rule GKE creates admits only that VM.
+#   externalTrafficPolicy Local: no second hop through kube-proxy; a terminating gateway's node fails the LB health
+#     check while the gateway keeps serving for GATEWAY_DRAIN_DELAY_MS (FR-PRG-07).
+#   No session affinity: each new connection hashes onto a gateway; a FIX session resumes on any of them (ADR-086).
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw-ilb
+  namespace: traderx
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerSourceRanges:
+    - CLIENT_CIDR
+  selector:
+    app: cluster-gateway
+  ports:
+    - name: fix
+      port: 18130
+      targetPort: 18130
+    - name: http
+      port: 18110
+      targetPort: 18110

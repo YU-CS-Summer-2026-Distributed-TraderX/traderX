@@ -1,0 +1,5 @@
+# ADR-096 (FR-PRG-06): gateway-pool, the bench's hxb-gateway8b config. The static CPU manager pins each gateway's
+# 4 guaranteed CPUs; one gateway per node (the Deployment's anti-affinity), so nothing else shares those cores.
+kubeletConfig:
+  insecureKubeletReadonlyPortEnabled: false
+  cpuManagerPolicy: static

@@ -38,6 +38,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [FIX TLS entry](fix-tls-entry/README.md) | Built and proven on kind 2026-10-29: TLS-only socket for the external CompID, /32-allowlisted L4 Service, pinned client (ADR-095); not on production |
 | [FIX session persistence](fix-session-persistence/README.md) | Integrated 2026-10-28; on production `traderx` since roll 4 (2026-10-28, `00b31d33`; rollout record §13) (ADR-086) |
 | [Exactly-once dedupe](exactly-once-dedupe/README.md) | Proposed 2026-10-28 (ADR-090), awaiting approval; not implemented |
+| [Production rig](production-rig/README.md) | Code 2026-10-29: `rig.sh` up/down with the restore gate, `gateways.sh`, autoscaling, gateway drain (ADR-096); not yet run on production |
 | [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, on production since roll 4 (ADR-087) |
 
 Future fixes, including feed reconnect, belong here. Update the parent RI issue, bounded task record and live-rig queue as appropriate. A directory is not a service or deployment; follow [state pack layout](../../../docs/spec-kit/state-components.md) and the project task lifecycle.

@@ -1,0 +1,37 @@
+# ADR-096 §3 (FR-PRG-09): with AUTOSCALE=on the gateway count follows CPU between GATEWAYS and 18; the
+# gateway-pool's cluster autoscaler adds a node per pending gateway (one per node). rig.sh replaces MIN_GATEWAYS.
+# Up fast (4 gateways a minute); down slowly (30 min of low CPU, then one gateway per 10 min), never below
+# GATEWAYS. Each removed gateway drains (FR-PRG-07).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cluster-gateway
+  namespace: traderx
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cluster-gateway
+  minReplicas: MIN_GATEWAYS
+  maxReplicas: 18
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 1800
+      selectPolicy: Min
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 600

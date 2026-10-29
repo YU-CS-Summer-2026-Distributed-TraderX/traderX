@@ -262,6 +262,62 @@ class Rendering(unittest.TestCase):
             else: engine['spec'].pop('persistentVolumeClaimRetentionPolicy')
             with self.assertRaises(AssertionError, msg=str(policy)): module.validate(docs)
 
+    def workload(self, docs, name):
+        return next(d for d in docs if d['kind'] in ('Deployment','StatefulSet') and d['metadata']['name']==name)
+
+    def test_rig_tiers_are_on_their_own_pools(self):
+        # FR-PRG-05 (ADR-096): members, gateways and NATS each on their own pool and taint.
+        for name,pool,taint in (('order-matcher-cluster','engine-pool','traderx-engine'),
+                                ('cluster-gateway','gateway-pool','traderx-gateway'),('nats','nats-pool','traderx-nats')):
+            pod=module.podspec(self.workload(self.docs,name))
+            self.assertEqual(pod['nodeSelector'],{'cloud.google.com/gke-nodepool':pool},name)
+            self.assertIn({'key':taint,'operator':'Equal','value':'true','effect':'NoSchedule'},pod['tolerations'],name)
+        self.assertEqual(module.podspec(self.workload(self.docs,'trade-processor'))['nodeSelector'],
+                         {'cloud.google.com/gke-nodepool':'default-pool'})
+        docs=copy.deepcopy(self.docs)
+        module.podspec(self.workload(docs,'cluster-gateway'))['nodeSelector']={'cloud.google.com/gke-nodepool':'default-pool'}
+        with self.assertRaises(AssertionError): module.validate(docs)
+
+    def test_gateways_are_one_per_node_counted_by_the_rig_and_drain(self):
+        # FR-PRG-06/07: no replica count in the pack, required hostname anti-affinity, a guaranteed whole-CPU pod,
+        # and a drain delay longer than the internal LB's deregistration, inside the grace period.
+        gw=self.workload(self.docs,'cluster-gateway'); pod=module.podspec(gw); c=pod['containers'][0]
+        self.assertNotIn('replicas',gw['spec'])
+        self.assertEqual(c['resources'],{'requests':{'cpu':'4','memory':'2Gi'},'limits':{'cpu':'4','memory':'2Gi'}})
+        self.assertEqual({e['name']:e.get('value') for e in c['env']}['GATEWAY_DRAIN_DELAY_MS'],'30000')
+        self.assertEqual(pod['terminationGracePeriodSeconds'],60)
+        module.validate(self.docs)
+        def broken(change):
+            docs=copy.deepcopy(self.docs); change(self.workload(docs,'cluster-gateway')); return docs
+        for change in (lambda d: d['spec'].__setitem__('replicas',1),
+                       lambda d: module.podspec(d).pop('affinity'),
+                       lambda d: module.podspec(d)['containers'][0]['resources']['requests'].__setitem__('cpu','250m'),
+                       lambda d: module.podspec(d).__setitem__('terminationGracePeriodSeconds',30),
+                       lambda d: next(e for e in module.podspec(d)['containers'][0]['env']
+                                      if e['name']=='GATEWAY_DRAIN_DELAY_MS').__setitem__('value','0')):
+            with self.assertRaises(AssertionError): module.validate(broken(change))
+
+    def test_members_run_generational_zgc_with_the_book_cap_pinned(self):
+        # FR-PRG-05: generational ZGC at production's 12 GB, 7 CPU / 16Gi, MAX_ACTIVE_BOOKS pinned at 1,024 (ADR-079 §6:
+        # unset, the cap follows the heap, and the bench's 6 GB would cut it to ~436); the module flags are kept.
+        c=module.podspec(self.workload(self.docs,'order-matcher-cluster'))['containers'][0]
+        env={e['name']:e.get('value') for e in c['env']}
+        jvm=env['JAVA_TOOL_OPTIONS'].split()
+        for flag in ('-XX:+UseZGC','-XX:+ZGenerational','-Xms12g','-Xmx12g','-XX:+AlwaysPreTouch',
+                     '-Daeron.socket.so_rcvbuf=4194304','--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED'):
+            self.assertIn(flag,jvm)
+        self.assertFalse([t for t in jvm if t.startswith('-XX:MaxGCPauseMillis')])
+        self.assertEqual(env['MAX_ACTIVE_BOOKS'],'1024')
+        self.assertEqual(c['resources'],{'requests':{'cpu':'7','memory':'16Gi'},'limits':{'cpu':'7','memory':'16Gi'}})
+        def broken(change):
+            docs=copy.deepcopy(self.docs); change(module.podspec(self.workload(docs,'order-matcher-cluster'))['containers'][0]); return docs
+        def jvm_is(value):
+            return lambda c: next(e for e in c['env'] if e['name']=='JAVA_TOOL_OPTIONS').__setitem__('value',value)
+        for change in (jvm_is('-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50'),                       # the G1 shape it replaced
+                       jvm_is('-XX:+UseZGC -XX:+ZGenerational -Xms6g -Xmx6g -XX:SoftMaxHeapSize=3g'),   # the bench heap: 1,024 books do not fit
+                       lambda c: c.__setitem__('env',[e for e in c['env'] if e['name']!='MAX_ACTIVE_BOOKS'])):
+            with self.assertRaises(AssertionError): module.validate(broken(change))
+
     def test_projection_pulls_the_durable_feed(self):
         tp=next(d for d in self.docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}

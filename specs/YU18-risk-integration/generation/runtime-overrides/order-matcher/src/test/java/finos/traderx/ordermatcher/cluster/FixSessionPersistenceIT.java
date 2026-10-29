@@ -63,9 +63,9 @@ class FixSessionPersistenceIT {
         public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
                                       final char side, final int qty, final long limitPxTicks) {
             submitted.incrementAndGet();
-            if (qty == 99) {
+            if (qty == 99 || qty == 98) {
                 try {
-                    Thread.sleep(1_500);   // the ack arrives after the client is gone
+                    Thread.sleep(qty == 98 ? 4_000 : 1_500);   // the ack arrives after the client is gone
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -392,6 +392,46 @@ class FixSessionPersistenceIT {
         c1.order("still-mine", '2', 10);
         assertEquals("still-mine", c1.awaitType("8").get("11"), "the stalled owner lost a session nobody took");
         c1.close();
+    }
+
+    /**
+     * FR-PRG-07 (ADR-096 §4): a draining gateway logs its sessions out but keeps its store open until the orders
+     * in flight are answered, so the answer to an order still in flight at the Logout reaches the client where it
+     * resumes. Falsifiable: stopping the acceptor at the Logout instead (the pre-drain shutdown, which closed the
+     * store with the acceptor) leaves nothing stored for "slow", and B's resend gap-fills it.
+     */
+    @Test
+    void aDrainingGatewayLogsOutAndStillStoresTheAnswerInFlight() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT7");
+        final int b = startGateway(venue, "gw-b", "CLIENT7");
+        final FixGatewayAcceptor drained = gateways.get(0);
+        final Client c1 = new Client(a, "CLIENT7");
+        assertEquals("A", c1.logon().get("35"));
+        c1.order("slow", '2', 98);                       // answered 4 s from now
+        Thread.sleep(200);
+        drained.logoutAll("gateway draining; reconnect");
+        final Map<String, String> logout = c1.awaitType("5");
+        assertEquals("2", logout.get("34"), "the Logout is the second message: nothing answered yet");
+        c1.send("5", "58=bye");
+        c1.close();
+
+        while (venue.submitted.get() < 1) {
+            Thread.sleep(50);
+        }
+        Thread.sleep(4_500);                              // the drain waits for the order in flight
+        drained.stop();                                   // then releases the session
+
+        final Client c2 = new Client(b, "CLIENT7");
+        c2.out = 4;                                       // sent: Logon 1, order 2, Logout 3
+        final Map<String, String> logon = c2.logon();
+        assertEquals("A", logon.get("35"), "B takes the drained session: " + logon);
+        assertEquals("4", logon.get("34"), "the answer stored after the Logout took number 3");
+        c2.send("2", "7=3\u000116=0");
+        final Map<String, String> er = c2.awaitType("8");
+        assertEquals("slow", er.get("11"), "the order in flight at the drain is answered on resume: " + er);
+        assertEquals("Y", er.get("43"));
+        c2.close();
     }
 
     private static String now() {

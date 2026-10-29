@@ -39,6 +39,9 @@ timeout stays 200 ms. The PVC variant `statefulset.yaml` (reference only) carrie
 **Result.** hxb row 8 (same rig, image and load, only the flag changed): max pause 69–79 ms, no
 elections, one cut sha on all three members, and the empty-disk rejoin completed in ~121 s.
 
+**Amended 2026-10-29 (ADR-096 §1).** The CompSci production profile runs the same 12 GB heap on generational ZGC,
+with `MAX_ACTIVE_BOOKS=1024` pinned so that the derived book cap does not drop to ZGC's 873.
+
 ## 3. A member exits on SIGTERM (37e1e30e)
 
 **Context.** `ClusterNodeMain` awaited an Agrona `ShutdownSignalBarrier` and never closed it. Under

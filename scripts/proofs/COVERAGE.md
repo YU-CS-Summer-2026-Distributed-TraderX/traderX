@@ -1525,6 +1525,15 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-POE-01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-POE-02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-POE-03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
+| YU18 | `FR-PRG-01` | CI |  |  | test_rig Up/Plan: order, refusals, dry run contacts nothing; live bring-up pending (ADR-096 tasks) |
+| YU18 | `FR-PRG-02` | CI |  |  | test_rig Down: order, ClusterTool -Xmx128m, exit-137 member still ends at zero; live down pending |
+| YU18 | `FR-PRG-03` | CI |  |  | test_rig Up: G0–G4 each refuse, no gateway after a refusal; gate-removed mutation fails 9/10; live gate on the FR-ERH-F13 backport pending |
+| YU18 | `FR-PRG-04` | LIVE |  |  | smoke order at the effect end (orderbook CANCELED); runs inside rig.sh up; not yet run live |
+| YU18 | `FR-PRG-05` | CI |  |  | test_prepare test_rig_tiers / test_members_run_the_bench_heap; validate() refuses the G1 12g shape |
+| YU18 | `FR-PRG-06` | CI |  |  | test_prepare test_gateways_are_one_per_node…; test_rig gateways sharing a node refused; gateways.sh shrink live pending |
+| YU18 | `FR-PRG-07` | CI |  |  | FixSessionPersistenceIT.aDrainingGateway…: answer stored after the Logout, resent on resume; negative control (old stop) fails; full-gateway drain live pending |
+| YU18 | `FR-PRG-08` | LIVE |  |  | internal LB spread across new gateways: not yet run live |
+| YU18 | `FR-PRG-09` | LIVE |  |  | HPA/pool autoscaler under load, scale-down with no order lost: not yet run live |
 | YU18 | `FR-RA-01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RA-02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RA-03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |

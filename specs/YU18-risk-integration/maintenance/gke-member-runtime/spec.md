@@ -11,7 +11,8 @@
   (ADR-087).
 - FR-GMR-02: The kustomization and the CompSci render (`prepare.py`) SHALL both emit the StorageClass,
   cluster-scoped, with no namespace.
-- FR-GMR-03: Members SHALL run `-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50` on G1, at a 16Gi memory
+- FR-GMR-03 (on the CompSci production profile, FR-PRG-05 replaces G1 with generational ZGC at the same 12 GB heap
+  and pins `MAX_ACTIVE_BOOKS=1024`; ADR-096): Members SHALL run `-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50` on G1, at a 16Gi memory
   request equal to the limit. `statefulset.yaml` SHALL carry the same JVM flags as `statefulset-emptydir.yaml`.
 - FR-GMR-04: A member SHALL exit with status 143 within the grace period on SIGTERM, after closing its
   `ShutdownSignalBarrier`, archive and media driver, and SHALL log `Cluster node down` once they are

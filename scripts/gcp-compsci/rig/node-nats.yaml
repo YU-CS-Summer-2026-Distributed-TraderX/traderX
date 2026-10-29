@@ -1,0 +1,3 @@
+# ADR-096 (FR-PRG-05): nats-pool. NATS alone on its node; the FIX session store's put is on the FIX order path.
+kubeletConfig:
+  insecureKubeletReadonlyPortEnabled: false

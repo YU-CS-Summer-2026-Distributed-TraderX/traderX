@@ -42,6 +42,20 @@ SUPPORT_BUDGETS = {
     'otel-collector': ('50m', '128Mi', '500m', '256Mi'),
 }
 
+# ADR-096 §1: the production rig at bench parity (hxb f15hf2/b15ho, 400K/s for an hour). Each tier has its own pool
+# and taint; gateways run one per node, so the gateway count is the node count.
+RIG_POOLS = {'order-matcher-cluster': ('engine-pool', 'traderx-engine'),
+             'cluster-gateway': ('gateway-pool', 'traderx-gateway'),
+             'nats': ('nats-pool', 'traderx-nats')}
+# Generational ZGC as on the bench, but at production's 12 GB heap, not the bench's 6 GB: with MAX_ACTIVE_BOOKS unset the
+# book cap is derived from the heap (ADR-079 §6), and every touched book costs ~7 MB under ZGC. The cap is pinned to the
+# 1,024 production has today (12 GB G1), so no heap change can move an apply-path decision (BOOK_CAPACITY).
+MEMBER_JVM = '-XX:+UseZGC -XX:+ZGenerational -Xms12g -Xmx12g -XX:+AlwaysPreTouch -Daeron.socket.so_rcvbuf=4194304'
+MEMBER_MAX_ACTIVE_BOOKS = '1024'
+BOOK_MB_ZGC = 7
+# FR-PRG-07: longer than the internal LB takes to mark a terminating gateway's node down (health check 8 s x 3).
+GATEWAY_DRAIN_DELAY_MS = '30000'
+
 
 def secret_env(container, name, secret, key):
     env = container.setdefault('env', [])
@@ -69,7 +83,25 @@ def configure_private_runtime(docs):
                         'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -e "SELECT 1" >/dev/null']
             if name == 'grafana':
                 secret_env(c, 'GF_SECURITY_ADMIN_PASSWORD', 'grafana-credentials', 'admin-password')
+        if name == 'cluster-gateway':
+            # FR-PRG-06/07: one gateway per node, and a grace period that covers the drain (delay + in-flight wait).
+            pod['terminationGracePeriodSeconds'] = 60
+            pod['affinity'] = {'podAntiAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': [
+                {'labelSelector': {'matchLabels': {'app': 'cluster-gateway'}}, 'topologyKey': 'kubernetes.io/hostname'}]}}
         for c in pod.get('containers', []):
+            if name == 'order-matcher-cluster':
+                # FR-PRG-05: generational ZGC (no G1 stop-the-world pauses), 7 CPUs for the DEDICATED driver's agents, a
+                # 4 MiB Aeron receive buffer (the engine pool's rmem_max allows it), and the book cap pinned.
+                c['resources'] = {'requests': {'cpu': '7', 'memory': '16Gi'}, 'limits': {'cpu': '7', 'memory': '16Gi'}}
+                c['env'] = [e for e in c['env'] if e['name'] != 'MAX_ACTIVE_BOOKS']
+                c['env'].append({'name': 'MAX_ACTIVE_BOOKS', 'value': MEMBER_MAX_ACTIVE_BOOKS})
+                jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
+                kept = [t for t in jvm['value'].split() if not t.startswith(('-Xms', '-Xmx', '-XX:MaxGCPauseMillis', '-XX:+Use'))]
+                jvm['value'] = ' '.join([MEMBER_JVM] + kept)
+            if name == 'cluster-gateway':
+                c['resources'] = {'requests': {'cpu': '4', 'memory': '2Gi'}, 'limits': {'cpu': '4', 'memory': '2Gi'}}
+                c['env'] = [e for e in c.get('env', []) if e['name'] != 'GATEWAY_DRAIN_DELAY_MS']
+                c['env'].append({'name': 'GATEWAY_DRAIN_DELAY_MS', 'value': GATEWAY_DRAIN_DELAY_MS})
             if name == 'trade-processor':
                 # FR-DRS-25: the projection pulls a durable JetStream consumer, so sides booked while it is
                 # down are replayed on restart instead of lost. Row projection: SQL keeps every trade.
@@ -242,6 +274,39 @@ def validate(docs):
             require('data' in claims and all(v['name'] != 'data' for v in pod.get('volumes', []))
                     and retention.get('whenScaled') == 'Retain' and retention.get('whenDeleted') == 'Retain',
                     'member /data is not a retained per-member claim (FR-GMR-01, ADR-087)')
+        # ADR-096: each rig tier on its own pool (FR-PRG-05); gateways one per node, guaranteed whole CPUs for the
+        # static CPU manager, counted by the rig, draining for longer than the LB deregisters them (FR-PRG-06/07).
+        if pod and doc['metadata']['name'] in RIG_POOLS and doc['kind'] in ('Deployment', 'StatefulSet'):
+            pool, taint = RIG_POOLS[doc['metadata']['name']]
+            require(pod.get('nodeSelector') == {'cloud.google.com/gke-nodepool': pool}
+                    and {'key': taint, 'operator': 'Equal', 'value': 'true', 'effect': 'NoSchedule'} in pod.get('tolerations', []),
+                    f'{doc["metadata"]["name"]} is not on its own pool {pool} (FR-PRG-05)')
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
+            anti = pod.get('affinity', {}).get('podAntiAffinity', {}).get('requiredDuringSchedulingIgnoredDuringExecution', [])
+            res = pod['containers'][0].get('resources', {})
+            env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}
+            delay = int(env.get('GATEWAY_DRAIN_DELAY_MS') or 0)
+            require('replicas' not in doc['spec'], 'gateway count pinned in the pack; the rig owns it (FR-PRG-06)')
+            require(any(t.get('topologyKey') == 'kubernetes.io/hostname'
+                        and t.get('labelSelector', {}).get('matchLabels') == {'app': 'cluster-gateway'} for t in anti),
+                    'two gateways may share a node (FR-PRG-06)')
+            require(res.get('requests') == res.get('limits') and str(res.get('requests', {}).get('cpu', '')).isdigit(),
+                    'gateway is not a guaranteed whole-CPU pod, so the static CPU manager will not pin it (FR-PRG-06)')
+            require(delay >= 25000 and pod.get('terminationGracePeriodSeconds', 30) >= delay // 1000 + 15,
+                    'gateway drain shorter than the LB deregistration, or longer than its grace period (FR-PRG-07)')
+        if doc['kind'] == 'StatefulSet' and doc['metadata']['name'] == 'order-matcher-cluster':
+            c = pod['containers'][0]
+            jvm = next((e.get('value', '') for e in c.get('env', []) if e['name'] == 'JAVA_TOOL_OPTIONS'), '')
+            xmx = re.search(r'-Xmx(\d+)g', jvm)
+            limit = str(c.get('resources', {}).get('limits', {}).get('memory', ''))
+            books = next((e.get('value') for e in c.get('env', []) if e['name'] == 'MAX_ACTIVE_BOOKS'), None)
+            require('-XX:+UseZGC' in jvm and '-XX:+ZGenerational' in jvm and xmx
+                    and limit.endswith('Gi') and int(xmx.group(1)) + 3 <= int(limit[:-2]),
+                    'member is not on generational ZGC, or its heap leaves no room for direct memory and /dev/shm (FR-PRG-05)')
+            require(books is not None and books.isdigit()
+                    and int(xmx.group(1)) * 1024 >= int(books) * BOOK_MB_ZGC * 3 // 2,
+                    'MAX_ACTIVE_BOOKS not pinned, or the heap cannot hold that many books under ZGC with headroom: '
+                    'the derived cap would move with the heap and change BOOK_CAPACITY decisions (FR-PRG-05, ADR-079 §6)')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
@@ -334,14 +399,19 @@ def prepare(output, tag, dns, published_path=None, public_path=None):
                 c['resources'] = {'requests': {'cpu': '25m', 'memory': '64Mi'},
                                   'limits': {'cpu': '250m', 'memory': '128Mi'}}
             continue
-        engine = doc['metadata']['name'] == 'order-matcher-cluster'
-        pod['nodeSelector'] = {'cloud.google.com/gke-nodepool': 'engine-pool' if engine else 'default-pool'}
-        if engine:
-            pod['initContainers'] = [c for c in pod.get('initContainers', []) if c['name'] != 'restore-from-gcs']
-            pod['tolerations'] = [{'key':'traderx-engine','operator':'Equal','value':'true','effect':'NoSchedule'}]
+        workload = doc['metadata']['name']
+        pool, taint = RIG_POOLS.get(workload, ('default-pool', None))
+        pod['nodeSelector'] = {'cloud.google.com/gke-nodepool': pool}
+        if taint:
+            pod['tolerations'] = [{'key':taint,'operator':'Equal','value':'true','effect':'NoSchedule'}]
         else:
             pod.pop('tolerations', None)
-            if doc['kind'] == 'Deployment': doc['spec']['replicas'] = 1
+        if workload == 'order-matcher-cluster':
+            pod['initContainers'] = [c for c in pod.get('initContainers', []) if c['name'] != 'restore-from-gcs']
+        elif workload == 'cluster-gateway':
+            doc['spec'].pop('replicas', None)   # ADR-096 §3: rig.sh, gateways.sh and the HPA own the count
+        elif doc['kind'] == 'Deployment':
+            doc['spec']['replicas'] = 1
         for container in pod.get('containers', []) + pod.get('initContainers', []):
             image = container['image']
             if image.startswith('traderx-api-explorer:'):

@@ -1,0 +1,22 @@
+# Production rig tasks
+
+- [x] Parity tiers, member heap and gateway shape rendered and validated by `prepare.py` (FR-PRG-05/06/07);
+      `test_prepare` 38/38, and the three new tests fail on the previous renderer.
+- [x] Member heap kept at 12 GB, on generational ZGC, with `MAX_ACTIVE_BOOKS=1024` pinned. The bench's 6 GB would cut
+      the derived book cap from 1,024 to ~436, an apply-path change (ADR-079 §6).
+- [x] Gateway drain in one shutdown hook (FR-PRG-07). `FixSessionPersistenceIT` 9/9. Its drain test fails with the
+      old stop-at-Logout behaviour: nothing stored, B logs on at 3.
+- [x] `rig.sh` pools/up/down/status with the restore gate (FR-PRG-01..04), `gateways.sh` (FR-PRG-06), HPA and pool
+      autoscaler (FR-PRG-09). `test_rig.py` 16/16, three runs; with the gate removed, 9 of 10 `up` tests fail.
+- [x] Gate G2 aligned with the backport's `/recon/shadow-state` and `/health?digest=1` (FR-ERH-F13,
+      `claude/snapshot-reader-failclosed-00b31d33`).
+- [x] Quota: regional CPUS 3,000 (no separate C4D quota); a full rig with 18 gateways is ~196 vCPU.
+- [ ] Rehearsal on a side namespace, needing yaakov's approval and a spend projection:
+      - `pools`;
+      - `up` on the backport build (G0–G4 pass);
+      - `gateways.sh 2 → 4 → 2` with FIX clients connected through the internal LB: new connections reach the new
+        gateways, every drained gateway ends `inflight=0`, resume times recorded;
+      - autoscale up under load and back down with no order lost (every order answered once, recon mismatch 0);
+      - `down` with three exit-143 members and zero instances.
+- [ ] Production run in rollout 5a (yaakov approves in session).
+- [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

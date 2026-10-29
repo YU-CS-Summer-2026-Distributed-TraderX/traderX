@@ -1,0 +1,13 @@
+# ADR-096 (FR-PRG-05): engine-pool, the hxb bench's engine node config (hxb-engine2/3/4, 2026-10-22). Continuous
+# dirty-page writeback, so the archive's log writes are flushed steadily instead of in bursts that stall the recorder,
+# and UDP receive buffers large enough for the members' explicit 4 MiB Aeron so_rcvbuf.
+kubeletConfig:
+  insecureKubeletReadonlyPortEnabled: false
+linuxConfig:
+  sysctl:
+    vm.dirty_background_bytes: '16777216'
+    vm.dirty_bytes: '268435456'
+    vm.dirty_writeback_centisecs: '100'
+    vm.dirty_expire_centisecs: '300'
+    net.core.rmem_max: '16777216'
+    net.core.rmem_default: '4194304'
