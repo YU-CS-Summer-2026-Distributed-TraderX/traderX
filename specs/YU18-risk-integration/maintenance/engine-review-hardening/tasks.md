@@ -20,6 +20,10 @@
       -2147483648, -2147483647, -2147483646 issued). Deterministic core: fresh epoch, same image on all members.
       Amended (codeX pass 3 §15): the ceiling is checked after deduplication; a retry of the last accepted order
       and a sequenced resend recover their answer with no ref (two more cases, both fail on the first cut).
+- [x] FR-ERH-F16: `/health?digest=1` and `/recon/shadow-state` expose the member's and a strict full-log replay's
+      `bookHash`/`positionHash` (decimal strings) for the restore gate. Test
+      `ClusterReconOtcRefusalTest.shadowStateFromTheArchiveMatchesAMemberThatAppliedTheSameLog`: replay of a real
+      recorded archive equals a member that applied the same log; one order fewer changes the book hash.
 
 ## Still open
 

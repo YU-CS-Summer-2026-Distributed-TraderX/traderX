@@ -1,5 +1,9 @@
 package finos.traderx.ordermatcher.cluster;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
+import finos.traderx.ordermatcher.lmax.MatchingEngine;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import finos.traderx.ordermatcher.lmax.AeronReplicationCodec;
 import finos.traderx.ordermatcher.lmax.InputEvent;
@@ -209,6 +213,62 @@ class ClusterReconOtcRefusalTest {
         assertEquals("CONVENTION_"+(SwapConventions.count()+5),row.security());
         assertEquals("PRICE_MISSING",row.riskReason());assertEquals("SWAPTION_REJECTED",row.kind());
         assertNull(row.clientOrderKey());assertNull(row.requestId());assertNull(row.quantity());
+    }
+
+    /**
+     * FR-ERH-F16: the restore gate's reference. A strict full-log replay of a real recorded archive (shadowState) gives
+     * the same applied sequence, book hash and position hash as a member that applied the same log, in the form
+     * /health?digest=1 and /recon/shadow-state print them (hashes as decimal strings). The control: a member missing
+     * the last order disagrees, so an equal answer is not vacuous.
+     */
+    @Test
+    void shadowStateFromTheArchiveMatchesAMemberThatAppliedTheSameLog() throws Exception {
+        final int other = ACCOUNT + 1;
+        var security = new InputEvent();security.type=InputEvent.TYPE_SECURITY_CONTROL;
+        security.securityId=0;security.setControlEnabled(true);security.setControlVersion(1);
+        var price = new InputEvent();price.type=InputEvent.TYPE_PRICE_TICK;price.securityId=0;price.priceTicks=100_000_000L;
+        var inputs=List.of(account(ACCOUNT,true,1),account(other,true,1),security,price,
+            equity(ACCOUNT,InputEvent.SIDE_BUY,3,100_000_000L,71),equity(other,InputEvent.SIDE_SELL,2,100_000_000L,72),
+            equity(ACCOUNT,InputEvent.SIDE_BUY,5,98_000_000L,73));
+        try(ClosedArchive archive=new ClosedArchive(inputs,true)) {
+            final ClusterRecon.ShadowState shadow=archive.recon(100).shadowState();
+            final MatchingEngineClusteredService member=memberApplying(inputs, inputs.size());
+            final MatchingEngine.RecoveryDigest d=member.engine().recoveryDigest();
+            assertEquals(member.appliedSeq(),shadow.applied());
+            assertEquals(d.orderHash(),shadow.bookHash());
+            assertEquals(d.positionHash(),shadow.positionHash());
+            assertEquals(d.tradeCounter(),shadow.tradeCounter());
+            assertEquals(2,shadow.openOrders(),"one partly filled bid and one untouched bid rest");
+            assertEquals(2,d.tradeCounter(),"the crossing sell traded (one trade, two legs)");
+            final MatchingEngine.RecoveryDigest missing=memberApplying(inputs, inputs.size()-1).engine().recoveryDigest();
+            assertNotEquals(missing.orderHash(),shadow.bookHash(),"control: one order fewer must change the book hash");
+
+            final String health=ClusterNodeMain.digestJson(d);
+            assertTrue(health.contains("\"bookHash\":\""+d.orderHash()+"\""),health);
+            assertTrue(health.contains("\"positionHash\":\""+d.positionHash()+"\""),health);
+            final var json=new ObjectMapper().valueToTree(ClusterNodeMain.shadowStateJson(shadow,member.appliedSeq(),member.appliedSeq()));
+            assertEquals(Long.toString(d.orderHash()),json.path("bookHash").asText());
+            assertEquals(Long.toString(d.positionHash()),json.path("positionHash").asText());
+            assertTrue(json.path("bookHash").isTextual(),"64-bit hashes travel as strings (jq/JS doubles lose precision)");
+            assertEquals(member.appliedSeq(),json.path("applied").asLong());
+            assertTrue(json.path("complete").asBoolean());
+            assertFalse(new ObjectMapper().valueToTree(ClusterNodeMain.shadowStateJson(shadow,member.appliedSeq(),member.appliedSeq()+1))
+                .path("complete").asBoolean(),"a member that applied during the replay is not a complete comparison");
+        }
+    }
+
+    /** A member applying the archive's payloads in the same order (symbol registration first, as the fixture records). */
+    private MatchingEngineClusteredService memberApplying(List<InputEvent> inputs, int count) {
+        var s=service();
+        var symbol=new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
+        codec.encodeSymbolRegister(symbol,0,0,"IBM");
+        s.onSessionMessage(null,TIME+1,symbol,0,symbol.capacity(),null);
+        for(int i=0;i<count;i++){byte[] w=wire(inputs.get(i));s.onSessionMessage(null,TIME+i+2,new UnsafeBuffer(w),0,w.length,null);}
+        return s;
+    }
+
+    private static InputEvent equity(int account,byte side,int qty,long px,long key) {
+        var o=new InputEvent();o.type=InputEvent.TYPE_ORDER_NEW;o.accountId=account;o.securityId=0;o.side=side;o.qty=qty;o.limitPx=px;o.setClientOrderKey(key);return o;
     }
 
     private static MatchingEngineClusteredService service() {var s=new MatchingEngineClusteredService();s.initEngine();return s;}

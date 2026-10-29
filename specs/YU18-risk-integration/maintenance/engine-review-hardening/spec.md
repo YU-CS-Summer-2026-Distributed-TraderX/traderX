@@ -63,6 +63,15 @@
     left the load waiting forever.) A record larger than one snapshot message SHALL be reassembled before it is read.
   - `ClusterRecon`'s archive replay SHALL do the same, so an incomplete replay never becomes a witness. This has
     held since 3f8db417.
+- FR-ERH-F16: A restored member's state SHALL be comparable with a full-log replay, in the same terms on both sides.
+  - `GET /health?digest=1` SHALL add the member's `bookHash` and `positionHash` (`MatchingEngine.recoveryDigest`:
+    open orders and net positions), plus `openOrders`, `positions` and `digestTrades`. Plain `/health` is
+    unchanged, because the readiness sampler polls it every 250 ms.
+  - `GET /recon/shadow-state` SHALL replay the whole log strictly from position 0 into a fresh shadow (refusing a
+    purged or discontinuous archive, FR-ERH-F8) and return the same fields, plus `applied`, `replayedMessages`,
+    `memberAppliedBefore`/`memberAppliedAfter` and `complete`. `complete` means the member applied nothing during
+    the replay, and the replay reached the member's applied sequence.
+  - Hashes SHALL be decimal strings: a 64-bit value read as a JSON number loses precision in jq and JavaScript.
 
 ## Success Criteria
 

@@ -1358,6 +1358,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-ERH-C2` | LIVE | yu18-legacy-trade-bearer |  |  |
 | YU18 | `FR-ERH-F1` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
 | YU18 | `FR-ERH-F10` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
+| YU18 | `FR-ERH-F16` | CI |  |  | ClusterReconOtcRefusalTest shadowStateFromTheArchiveMatchesAMemberThatAppliedTheSameLog: strict replay of a real recorded archive gives the member's applied, bookHash and positionHash; control: one order fewer changes the book hash; JSON helpers print hashes as strings and `complete` false if the member applied during the replay. Live use: the 5a restore gate |
 | YU18 | `FR-ERH-F12` | CI |  |  | SnapshotRealChannelRestoreTest (real IPC snapshot channel → loadSnapshot(Image)): intact restore is byte-identical; a refused record mid-stream fails the load (without the fix it was skipped and the load completed); a too-new header fails the load (without the fix it hung). ClusterReconOtcRefusalTest closedArchiveReport…: the REGULATORY_MAX_RECORDS refusal thrown inside the archive replay surfaces (with the replay guard off it is swallowed and the report is partial) |
 | YU18 | `FR-ERH-F11` | LIVE |  |  | needs a purged archive / 65,536 FIX orders; not attempted |
 | YU18 | `FR-ERH-F2` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |

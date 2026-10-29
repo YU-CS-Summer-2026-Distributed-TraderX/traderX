@@ -502,7 +502,7 @@ restore_gate(){
     done
     note "G1 ok: each replay from 0 reaches applied $a with $t trades"
   fi
-  # G2, check A (FR-ERH-F13): a strict replay of the whole log into a fresh shadow must hold exactly the restored state,
+  # G2, check A (FR-ERH-F16): a strict replay of the whole log into a fresh shadow must hold exactly the restored state,
   # in the terms of /health?digest=1. Hashes are decimal strings (a 64-bit hash read as a JSON number loses digits).
   for i in 0 1 2; do
     token=$(admin_token); [ -n "$token" ] || die "G2: could not mint an admin token in trade-processor"

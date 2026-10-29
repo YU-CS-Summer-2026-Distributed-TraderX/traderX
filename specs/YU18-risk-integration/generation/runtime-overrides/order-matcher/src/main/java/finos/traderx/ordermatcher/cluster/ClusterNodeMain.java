@@ -340,7 +340,10 @@ public final class ClusterNodeMain {
                 + ",\"phase\":\"" + service.phaseName() + "\""
                 + ",\"queueDepth\":" + service.queueDepth()
                 // YU18 (§7.9): non-zero "rejected" = NATS dropped published messages at stream ingest.
-                + ",\"bridges\":" + service.bridgeJson() + "}";
+                + ",\"bridges\":" + service.bridgeJson()
+                // FR-ERH-F16: opt-in, because the readiness sampler polls /health every 250 ms and the digest walks
+                // the whole book from this thread. Compared by the restore gate with /recon/shadow-state.
+                + (started && wantsDigest(exchange) ? "," + digestJson(service.engine().recoveryDigest()) : "") + "}";
             respond(exchange, 200, body);
         });
         // Routing readiness = election CLOSED + lag tolerance (or no observed peer). These do not
@@ -874,6 +877,14 @@ public final class ClusterNodeMain {
         server.createContext("/recon/trades/blotter", exchange ->
             guarded.apply(exchange, () -> recon.liveSince(longParam(exchange, "sinceSeq", 0), pageSize)));
 
+        // FR-ERH-F16: the restore gate's reference. A strict full-log replay into a fresh shadow (read-only; refuses a
+        // purged or discontinuous archive), in the same terms as /health?digest=1.
+        server.createContext("/recon/shadow-state", exchange -> guarded.apply(exchange, () -> {
+            final long before = service.appliedSeq();
+            final ClusterRecon.ShadowState s = recon.shadowState();
+            return shadowStateJson(s, before, service.appliedSeq());
+        }));
+
         server.createContext("/recon/full-history/reindex", exchange ->
             guarded.apply(exchange, () -> {
                 // Bracket the replay with the live trade counter. The replay's own index is a
@@ -1066,4 +1077,35 @@ public final class ClusterNodeMain {
         final String value = System.getenv(name);
         return value == null || value.isEmpty() ? fallback : value;
     }
+
+    /** FR-ERH-F16: digest fields shared by /health?digest=1 and /recon/shadow-state. Hashes are decimal STRINGS:
+     *  a 64-bit hash read as a JSON number loses precision in jq and JavaScript (doubles). */
+    static String digestJson(final MatchingEngine.RecoveryDigest d) {
+        return "\"bookHash\":\"" + d.orderHash() + "\",\"positionHash\":\"" + d.positionHash()
+            + "\",\"openOrders\":" + d.openOrders() + ",\"positions\":" + d.positions()
+            + ",\"digestTrades\":" + d.tradeCounter();
+    }
+
+    static boolean wantsDigest(final com.sun.net.httpserver.HttpExchange exchange) {
+        final String q = exchange.getRequestURI().getRawQuery();
+        return q != null && java.util.Arrays.asList(q.split("&")).contains("digest=1");
+    }
+
+    /** {@code complete}: the member applied nothing while the replay ran, and the replay reached its applied sequence. */
+    static java.util.Map<String, Object> shadowStateJson(final ClusterRecon.ShadowState s, final long memberBefore,
+                                                         final long memberAfter) {
+        final java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("applied", s.applied());
+        m.put("bookHash", Long.toString(s.bookHash()));
+        m.put("positionHash", Long.toString(s.positionHash()));
+        m.put("openOrders", s.openOrders());
+        m.put("positions", s.positions());
+        m.put("digestTrades", s.tradeCounter());
+        m.put("replayedMessages", s.replayedMessages());
+        m.put("memberAppliedBefore", memberBefore);
+        m.put("memberAppliedAfter", memberAfter);
+        m.put("complete", memberBefore == memberAfter && s.applied() == memberAfter);
+        return m;
+    }
+
 }

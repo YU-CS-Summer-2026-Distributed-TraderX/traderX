@@ -1,5 +1,6 @@
 package finos.traderx.ordermatcher.cluster;
 
+import finos.traderx.ordermatcher.lmax.MatchingEngine;
 import finos.traderx.ordermatcher.lmax.OutputEvent;
 import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.lmax.TradeBlotter;
@@ -152,6 +153,11 @@ final class ClusterRecon {
     record ReindexResult(int indexedTrades, long evictions, long replayedMessages,
                          long replayedAppliedSeq, long shadowTradeCounter) { }
 
+    /** FR-ERH-F16: the shadow engine's recoverable-state digest after a strict full-log replay from 0, in the same
+     *  terms as a member's {@code /health?digest=1}: applied sequence, book (open-order) hash, position hash. */
+    record ShadowState(long replayedMessages, long applied, long bookHash, long positionHash, long tradeCounter,
+                       int openOrders, int positions) { }
+
     private final File clusterDir;
     private final String aeronDir;
     private final String epoch;
@@ -209,6 +215,16 @@ final class ClusterRecon {
      * never scheduled, always explicitly triggered. Synchronized so two admin calls cannot each
      * build a shadow engine on a consensus member at the same time.
      */
+    /** FR-ERH-F16: strict (GENESIS_MISSING / DISCONTINUITY refuse) full-log replay into a fresh shadow; read-only. */
+    synchronized ShadowState shadowState() {
+        final long[] counters = new long[2]; // replayed messages, applied seq
+        final MatchingEngineClusteredService[] shadow = new MatchingEngineClusteredService[1];
+        replay((out, ticker) -> { }, null, null, counters, true, shadow);
+        final MatchingEngine.RecoveryDigest d = shadow[0].engine().recoveryDigest();
+        return new ShadowState(counters[0], counters[1], d.orderHash(), d.positionHash(), d.tradeCounter(),
+            d.openOrders(), d.positions());
+    }
+
     synchronized ReindexResult reindexFullHistory() {
         final TradeBlotter index = new TradeBlotter(fullHistoryMax);
         final long[] counters = new long[2]; // replayed messages, applied seq
@@ -498,7 +514,18 @@ final class ClusterRecon {
     private long replay(final ReplaySink sink, final ContractSink contractSink,
                         final java.util.function.Consumer<MatchingEngineClusteredService.OtcRefusal> refusalSink,
                         final long[] counters, final boolean strict) {
+        return replay(sink, contractSink, refusalSink, counters, strict, null);
+    }
+
+    /** {@code shadowOut}, when given, receives the shadow after the replay (FR-ERH-F16). */
+    private long replay(final ReplaySink sink, final ContractSink contractSink,
+                        final java.util.function.Consumer<MatchingEngineClusteredService.OtcRefusal> refusalSink,
+                        final long[] counters, final boolean strict,
+                        final MatchingEngineClusteredService[] shadowOut) {
         final MatchingEngineClusteredService shadow = new MatchingEngineClusteredService();
+        if (shadowOut != null) {
+            shadowOut[0] = shadow;
+        }
         shadow.runDescriptor(runDescriptor);
         shadow.initEngine();
         shadow.outputSink(out -> sink.accept(out, shadow.tickerFor(out.securityId)));
