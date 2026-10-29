@@ -26,9 +26,11 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
     instance remains and the VM is TERMINATED.
   - A member that did not exit 143 SHALL be reported, the teardown SHALL still complete, and the run SHALL exit 3.
 - **FR-PRG-03:** Restore gate. Before the members start, G-pre SHALL read each member claim's cluster error log in a
-  read-only pod (ClusterTool `errors`, its own `JAVA_TOOL_OPTIONS`) while no member runs, and SHALL stop the bring-up on
-  "snapshot corrupt", "NEWER" or "unknown snapshot record type" (a past restore that loaded a snapshot partially,
-  before FR-ERH-F12), or on a log it could not read. After they start, gateways SHALL stay at 0 until every check
+  read-only pod while no member runs, and SHALL stop the bring-up on "snapshot corrupt", "NEWER" or "unknown snapshot
+  record type" (a past restore that loaded a snapshot partially, before FR-ERH-F12), or on a log it could not read.
+  - It SHALL read the error logs of both the consensus module's mark file (`cluster-mark.dat`) and the service
+    container's (`cluster-mark-service-*.dat`). A refused snapshot record is logged in the service container's.
+  - A claim without both mark files SHALL count as unreadable. After they start, gateways SHALL stay at 0 until every check
   passes, and `up` SHALL stop on the first that fails. The checks are G0–G4 (table below); G2 and G3 are checks A
   and B.
   - G2 SHALL refuse on namespace `traderx` when a member has no `/recon/shadow-state`. `GATE_ALLOW_NO_SHADOW=1`
@@ -117,7 +119,8 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | each gate check failing | 03 | `test_rig.Up.*refused*` | REFUSED Gn; no gateway scaled up; no `rig-gate` |
 | a past partial restore in a member's error log | 03 | `test_rig.Up.test_a_member_that_once_restored_partially…` | REFUSED G-pre for each of the three messages; no member started |
 | error log unreadable, or members running | 03 | `test_rig.Up.test_an_unreadable…`, `…not_read_while_members_run` | refused |
-| G-pre pods | 03 | `test_rig.Up.test_the_error_logs_are_read_read_only…` | claim and mount read-only, `-Xmx128m`, all three read before the members scale to 3 |
+| G-pre pods | 03 | `test_rig.Up.test_the_error_logs_are_read_read_only…`, `…test_the_pod_runs_the_reader_on_the_claim` | claim and mount read-only, the shipped reader on `/data/cluster`, all three read before the members scale to 3 |
+| a refusal in the service mark file, as Aeron writes it | 03 | `test_rig.Up.test_the_reader_finds_a_refusal_aeron_logged_in_the_service_mark_file` (`rig/ErrlogProbe.java`, Aeron 1.51.0) | each of the three messages found in `cluster-mark-service-0.dat` and REFUSED; clean control passes; no service file = exit 3; reading the consensus file alone fails the test |
 | Pending members at bring-up | 01 | `test_rig.Up.test_members_are_held_at_zero…` | StatefulSet to 0 before any pool resize |
 | re-run on a gated rig | 01 | `test_rig.Up.test_a_rerun_on_a_gated_rig…` | nothing scaled to 0, no G-pre, no gate; gateways to N |
 | build without check A | 03 | `test_rig.Up.test_a_build_without_check_a…` | refused on `traderx`, opt-out ignored there; skipped only in a side namespace |

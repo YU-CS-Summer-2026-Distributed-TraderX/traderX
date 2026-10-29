@@ -258,7 +258,9 @@ scripts/gcp-compsci/rig/rig.sh status
 
 - **`pools` puts the sysctls on `engine-pool` only while it has no nodes.** GKE recreates a pool's nodes to apply
   them. `nats-pool` is c3-standard-8 because NATS's JetStream claim is pd-balanced, which C4D cannot attach.
-- **`up` holds the members at 0 first, then reads each member claim's past error log in a read-only pod (G-pre).**
+- **`up` holds the members at 0 first, then reads each member claim's past error logs in a read-only pod (G-pre).**
+  It reads both mark files in `/data/cluster`: the consensus module's and the service container's, where a refused
+  snapshot record is logged. Not `ClusterTool errors`, which stops at the missing driver before the service file.
   A "snapshot corrupt", "NEWER" or "unknown snapshot record type" line means a past restart loaded a snapshot partially
   (before FR-ERH-F12), and the bring-up stops before any member starts. A re-run on a rig that is up and gated stops
   nothing.

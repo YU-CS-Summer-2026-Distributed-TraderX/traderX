@@ -13,6 +13,10 @@
 - [x] G-pre: before the members start, each claim's past error log is read in a read-only pod, and a past partial
       restore stops the bring-up. Members are held at 0 first, because production's StatefulSet was left at 3 with
       Pending pods. A re-run on a gated rig stops nothing. `test_rig` 22/22.
+- [x] G-pre reads the service container's error log too. `ClusterTool errors` (Aeron 1.51) throws on the absent
+      driver's `cnc.dat` before it reaches the service mark files, and maps the files read-write, so on production it
+      would have failed every bring-up and never read the service log. The pod now greps both mark files' bytes on the
+      read-only claim. Tested on mark files Aeron itself wrote; `test_rig` 24/24.
 - [x] Quota: regional CPUS 3,000 (no separate C4D quota); a full rig with 18 gateways is ~196 vCPU.
 - [x] Declared two-commit population for 5a (FR-PRG-10): members `cluster-node-member` from `c562bbab`, the rest
       from the tip. Every stage refuses neither-commit images and undeclared mixes; `test_population` 23/23,
@@ -28,4 +32,8 @@
       - autoscale up under load and back down with no order lost (every order answered once, recon mismatch 0);
       - `down` with three exit-143 members and zero instances.
 - [ ] Production run in rollout 5a (yaakov approves in session).
+- [ ] Clean up the rehearsal's load: yaakov approved real load on dedicated test accounts, leaving their trades in
+      production's database to clear later. Record here the account ids, the FIX CompIDs CLIENT2–CLIENT8 and the ET
+      time window when the run happens, then delete exactly those accounts' orders, trades and positions, and remove
+      the CompIDs from `FIX_SESSION_COMPIDS` / `FIX_SESSION_AUTH`.
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

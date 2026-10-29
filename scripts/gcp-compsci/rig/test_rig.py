@@ -147,7 +147,48 @@ class Up(unittest.TestCase):
         rc, out, _ = run('errlog_pod 1 img')
         self.assertIn('claimName: data-order-matcher-cluster-1, readOnly: true', out)
         self.assertIn('mountPath: /data, readOnly: true', out)
-        self.assertIn('-Xmx128m', out)
+
+    def test_the_reader_finds_a_refusal_aeron_logged_in_the_service_mark_file(self):
+        # The real bytes: Aeron 1.51 writes both mark files, the refusal in the service container's error log only.
+        java = Path(subprocess.run(['/usr/libexec/java_home', '-v', '21'], capture_output=True, text=True).stdout.strip(),
+                    'bin/java')
+        jar = next(Path.home().glob('.gradle/caches/modules-2/files-2.1/io.aeron/aeron-all/1.51.0/*/aeron-all-1.51.0.jar'), None)
+        if not java.exists() or jar is None:
+            self.skipTest('needs JDK 21 and aeron-all 1.51.0 in the gradle cache')
+        def member(message=None):
+            d = tempfile.mkdtemp(); self.addCleanup(subprocess.run, ['rm', '-rf', d])
+            subprocess.run([str(java), '--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED', '-cp', str(jar), str(RIG.with_name('ErrlogProbe.java')), d] + ([message] if message else []),
+                           check=True, capture_output=True)
+            return d
+        read = lambda d: run(f'sh -c "$ERRLOG_SCRIPT" errlog {d} "$PAST_RESTORE_ERRORS"')
+        for message in ('snapshot corrupt: first record type 7, want header', 'unknown snapshot record type: 12',
+                        'snapshot format 15 is NEWER than this reader'):
+            rc, out, _ = read(member(message))
+            self.assertEqual(rc, 0, out)
+            self.assertIn('consensus=1 service=1', out)
+            self.assertRegex(out, r'cluster-mark-service-0\.dat: .*' + re.escape(message.split(':')[0]))
+            rc, gated, calls = run('rig_up', ERRLOG=out)
+            self.assertEqual(rc, 2, gated)
+            self.assertIn('G-pre: member 0 restored a snapshot partially', gated)
+            self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'), 'members started')
+        clean = member()   # control: the consensus module's own error, no refusal anywhere
+        rc, out, _ = read(clean)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('.dat: ', out)
+        rc, gated, _ = run('rig_up', ERRLOG=out)
+        self.assertEqual(rc, 0, gated)
+        os.remove(Path(clean, 'cluster-mark-service-0.dat'))   # a missing service log is not a clean one
+        rc, out, _ = read(clean)
+        self.assertEqual(rc, 3, out)
+
+    def test_the_pod_runs_the_reader_on_the_claim(self):
+        import yaml
+        rc, out, _ = run('errlog_pod 1 img; echo ---; printf "%s" "$ERRLOG_SCRIPT"')
+        pod_yaml, script = out.split('\n---\n', 1)
+        command = yaml.safe_load(pod_yaml)['spec']['containers'][0]['command']
+        self.assertEqual(command[:2], ['sh', '-c'])
+        self.assertEqual(command[2].rstrip('\n'), script)
+        self.assertEqual(command[3:], ['errlog', '/data/cluster', 'snapshot corrupt|NEWER|unknown snapshot record type'])
 
     def test_the_error_logs_are_not_read_while_members_run(self):
         rc, out, _ = run('rig_up', STS_REPLICAS='3')

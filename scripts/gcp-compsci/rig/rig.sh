@@ -212,8 +212,23 @@ except Exception: print(s.strip(chr(34)))'
 # ---- before the members start: did a past restore load a snapshot partially? (FR-PRG-03, G-pre) ------------------
 # Before the FR-ERH-F12 fix a refused or corrupt snapshot record was skipped and the load completed partial; its error
 # stayed in the member's cluster error log on the claim. One read-only pod per claim, while no member runs, prints that
-# log with ClusterTool; any such error means that member already came up partial once, and the bring-up stops.
+# log from both mark files; any such error means that member already came up partial once, and the bring-up stops.
 PAST_RESTORE_ERRORS='snapshot corrupt|NEWER|unknown snapshot record type'
+# Not `ClusterTool errors`: in Aeron 1.51 it prints the consensus module's log, then throws on the absent driver's
+# cnc.dat before it reaches the service container's mark file, which is where a refused snapshot record is logged; and
+# it maps the mark file read-write. An error log stores each error's text as UTF-8, so this reads the bytes of both
+# mark files on the read-only claim, and fails if either file is missing or unreadable.
+# sh -c "$ERRLOG_SCRIPT" errlog <cluster dir> <pattern>
+ERRLOG_SCRIPT='d=$1
+c=$(ls "$d"/cluster-mark.dat 2>/dev/null | wc -l | tr -d " "); s=$(ls "$d"/cluster-mark-service-*.dat 2>/dev/null | wc -l | tr -d " ")
+echo "mark files in $d: consensus=$c service=$s"
+[ "$c" -ge 1 ] && [ "$s" -ge 1 ] || { echo "no consensus or no service mark file"; exit 3; }
+for f in "$d"/cluster-mark.dat "$d"/cluster-mark-service-*.dat; do
+  [ -r "$f" ] || { echo "cannot read $f"; exit 4; }
+  out=$(grep -aoiE "[[:print:]]{0,160}($2)[[:print:]]{0,160}" "$f"); rc=$?
+  [ "$rc" -le 1 ] || { echo "cannot read $f"; exit 4; }
+  [ -z "$out" ] || printf "%s\n" "$out" | sed "s|^|$f: |"
+done'
 errlog_pod(){ # errlog_pod <ordinal> <image>: the pod manifest
   cat <<EOF
 apiVersion: v1
@@ -226,9 +241,15 @@ spec:
   containers:
   - name: errlog
     image: $2
-    command: [sh, -c, 'java -cp "/opt/app/classes:/opt/app/lib/*" io.aeron.cluster.ClusterTool /data/cluster errors']
-    env: [{name: JAVA_TOOL_OPTIONS, value: "-Xmx128m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"}]
-    resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "1", memory: 512Mi}}
+    command:
+    - sh
+    - -c
+    - |
+$(printf '%s\n' "$ERRLOG_SCRIPT" | sed 's/^/      /')
+    - errlog
+    - /data/cluster
+    - '$PAST_RESTORE_ERRORS'
+    resources: {requests: {cpu: 250m, memory: 128Mi}, limits: {cpu: "1", memory: 128Mi}}
     volumeMounts: [{name: data, mountPath: /data, readOnly: true}]
   volumes: [{name: data, persistentVolumeClaim: {claimName: data-order-matcher-cluster-$1, readOnly: true}}]
 EOF
@@ -237,7 +258,7 @@ pod_done(){ case "$(kc get pod "$1" -o jsonpath='{.status.phase}' 2>/dev/null)" 
 past_restore_errors(){
   step "before the members start: no member's error log holds a refused snapshot record (G-pre)"
   if [ "$DRY" = 1 ]; then
-    note "would run per claim data-order-matcher-cluster-{0,1,2}: a read-only pod, ClusterTool /data/cluster errors"
+    note "would run per claim data-order-matcher-cluster-{0,1,2}: a read-only pod reading both mark files' error logs"
     note "would refuse on: $PAST_RESTORE_ERRORS, or a pod that cannot read the log"; return 0; fi
   [ "$(kc get sts order-matcher-cluster -o jsonpath='{.status.replicas}')" = 0 ] || die "G-pre: members are running"
   local image i phase

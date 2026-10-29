@@ -84,7 +84,7 @@ reference never comes from a snapshot.
 
 | Check | Holds when |
 |---|---|
-| G-pre | before any member starts: each member claim's cluster error log, read by ClusterTool in a read-only pod, has no "snapshot corrupt", "NEWER" or "unknown snapshot record type". Production's 00b31d33 skipped a refused snapshot record silently (Aeron's `Image.poll` swallows the handler's exception), so such a line means that member once came up partial, and the bring-up stops before anything else runs |
+| G-pre | before any member starts: each member claim's error logs, in both the consensus module's and the service container's mark file, read in a read-only pod, have no "snapshot corrupt", "NEWER" or "unknown snapshot record type". Production's 00b31d33 skipped a refused snapshot record silently (Aeron's `Image.poll` swallows the handler's exception), so such a line means that member once came up partial, and the bring-up stops before anything else runs |
 | G0 | the three members agree on applied, engineApplied, trades and both hashes |
 | G1 | each member's replay from log position 0 (`/recon/full-history/reindex`) reaches its applied with its trade count |
 | G2 (check A) | each member's strict full-log replay into a fresh shadow (`/recon/shadow-state`, FR-ERH-F13) is `complete` at the same applied and equals `/health?digest=1`: book hash, position hash, open orders, positions, trades |
@@ -214,7 +214,9 @@ workload, including the gateway's `cluster-node`, runs the tip.
   - a member's bad exit still ending at zero;
   - a dry run contacting nothing;
   - argument refusals.
-  - G-pre: each past-restore message refused, an unreadable log refused, read-only mounts.
+  - G-pre: each past-restore message refused, an unreadable log refused, read-only mounts. On mark files Aeron 1.51
+    wrote itself, a refusal in the service container's log is found and refused. `ClusterTool errors` could not do
+    this: it throws on the absent driver's `cnc.dat` before reaching the service files.
   - Members held at 0 before any pool grows, and a gated re-run that stops nothing.
   - Mutations: with the gate removed from `up`, 14 of the 18 `up` tests fail; with G-pre removed, 10 fail.
 - **Population (§6): `test_population` 23/23 and `test_prepare` 42/42.**
