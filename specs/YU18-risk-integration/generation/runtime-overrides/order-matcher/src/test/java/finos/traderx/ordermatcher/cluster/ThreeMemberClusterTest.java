@@ -142,7 +142,10 @@ class ThreeMemberClusterTest {
         // recovery.
         acks.clear();
         offerSellOrder(COUNTER, 100 * PX, 70);
-        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_FILLED) == 8); // 7 resting + the aggressor
+        // Await the TRADE_BOOKED acks as well: they can trail the 8th FILLED ack on egress, and reading the max
+        // before the 14th arrived failed this under full-suite load ("expected 14 but was 13").
+        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_FILLED) == 8   // 7 resting + the aggressor
+            && countKind(OutputEvent.KIND_TRADE_BOOKED) == 14);
         final long maxTradeSeq = acks.stream()
             .filter(a -> a[1] == OutputEvent.KIND_TRADE_BOOKED)
             .mapToLong(a -> a[2]).max().orElse(-1);
