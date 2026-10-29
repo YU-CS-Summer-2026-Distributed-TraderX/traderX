@@ -344,6 +344,24 @@ class Down(unittest.TestCase):
         self.assertIsNotNone(first(calls, r'resize .*default-pool --num-nodes 0'), 'pools left billing')
 
 
+class InstanceCheck(unittest.TestCase):
+    """FR-PRG-02: the real no_rig_instances (the suites stub it), with gcloud stubbed."""
+    def check(self, gc_body):
+        script = f'set -uo pipefail; RIG_LIB=1 . "{RIG}"; gc(){{ {gc_body}; }}; if no_rig_instances; then echo rc=0; else echo rc=1; fi'   # as wait_for calls it
+        return subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30).stdout.strip()
+
+    def test_a_failing_query_is_not_an_empty_one(self):
+        # Production 2026-10-29: gcloud crashed on the alternation filter, printed nothing, and the check passed.
+        self.assertEqual(self.check('echo "ERROR: gcloud crashed" >&2; return 1'), 'rc=1')
+
+    def test_an_instance_in_any_pool_is_found(self):
+        for pool in ('default-pool', 'engine-pool', 'nats-pool', 'gateway-pool'):
+            body = f'case "$*" in *"{pool}-"*) echo gke-traderx-demo-{pool}-abc-1;; esac'
+            self.assertEqual(self.check(body), 'rc=1', pool)
+
+    def test_no_instance_in_any_pool_passes(self):
+        self.assertEqual(self.check('return 0'), 'rc=0')
+
 class Plan(unittest.TestCase):
     def test_dry_run_contacts_nothing(self):
         with tempfile.TemporaryDirectory() as d:

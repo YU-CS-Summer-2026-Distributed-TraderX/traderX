@@ -85,8 +85,14 @@ hpa_exists(){ kc get hpa cluster-gateway >/dev/null 2>&1; }
 no_pods(){ [ -z "$(kc get pods -l "app=$1" -o name 2>/dev/null)" ]; }
 ready_replicas(){ [ "$(kc get "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "$2" ]; }
 ilb_has_ip(){ [ -n "$(kc get svc order-matcher-gw-ilb -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)" ]; }
-no_rig_instances(){ [ -z "$(gc compute instances list \
-  --filter="name~^gke-${CLUSTER}-(default-pool|engine-pool|nats-pool|gateway-pool)-" --format='value(name)')" ]; }
+# One plain-prefix query per pool: gcloud crashes on an alternation in this filter, and a crashed query printed nothing,
+# so `down` once reported "no rig node instance left" with default-pool still RUNNING (2026-10-29). A failed query is
+# not an empty one.
+no_rig_instances(){ local p out
+  for p in $RIG_POOLS; do
+    out=$(gc compute instances list --filter="name~^gke-${CLUSTER}-${p}-" --format='value(name)') || return 1
+    [ -z "$out" ] || return 1
+  done; }
 vm_status_is(){ [ "$(gc compute instances describe "$CLIENT_VM" --zone "$ZONE" --format='value(status)')" = "$1" ]; }
 pool_instances_are(){ [ "$(pool_size "$1")" = "$2" ]; }
 pool_autoscaling(){ [ "$(gc container node-pools describe gateway-pool --cluster "$CLUSTER" --zone "$ZONE" \

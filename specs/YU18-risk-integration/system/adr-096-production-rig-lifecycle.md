@@ -253,6 +253,9 @@ yaakov: "Rehearse on production". Members `cluster-node-member` from `c562bbab`,
 - **Exactly-once:** 3,498,116 orders over 9 runs. For each test account the SQL rows equal the orders sent minus the
   ones refused at the session layer (3, below), all distinct, none left open. One live slow-consumer disconnect resumed
   on the other gateway: ResendRequest, GapFill, 4,993 resends, 1 restated as a duplicate.
+- **`down`** at 4:04 pm: gateways drained, barrier, baseline recorded, three exit-143 members, every rig instance gone
+  by 4:11 pm. Its instance check had passed vacuously, because gcloud crashed on the alternation filter and printed
+  nothing; it now queries each pool and refuses on a failed query.
 - **Findings:**
   - **CPU is a weak signal for FIX gateways:** per-session ingress saturates first. The in-flight gauge (§3) is the
     candidate.

@@ -29,7 +29,9 @@
       the documented reading after a restore into an idle cluster. G0 and G4 corrected; gateways never started.
 - [x] Rehearsal on production, 2026-10-29 1:22–4:02 pm ET (ADR-096 Evidence, production rehearsal): pools, up and the
       restore gate, ILB spread, grow/shrink with live FIX sessions, autoscale up and down (at a 15% target for the run;
-      60% restored), exactly-once over 3,498,116 orders. `down` follows.
+      60% restored), exactly-once over 3,498,116 orders. `down` 4:04–4:07 pm: gateways drained, barrier (snapshots
+      past 28), baseline applied 3646350 / trades 3392664, members exited 143, client VM TERMINATED; every rig
+      instance gone by 4:11 pm. Its instance check had passed vacuously (gcloud crashed on the filter): fixed.
 - [ ] FIX session store: a `ResetSeqNumFlag=Y` Logon racing the lease handover is undone by the store load (ADR-086;
       CLIENT4/6/8 wedged 50 minutes). FIX session lane.
 - [ ] Autoscale signal: 7 FIX sessions cannot reach 60% CPU; evaluate the in-flight gauge (§3) or more sessions.

@@ -149,6 +149,7 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | shrink resume report | 06 | `test_rig.Resume` on production's 2 → 1 drain logs | only logouts after `GATEWAY-DRAIN begin`: 4 sessions, worst 595 ms; without that filter the real log reports 22 sessions, worst 805 s |
 | gateways sharing a node | 06 | `test_rig.Up.test_gateways_sharing_a_node…` | refused |
 | down order | 02 | `test_rig.Down.test_gateways_then_barrier…` | gateways 0 → LB → barrier (ClusterTool with -Xmx128m) → baseline → members → pools → VM |
+| the instance check itself | 02 | `test_rig.InstanceCheck` (the real `no_rig_instances`, gcloud stubbed) | a failing query refuses; an instance in any pool is found; on production 2026-10-29 the old alternation filter crashed gcloud and passed with default-pool RUNNING |
 | a member exits 137 | 02 | `test_rig.Down.test_a_member_that_did_not_exit_143…` | exit 3, pools still at 0 |
 | dry run | 01 | `test_rig.Plan` | contacts nothing; bad arguments refused |
 | gate removed from `up` (mutation) | 01, 03 | `test_rig.Up` | 14 of 18 fail |
