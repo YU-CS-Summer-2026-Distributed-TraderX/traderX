@@ -425,6 +425,62 @@ class ExplorerMetadata(unittest.TestCase):
             self.assertFalse(path.exists())
 
 
+class FixTestClients(unittest.TestCase):
+    """FR-PRG-11: the rehearsal's load CompIDs, opt-in, each bound to its own test account, passwords from a Secret."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10',fix_test_clients=True)
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+        cls.plan=json.loads((Path(cls.temp.name)/'candidate/plan.json').read_text())
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def gateway(self,docs):
+        c=module.podspec(next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d)))['containers'][0]
+        return c['env'],{e['name']:e for e in c['env']}
+
+    def test_each_client_trades_only_its_account_with_a_secret_password(self):
+        env,by=self.gateway(self.docs); names=[e['name'] for e in env]
+        self.assertEqual(by['FIX_SESSION_COMPIDS']['value'],'CLIENT1,'+','.join(f'CLIENT{n}' for n in range(2,9)))
+        for n in range(2,9):
+            self.assertIn(f',CLIENT{n}:$(FIX_TEST_PASSWORD_{n}):{9900000+n}',by['FIX_SESSION_AUTH']['value'])
+            self.assertEqual(by[f'FIX_TEST_PASSWORD_{n}']['valueFrom']['secretKeyRef'],{'name':'fix-test-clients','key':f'client{n}'})
+            self.assertLess(names.index(f'FIX_TEST_PASSWORD_{n}'),names.index('FIX_SESSION_AUTH'))
+        self.assertEqual(self.plan['requiredSecretKeys']['fix-test-clients'],[f'client{n}' for n in range(2,9)])
+        self.assertEqual(self.plan['fixTestClients']['CLIENT8'],'9900008')
+
+    def test_the_default_render_has_no_test_clients(self):
+        with tempfile.TemporaryDirectory() as d:
+            module.prepare(Path(d)/'c','test-candidate','10.93.0.10')
+            docs=list(yaml.safe_load_all((Path(d)/'c/candidate.yaml').read_text()))
+        _,by=self.gateway(docs)
+        self.assertEqual(by['FIX_SESSION_COMPIDS']['value'],'CLIENT1')
+        self.assertNotIn('CLIENT2',by['FIX_SESSION_AUTH']['value'])
+
+    def test_an_unbound_or_literal_client_is_refused(self):
+        for mutate,message in (('every-account','CLIENT3 is not bound'),('literal','CLIENT4 without a Secret'),
+                               ('after-auth','CLIENT5 without a Secret'),('not-secret','CLIENT6 without a Secret')):
+            docs=copy.deepcopy(self.docs); env,by=self.gateway(docs); auth=by['FIX_SESSION_AUTH']
+            if mutate=='every-account': auth['value']=auth['value'].replace(':9900003',':*')
+            if mutate=='literal': auth['value']=auth['value'].replace('$(FIX_TEST_PASSWORD_4)','guess')
+            if mutate=='after-auth': env.remove(by['FIX_TEST_PASSWORD_5']); env.append(by['FIX_TEST_PASSWORD_5'])
+            if mutate=='not-secret': by['FIX_TEST_PASSWORD_6'].pop('valueFrom'); by['FIX_TEST_PASSWORD_6']['value']='x'
+            with self.assertRaisesRegex(AssertionError,message,msg=mutate): module.validate(docs)
+
+    def test_the_provisioner_keeps_passwords_in_a_private_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.chmod(d,0o700)
+            r=subprocess.run([__import__('sys').executable,str(Path(__file__).with_name('provision-fix-test-clients.py')),
+                              '--private-dir',d],capture_output=True,text=True,check=True)
+            path=Path(d)/'fix-test-clients.json'; clients=json.loads(path.read_text())
+            self.assertEqual(path.stat().st_mode&0o777,0o600)
+            self.assertEqual({c:v['account'] for c,v in clients.items()},module.FIX_TEST_CLIENTS)
+            self.assertIn('No cluster mutation',r.stdout)
+            for v in clients.values(): self.assertNotIn(v['password'],r.stdout+r.stderr)
+
+
 class Population(unittest.TestCase):
     """ADR-096 §6: a declared exception renders onto its workload only, and validate() refuses it anywhere else."""
     @classmethod

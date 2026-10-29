@@ -32,8 +32,10 @@
       - autoscale up under load and back down with no order lost (every order answered once, recon mismatch 0);
       - `down` with three exit-143 members and zero instances.
 - [ ] Production run in rollout 5a (yaakov approves in session).
+- [x] Load clients CLIENT2–CLIENT8 (FR-PRG-11), opt-in in the render, each on its own test account; passwords in
+      Secret `fix-test-clients` and `~/traderx-private/fix-test-clients.json` only. `test_prepare` 46/46.
 - [ ] Clean up the rehearsal's load: yaakov approved real load on dedicated test accounts, leaving their trades in
-      production's database to clear later. Record here the account ids, the FIX CompIDs CLIENT2–CLIENT8 and the ET
-      time window when the run happens, then delete exactly those accounts' orders, trades and positions, and remove
-      the CompIDs from `FIX_SESSION_COMPIDS` / `FIX_SESSION_AUTH`.
+      production's database to clear later. Accounts 9900002–9900008, CompIDs CLIENT2–CLIENT8; the ET time window is
+      recorded here when the run happens. Then delete exactly those accounts' orders, trades and positions, render
+      without `--fix-test-clients`, and delete Secret `fix-test-clients`.
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

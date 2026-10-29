@@ -106,6 +106,12 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
     - a missing exception image, two digests for one image name, and an exception without its own derivation.
   - The members' commit SHALL decode the tip gateway's unflagged ingress byte for byte, shown with both sides' real
     compiled codec (`rig/codec-compat.sh`).
+- **FR-PRG-11:** The rehearsal's load clients SHALL be opt-in (`prepare.py --fix-test-clients`): CompIDs CLIENT2–CLIENT8,
+  each bound to exactly one dedicated test account (9900002–9900008), each password a variable from Secret
+  `fix-test-clients` defined before `FIX_SESSION_AUTH`. `validate()` SHALL refuse any CompID other than CLIENT1 that
+  may trade every account (`*`) or whose password is not Secret-backed. `provision-fix-test-clients.py` SHALL keep the
+  passwords only in that Secret and a mode-0600 file outside the checkout, and print none. The default render SHALL
+  carry no test client.
 
 ## Acceptance
 
@@ -135,4 +141,6 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | wrong placement | 10 | `test_population.Measure`, `test_prepare.Population` | members on the tip image, member image on the gateway: refused by `measure-admission.population` and `prepare.validate` |
 | guard removed (mutation) | 10 | same | each of the five guards removed: 1–6 tests fail |
 | tip ingress on the members' codec | 10 | `rig/codec-compat.sh` | 42 encodings over 19 command types, 518 checks, 0 failures; both controls fire |
+| load clients rendered | 11 | `test_prepare.FixTestClients` | CLIENT2–8 each on its account, Secret-backed and ordered before the auth list; none in the default render |
+| unbound or literal load client | 11 | same | `*` account, literal password, password after the list, non-Secret password: each refused; dropping the check fails the test |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

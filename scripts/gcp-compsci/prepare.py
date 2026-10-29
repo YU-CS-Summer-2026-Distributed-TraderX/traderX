@@ -24,6 +24,10 @@ CUSTOM_WORKLOADS = {'order-matcher-cluster','cluster-gateway','risk-extract',
                     'web-front-end-angular','web-front-end-console','api-explorer'}
 # ADR-095: the external FIX-over-TLS entry. Its CompID, its accounts and its port; render-fix-tls-access.py exposes it.
 FIX_TLS = {'port': 18143, 'compId': 'EXTQFJ', 'accounts': '22214|42422'}
+# ADR-096 (FR-PRG-11): the rehearsal's load clients, opt-in (--fix-test-clients). Each CompID trades only its own
+# dedicated test account; passwords from Secret fix-test-clients (provision-fix-test-clients.py). The production-rig
+# clean-up task removes them, their accounts and their trades.
+FIX_TEST_CLIENTS = {f'CLIENT{n}': str(9900000 + n) for n in range(2, 9)}
 BUCKETS = {
     'traderx-505400-risk-extracts': f'{PROJECT}-traderx-risk-extracts',
     'traderx-505400-order-matcher-journal-archive': f'{PROJECT}-traderx-journal-archive',
@@ -144,6 +148,19 @@ def configure_private_runtime(docs):
                     c.setdefault('env', []).append({'name': 'JAVA_TOOL_OPTIONS', 'value': jvm_options})
 
 
+def add_fix_test_clients(docs):
+    for doc in docs:
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
+            c = podspec(doc)['containers'][0]
+            env = {e['name']: e for e in c['env']}
+            auth = env['FIX_SESSION_AUTH']; c['env'].remove(auth)   # $(VAR) expands only earlier entries
+            for compid, account in FIX_TEST_CLIENTS.items():
+                secret_env(c, 'FIX_TEST_PASSWORD_' + compid[6:], 'fix-test-clients', compid.lower())
+                auth['value'] += f',{compid}:$(FIX_TEST_PASSWORD_{compid[6:]}):{account}'
+            env['FIX_SESSION_COMPIDS']['value'] += ',' + ','.join(FIX_TEST_CLIENTS)
+            c['env'].append(auth)
+
+
 def apply_population(docs, declared, tag):
     """ADR-096 §6: a workload with a declared exception runs its own image repository (built from its own commit)."""
     for doc in docs:
@@ -244,6 +261,16 @@ def validate(docs, declared=None):
                         and 'FIX_SESSION_PASSWORD' in names
                         and names.index('FIX_SESSION_PASSWORD') < names.index('FIX_SESSION_AUTH'),
                         'FIX acceptor without Secret-backed session credentials')
+                # Every CompID's password is a Secret-backed variable defined before FIX_SESSION_AUTH, and only
+                # CLIENT1 may trade every account (*); any other CompID names its accounts (ADR-095, FR-PRG-11).
+                for entry in env['FIX_SESSION_AUTH'].get('value', '').split(','):
+                    compid, password, accounts = (entry.split(':') + ['', ''])[:3]
+                    var = re.fullmatch(r'\$\((\w+)\)', password)
+                    require(var and var.group(1) in names and names.index(var.group(1)) < names.index('FIX_SESSION_AUTH')
+                            and 'secretKeyRef' in env[var.group(1)].get('valueFrom', {}),
+                            f'FIX CompID {compid} without a Secret-backed password')
+                    require(accounts == '*' if compid == 'CLIENT1' else re.fullmatch(r'\d+(\|\d+)*', accounts),
+                            f'FIX CompID {compid} is not bound to named accounts')
         # YU04 (FR-IMRG32/33): the gateway consumes reference-data's control feed, or a new security
         # reaches it only on restart.
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
@@ -336,7 +363,8 @@ def validate(docs, declared=None):
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
 
 
-def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None):
+def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
+            fix_test_clients=False):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -472,6 +500,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     raw = raw.replace('.traderx.svc.', f'.{NAMESPACE}.svc.')  # member/ingress FQDNs follow the namespace
     docs = list(yaml.safe_load_all(raw))
     configure_private_runtime(docs)
+    if fix_test_clients:
+        add_fix_test_clients(docs)
     declared = population.load(population_path)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
@@ -528,6 +558,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
                   'imageSourceCommit':json.loads(published_path.read_text())['sourceCommit'],
                   'exceptionPublishedSha256':[hashlib.sha256(Path(x).read_bytes()).hexdigest() for x in exception_published or []]},
               'population':population.load(population_path),
+              'fixTestClients':FIX_TEST_CLIENTS if fix_test_clients else None,
               'remainingGates':['review per-image payload evidence and compatible admission',
                   'provision scoped storage credentials and private application secrets',
                   'verify node resource fit','server dry-run and live end-to-end proof']}
@@ -544,8 +575,10 @@ if __name__=='__main__':
     p.add_argument('--public-lock',type=Path)
     p.add_argument('--population',type=Path,help='the reviewed population (ADR-096 §6); default population.json')
     p.add_argument('--exception-published',type=Path,action='append',help="an exception build's published inventory")
+    p.add_argument('--fix-test-clients',action='store_true',help='the rehearsal load CompIDs CLIENT2-8 (FR-PRG-11)')
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
-    prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published)
+    prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
+            args.fix_test_clients)

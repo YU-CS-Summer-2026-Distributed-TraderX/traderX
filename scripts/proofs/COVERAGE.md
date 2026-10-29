@@ -1534,6 +1534,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-PRG-07` | CI |  |  | FixSessionPersistenceIT.aDrainingGateway…: answer stored after the Logout, resent on resume; negative control (old stop) fails; full-gateway drain live pending |
 | YU18 | `FR-PRG-08` | LIVE |  |  | internal LB spread across new gateways: not yet run live |
 | YU18 | `FR-PRG-09` | LIVE |  |  | HPA/pool autoscaler under load, scale-down with no order lost: not yet run live |
+| YU18 | `FR-PRG-11` | CI |  |  | test_prepare.FixTestClients: each load CompID on its own account, Secret-backed; refusals; default render has none |
 | YU18 | `FR-PRG-10` | CI |  |  | test_population (declaration, neither commit, each half of a mix, placement, pull) + test_prepare.Population; codec-compat.sh on the real compiled codecs |
 | YU18 | `FR-RA-01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RA-02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |

@@ -2,7 +2,7 @@
 
 Status: accepted 2026-10-29 (yaakov: rollout 5a "yes, optimized for throughput also"; client path option A; FIX store
 on and measured). Code and scripts on `traderX-risk-integration`; not yet run on production. Pack:
-[production rig](../maintenance/production-rig/spec.md) (FR-PRG-01..10).
+[production rig](../maintenance/production-rig/spec.md) (FR-PRG-01..11).
 
 ## Context
 

@@ -280,6 +280,9 @@ scripts/gcp-compsci/rig/rig.sh status
   - Verify with `gcloud compute instances list`, not the cluster's node count.
 - **The gateway count belongs to the rig.** The pack carries none, and the first pack apply after this change resets
   it to 1. Run `gateways.sh` or `rig.sh up` after it.
+- **Load clients for a rehearsal (FR-PRG-11):** `provision-fix-test-clients.py --private-dir ~/traderx-private --apply`
+  creates Secret `fix-test-clients`, and `prepare.py --fix-test-clients` renders CLIENT2–CLIENT8, each bound to one
+  test account (9900002–9900008). Remove them after the run (production-rig tasks, clean-up).
 - **Clients in the region use `order-matcher-gw-ilb`:** FIX 18130 and REST 18110, internal, open to the client VM
   `traderx-client-1` only. Binary is not exposed (it has no logon).
 - **Evidence:** each run writes to `rig-evidence/<time>/`. That covers the gate readings, smoke output, drained-gateway
