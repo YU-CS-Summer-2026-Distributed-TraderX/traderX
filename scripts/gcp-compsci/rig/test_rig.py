@@ -28,6 +28,7 @@ kubectl(){
     *shadow-state*) echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
+    *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
     *"get configmap rig-shutdown-baseline"*) echo "${BASELINE:-}";;
     *"create configmap"*) echo 'kind: ConfigMap';;
     *"apply -f -"*) cat >/dev/null;;
@@ -51,7 +52,7 @@ gcloud(){ call "gcloud $*"; case "$*" in *networkIP*) echo 10.0.0.5;; esac; }
 GOOD = {'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
-        'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2',
+        'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5',
         'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded', 'ERRLOG': 'No errors'}
 
 
@@ -120,6 +121,18 @@ class Up(unittest.TestCase):
 
     def test_restored_open_orders_that_the_read_model_lacks_are_refused(self):
         self.refused('G3', OPEN_ROWS='1')
+
+    def test_the_read_model_must_hold_exactly_the_members_trade_sides(self):
+        # Production 2026-10-29: trades 18 on the members = rows 1-B/S..18-B/S in SQL, beside 13 seed rows.
+        for rows in ('4\t4\t4', '5\t4\t5', '5\t5\t6', '6\t6\t6'):   # missing, duplicate number, gap, extra
+            out = self.refused('G3', TRADE_ROWS=rows)
+            self.assertIn('the members booked 5 trade sides', out)
+        rc, out, _ = run('rig_up')
+        self.assertIn('G3 ok: the read model holds trade sides 1..5, each once', out)
+
+    def test_a_managed_projection_scope_is_refused_not_guessed(self):
+        digest = GOOD['DIGEST'][:-1] + ',"projectionScope":"run_a"}'
+        self.assertIn('managed projection scope', self.refused('G3', DIGEST=digest))
 
     def test_a_build_without_check_a_is_refused_on_production(self):
         self.refused('G2', SHADOW='')

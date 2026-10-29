@@ -337,6 +337,14 @@ restore_gate(){
     [ "$(jq -r .openOrders <<<"$digest")" = "$open_rows" ] \
       || die "G3: members restored $(jq -r .openOrders <<<"$digest") open orders, the read model holds $open_rows"
   fi
+  # Check B, trades: the engine's trade sides in the read model are exactly 1..trades, each number once. Legacy ids are
+  # <n>-B / <n>-S (seed rows are named otherwise); a managed run's e1-<epoch>- ids are not read here, so it is refused.
+  [ "$(jq -r '.projectionScope // "null"' <<<"${digest:-null}")" = null ] \
+    || die "G3: the members run a managed projection scope; this trade-count check reads legacy trade ids only"
+  read -r n distinct top <<<"$(sql "select count(*), count(distinct substring_index(id,'-',1)), coalesce(max(cast(substring_index(id,'-',1) as unsigned)),0) from trades where right(id,2) in ('-B','-S') and concat(cast(substring_index(id,'-',1) as unsigned),right(id,2))=id")"
+  [ "$n" = "$t" ] && [ "$distinct" = "$t" ] && [ "$top" = "$t" ] \
+    || die "G3: the members booked $t trade sides, the read model holds $n (distinct $distinct, highest $top)"
+  note "G3 ok: the read model holds trade sides 1..$t, each once"
   after=$(read_model); echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
   note "G3 ok: read model unchanged"

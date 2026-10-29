@@ -88,7 +88,7 @@ reference never comes from a snapshot.
 | G0 | the three members agree on applied, engineApplied, trades and both hashes. engineApplied equals applied, or is -1 on a member restored into an idle cluster: it is the engine's sequence, which only an engine event sets (production's first `up`, 2026-10-29, refused on the earlier `applied = engineApplied`) |
 | G1 | each member's replay from log position 0 (`/recon/full-history/reindex`) reaches its applied with its trade count |
 | G2 (check A) | each member's strict full-log replay into a fresh shadow (`/recon/shadow-state`, FR-ERH-F13) is `complete` at the same applied and equals `/health?digest=1`: book hash, position hash, open orders, positions, trades |
-| G3 (check B) | the read model's md5s are unchanged since before the members started, and its open rows equal the members' open orders |
+| G3 (check B) | the read model's md5s are unchanged since before the members started, its open rows equal the members' open orders, and its engine trade sides are exactly 1..trades (the members' count), each once |
 | G4 | the members equal the last `down`'s shutdown baseline, when one exists |
 
 Gateways stay at 0 until all of these pass. A build without `/recon/shadow-state` fails G2 on `traderx`.
