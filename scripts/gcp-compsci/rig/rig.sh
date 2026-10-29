@@ -347,10 +347,16 @@ restore_gate(){
   # <n>-B / <n>-S (seed rows are named otherwise); a managed run's e1-<epoch>- ids are not read here, so it is refused.
   [ "$(jq -r '.projectionScope // "null"' <<<"${digest:-null}")" = null ] \
     || die "G3: the members run a managed projection scope; this trade-count check reads legacy trade ids only"
-  read -r n distinct top <<<"$(sql "select count(*), count(distinct substring_index(id,'-',1)), coalesce(max(cast(substring_index(id,'-',1) as unsigned)),0) from trades where right(id,2) in ('-B','-S') and concat(cast(substring_index(id,'-',1) as unsigned),right(id,2))=id")"
-  [ "$n" = "$t" ] && [ "$distinct" = "$t" ] && [ "$top" = "$t" ] \
-    || die "G3: the members booked $t trade sides, the read model holds $n (distinct $distinct, highest $top)"
-  note "G3 ok: the read model holds trade sides 1..$t, each once"
+  # Ranges recorded with `rig.sh unprojected A-B` (a run with the bridges off) are excluded: SQL holds exactly
+  # 1..trades minus those ranges, each number once, and nothing inside them.
+  local ranges removed=0 inr=0 r a b want
+  ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
+  for r in $ranges; do a=${r%-*}; b=${r#*-}; removed=$((removed + b - a + 1)); inr="$inr + (n between $a and $b)"; done
+  read -r n distinct top inside <<<"$(sql "select count(*), count(distinct n), coalesce(max(n),0), coalesce(sum($inr),0) from (select cast(substring_index(id,'-',1) as unsigned) n from trades where right(id,2) in ('-B','-S') and concat(cast(substring_index(id,'-',1) as unsigned),right(id,2))=id) x")"
+  want=$((t - removed))
+  [ "$n" = "$want" ] && [ "$distinct" = "$want" ] && [ "$top" -le "$t" ] && [ "$inside" = 0 ] \
+    || die "G3: the members booked $t trade sides (${removed} unprojected: ${ranges:-none}), the read model holds $n (distinct $distinct, highest $top, $inside inside an unprojected range)"
+  note "G3 ok: the read model holds trade sides 1..$t${ranges:+ except $ranges}, each once"
   after=$(read_model); echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
   note "G3 ok: read model unchanged"
@@ -527,6 +533,18 @@ rig_down(){
   step "rig down: done"
 }
 
+# ---- a window the bridges did not project (FR-PRG-03): `rig.sh unprojected A-B` --------------------------------------
+# Record the members' trade-side numbers A..B (their `trades` before and after a run with the bridges off) so the next
+# gate excludes exactly them. Appends; never removes.
+rig_unprojected(){
+  local range=${1:-} have
+  [[ $range =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] && [ "${range%-*}" -le "${range#*-}" ] || die "unprojected: want A-B with 1 <= A <= B"
+  have=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
+  [ "$DRY" = 1 ] && { note "would record: rig-unprojected ranges=${have:+$have }$range"; return 0; }
+  kc create configmap rig-unprojected --from-literal=ranges="${have:+$have }$range" --dry-run=client -o yaml | kc apply -f - >/dev/null
+  note "recorded: trade sides $range were not projected (G3 excludes them)"
+}
+
 rig_status(){
   preflight
   for p in $RIG_POOLS; do note "$p: $(pool_size $p) instance(s)"; done
@@ -543,7 +561,8 @@ main(){
     up) rig_up;;
     down) rig_down;;
     status) rig_status;;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status [--dry-run]" >&2; exit 64;;
+    unprojected) rig_unprojected "${1:-}";;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

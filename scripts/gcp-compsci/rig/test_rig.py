@@ -31,6 +31,7 @@ kubectl(){
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
     *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
     *"get configmap rig-shutdown-baseline"*) echo "${BASELINE:-}";;
+    *"get configmap rig-unprojected"*) echo "${UNPROJECTED:-}";;
     *"create configmap"*) echo 'kind: ConfigMap';;
     *"apply -f -"*) cat >/dev/null;;
     *"get pods -l app=cluster-gateway -o jsonpath"*) for i in $(seq 1 "$GATEWAYS"); do echo "node-$i"; done;;
@@ -53,7 +54,7 @@ gcloud(){ call "gcloud $*"; case "$*" in *networkIP*) echo 10.0.0.5;; esac; }
 GOOD = {'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
-        'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5',
+        'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
         'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded', 'ERRLOG': 'No errors'}
 
 
@@ -125,7 +126,7 @@ class Up(unittest.TestCase):
 
     def test_the_read_model_must_hold_exactly_the_members_trade_sides(self):
         # Production 2026-10-29: trades 18 on the members = rows 1-B/S..18-B/S in SQL, beside 13 seed rows.
-        for rows in ('4\t4\t4', '5\t4\t5', '5\t5\t6', '6\t6\t6'):   # missing, duplicate number, gap, extra
+        for rows in ('4\t4\t4\t0', '5\t4\t5\t0', '5\t5\t6\t0', '6\t6\t6\t0'):   # missing, duplicate number, gap, extra
             out = self.refused('G3', TRADE_ROWS=rows)
             self.assertIn('the members booked 5 trade sides', out)
         rc, out, _ = run('rig_up')
@@ -184,6 +185,22 @@ class Up(unittest.TestCase):
         line = next(l for l in RIG.with_name('fix-smoke.mjs').read_text().splitlines() if l.startswith('const t = '))
         stamp = subprocess.run(['node', '-e', line + '\nconsole.log(t())'], capture_output=True, text=True, check=True).stdout.strip()
         self.assertRegex(stamp, r'^\d{8}-\d\d:\d\d:\d\d\.\d{3}$')
+
+    def test_a_recorded_unprojected_window_is_excluded_exactly(self):
+        # C1 (full-throughput run with the bridges off): trade sides 3-4 never reach SQL; the gate excludes exactly them.
+        rc, out, _ = run('rig_up', UNPROJECTED='3-4', TRADE_ROWS='3\t3\t5\t0')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3 ok: the read model holds trade sides 1..5 except 3-4, each once', out)
+        for rows in ('5\t5\t5\t2', '3\t3\t5\t1', '2\t2\t5\t0'):   # window not excluded, a row inside it, one missing
+            self.assertIn('unprojected: 3-4', self.refused('G3', UNPROJECTED='3-4', TRADE_ROWS=rows))
+
+    def test_recording_a_window_appends_and_checks_its_form(self):
+        rc, out, calls = run('rig_unprojected 10-20', UNPROJECTED='3-4')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'create configmap rig-unprojected --from-literal=ranges=3-4 10-20'))
+        for bad in ('20-10', '0-5', '5', 'a-b'):
+            rc, out, _ = run(f'rig_unprojected {bad}')
+            self.assertEqual(rc, 2, (bad, out))
 
     def test_a_managed_projection_scope_is_refused_not_guessed(self):
         digest = GOOD['DIGEST'][:-1] + ',"projectionScope":"run_a"}'

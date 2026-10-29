@@ -174,6 +174,15 @@ def add_binary_port(docs, port):
                           'ports': [{'name': 'binary', 'port': port, 'targetPort': port}]}})
 
 
+def without_bridges(docs):
+    """ADR-096 (FR-PRG-14): a full-throughput run with the members' NATS bridges off (as the bench's 400K hours ran).
+    The read model then misses the run's trade sides: record them with `rig.sh unprojected A-B` before the next gate.
+    FIX fill reports, which read that feed, stop too; New acks are unaffected."""
+    sts = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'order-matcher-cluster')
+    for c in podspec(sts)['containers']:
+        c['env'] = [e for e in c.get('env', []) if e['name'] != 'TRADE_BRIDGE_NATS_URL']
+
+
 def refuse_sequenced_binary(docs, declared):
     """ADR-096 §6: in front of members built from an older commit (pre-ADR-090), a sequenced binary NEW must never
     reach the cluster, so the gateway refuses the flag (BINARY_SEQUENCED=refuse)."""
@@ -396,7 +405,7 @@ def validate(docs, declared=None):
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
-            fix_test_clients=False, binary_port=None):
+            fix_test_clients=False, binary_port=None, no_bridges=False):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -538,6 +547,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     refuse_sequenced_binary(docs, declared)
     if binary_port:
         add_binary_port(docs, binary_port)
+    if no_bridges:
+        without_bridges(docs)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
@@ -612,9 +623,10 @@ if __name__=='__main__':
     p.add_argument('--exception-published',type=Path,action='append',help="an exception build's published inventory")
     p.add_argument('--fix-test-clients',action='store_true',help='the rehearsal load CompIDs CLIENT2-8 (FR-PRG-11)')
     p.add_argument('--binary-port',type=int,help='in-cluster binary entry for a throughput run (FR-PRG-13)')
+    p.add_argument('--no-bridges',action='store_true',help="members' NATS bridges off for a throughput run (FR-PRG-14)")
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
-            args.fix_test_clients,args.binary_port)
+            args.fix_test_clients,args.binary_port,args.no_bridges)

@@ -112,6 +112,10 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   may trade every account (`*`) or whose password is not Secret-backed. `provision-fix-test-clients.py` SHALL keep the
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. The default render SHALL
   carry no test client.
+- **FR-PRG-14:** A throughput run MAY render the members without their NATS bridges (`prepare.py --no-bridges`), as
+  the bench's 400K hours ran. The run's trade sides then never reach SQL. `rig.sh unprojected A-B` SHALL record that
+  range (the members' `trades` before and after), appending, never removing. G3 SHALL then require SQL to hold exactly
+  1..trades minus every recorded range, each number once, with none inside a range.
 - **FR-PRG-13:** A throughput run MAY open the gateways' binary entry (`prepare.py --binary-port`). It SHALL be a
   ClusterIP Service only, because binary frames carry the account and have no logon. While the population declares
   the members from an older commit, every gateway SHALL run `BINARY_SEQUENCED=refuse`: a NEW with the sequenced flag
@@ -166,6 +170,8 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | an order never answered | 12 | `rig/test_fix_load.Drain.test_an_unanswered_order_does_not_leave_the_others_resting` | the resting sweep still runs halfway through the wait; the run still fails; the previous condition left 18 resting |
 | pacing | 12 | `rig/test_fix_load.Drain.test_the_rate_is_per_session_per_second` | 5/s for 2 s sends 8–11; the previous script sent 188 (production 2026-10-29: `--rate 5` sent 100/s per session) |
 | a drain mid-load | 12 | `rig/test_fix_load.Drain` (scripted acceptor) | 30 orders, 10 in flight at the Logout: resumed without reset, GapFill before the first resend, every order answered once, 1 reconnect; resending straight after the Logon fails it (the GapFill lands after 13 messages) |
+| an unprojected window | 14 | `test_rig.Up.test_a_recorded_unprojected_window_is_excluded_exactly`, `…test_recording_a_window_appends…`; the query checked on mariadb:11.4 | sides 3–4 excluded passes; window not excluded, a row inside it, one missing: each refused; malformed ranges refused |
+| members without bridges | 14 | `test_prepare.Population.test_a_throughput_run_can_render_the_members_without_bridges` | default keeps `TRADE_BRIDGE_NATS_URL`; `--no-bridges` removes it |
 | sequenced binary in front of older members | 13 | `BinarySequencedFrameTest.refusedSequencing…`, `test_prepare.Population.test_older_members_get_a_gateway_that_refuses_sequenced_binary` | flagged NEW answered protocol-error, nothing submitted, unflagged unchanged; the render carries the switch and refuses without it; the test fails on the previous acceptor |
 | binary entry | 13 | `test_prepare.Population.test_the_binary_entry_is_in_cluster_only` | env + port + ClusterIP Service; a LoadBalancer refused |
 | load clients rendered | 11 | `test_prepare.FixTestClients` | CLIENT2–8 each on its account, Secret-backed and ordered before the auth list; none in the default render |

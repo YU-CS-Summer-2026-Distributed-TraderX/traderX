@@ -518,6 +518,16 @@ class Population(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError,'BINARY_SEQUENCED=refuse'):
             module.validate(docs,self.declared)
 
+    def test_a_throughput_run_can_render_the_members_without_bridges(self):
+        def bridge(docs):
+            sts=next(x for x in docs if x['kind']=='StatefulSet')
+            return [e for e in module.podspec(sts)['containers'][0]['env'] if e['name']=='TRADE_BRIDGE_NATS_URL']
+        self.assertTrue(bridge(self.docs))   # the default render keeps the read model fed
+        with tempfile.TemporaryDirectory() as d:
+            module.prepare(Path(d)/'c','test-candidate','10.93.0.10',no_bridges=True)
+            docs=list(yaml.safe_load_all((Path(d)/'c/candidate.yaml').read_text()))
+        self.assertEqual(bridge(docs),[])
+
     def test_the_binary_entry_is_in_cluster_only(self):
         with tempfile.TemporaryDirectory() as d:
             declared=Path(d)/'population.json'
