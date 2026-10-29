@@ -113,22 +113,42 @@ Expected p99.9 figures are for one hour at 400K/s binary with 60 s snapshots, fr
 
 ### hxb: CLOUD-QUEUE row 18 (proposed)
 
-**Arms.** Lane A, one hour each. `b15ho` is the banked control.
-- `b15hk` = `b15ho` plus `CLUSTER_SNAPSHOT_PACKED=true`. The tip build must include step 0 for any stream state; the binary hour has none.
+Sized for a decisive answer (yaakov 2026-10-29: total cap $3,500, cost no constraint for the tail work).
+
+**Arms.** One hour each, one image (a tip with step 0 and option 2), only the env differs:
+- `b15ho` = the control: today's unpacked writer, 60 s snapshots. It is re-run, not banked, so control and treatment share the night and the lanes.
+- `b15hk` = `b15ho` plus `CLUSTER_SNAPSHOT_PACKED=true`.
 - `b15hl` = `b15hk` plus `CLUSTER_SNAPSHOT_LOG_BYTES=6000000000`.
+- `b15hs` = `b15hk` with ADR-090 sequenced clients (the `xs` plan, no kills). Every session is a stream, so the stream rings fill and the snapshot carries T_STREAM. It is the only arm that exercises step 0 on the real channel at load.
+
+**Repeats and order.**
+- Three repeats each of `b15ho`, `b15hk` and `b15hl`, and two of `b15hs`: 11 arm-hours.
+- Both lanes, interleaved and reversed: lane A runs `ho hk hl hs ho hk`, lane B runs `hl hk ho hs hl`, then A finishes with `hl ho hk` (lane A nine, lane B five, ≈ 13 h wall in all).
+- Every treatment then has a control on the same lane within two hours, and no arm always runs first.
 
 **Shape.** Both use 400K/s binary, 60 s snapshots (`b15hl`: log-size trigger with a 60 s floor), member `/data` on the Hyperdisk, the probe running the whole hour, hx-purge and hx-verify.
 
 **The member heap stays 3g, as in `b15ho`,** so the comparison varies the snapshot only. The member GC sizing from f15hx (6g, SoftMax 3g) is a separate row. If an allocation stall appears, the arm is re-run, not judged.
 
-**Passes if:**
-1. p99.9 ≤ 8 ms over the hour, intended→ack.
-2. The leader halt per snapshot (probe: ingress plus commit flat) has median ≤ 16 ms in `b15hk`.
-3. `b15hl` takes the expected number of snapshots for its log growth.
-4. Snapshot plus tail verify `problems: []` with its negative control failing; snapshot hashes agree across members.
-5. Snapshot record counts are recorded per type, so the terminal-row size on this workload is measured.
+**Verdict rules, written before the run:**
+- **The control must reproduce the problem.** Every `b15ho` repeat must show p99.9 ≥ 15 ms, with snapshot-class orders above the 24K-per-snapshot budget. Otherwise the night is INCONCLUSIVE: the snapshot is not what sets p99.9 on that rig, and no treatment verdict is read.
+- **A treatment passes only if all its repeats pass.** For `b15hk`, `b15hl` and `b15hs`, every repeat must satisfy:
+  1. p99.9 ≤ 8 ms over the hour, intended→ack;
+  2. snapshot-class orders past 8 ms per snapshot below 24K. This is the model's own quantity, so a pass can be told apart from a quiet hour;
+  3. snapshot plus tail verify `problems: []` with its negative control failing; snapshot hashes agree across members.
+- **Arm-specific checks:**
+  - `b15hk`: leader halt per snapshot (probe: ingress plus commit flat) with median ≤ 16 ms over all repeats.
+  - `b15hl`: the expected number of snapshots for its log growth, and the archive never above one interval plus a segment.
+  - `b15hs`: every member restores its last snapshot after the hour (a restart of one follower at the end), proving step 0 at load. Its T_STREAM bytes are recorded, and they decide option 3.
+- **Split results:** one repeat failing and others passing is reported as a FAIL, with the failing hour's stall classes (probe) named.
+- **Recorded on every arm:** snapshot record counts per type, so the terminal-row size on this workload is measured.
+- **Member GC:** the members stay at 3g as in the f15hx/b15ho evidence, so the snapshot is the only variable. An allocation stall voids that repeat, which is then re-run rather than judged.
 
-**Cost.** Lane A ≈ $9/h. Each arm ≈ 1.25 h including bring-up and collection, so ≈ $11–12 per arm and **≈ $25 for the pair**, within the $250 ET-day budget. Check controller disk before launch (feedback: f15hf2).
+**Cost.**
+- Lane ≈ $9/h, and each arm ≈ 1.25 h including bring-up and collection, so ≈ $11.5 per arm-hour.
+- 11 arm-hours ≈ **$125**, plus one re-run allowance per arm type (4 × $11.5 ≈ $46): **≈ $170 in all**, spread over two ET days.
+- That is within the $3,500 total cap (~$1,800 spent).
+- Check the controller disk before every launch (feedback: f15hf2). The controller VM is TERMINATED as of 2026-10-29 and must be started first.
 
 **Owner and prerequisites:**
 - the coordinator assigns the lane;
