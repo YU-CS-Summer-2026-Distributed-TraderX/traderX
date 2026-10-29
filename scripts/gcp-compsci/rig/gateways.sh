@@ -20,12 +20,7 @@ GATEWAYS=$N; validate_args; preflight
 
 gate_covers_members(){
   [ "$DRY" = 1 ] && { note "would require: ConfigMap rig-gate PASS for the running members' pod UIDs"; return 0; }
-  local status recorded now
-  status=$(kc get configmap rig-gate -o jsonpath='{.data.status}' 2>/dev/null || true)
-  recorded=$(kc get configmap rig-gate -o jsonpath='{.data.members}' 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')
-  now=$(kc get pods -l app=order-matcher-cluster -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort | tr '\n' ' ')
-  [ "$status" = PASS ] && [ -n "$now" ] && [ "$recorded" = "$now" ] \
-    || die "the restore gate does not cover the members now running; run rig.sh up"
+  members_gated || die "the restore gate does not cover the members now running; run rig.sh up"
 }
 
 one_per_node(){

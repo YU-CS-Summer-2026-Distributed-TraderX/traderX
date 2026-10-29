@@ -53,13 +53,17 @@ that cannot hold the pinned cap, or no pin at all.
 
 - **`up`**, in this order:
   1. Gateways are held at 0 (HPA removed, autoscaling off).
-  2. Pools are resized and the client VM started.
-  3. Support workloads come up, then the read model is fingerprinted.
-  4. The members start from their retained claims.
-  5. The **restore gate** runs (§2a).
-  6. N gateways start, then the internal LB.
-  7. Autoscaling is switched on, if asked for.
-  8. A FIX smoke order runs, checked at the effect end.
+  2. Members are held at 0. A StatefulSet left at 3 while its nodes were at 0 has Pending members, which would start
+     with the first engine node.
+  3. Pools are resized and the client VM started.
+  4. Support workloads come up, then the read model is fingerprinted.
+  5. **G-pre** runs (§2a).
+  6. The members start from their retained claims.
+  7. The **restore gate** runs (§2a).
+  8. N gateways start, then the internal LB.
+  9. Autoscaling is switched on, if asked for.
+  10. A FIX smoke order runs, checked at the effect end.
+  - A re-run on a rig whose members are up and covered by the gate record holds nothing and re-gates nothing.
 - **`down`**, in this order:
   1. Gateways go to 0 first; each drains (§4). The internal LB is deleted.
   2. A snapshot barrier is taken, and a **shutdown baseline** is written to a ConfigMap.
@@ -80,6 +84,7 @@ reference never comes from a snapshot.
 
 | Check | Holds when |
 |---|---|
+| G-pre | before any member starts: each member claim's cluster error log, read by ClusterTool in a read-only pod, has no "snapshot corrupt", "NEWER" or "unknown snapshot record type". Production's 00b31d33 skipped a refused snapshot record silently (Aeron's `Image.poll` swallows the handler's exception), so such a line means that member once came up partial, and the bring-up stops before anything else runs |
 | G0 | the three members agree on applied, engineApplied, trades and both hashes |
 | G1 | each member's replay from log position 0 (`/recon/full-history/reindex`) reaches its applied with its trade count |
 | G2 (check A) | each member's strict full-log replay into a fresh shadow (`/recon/shadow-state`, FR-ERH-F13) is `complete` at the same applied and equals `/health?digest=1`: book hash, position hash, open orders, positions, trades |
@@ -175,10 +180,12 @@ concurrently, so the cluster session could close while orders were in flight. It
     The test fails.
   - 9/9 in the class.
 - **`test_prepare`:** 38/38. The three new rig tests fail on the previous `prepare.py`.
-- **`rig/test_rig.py`:** 16/16, stable over 3 runs, covering:
+- **`rig/test_rig.py`:** 22/22, stable over 3 runs, covering:
   - the up and down order, with real `rig.sh` functions and kubectl/gcloud stubbed;
   - each gate check refusing, with no gateway scaled up after a refusal;
   - a member's bad exit still ending at zero;
   - a dry run contacting nothing;
   - argument refusals.
-  - Mutation: with the gate removed from `up`, 9 of the 10 `up` tests fail.
+  - G-pre: each past-restore message refused, an unreadable log refused, read-only mounts.
+  - Members held at 0 before any pool grows, and a gated re-run that stops nothing.
+  - Mutations: with the gate removed from `up`, 14 of the 18 `up` tests fail; with G-pre removed, 10 fail.

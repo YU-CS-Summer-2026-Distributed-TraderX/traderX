@@ -10,6 +10,9 @@
       autoscaler (FR-PRG-09). `test_rig.py` 16/16, three runs; with the gate removed, 9 of 10 `up` tests fail.
 - [x] Gate G2 aligned with the backport's `/recon/shadow-state` and `/health?digest=1` (FR-ERH-F13,
       `claude/snapshot-reader-failclosed-00b31d33`).
+- [x] G-pre: before the members start, each claim's past error log is read in a read-only pod, and a past partial
+      restore stops the bring-up. Members are held at 0 first, because production's StatefulSet was left at 3 with
+      Pending pods. A re-run on a gated rig stops nothing. `test_rig` 22/22.
 - [x] Quota: regional CPUS 3,000 (no separate C4D quota); a full rig with 18 gateways is ~196 vCPU.
 - [ ] Rehearsal on a side namespace, needing yaakov's approval and a spend projection:
       - `pools`;

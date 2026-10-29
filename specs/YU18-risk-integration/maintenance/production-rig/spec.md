@@ -5,10 +5,13 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 
 ## Requirements
 
-- **FR-PRG-01:** `rig.sh up` SHALL run in this order: gateways held at 0 (HPA removed, pool autoscaling off), rig
-  pools resized and the client VM started, support workloads Ready, read-model fingerprint, members to 3 Ready, the
-  restore gate (FR-PRG-03), N gateways (FR-PRG-06), the internal LB (FR-PRG-08), autoscaling when `AUTOSCALE=on`
-  (FR-PRG-09), the smoke order (FR-PRG-04).
+- **FR-PRG-01:** `rig.sh up` SHALL run in this order: gateways held at 0 (HPA removed, pool autoscaling off),
+  members held at 0 (a StatefulSet left at 3 while its nodes were at 0 has Pending members that would otherwise start
+  with the first engine node), rig pools resized and the client VM started, support workloads Ready, read-model
+  fingerprint, G-pre (FR-PRG-03), members to 3 Ready, the restore gate (FR-PRG-03), N gateways (FR-PRG-06), the
+  internal LB (FR-PRG-08), autoscaling when `AUTOSCALE=on` (FR-PRG-09), the smoke order (FR-PRG-04).
+  - On a rig whose three members are Ready and covered by `rig-gate`, `up` SHALL hold nothing and re-gate nothing; it
+    resizes the pools and continues from the gateways.
   - Every step SHALL check live state before it changes it, so a re-run is safe.
   - A check that does not hold SHALL stop the run with `REFUSED` and exit non-zero, and no later step SHALL run.
   - `--dry-run` SHALL print every step and contact neither kubectl nor gcloud.
@@ -22,8 +25,12 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   - resize every rig pool to 0, stop the client VM, and verify with `gcloud compute instances list` that no rig node
     instance remains and the VM is TERMINATED.
   - A member that did not exit 143 SHALL be reported, the teardown SHALL still complete, and the run SHALL exit 3.
-- **FR-PRG-03:** Restore gate. Gateways SHALL stay at 0 until every check passes, and `up` SHALL stop on the first
-  that fails. The checks are G0–G4 (table below); G2 and G3 are checks A and B.
+- **FR-PRG-03:** Restore gate. Before the members start, G-pre SHALL read each member claim's cluster error log in a
+  read-only pod (ClusterTool `errors`, its own `JAVA_TOOL_OPTIONS`) while no member runs, and SHALL stop the bring-up on
+  "snapshot corrupt", "NEWER" or "unknown snapshot record type" (a past restore that loaded a snapshot partially,
+  before FR-ERH-F12), or on a log it could not read. After they start, gateways SHALL stay at 0 until every check
+  passes, and `up` SHALL stop on the first that fails. The checks are G0–G4 (table below); G2 and G3 are checks A
+  and B.
   - G2 SHALL refuse on namespace `traderx` when a member has no `/recon/shadow-state`. `GATE_ALLOW_NO_SHADOW=1`
     SHALL skip it only in another namespace.
   - A pass SHALL be recorded in ConfigMap `rig-gate` with the members' pod UIDs.
@@ -98,10 +105,16 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | broken candidates | 05, 06, 07 | same | gateway on default-pool, a replica count, no anti-affinity, 250m CPU, 30 s grace, no drain delay, the G1 shape, the bench's 6 GB heap, no `MAX_ACTIVE_BOOKS`: each refused |
 | up order | 01, 03 | `test_rig.Up.test_gateways_start_only_after…` | gateways 0 → pools → members → `rig-gate` → gateways → ILB → smoke |
 | each gate check failing | 03 | `test_rig.Up.*refused*` | REFUSED Gn; no gateway scaled up; no `rig-gate` |
+| a past partial restore in a member's error log | 03 | `test_rig.Up.test_a_member_that_once_restored_partially…` | REFUSED G-pre for each of the three messages; no member started |
+| error log unreadable, or members running | 03 | `test_rig.Up.test_an_unreadable…`, `…not_read_while_members_run` | refused |
+| G-pre pods | 03 | `test_rig.Up.test_the_error_logs_are_read_read_only…` | claim and mount read-only, `-Xmx128m`, all three read before the members scale to 3 |
+| Pending members at bring-up | 01 | `test_rig.Up.test_members_are_held_at_zero…` | StatefulSet to 0 before any pool resize |
+| re-run on a gated rig | 01 | `test_rig.Up.test_a_rerun_on_a_gated_rig…` | nothing scaled to 0, no G-pre, no gate; gateways to N |
 | build without check A | 03 | `test_rig.Up.test_a_build_without_check_a…` | refused on `traderx`, opt-out ignored there; skipped only in a side namespace |
 | gateways sharing a node | 06 | `test_rig.Up.test_gateways_sharing_a_node…` | refused |
 | down order | 02 | `test_rig.Down.test_gateways_then_barrier…` | gateways 0 → LB → barrier (ClusterTool with -Xmx128m) → baseline → members → pools → VM |
 | a member exits 137 | 02 | `test_rig.Down.test_a_member_that_did_not_exit_143…` | exit 3, pools still at 0 |
 | dry run | 01 | `test_rig.Plan` | contacts nothing; bad arguments refused |
-| gate removed from `up` (mutation) | 01, 03 | `test_rig.Up` | 9 of 10 fail |
+| gate removed from `up` (mutation) | 01, 03 | `test_rig.Up` | 14 of 18 fail |
+| G-pre removed from `up` (mutation) | 03 | `test_rig.Up` | 10 of 18 fail |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

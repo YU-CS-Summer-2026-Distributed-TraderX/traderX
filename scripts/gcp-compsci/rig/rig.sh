@@ -162,6 +162,25 @@ hold_gateways(){
   wait_for 120 "no gateway pod" no_pods cluster-gateway
 }
 
+# ---- members held at 0 -------------------------------------------------------------------------------------------
+# A StatefulSet left at 3 replicas while its nodes were at 0 has Pending members, and they would start the moment
+# engine-pool has nodes: before G-pre and the restore gate. So they are held at 0 first, like the gateways.
+hold_members(){
+  step "members held at 0 until their past error logs are read (G-pre)"
+  do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=0
+  wait_for 300 "no member pod" no_pods order-matcher-cluster
+}
+# The running members are all Ready and are the ones the restore gate passed (ConfigMap rig-gate, pod UIDs).
+members_gated(){
+  [ "$DRY" = 1 ] && return 1
+  local status recorded now
+  ready_replicas sts/order-matcher-cluster 3 || return 1
+  status=$(kc get configmap rig-gate -o jsonpath='{.data.status}' 2>/dev/null || true)
+  recorded=$(kc get configmap rig-gate -o jsonpath='{.data.members}' 2>/dev/null | tr ' ' '\n' | grep . | sort | tr '\n' ' ')
+  now=$(kc get pods -l app=order-matcher-cluster -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | grep . | sort | tr '\n' ' ')
+  [ "$status" = PASS ] && [ -n "$now" ] && [ "$recorded" = "$now" ]
+}
+
 # ---- read-model and member fingerprints ------------------------------------------------------------------------------
 row_status_is(){ [ "$(sql "select status from orderbook where orderid like '%-$1'")" = "$2" ]; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
@@ -188,6 +207,53 @@ admin_token(){ # minted inside trade-processor, so the master secret never leave
 s=sys.stdin.read().strip()
 try: d=json.loads(s); print(d.get("token") or d.get("accessToken") or d.get("jwt") or "")
 except Exception: print(s.strip(chr(34)))'
+}
+
+# ---- before the members start: did a past restore load a snapshot partially? (FR-PRG-03, G-pre) ------------------
+# Before the FR-ERH-F12 fix a refused or corrupt snapshot record was skipped and the load completed partial; its error
+# stayed in the member's cluster error log on the claim. One read-only pod per claim, while no member runs, prints that
+# log with ClusterTool; any such error means that member already came up partial once, and the bring-up stops.
+PAST_RESTORE_ERRORS='snapshot corrupt|NEWER|unknown snapshot record type'
+errlog_pod(){ # errlog_pod <ordinal> <image>: the pod manifest
+  cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: rig-errlog-$1, namespace: $NS, labels: {app: rig-errlog}}
+spec:
+  restartPolicy: Never
+  nodeSelector: {cloud.google.com/gke-nodepool: engine-pool}
+  tolerations: [{key: traderx-engine, operator: Equal, value: "true", effect: NoSchedule}]
+  containers:
+  - name: errlog
+    image: $2
+    command: [sh, -c, 'java -cp "/opt/app/classes:/opt/app/lib/*" io.aeron.cluster.ClusterTool /data/cluster errors']
+    env: [{name: JAVA_TOOL_OPTIONS, value: "-Xmx128m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"}]
+    resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "1", memory: 512Mi}}
+    volumeMounts: [{name: data, mountPath: /data, readOnly: true}]
+  volumes: [{name: data, persistentVolumeClaim: {claimName: data-order-matcher-cluster-$1, readOnly: true}}]
+EOF
+}
+pod_done(){ case "$(kc get pod "$1" -o jsonpath='{.status.phase}' 2>/dev/null)" in Succeeded|Failed) return 0;; *) return 1;; esac; }
+past_restore_errors(){
+  step "before the members start: no member's error log holds a refused snapshot record (G-pre)"
+  if [ "$DRY" = 1 ]; then
+    note "would run per claim data-order-matcher-cluster-{0,1,2}: a read-only pod, ClusterTool /data/cluster errors"
+    note "would refuse on: $PAST_RESTORE_ERRORS, or a pod that cannot read the log"; return 0; fi
+  [ "$(kc get sts order-matcher-cluster -o jsonpath='{.status.replicas}')" = 0 ] || die "G-pre: members are running"
+  local image i phase
+  image=$(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}')
+  for i in 0 1 2; do
+    kc delete pod "rig-errlog-$i" --ignore-not-found --wait >/dev/null
+    errlog_pod "$i" "$image" | kc apply -f - >/dev/null
+    wait_for 300 "member $i's error log read" pod_done "rig-errlog-$i"
+    phase=$(kc get pod "rig-errlog-$i" -o jsonpath='{.status.phase}')
+    kc logs "rig-errlog-$i" > "$EVIDENCE/past-errors-$i.txt" 2>&1 || true
+    kc delete pod "rig-errlog-$i" --wait >/dev/null
+    [ "$phase" = Succeeded ] || die "G-pre: member $i's error log could not be read ($phase): $EVIDENCE/past-errors-$i.txt"
+    ! grep -Eiq "$PAST_RESTORE_ERRORS" "$EVIDENCE/past-errors-$i.txt" \
+      || die "G-pre: member $i restored a snapshot partially in the past: $EVIDENCE/past-errors-$i.txt"
+  done
+  note "G-pre ok: no refused snapshot record in any member's error log"
 }
 
 # ---- the restore gate (FR-PRG-03) --------------------------------------------------------------------------------
@@ -313,25 +379,37 @@ smoke(){
 rig_up(){
   validate_args; preflight; require_pools
   note "rig up: GATEWAYS=$GATEWAYS AUTOSCALE=$AUTOSCALE context=$CTX namespace=$NS evidence=$EVIDENCE"
-  hold_gateways
-  step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $CLIENT_VM started"
-  for p in $RIG_POOLS; do
-    do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
-  done
-  do_ gcloud compute instances start "$CLIENT_VM" --zone "$ZONE" --project "$PROJECT"
-  for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
-  step "support workloads Ready (everything but the members and the gateways)"
-  if [ "$DRY" = 1 ]; then note "would wait: every Deployment except cluster-gateway rolled out"; else
-    for d in $(kc get deploy -o name | grep -v '/cluster-gateway$'); do
-      kc rollout status "$d" --timeout=600s >/dev/null || die "$d not Ready"
-    done; note "ok"
+  if members_gated; then
+    # A re-run on a rig that is up: nothing is stopped, nothing re-gated; only the gateway count and what follows.
+    note "members are up and covered by the restore gate: holding nothing, re-gating nothing"
+    for p in $RIG_POOLS; do
+      do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
+    done
+    do_ gcloud compute instances start "$CLIENT_VM" --zone "$ZONE" --project "$PROJECT"
+    for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
+  else
+    hold_gateways
+    hold_members
+    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $CLIENT_VM started"
+    for p in $RIG_POOLS; do
+      do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
+    done
+    do_ gcloud compute instances start "$CLIENT_VM" --zone "$ZONE" --project "$PROJECT"
+    for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
+    step "support workloads Ready (everything but the members and the gateways)"
+    if [ "$DRY" = 1 ]; then note "would wait: every Deployment except cluster-gateway rolled out"; else
+      for d in $(kc get deploy -o name | grep -v '/cluster-gateway$'); do
+        kc rollout status "$d" --timeout=600s >/dev/null || die "$d not Ready"
+      done; note "ok"
+    fi
+    local before=''
+    if [ "$DRY" = 0 ]; then before=$(read_model); echo "$before" > "$EVIDENCE/read-model-before.txt"; fi
+    past_restore_errors
+    step "members: 3, from their retained claims"
+    do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=3
+    wait_for 900 "3 members Ready (election closed)" ready_replicas sts/order-matcher-cluster 3
+    restore_gate "$before"
   fi
-  local before=''
-  if [ "$DRY" = 0 ]; then before=$(read_model); echo "$before" > "$EVIDENCE/read-model-before.txt"; fi
-  step "members: 3, from their retained claims"
-  do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=3
-  wait_for 900 "3 members Ready (election closed)" ready_replicas sts/order-matcher-cluster 3
-  restore_gate "$before"
   gateways_up
   ilb_up
   [ "$AUTOSCALE" = on ] && autoscale_on

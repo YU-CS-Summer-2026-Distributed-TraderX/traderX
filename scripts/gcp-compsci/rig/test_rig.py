@@ -33,7 +33,11 @@ kubectl(){
     *"apply -f -"*) cat >/dev/null;;
     *"get pods -l app=cluster-gateway -o jsonpath"*) for i in $(seq 1 "$GATEWAYS"); do echo "node-$i"; done;;
     *"web-front-end-console"*) printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
+    *"get sts order-matcher-cluster -o jsonpath={.status.replicas}"*) echo "${STS_REPLICAS:-0}";;
+    *"get sts order-matcher-cluster -o jsonpath={.spec"*) echo member-image;;
     *"get sts order-matcher-cluster -o jsonpath"*) echo 3;;
+    *"get pod rig-errlog-"*phase*) echo "$ERRLOG_PHASE";;
+    *"logs rig-errlog-"*) echo "$ERRLOG";;
     *"localhost:8080/health"*) a="$*"; [[ "$a" == *"order-matcher-cluster-$LEADER "* ]] && echo '{"role":"LEADER"}' || echo '{"role":"FOLLOWER"}';;
     *"get pods -l app=order-matcher-cluster -w"*)
       i=0; for code in $EXITS; do
@@ -48,7 +52,7 @@ GOOD = {'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2',
-        'LEADER': '1', 'EXITS': '143 143 143'}
+        'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded', 'ERRLOG': 'No errors'}
 
 
 def run(body, **env):
@@ -120,6 +124,50 @@ class Up(unittest.TestCase):
         self.refused('G4', BASELINE='101 101 5 11 22 7')
         rc, out, _ = run('rig_up', BASELINE='100 100 5 11 22 9')   # snapshot counter differs: not compared
         self.assertEqual(rc, 0, out)
+
+    def test_a_member_that_once_restored_partially_is_refused_before_any_member_starts(self):
+        for text in ('io.aeron.cluster.ClusterException: snapshot corrupt: record 7',
+                     'snapshot format 15 is NEWER than this reader', 'unknown snapshot record type 99'):
+            rc, out, calls = run('rig_up', ERRLOG=text)
+            self.assertEqual(rc, 2, out)
+            self.assertIn('G-pre: member 0 restored a snapshot partially', out)
+            self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'), 'members started')
+
+    def test_an_unreadable_error_log_is_refused(self):
+        rc, out, calls = run('rig_up', ERRLOG_PHASE='Failed')
+        self.assertEqual(rc, 2, out)
+        self.assertIn('could not be read', out)
+        self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'))
+
+    def test_the_error_logs_are_read_read_only_before_the_members_start(self):
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G-pre ok', out)
+        self.assertLess(first(calls, r'get pod rig-errlog-2'), first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'))
+        rc, out, _ = run('errlog_pod 1 img')
+        self.assertIn('claimName: data-order-matcher-cluster-1, readOnly: true', out)
+        self.assertIn('mountPath: /data, readOnly: true', out)
+        self.assertIn('-Xmx128m', out)
+
+    def test_the_error_logs_are_not_read_while_members_run(self):
+        rc, out, _ = run('rig_up', STS_REPLICAS='3')
+        self.assertEqual(rc, 2, out)
+        self.assertIn('G-pre: members are running', out)
+
+    def test_members_are_held_at_zero_before_any_pool_grows(self):
+        # Pending members of a StatefulSet left at 3 would start the moment engine-pool has nodes, before G-pre.
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertLess(first(calls, r'scale statefulset/order-matcher-cluster --replicas=0'), first(calls, r'clusters resize'))
+
+    def test_a_rerun_on_a_gated_rig_stops_nothing(self):
+        rc, out, calls = run('members_gated(){ true; }; rig_up', GATEWAYS='5')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('holding nothing, re-gating nothing', out)
+        for stop in (r'statefulset/order-matcher-cluster --replicas=0', r'deploy/cluster-gateway --replicas=0',
+                     r'replicas=3', r'rig-errlog', r'reindex', r'create configmap rig-gate'):
+            self.assertIsNone(first(calls, stop), stop)
+        self.assertIsNotNone(first(calls, r'scale deploy/cluster-gateway --replicas=5'))
 
     def test_autoscale_sets_the_minimum_to_the_gateway_count(self):
         rc, out, calls = run('rig_up', AUTOSCALE='on', GATEWAYS='4')

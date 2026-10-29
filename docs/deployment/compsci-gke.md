@@ -248,6 +248,10 @@ scripts/gcp-compsci/rig/rig.sh status
 
 - **`pools` puts the sysctls on `engine-pool` only while it has no nodes.** GKE recreates a pool's nodes to apply
   them. `nats-pool` is c3-standard-8 because NATS's JetStream claim is pd-balanced, which C4D cannot attach.
+- **`up` holds the members at 0 first, then reads each member claim's past error log in a read-only pod (G-pre).**
+  A "snapshot corrupt", "NEWER" or "unknown snapshot record type" line means a past restart loaded a snapshot partially
+  (before FR-ERH-F12), and the bring-up stops before any member starts. A re-run on a rig that is up and gated stops
+  nothing.
 - **The restore gate keeps the gateways at 0 until the restored members equal a replay of the whole log.**
   - G0 members agree.
   - G1 replay from 0 reaches the same applied and trades.
