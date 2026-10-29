@@ -32,6 +32,8 @@ kubectl(){
     *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
     *"get configmap rig-shutdown-baseline"*) echo "${BASELINE:-}";;
     *"get configmap rig-unprojected"*) echo "${UNPROJECTED:-}";;
+    *"get pvc data-order-matcher-cluster-"*"requests.storage"*) echo "${PVC_SIZE:-32Gi}";;
+    *"get storageclass order-matcher-archive"*) echo "${SC_EXPAND:-}";;
     *"create configmap"*) echo 'kind: ConfigMap';;
     *"apply -f -"*) cat >/dev/null;;
     *"get pods -l app=cluster-gateway -o jsonpath"*) for i in $(seq 1 "$GATEWAYS"); do echo "node-$i"; done;;
@@ -320,6 +322,27 @@ class Up(unittest.TestCase):
         self.assertEqual(rc, 2, out)
         self.assertIn('one per node does not hold', out)
 
+
+class MemberDisk(unittest.TestCase):
+    """FR-PRG-15: member claims grow for a throughput hour, never shrink, after the StorageClass allows it."""
+    def test_expansion_is_allowed_then_each_claim_grows(self):
+        rc, out, calls = run('DRY=0; pv_size_is(){ true; }; rig_member_disk 250Gi')
+        self.assertEqual(rc, 0, out)
+        sc = first(calls, r'patch storageclass order-matcher-archive .*allowVolumeExpansion')
+        claims = [first(calls, rf'patch pvc data-order-matcher-cluster-{i} .*250Gi') for i in range(3)]
+        self.assertIsNotNone(sc); self.assertTrue(all(c is not None for c in claims), calls)
+        self.assertLess(sc, min(claims))
+
+    def test_an_expandable_class_is_left_alone(self):
+        rc, out, calls = run('DRY=0; pv_size_is(){ true; }; rig_member_disk 250Gi', SC_EXPAND='true')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(first(calls, r'patch storageclass'))
+
+    def test_a_shrink_or_a_bad_size_is_refused_before_any_change(self):
+        for args, env in (('16Gi', {}), ('250', {}), ('250Gi', {'PVC_SIZE': '300Gi'})):
+            rc, out, calls = run(f'DRY=0; rig_member_disk {args}', **env)
+            self.assertEqual(rc, 2, (args, out))
+            self.assertIsNone(first(calls, r'patch '), (args, calls))
 
 class Resume(unittest.TestCase):
     """FR-PRG-06: the shrink's logout -> logon report, on the real logs of production's 2 -> 1 drain (2026-10-29)."""

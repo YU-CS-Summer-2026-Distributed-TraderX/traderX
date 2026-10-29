@@ -533,6 +533,33 @@ rig_down(){
   step "rig down: done"
 }
 
+# ---- member disks for a full-throughput hour (FR-PRG-15): `rig.sh member-disk 250Gi` --------------------------------
+# The archive grows ~125 B per order (~180 GB/h at 400K/s) and production runs no purge. Grows each member claim (never
+# shrinks: Hyperdisk cannot), after allowing expansion on the StorageClass, and waits for each bound volume's size.
+pv_size(){ kc get pv "$(kc get pvc "$1" -o jsonpath='{.spec.volumeName}')" -o jsonpath='{.spec.capacity.storage}'; }
+rig_member_disk(){
+  local size=${1:-} i cur
+  [[ $size =~ ^[1-9][0-9]*Gi$ ]] || die "member-disk: want a size like 250Gi"
+  step "member disks to $size (order-matcher-archive, allowVolumeExpansion)"
+  for i in 0 1 2; do
+    cur=$(kc get pvc "data-order-matcher-cluster-$i" -o jsonpath='{.spec.resources.requests.storage}')
+    [[ $cur =~ ^[0-9]+Gi$ ]] || die "member-disk: claim $i has size '$cur'"
+    [ "${cur%Gi}" -le "${size%Gi}" ] || die "member-disk: claim $i is $cur; a claim never shrinks"
+  done
+  [ "$(kubectl --context "$CTX" get storageclass order-matcher-archive -o jsonpath='{.allowVolumeExpansion}')" = true ] \
+    || do_ kubectl --context "$CTX" patch storageclass order-matcher-archive -p '{"allowVolumeExpansion":true}'
+  for i in 0 1 2; do
+    do_ kubectl --context "$CTX" -n "$NS" patch pvc "data-order-matcher-cluster-$i" \
+      -p "{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"$size\"}}}}"
+  done
+  [ "$DRY" = 1 ] && return 0
+  for i in 0 1 2; do
+    wait_for 600 "member $i's volume at $size" pv_size_is "data-order-matcher-cluster-$i" "$size"
+  done
+  note "member disks at $size (the filesystem grows when each member next mounts it)"
+}
+pv_size_is(){ [ "$(pv_size "$1")" = "$2" ]; }
+
 # ---- a window the bridges did not project (FR-PRG-03): `rig.sh unprojected A-B` --------------------------------------
 # Record the members' trade-side numbers A..B (their `trades` before and after a run with the bridges off) so the next
 # gate excludes exactly them. Appends; never removes.
@@ -562,7 +589,8 @@ main(){
     down) rig_down;;
     status) rig_status;;
     unprojected) rig_unprojected "${1:-}";;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B [--dry-run]" >&2; exit 64;;
+    member-disk) rig_member_disk "${1:-}";;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B|member-disk SIZE [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

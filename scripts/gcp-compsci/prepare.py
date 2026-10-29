@@ -174,6 +174,18 @@ def add_binary_port(docs, port):
                           'ports': [{'name': 'binary', 'port': port, 'targetPort': port}]}})
 
 
+# ADR-096 (FR-PRG-15): the bench's 450K member settings, all in 00b31d33 and later: egress coalescing (9373b8ef; every
+# egress reader splits), packed snapshots with the ring-ordered idempotency walk (bccbc71a, the snapshot-stall fix).
+THROUGHPUT_MEMBER_ENV = {'CLUSTER_EGRESS_COALESCE': 'true', 'CLUSTER_SNAPSHOT_PACKED': 'true', 'CLUSTER_SNAPSHOT_RING': 'true'}
+
+
+def throughput_members(docs):
+    sts = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'order-matcher-cluster')
+    c = podspec(sts)['containers'][0]
+    c['env'] = [e for e in c['env'] if e['name'] not in THROUGHPUT_MEMBER_ENV] + \
+               [{'name': k, 'value': v} for k, v in THROUGHPUT_MEMBER_ENV.items()]
+
+
 def without_bridges(docs):
     """ADR-096 (FR-PRG-14): a full-throughput run with the members' NATS bridges off (as the bench's 400K hours ran).
     The read model then misses the run's trade sides: record them with `rig.sh unprojected A-B` before the next gate.
@@ -405,7 +417,7 @@ def validate(docs, declared=None):
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
-            fix_test_clients=False, binary_port=None, no_bridges=False):
+            fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -549,6 +561,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
         add_binary_port(docs, binary_port)
     if no_bridges:
         without_bridges(docs)
+    if throughput:
+        throughput_members(docs)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
@@ -624,9 +638,10 @@ if __name__=='__main__':
     p.add_argument('--fix-test-clients',action='store_true',help='the rehearsal load CompIDs CLIENT2-8 (FR-PRG-11)')
     p.add_argument('--binary-port',type=int,help='in-cluster binary entry for a throughput run (FR-PRG-13)')
     p.add_argument('--no-bridges',action='store_true',help="members' NATS bridges off for a throughput run (FR-PRG-14)")
+    p.add_argument('--throughput-members',action='store_true',help="the bench's 450K member settings (FR-PRG-15)")
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
-            args.fix_test_clients,args.binary_port,args.no_bridges)
+            args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members)

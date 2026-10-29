@@ -528,6 +528,19 @@ class Population(unittest.TestCase):
             docs=list(yaml.safe_load_all((Path(d)/'c/candidate.yaml').read_text()))
         self.assertEqual(bridge(docs),[])
 
+    def test_throughput_members_get_the_bench_settings(self):
+        def env(docs):
+            sts=next(x for x in docs if x['kind']=='StatefulSet')
+            return {e['name']:e.get('value') for e in module.podspec(sts)['containers'][0]['env']}
+        self.assertNotIn('CLUSTER_EGRESS_COALESCE',env(self.docs))   # off unless asked
+        with tempfile.TemporaryDirectory() as d:
+            module.prepare(Path(d)/'c','test-candidate','10.93.0.10',throughput=True)
+            docs=list(yaml.safe_load_all((Path(d)/'c/candidate.yaml').read_text()))
+        e=env(docs)
+        self.assertEqual({k:e[k] for k in module.THROUGHPUT_MEMBER_ENV},module.THROUGHPUT_MEMBER_ENV)
+        self.assertIn('-Xmx12g',e['JAVA_TOOL_OPTIONS'])   # the heap and the pinned book cap stay
+        self.assertEqual(e['MAX_ACTIVE_BOOKS'],'1024')
+
     def test_the_binary_entry_is_in_cluster_only(self):
         with tempfile.TemporaryDirectory() as d:
             declared=Path(d)/'population.json'
