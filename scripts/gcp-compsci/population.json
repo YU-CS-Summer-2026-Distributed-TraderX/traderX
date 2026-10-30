@@ -1,7 +1,7 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76. The members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 02b0eb57 (branch claude/fr-drs-33-on-59b0db21): 59b0db21 plus only the FR-DRS-33 trade-processor feed fix, backported from af5d3760. An exception adds an image, so it cannot replace trade-processor's; the fix rides the tip instead.",
-  "imageSourceCommit": "02b0eb57768611cbc22e562c52cecd52c861b8b7",
+  "note": "ADR-096 \u00a76. The members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 86487ff8 (ADR-099 group-commit FIX store, ADR-098 history feed opt-in, FR-DRS-35/36, FR-PRG-23..27). codec-compat.sh: the tip gateway's ingress decodes on c562bbab (42 encodings, 19 command types, 0 failures).",
+  "imageSourceCommit": "86487ff85ec892164c23583970cc6aa42a5a450c",
   "workloads": {
     "order-matcher-cluster": {
       "image": "cluster-node-member",
