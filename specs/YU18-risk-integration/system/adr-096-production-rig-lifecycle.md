@@ -268,3 +268,39 @@ yaakov: "Rehearse on production". Members `cluster-node-member` from `c562bbab`,
   - **A reset Logon racing the FIX lease handover is undone (ADR-086):** the store load restored the previous sequence
     (180146) after `ResetSeqNumFlag=Y`. CLIENT4/6/8 were wedged for 50 minutes, every re-logon "MsgSeqNum too low";
     their one order each never reached the engine. Routed to the FIX session lane.
+
+## Evidence (production throughput night, 2026-10-29, 7:39–11:20 pm ET)
+
+Population: tip `59b0db21` plus members `c562bbab`. Members ran the bench's throughput settings without bridges
+(FR-PRG-15/14). 18 gateways; binary entry ClusterIP 18140 (FR-PRG-13); members' disks grown to 250Gi (B1).
+
+- **Gate (FR-PRG-03):**
+  - The first two `up`s refused:
+    - 8:15 pm: G1's full-history index is capped at 200,000 trades and refused at 3,392,664 → FR-PRG-18 (defer to G2).
+    - 8:44 pm: G3's before-reading hashed a failed query as empty tables → FR-PRG-19.
+  - Third `up`, 8:59–9:03 pm, passed: G-pre, G0, G1 deferred, G2, G3 (sides 1..3,392,664 and an unchanged read model)
+    and G4.
+- **Binary (FR-PRG-16/17), MSFT, test accounts 9900010–17:**
+  - **The knee is client-side.** 8 pods × 16 sessions (2,000 in flight each) plateaued at ~245K/s applied, and offered
+    load above that only filled the windows.
+  - **Doubling the in-flight raised it.** 16 pods × 16 sessions applied **427,493/s and 430,136/s** (two 60-second
+    windows, 11:11–11:13 pm), averaged over 15-second phases with 3-second pauses (~78% duty). In-flight was again
+    full (~510K), so 430K/s is a client bound, not the ceiling.
+  - **Nothing on the server side was saturated.** Member queue 0, leader 1.4 cores, gateways 1.1–1.4 of 4 cores; the
+    disks reached 29% of 250Gi.
+  - **Exactly-once held.** No duplicates; every finished pod balanced (buys = sells).
+- **Two client defects, found on production and fixed with tests and controls:**
+  - `dabd09cc`: accounts picked by `seq % n` gave each side half the accounts; they hit POSITION_LIMIT (22.7M rejects).
+  - `b264f73f`: a Set of every answered seq ran a pod out of heap after 18 minutes.
+- **FIX, 600 sessions on 3 client VMs (FR-PRG-17), stopped at 9:09 pm:**
+  - **Throughput:** answered capped at ~29K/s by the JetStream KV session store (ADR-086). The gateways were idle; NATS
+    was at 2.1 cores.
+  - **Exactly-once failed:** 202 reconnects, each down 9–67 seconds, then resends past the engine's idempotency window.
+    These members cannot read ADR-090 sequencing, so ~1,600 orders were answered twice, on test accounts 9900002–08.
+- **Shutdown:**
+  - 13 resting test orders were crossed away (no orderRefs exist with bridges off).
+  - `rig.sh unprojected 3392665-662922190`.
+  - Bridges rendered back and admitted. The StatefulSet is **RollingUpdate**, so applying it rolled the members; they
+    came back identical (applied 695,423,942, same hashes).
+  - `rig.sh down`, 11:20–11:26 pm: snapshot barrier; baseline applied 695,423,942 and trades 662,922,190; every
+    member exited 143; no rig instance left (gcloud); the three client VMs TERMINATED.

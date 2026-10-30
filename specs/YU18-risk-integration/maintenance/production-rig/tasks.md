@@ -66,4 +66,14 @@
 - [ ] Before the profile runs on production: create `readmodel-pool` and `db-pool` in `rig.sh pools` and size them
       in `up`/`down`; record `rig-snapshot-base` (members' `trades` after a passing row G3) at the switch; take the
       VolumeSnapshot of `eod-price-db-data` with the database at 0.
+- [ ] FIX at scale (2026-10-29 night):
+      - The KV session store caps 600 sessions at ~29K/s answered.
+      - Long reconnects resend past the idempotency window: ~1,600 double-bookings on 9900002–08. Needs ADR-090
+        sequencing on the members (rollout 5b) or a resend bound.
+      - Clean up those accounts' rows with the rehearsal's.
+- [ ] The members' StatefulSet is RollingUpdate, not OnDelete. A template apply rolls the members at once, so any
+      member change must go through the snapshot barrier first (issue: engine roll needs a snapshot barrier).
+- [ ] The binary load's measured bound is the client in-flight window (16 pods reached ~430K/s). For the real
+      ceiling: more pods, or `--max-in-flight` above 2,000.
+- [ ] Review and land `450c195b` (FR-PRG-22, branch `claude/g3-fail-closed`).
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.
