@@ -33,6 +33,8 @@
       trade store rethrows, the pipelined feed retries the batch before anything behind it, the row projections
       redeliver instead of counting, and a consumer deleted at a barrier is recreated. `FeedBarrierTest`,
       `JetStreamFeedAckGapIT`.
+- [x] `yu18-jetstream-feed.sh` establishes its crash window: the restarted process must replay >= 1 side the killed
+      one had not snapshotted, or the run is refused (SC-DRS-02; codeX review 2026-10-30 §5).
 
 ## Still open
 

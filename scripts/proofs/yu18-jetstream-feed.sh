@@ -6,7 +6,9 @@
 #   SC-DRS-01  N crossing pairs, then trade-processor is SIGKILLed (force delete, no grace) while the
 #   SC-DRS-02  feed is still draining or before its first snapshot. After the restart every trade side
 #              the ENGINE booked is in SQL positions: A = +N and B = -N exactly (the engine's own
-#              trade counter is the independent count).
+#              trade counter is the independent count). The restarted process must have replayed at
+#              least one side the killed one had not snapshotted; a kill that missed that window is
+#              refused, not passed (codeX review 2026-10-30 §5).
 #   FR-DRS-08  TRADE_PROJECTION_MODE=snapshot writes projection_cursor rows whose stream_seq advances.
 #   FR-DRS-07  ORDER_FEED_PERSIST=false: a resting order is served by GET /accounts/{id}/orders while
 #              SQL `orderbook` has NO row for it (the negative control: the answer is the view, not
@@ -83,13 +85,20 @@ s="$(batch "${ACCT_A}" Buy "${N}")"; [[ "${s}" == "${N}" ]] || fail "buy batch a
 before="$(feed)"; POD="$("${K[@]}" get pods -l app=trade-processor -o jsonpath='{.items[0].metadata.name}')"
 "${K[@]}" delete pod "${POD}" --grace-period=0 --force >/dev/null 2>&1
 echo "    killed ${POD}; feed at the kill: $(jget 'd["trades"]' <<<"${before}")"
+echo "    committed snapshot cursor at the kill: $(sql "SELECT GROUP_CONCAT(CONCAT(partition_id,'=',stream_seq)) FROM projection_cursor")"
 for i in $(seq 1 60); do L1="$(trades_leader)"; (( L1 - L0 >= 2 * N )) && break; sleep 1; done
 (( L1 - L0 == 2 * N )) || fail "engine booked $(( L1 - L0 )) trade sides, want $((2 * N)) (another writer, or the cross did not happen)"
 tp_ready; reforward
 for i in $(seq 1 90); do [[ "$(pos "${T}" "${ACCT_A}")" == "${N}" && "$(pos "${T}" "${ACCT_B}")" == "-${N}" ]] && break; sleep 2; done
 pa="$(pos "${T}" "${ACCT_A}")"; pb="$(pos "${T}" "${ACCT_B}")"
 [[ "${pa}" == "${N}" && "${pb}" == "-${N}" ]] || fail "after kill -9 + replay: positions ${ACCT_A}=${pa} ${ACCT_B}=${pb}, want +${N}/-${N} (engine booked $((2 * N)) sides)"
-ok "engine $((2 * N)) sides; SQL positions ${ACCT_A}=+${pa} ${ACCT_B}=${pb} after the SIGKILL and replay"
+# The crash window, established rather than assumed: the restarted process books only sides after the committed
+# cursor (TradeView ignores seq <= cursor), so a run whose every side was snapshotted before the kill replays none.
+# Such a run is an ordinary restart, not SC-DRS-01/02; refuse it instead of passing.
+replayed="$(jget 'd["trades"]["applied"]' <<<"$(feed)")"
+(( replayed >= 1 && replayed <= 2 * N )) || fail "REFUSED: the restarted trade-processor booked ${replayed} side(s), want 1..$((2 * N)):" \
+  "the kill missed its window (every side was already snapshotted, or another writer booked), so SC-DRS-01/02 were not exercised; rerun"
+ok "engine $((2 * N)) sides; the restart replayed ${replayed} side(s) the killed process had not snapshotted; SQL positions ${ACCT_A}=+${pa} ${ACCT_B}=${pb}"
 
 step "FR-DRS-08. the snapshot cursor"
 C1="$(sql "SELECT COALESCE(MAX(stream_seq),-1) FROM projection_cursor")"

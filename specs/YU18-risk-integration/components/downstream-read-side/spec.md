@@ -242,7 +242,9 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
 
 - SC-DRS-01: In jetstream mode a `kill -9` mid-drain books every published trade side, with 0 gaps.
 - SC-DRS-02: In snapshot mode a `kill -9` before the first snapshot replays every published trade side,
-  and every position equals an independent recomputation.
+  and every position equals an independent recomputation. The proof (`yu18-jetstream-feed.sh`) SHALL establish
+  the window: the restarted process books at least one side the killed one had not snapshotted. A kill that
+  missed the window is an ordinary restart; the proof SHALL refuse it, not pass it.
 - SC-DRS-03: `TradeSeqGapsTest`, `JetStreamFeedTest`, `OrderViewTest`, `TradeViewTest`,
   `BridgePartitionsTest`, `LedgerSettlementReconTest`, `ReconciliationProjectionGraceTest`,
   `TradeSnapshotStoreConcurrencyIT`, `ReceiptLanesIT`, `ClusterReconPriceTest`, `TradeFeedRefusalTest` and `FeedBarrierTest` pass in an empty-root render.
