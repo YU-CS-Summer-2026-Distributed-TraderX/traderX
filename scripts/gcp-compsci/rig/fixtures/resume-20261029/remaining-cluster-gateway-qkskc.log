@@ -1,0 +1,4 @@
+2026-10-29T18:11:25.888451240Z 18:11:25.888 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT7] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logon: CLIENT7
+2026-10-29T18:11:25.896379993Z 18:11:25.896 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT3] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logon: CLIENT3
+2026-10-29T18:11:25.901837389Z 18:11:25.901 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT4] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logon: CLIENT4
+2026-10-29T18:11:25.901970529Z 18:11:25.901 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT8] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logon: CLIENT8

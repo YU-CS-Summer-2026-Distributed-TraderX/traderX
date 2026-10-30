@@ -1,0 +1,24 @@
+2026-10-29T17:47:13.519253763Z 17:47:13.519 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT1] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT1
+2026-10-29T17:49:07.839162155Z 17:49:07.839 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT1] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT1
+2026-10-29T17:58:00.758650096Z 17:58:00.758 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT7] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT7
+2026-10-29T17:58:00.758661423Z 17:58:00.758 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT4] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT4
+2026-10-29T17:58:00.758701753Z 17:58:00.758 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT2] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT2
+2026-10-29T17:58:00.758712179Z 17:58:00.758 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT3] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT3
+2026-10-29T18:01:16.067112760Z 18:01:16.067 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT3] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT3
+2026-10-29T18:01:16.067118209Z 18:01:16.067 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT6] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT6
+2026-10-29T18:01:16.067136636Z 18:01:16.067 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT2] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT2
+2026-10-29T18:04:22.325639389Z 18:04:22.325 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT5] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT5
+2026-10-29T18:04:22.325701833Z 18:04:22.325 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT2] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT2
+2026-10-29T18:04:22.325703576Z 18:04:22.325 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT7] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT7
+2026-10-29T18:07:04.894589903Z 18:07:04.894 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT7] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT7
+2026-10-29T18:07:04.894674529Z 18:07:04.894 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT3] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT3
+2026-10-29T18:07:04.894723172Z 18:07:04.894 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT8] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT8
+2026-10-29T18:07:04.894855521Z 18:07:04.894 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT6] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT6
+2026-10-29T18:07:04.894956112Z 18:07:04.894 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT5] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT5
+2026-10-29T18:07:04.895364414Z 18:07:04.894 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT4] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT4
+2026-10-29T18:10:55.264670235Z GATEWAY-DRAIN begin delayMs=30000 inflight=0
+2026-10-29T18:11:25.302867094Z 18:11:25.302 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT3] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT3
+2026-10-29T18:11:25.306850268Z 18:11:25.306 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT4] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT4
+2026-10-29T18:11:25.312234224Z 18:11:25.312 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT8] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT8
+2026-10-29T18:11:25.313098230Z 18:11:25.312 [QF/J Session dispatcher: FIX.4.4:TRADERX->CLIENT7] INFO finos.traderx.ordermatcher.cluster.FixGatewayAcceptor -- FIX logout: CLIENT7
+2026-10-29T18:11:25.479208877Z GATEWAY-DRAIN done inflight=0 elapsedMs=30214
