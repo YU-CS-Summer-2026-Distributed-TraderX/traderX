@@ -217,6 +217,13 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   the row's consensus sequence and ordinal is ignored. `JetStreamFeedAckGapIT` runs on a real JetStream. Before this
   rule the durable resumed after a kill -9 lost the batch lifetime A was delivered, and the running durable and the
   pipelined feed each lost a stolen pull response.
+  The one-off recon of rows written before this rule (`scripts/gcp-compsci/rig/fr-drs-33-order-fill-recon.sql`, read
+  only, before trading) compares each order row's filled quantity with its trade sides, and lists trade sides whose
+  order has no row. A booking through the gateway's `/trades` (the demo ticket, `TYPE_TRADE_NEW`) is a trade with no
+  order: it carries the reserved orderRef 0, so its sides name `<epoch>-0`, and no order row is ever written for it.
+  The engine issues order refs only on `ORDER_NEW`, from 1, so excluding `-0` cannot hide a real order; the ticket's
+  sides are still counted by the rig's G3 trade check. Production 2026-10-30: disagree 0 against 3,392,648 agreeing
+  filled orders; the only order without a row was `1-0`, the 2026-10-27 roll's ticket check (`13-B`, `14-S`).
 - FR-DRS-35: A store failure SHALL be a barrier on every JetStream feed: no message after it is applied, and no
   cursor, snapshot or ack passes it, until it is applied. A store failure is a failure of the database rather than
   the message (a Spring `DataAccessException` or `TransactionException`, or an `SQLException`, other than a
