@@ -19,7 +19,11 @@ sleep(){ :; }
 preflight(){ :; }; require_pools(){ :; }
 pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
 pool_autoscaling(){ false; }; row_status_is(){ true; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
-snapshots_past(){ true; }; admin_token(){ echo tok; }
+snapshots_past(){ true; }
+admin_token(){ local n; n=$(( $(cat "$EVIDENCE/.tok" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.tok"; echo "tok$n"; }
+# TOKEN_SINGLE_USE: a token already presented has expired (a strict replay outlasts the 600 s TTL), so the member answers 401
+expired(){ local t; read -r t || t=''; [ -n "${TOKEN_SINGLE_USE:-}" ] || return 1
+  grep -qx "$t" "$EVIDENCE/.spent" 2>/dev/null && return 0; echo "$t" >> "$EVIDENCE/.spent"; return 1; }
 member(){ local v="M$1"; echo "${!v:-$M}"; }
 read_model(){ [ -n "${RM_FAIL:-}" ] && return 1; if [ -f "$EVIDENCE/.rm" ]; then echo "$RM_AFTER"; else touch "$EVIDENCE/.rm"; echo "$RM"; fi; }
 kubectl(){
@@ -31,11 +35,11 @@ kubectl(){
     *"--field-selector spec.nodeName="*)   # GW_ON_<node>: the gateway pod on it; POD_LIST_FAIL: the node whose listing fails
       n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
       v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
-    *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; echo "$REINDEX";;
+    *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; expired && return 8; echo "$REINDEX";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
-    *shadow-state*) echo "${SHADOW:-}";;
+    *shadow-state*) expired || echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
     *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
@@ -154,6 +158,12 @@ class Up(unittest.TestCase):
         for field, value in (('"bookHash":"11"', '"bookHash":"12"'), ('"positions":3', '"positions":4'),
                              ('"openOrders":2', '"openOrders":1')):
             self.refused('G2', SHADOW=good.replace(field, value))
+
+    def test_each_members_replay_request_carries_a_token_minted_for_it(self):
+        # FR-PRG-25: one token minted up front expired before member 2 was asked (production 2026-10-30, G2 refused)
+        for gate in ({}, {'CAP': '4'}):   # G1 runs; G1 defers to G2
+            rc, out, _ = run('rig_up', TOKEN_SINGLE_USE='1', **gate)
+            self.assertEqual(rc, 0, out); self.assertIn('G2 ok', out)
 
     def test_an_incomplete_replay_is_refused(self):
         self.refused('G2', SHADOW=GOOD['SHADOW'].replace('"complete":true', '"complete":false'))

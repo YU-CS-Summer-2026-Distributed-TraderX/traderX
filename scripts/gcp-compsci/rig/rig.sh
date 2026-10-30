@@ -421,7 +421,9 @@ restore_gate(){
   # restored from its snapshot into an idle cluster, which has applied no engine event since (ClusterNodeMain /health).
   [ "$a" -gt 0 ] && { [ "$e" = "$a" ] || [ "$e" = -1 ]; } || die "G0: applied $a, engineApplied $e"
   note "G0 ok: applied $a, trades $t, hashes $oh $ph on all three"
-  token=$(admin_token); [ -n "$token" ] || die "G1: could not mint an admin token in trade-processor"
+  # FR-PRG-25: each member's replay request gets a token minted just before it. A strict replay of the log takes minutes
+  # per member, so one token minted up front expires (ttlSeconds 600) before the last member is asked, and its 401 reads
+  # as "no endpoint".
   # FR-PRG-18: the full-history index refuses past RECON_FULL_HISTORY_MAX trades (members' default 200000), so above it
   # G1 cannot answer; it defers to G2, whose whole-log replay into a shadow proves the same property by hashes, uncapped.
   local cap g1_deferred=0
@@ -433,6 +435,7 @@ restore_gate(){
     echo "G1 deferred: trades $t > RECON_FULL_HISTORY_MAX $cap" >> "$EVIDENCE/gate-g1.txt"
   else
     for i in 0 1 2; do
+      token=$(admin_token); [ -n "$token" ] || die "G1: could not mint an admin token in trade-processor"
       rep=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c 'read -r t; wget -qO- --post-data="" \
         --header="Authorization: Bearer $t" http://localhost:8080/recon/full-history/reindex' <<<"$token") \
         || die "G1: member $i's replay request failed (HTTP error)"
@@ -445,6 +448,7 @@ restore_gate(){
   # in the terms of /health?digest=1. Hashes are decimal strings (a 64-bit hash read as a JSON number loses digits).
   local digest='' open_rows
   for i in 0 1 2; do
+    token=$(admin_token); [ -n "$token" ] || die "G2: could not mint an admin token in trade-processor"
     shadow=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c "read -r t; wget -qO- \
       --header=\"Authorization: Bearer \$t\" http://localhost:8080$GATE_SHADOW_PATH" <<<"$token" 2>/dev/null || true)
     if [ -z "$shadow" ] || ! jq -e '.bookHash and .positionHash' <<<"$shadow" >/dev/null 2>&1; then
