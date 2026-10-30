@@ -1,12 +1,17 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76. Rollout 5a: the members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 59b0db21.",
+  "note": "ADR-096 \u00a76. The members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; trade-processor runs trade-processor-feedack built from af5d3760, the FR-DRS-33 feed fix (no feed acks past a delivery it did not apply); every other private image, the gateway's cluster-node included, is built from the tip 59b0db21.",
   "imageSourceCommit": "59b0db2132495612b21bbcebb07f169f91d40f7e",
   "workloads": {
     "order-matcher-cluster": {
       "image": "cluster-node-member",
       "component": "order-matcher",
       "sourceCommit": "c562bbab65f703a0edbbffd5cea98f54bf40b844"
+    },
+    "trade-processor": {
+      "image": "trade-processor-feedack",
+      "component": "trade-processor",
+      "sourceCommit": "af5d37602e5537b0a572d2ccb77d7c8a83f3fa5c"
     }
   }
 }
