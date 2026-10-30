@@ -125,12 +125,23 @@ public final class JetStreamFeed {
    * first {@code cursor} messages. {@code bound} is the creation time (epoch ns) of the stream the cursor was taken on,
    * null for a cursor recorded before it was; a cursor past 0 on another stream is refused. Returns this stream's
    * creation time, for the caller to bind to its cursor.
+   *
+   * <p>A first binding needs evidence, not assumption: an unbound cursor past 0 may already be on a recreated stream,
+   * so it is refused ({@code STREAM_UNBOUND}) until an operator reconciles the read model and attests the row
+   * ({@link #ATTESTED}). A cursor at 0 skips nothing and binds without either.
    */
   public static long requireRetained(Connection nc, String stream, String what, int partition, long cursor, Long bound)
       throws Exception {
     var info = nc.jetStreamManagement().getStreamInfo(stream);
     long created = createdNs(info);
-    if (cursor > 0 && bound != null && bound != created) {
+    if (cursor > 0 && bound == null) {
+      throw new IllegalStateException("STREAM_UNBOUND " + what + " partition " + partition + ": the snapshot cursor (stream"
+          + " sequence " + cursor + ") was saved before cursors were bound to their stream, so nothing shows it was taken"
+          + " on " + stream + " as created at " + instant(created) + "; if that stream was recreated, resuming would skip"
+          + " its first messages. Reconcile the read model (rig G3, FR-DRS-33 recon), then attest: UPDATE projection_cursor"
+          + " SET stream_created_ns=0 for this scope and partition; or rebuild: SET stream_seq=0");
+    }
+    if (cursor > 0 && bound != null && bound != ATTESTED && bound != created) {
       throw new IllegalStateException("STREAM_RESET " + what + " partition " + partition + ": the snapshot cursor (stream"
           + " sequence " + cursor + ") was taken on the stream " + stream + " created at " + instant(bound) + ", but " + stream
           + " was created at " + instant(created) + "; resuming would skip its first " + cursor + " messages. Reconcile, then"
@@ -152,6 +163,9 @@ public final class JetStreamFeed {
     }
     return created;
   }
+
+  /** {@code stream_created_ns} an operator writes after reconciling an unbound cursor: bind it to the current stream. */
+  public static final long ATTESTED = 0;
 
   /** A stream's identity: its creation time in epoch ns. An update (limits) keeps it; a recreate does not. */
   static long createdNs(io.nats.client.api.StreamInfo info) {

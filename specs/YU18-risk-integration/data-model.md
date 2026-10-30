@@ -33,7 +33,8 @@ snapshot_at DATETIME, stream_created_ns BIGINT)`, primary key `(projection_scope
 each partition's last SQL snapshot sits in the JetStream capture stream. The snapshot writes it in the same
 transaction as the changed positions and blotter windows. A restart replays from `stream_seq + 1`
 ([ADR-080](system/adr-080-downstream-read-side.md)). `stream_created_ns` is the creation time (epoch ns) of the stream the cursor was taken on, bound before the first
-message is applied and NULL for a row written before FR-DRS-36. A restart refuses a stream with another creation
+message is applied and NULL for a row written before FR-DRS-36. A NULL row past 0 is refused (STREAM_UNBOUND) until an
+operator reconciles the read model and attests it by writing 0, which binds it to the stream it resumes on. A restart refuses a stream with another creation
 time (STREAM_RESET): a stream recreated under the same name restarts its sequences.
 In row projection with one partition it also holds one row per cluster epoch, `projection_scope =
 'trade-seq:<trade id prefix>'` (`e1-<epoch>-`, or empty for legacy ids), `partition_id = 0`, with the last

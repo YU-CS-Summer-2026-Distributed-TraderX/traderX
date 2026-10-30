@@ -46,3 +46,5 @@
 - In snapshot mode no consumer replays a rejected trade side from the archive yet. The recon reports it
   MISSING, and the bridge names it (FR-DRS-16, FR-DRS-18).
 - [x] FR-DRS-36 migration for a persistent eod-price-db volume (`migrate-fr-drs-36.sql`), idempotent, with its rollback note.
+- [x] FR-DRS-36 first binding: an unbound cursor past 0 is refused (STREAM_UNBOUND) until reconciled and attested
+  (`stream_created_ns=0`); the migration lists those rows (codeX re-review, 2026-10-30).

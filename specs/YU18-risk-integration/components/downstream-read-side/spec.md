@@ -258,15 +258,20 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   bound to another creation time (`STREAM_RESET`, naming both times). A stream deleted and recreated under the same
   name restarts its sequences, and once it grows past the cursor it passes both sequence checks (FR-DRS-08's
   retention gap and reset). Resuming at the cursor + 1 would then skip its first messages for good. The remedy is
-  explicit: reconcile, then set the row's `stream_seq` to 0 and `stream_created_ns` to NULL. A NULL binding, from a
-  row written before this rule, is accepted once and bound. A cursor at 0 skips nothing and rebinds. A running feed
+  explicit: reconcile, then set the row's `stream_seq` to 0 and `stream_created_ns` to NULL. A first binding SHALL
+  rest on evidence, not assumption: a cursor past 0 with a NULL binding (a row written before this rule) may already
+  sit on a recreated stream, so it is refused (`STREAM_UNBOUND`) until the read model is reconciled (rig G3, the
+  FR-DRS-33 recon) and an operator attests the row by setting `stream_created_ns` to 0, which binds it to the stream
+  it then resumes on. A cursor at 0 skips nothing and binds or rebinds without either. A running feed
   SHALL NOT resubscribe across streams: a cursor-acknowledged view stops its partition (ALERT), and a durable (the
   idempotent row projections) reads the new stream from its first message, as a restart would. An update of the
   stream's limits keeps its creation time. Found by the codeX review of 2026-10-30 (§6): cursor 5, a recreated
-  stream of 8, and only 6..8 delivered. `StreamIdentityIT` and `StreamRecreateIT` run on NATS 2.10 and 2.14.
+  stream of 8, and only 6..8 delivered; its re-review found the first build accepted an unbound cursor 5 on that
+  recreated stream. `StreamIdentityIT` and `StreamRecreateIT` run on NATS 2.10 and 2.14.
   A persistent eod-price-db volume never runs `ri06.sql` again, so `stream_created_ns` reaches it only through
   `scripts/gcp-compsci/rig/migrate-fr-drs-36.sql` (the same two idempotent statements), applied before the build runs
-  snapshot mode or order-view snapshots; rows mode never reads the column. Rolling the image back needs no schema
+  snapshot mode or order-view snapshots; rows mode never reads the column. Its last statement lists every unbound
+  cursor past 0, each of which the build refuses until it is reconciled and attested. Rolling the image back needs no schema
   change: the earlier build names its columns, and a binding it leaves stale is refused, not skipped.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep

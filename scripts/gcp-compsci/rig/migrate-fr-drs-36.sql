@@ -7,6 +7,9 @@
 -- Rollback: none needed. The pre-FR-DRS-36 trade-processor names its projection_cursor columns, so a NULLable extra
 -- column is invisible to it. A cursor it advances keeps the old binding; if the stream was recreated meanwhile, the
 -- FR-DRS-36 build then refuses it (STREAM_RESET), which is the rule working. Dropping the column is never required.
+-- The last statement lists every cursor past 0 with no binding. The FR-DRS-36 build refuses each (STREAM_UNBOUND) until
+-- the read model is reconciled (rig G3, FR-DRS-33 recon) and the row attested, before the build starts:
+--   UPDATE projection_cursor SET stream_created_ns=0 WHERE stream_seq > 0 AND stream_created_ns IS NULL;
 CREATE TABLE IF NOT EXISTS projection_cursor (
  projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
  stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,
@@ -15,3 +18,5 @@ CREATE TABLE IF NOT EXISTS projection_cursor (
 ALTER TABLE projection_cursor ADD COLUMN IF NOT EXISTS stream_created_ns BIGINT;
 SELECT CONCAT('projection_cursor.stream_created_ns: ', COUNT(*)) FROM information_schema.columns
  WHERE table_schema = DATABASE() AND table_name = 'projection_cursor' AND column_name = 'stream_created_ns';
+SELECT CONCAT('unbound cursor, refused until reconciled and attested: ', projection_scope, ' partition ', partition_id,
+ ' stream_seq ', stream_seq) FROM projection_cursor WHERE stream_seq > 0 AND stream_created_ns IS NULL;

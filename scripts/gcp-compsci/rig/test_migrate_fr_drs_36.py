@@ -51,11 +51,14 @@ class MigrateFrDrs36(unittest.TestCase):
     def migrate(self):
         p = self.q(MIGRATION); self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn('projection_cursor.stream_created_ns: 1', p.stdout)
+        return p.stdout
 
     def test_every_starting_volume_twice(self):
         for name, setup in (('empty', ''), ('pre-FR-DRS-36 with a cursor', OLD_TABLE), ('migrated', MIGRATION)):
             with self.subTest(name):
-                self.volume(setup); self.migrate(); self.migrate()
+                self.volume(setup); self.migrate(); out = self.migrate()
+                # FR-DRS-36: the pre-binding cursor is listed for reconciliation and attestation; nothing else is.
+                self.assertEqual('unbound cursor' in out, 'cursor' in name, out)
                 if 'cursor' in name:
                     self.assertEqual(self.q("SELECT stream_seq, consensus_seq, stream_created_ns FROM projection_cursor "
                                             "WHERE projection_scope='s' AND partition_id=0").stdout, '42\t7\tNULL\n')
