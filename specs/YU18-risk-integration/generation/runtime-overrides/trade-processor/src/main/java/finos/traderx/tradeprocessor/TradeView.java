@@ -33,8 +33,19 @@ import java.util.function.BiFunction;
 public final class TradeView {
   /** What one snapshot writes: the changed positions, the changed accounts' windows, and the cursor. */
   public record Cut(List<Position> positions, Map<Integer, List<Trade>> blotters, Map<LocalDate, Long> days,
-                    long streamSeq, long consensusSeq, long applied) {
+                    long streamSeq, long consensusSeq, long applied, Accounting accounting) {
     public boolean isEmpty() { return positions.isEmpty() && blotters.isEmpty(); }
+  }
+
+  /**
+   * FR-DRS-29, exactly-once accounting of this partition: every booked side's engine tradeSeq, committed with the
+   * cursor. Within a partition the bridge publishes in engine order (one receipt lane per partition), so a tradeSeq at
+   * or below the last one booked is a second copy: it is refused and counted, never booked twice. A gate then proves
+   * in O(P) that the booked set is exactly {base+1..t}: distinct (strictly increasing here), none above t, t - base of
+   * them; the wrapped sums of seq and seq^2 guard the one case a partition cannot see (a side under two accounts).
+   */
+  public record Accounting(long sides, long maxSeq, long sumSeq, long sumSq, long duplicates, String epoch) {
+    public static final Accounting EMPTY = new Accounting(0, 0, 0, 0, 0, "");
   }
 
   private final int blotterDepth;
@@ -50,6 +61,7 @@ public final class TradeView {
   private long consensusSeq;
   private long appliedSinceCut;
   private long appliedTotal;
+  private Accounting acct = Accounting.EMPTY;
 
   public TradeView(int blotterDepth) {
     this.blotterDepth = Math.max(1, blotterDepth);
@@ -74,6 +86,11 @@ public final class TradeView {
     consensusSeq = cursorConsensusSeq;
   }
 
+  /** Restore the accounting committed with the cursor. */
+  public synchronized void loadAccounting(Accounting committed) {
+    if (committed != null) { acct = committed; }
+  }
+
   /** Restore the per-trade-date side counts written with the same snapshot as the cursor. */
   public synchronized void loadDays(Map<LocalDate, Long> days) {
     sidesByDay.putAll(days);
@@ -87,6 +104,13 @@ public final class TradeView {
    *  returns the trade row the window keeps. A seq at or below the cursor is a replay and is ignored. */
   public synchronized boolean apply(TradeOrder order, long seq, BiFunction<TradeOrder, Position, Trade> booker) {
     if (seq <= streamSeq) { return false; }
+    long tradeSeq = TradeFeedHandler.TradeSeqGaps.seqOf(order.getId());
+    String epoch = tradeSeq > 0 ? TradeFeedHandler.TradeSeqGaps.epochOf(order.getId()) : acct.epoch();
+    if (tradeSeq > 0 && epoch.equals(acct.epoch()) && tradeSeq <= acct.maxSeq()) {
+      acct = new Accounting(acct.sides(), acct.maxSeq(), acct.sumSeq(), acct.sumSq(), acct.duplicates() + 1, epoch);
+      streamSeq = seq;
+      return false;
+    }
     String k = key(order.getProjectionScope(), order.getAccountId(), order.getSecurity());
     Position position = positions.get(k);
     boolean fresh = position == null;
@@ -111,6 +135,10 @@ public final class TradeView {
     ring.addLast(trade);
     if (ring.size() > blotterDepth) { ring.pollFirst(); }
     dirtyAccounts.add(order.getAccountId());
+    if (tradeSeq > 0) {   // a new epoch restarts tradeSeq; the sums keep counting
+      acct = new Accounting(acct.sides() + 1, tradeSeq, acct.sumSeq() + tradeSeq, acct.sumSq() + tradeSeq * tradeSeq,
+          acct.duplicates(), epoch);
+    }
     streamSeq = seq;
     if (order.getConsensusSequence() != null) { consensusSeq = Math.max(consensusSeq, order.getConsensusSequence()); }
     appliedSinceCut++;
@@ -135,7 +163,7 @@ public final class TradeView {
     for (Integer a : dirtyAccounts) { bs.put(a, new ArrayList<>(blotter.get(a))); }
     Map<LocalDate, Long> ds = new HashMap<>();
     for (LocalDate d : dirtyDays) { ds.put(d, sidesByDay.get(d)); }
-    Cut cut = new Cut(ps, bs, ds, streamSeq, consensusSeq, appliedSinceCut);
+    Cut cut = new Cut(ps, bs, ds, streamSeq, consensusSeq, appliedSinceCut, acct);
     dirtyPositions.clear();
     dirtyAccounts.clear();
     dirtyDays.clear();
@@ -164,6 +192,7 @@ public final class TradeView {
 
   public synchronized long streamSeq() { return streamSeq; }
   public synchronized long applied() { return appliedTotal; }
+  public synchronized Accounting accounting() { return acct; }
   public synchronized int positionCount() { return positions.size(); }
   public synchronized int dirtyCount() { return dirtyPositions.size(); }
 }

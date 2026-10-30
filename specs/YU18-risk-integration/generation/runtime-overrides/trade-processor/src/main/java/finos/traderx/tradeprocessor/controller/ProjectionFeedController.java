@@ -44,6 +44,59 @@ public final class ProjectionFeedController {
         "settlement on the ledger needs TRADE_PROJECTION_MODE=snapshot with PROJECTION_FEED_MODE=jetstream");
   }
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.OrderViewSnapshotStore orderSnapshots;
+
+  /**
+   * FR-DRS-29/30: what the snapshot read model has COMMITTED, per partition, next to the stream it was read from, so a
+   * restore gate can check exactly-once in O(P): each trade partition's cursor, side count, highest tradeSeq, wrapped
+   * sums and refused duplicates; each order partition's cursor and committed open orders; and per partition subject
+   * the stream's last sequence (a committed cursor below it means unprojected messages). Committed, not live: it is
+   * what a restart resumes from, and it is the same whichever replica answers.
+   */
+  @GetMapping("/v2/projection-feed/accounting")
+  public Map<String, Object> accounting() throws Exception {
+    TradeFeedHandler trades = null;
+    OrderFeedHandler orders = null;
+    for (Subscriber<?> s : subscribers) {
+      if (s instanceof TradeFeedHandler t) { trades = t; } else if (s instanceof OrderFeedHandler o) { orders = o; }
+    }
+    if (trades == null || !trades.ledgerMode() || snapshotStore == null) {
+      throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,
+          "accounting needs TRADE_PROJECTION_MODE=snapshot with PROJECTION_FEED_MODE=jetstream");
+    }
+    var nc = trades.natsConnection();
+    String stream = trades.streamName();
+    int p = trades.partitionCount();
+    var state = nc.jetStreamManagement().getStreamInfo(stream).getStreamState();
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("scope", trades.snapshotScope());
+    out.put("partitions", p);
+    out.put("stream", Map.of("name", stream, "first", state.getFirstSequence(), "last", state.getLastSequence()));
+    Map<Integer, Map<String, Object>> committed = snapshotStore.committedAccounting(trades.snapshotScope());
+    Map<String, Object> tp = new LinkedHashMap<>();
+    for (int i = 0; i < p; i++) {
+      Map<String, Object> m = new LinkedHashMap<>(committed.getOrDefault(i, Map.of("cursor", 0L, "sides", 0L, "maxSeq", 0L,
+          "sumSeq", "0", "sumSq", "0", "duplicates", 0L, "epoch", "")));
+      m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, stream,
+          finos.traderx.tradeprocessor.JetStreamFeed.subject("/trades", i, p)));
+      tp.put(String.valueOf(i), m);
+    }
+    out.put("trades", tp);
+    if (orders != null && orderSnapshots != null && orders.viewScope() != null) {
+      Map<Integer, Map<String, Object>> oc = orderSnapshots.committed(orders.viewScope());
+      Map<String, Object> op = new LinkedHashMap<>();
+      for (int i = 0; i < p; i++) {
+        Map<String, Object> m = new LinkedHashMap<>(oc.getOrDefault(i, Map.of("cursor", -1L, "open", 0L, "resting", 0L)));
+        m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, stream,
+            finos.traderx.tradeprocessor.JetStreamFeed.subject("/orders", i, p)));
+        op.put(String.valueOf(i), m);
+      }
+      out.put("orders", op);
+    }
+    return out;
+  }
+
   @GetMapping("/v2/projection-feed")
   public Map<String, Object> status() {
     Map<String, Object> out = new LinkedHashMap<>();
@@ -64,7 +117,7 @@ public final class ProjectionFeedController {
           m.put("snapshotFailures", t.snapshotFailures());
           Map<String, Object> parts = new LinkedHashMap<>();
           t.views().forEach((p, v) -> parts.put(String.valueOf(p), Map.of("streamSeq", v.streamSeq(), "applied", v.applied(),
-              "positions", v.positionCount(), "dirty", v.dirtyCount())));
+              "positions", v.positionCount(), "dirty", v.dirtyCount(), "duplicates", v.accounting().duplicates())));
           m.put("partitions", parts);
         }
         out.put("trades", m);
@@ -78,6 +131,12 @@ public final class ProjectionFeedController {
         m.put("applied", o.view().applied());
         m.put("ignoredStale", o.view().ignored());
         m.put("viewSize", o.view().size());
+        if (o.viewScope() != null) {
+          m.put("resting", o.view().resting());
+          m.put("viewSnapshots", o.viewSnapshotCount());
+          m.put("viewSnapshotFailures", o.viewSnapshotFailureCount());
+          m.put("committed", o.viewCommitted());
+        }
         out.put("orders", m);
       }
     }

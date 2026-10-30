@@ -64,6 +64,36 @@ public final class TradeSnapshotStore {
         }, scope);
   }
 
+  /** FR-DRS-29: the partition's exactly-once accounting as of its cursor, or null before its first snapshot. */
+  public TradeView.Accounting loadAccounting(String scope, int partition) {
+    List<TradeView.Accounting> rows = jdbc.query("SELECT sides, max_seq, sum_seq, sum_sq, duplicates, epoch FROM projection_accounting"
+        + " WHERE projection_scope=? AND partition_id=?", (rs, i) -> new TradeView.Accounting(rs.getLong(1), rs.getLong(2),
+        rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getString(6)), scope, partition);
+    return rows.isEmpty() ? null : rows.get(0);
+  }
+
+  /**
+   * FR-DRS-29: per partition, the committed cursor and accounting, i.e. what a restart resumes from. The sums are
+   * unsigned decimal strings (they wrap at 2^64; a JSON number would lose digits).
+   */
+  public Map<Integer, Map<String, Object>> committedAccounting(String scope) {
+    Map<Integer, Map<String, Object>> out = new TreeMap<>();
+    jdbc.query("SELECT c.partition_id, c.stream_seq, a.sides, a.max_seq, a.sum_seq, a.sum_sq, a.duplicates, a.epoch"
+        + " FROM projection_cursor c LEFT JOIN projection_accounting a ON a.projection_scope=c.projection_scope"
+        + " AND a.partition_id=c.partition_id WHERE c.projection_scope=?", rs -> {
+          Map<String, Object> m = new LinkedHashMap<>();
+          m.put("cursor", rs.getLong(2));
+          m.put("sides", rs.getLong(3));
+          m.put("maxSeq", rs.getLong(4));
+          m.put("sumSeq", Long.toUnsignedString(rs.getLong(5)));
+          m.put("sumSq", Long.toUnsignedString(rs.getLong(6)));
+          m.put("duplicates", rs.getLong(7));
+          m.put("epoch", rs.getString(8) == null ? "" : rs.getString(8));
+          out.put(rs.getInt(1), m);
+        }, scope);
+    return out;
+  }
+
   /** Booked sides per UTC trade date, as of the partition's cursor (written in the same transaction). */
   public Map<LocalDate, Long> loadDays(String scope, int partition) {
     Map<LocalDate, Long> days = new TreeMap<>();
@@ -212,6 +242,13 @@ public final class TradeSnapshotStore {
       jdbc.update("INSERT INTO projection_cursor(projection_scope,partition_id,stream_seq,consensus_seq,snapshot_at)"
           + " VALUES (?,?,?,?,NOW()) ON DUPLICATE KEY UPDATE stream_seq=VALUES(stream_seq),consensus_seq=VALUES(consensus_seq),"
           + "snapshot_at=VALUES(snapshot_at)", scope, partition, cut.streamSeq(), cut.consensusSeq());
+      TradeView.Accounting a = cut.accounting();
+      if (a != null && (a.sides() > 0 || a.duplicates() > 0)) {
+        jdbc.update("INSERT INTO projection_accounting(projection_scope,partition_id,sides,max_seq,sum_seq,sum_sq,duplicates,epoch)"
+            + " VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE sides=VALUES(sides),max_seq=VALUES(max_seq),sum_seq=VALUES(sum_seq),"
+            + "sum_sq=VALUES(sum_sq),duplicates=VALUES(duplicates),epoch=VALUES(epoch)",
+            scope, partition, a.sides(), a.maxSeq(), a.sumSeq(), a.sumSq(), a.duplicates(), a.epoch());
+      }
       if (cut.applied() > 0) {
         jdbc.update("UPDATE projection_runs SET trade_rows=trade_rows+?, checkpoint_seq=GREATEST(checkpoint_seq,?) WHERE projection_scope=?",
             cut.applied(), cut.consensusSeq(), scope);

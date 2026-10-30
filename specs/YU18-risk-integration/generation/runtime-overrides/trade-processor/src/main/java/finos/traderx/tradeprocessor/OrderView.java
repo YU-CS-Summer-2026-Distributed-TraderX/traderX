@@ -116,6 +116,12 @@ public final class OrderView {
     return out;
   }
 
+  /** The update this view holds for the order, or null (never seen, or an evicted terminal). */
+  public OrderUpdate get(int accountId, String id) {
+    Map<String, OrderUpdate> orders = byAccount.get(accountId);
+    return orders == null ? null : orders.get(id);
+  }
+
   /** ADR-093: the order booked under this account-scoped client key, or null if this view holds none. */
   public OrderUpdate byClientKey(int accountId, String scopedKey) {
     Map<String, String> keys = byClientKey.get(accountId);
@@ -141,6 +147,15 @@ public final class OrderView {
 
   public long applied() { return applied.get(); }
   public long ignored() { return ignored.get(); }
+
+  /** Orders NEW or PARTIALLY_FILLED: what the engine's recovery digest counts as {@code openOrders} (the G3 term). */
+  public long resting() {
+    long n = 0;
+    for (Map<String, OrderUpdate> m : byAccount.values()) {
+      for (OrderUpdate u : m.values()) { if ("NEW".equals(u.getStatus()) || "PARTIALLY_FILLED".equals(u.getStatus())) { n++; } }
+    }
+    return n;
+  }
 
   public long size() {
     long n = 0;

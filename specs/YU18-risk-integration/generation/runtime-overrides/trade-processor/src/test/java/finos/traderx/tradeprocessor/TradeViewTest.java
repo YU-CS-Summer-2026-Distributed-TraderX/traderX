@@ -35,6 +35,29 @@ class TradeViewTest {
     return t;
   }
 
+  /** FR-DRS-29: a second copy of a side (tradeSeq not above the partition's last) moves the cursor and books nothing. */
+  @Test void aSecondCopyOfASideIsRefusedCountedAndNeverBooked() {
+    TradeView v = new TradeView(10);
+    assertTrue(v.apply(fill("5-B", 7, "AAPL", TradeSide.Buy, 100, 1), 1, TradeViewTest::book));
+    assertTrue(v.apply(fill("9-S", 7, "AAPL", TradeSide.Sell, 30, 2), 2, TradeViewTest::book));
+    assertFalse(v.apply(fill("5-B", 7, "AAPL", TradeSide.Buy, 100, 1), 3, TradeViewTest::book));   // the copy
+    assertFalse(v.apply(fill("8-B", 7, "AAPL", TradeSide.Buy, 1, 3), 4, TradeViewTest::book));     // behind the last
+    TradeView.Cut cut = v.cut();
+    assertEquals(70, cut.positions().get(0).getQuantity());
+    assertEquals(4, cut.streamSeq());
+    assertEquals(new TradeView.Accounting(2, 9, 14, 25 + 81, 2, ""), cut.accounting());
+  }
+
+  @Test void accountingSurvivesALoadAndANewEpochRestartsOnlyTheOrderCheck() {
+    TradeView v = new TradeView(10);
+    v.load(List.of(), List.of(), 100, 0);
+    v.loadAccounting(new TradeView.Accounting(3, 3, 6, 14, 0, ""));
+    assertFalse(v.apply(fill("3-B", 1, "A", TradeSide.Buy, 1, 1), 101, TradeViewTest::book));
+    assertTrue(v.apply(fill("4-B", 1, "A", TradeSide.Buy, 1, 1), 102, TradeViewTest::book));
+    assertTrue(v.apply(fill("e1-x-1-S", 2, "A", TradeSide.Sell, 1, 1), 103, TradeViewTest::book));   // new epoch, seq 1
+    assertEquals(new TradeView.Accounting(5, 1, 11, 31, 1, "e1-x-"), v.accounting());
+  }
+
   @Test void cutCarriesOnlyWhatChangedAndTheCursorItIsExactAt() {
     TradeView v = new TradeView(2);
     assertTrue(v.apply(fill("1-B", 7, "AAPL", TradeSide.Buy, 100, 10), 101, TradeViewTest::book));

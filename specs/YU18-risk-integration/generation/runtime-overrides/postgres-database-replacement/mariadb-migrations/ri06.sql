@@ -75,3 +75,19 @@ CREATE TABLE IF NOT EXISTS projection_trade_days (
  projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL, trade_date DATE NOT NULL,
  sides BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (projection_scope, partition_id, trade_date)
 );
+-- YU18 snapshot read model, exactly-once accounting (FR-DRS-29): per partition, the booked sides' engine tradeSeq
+-- count, highest, and wrapped sums of seq and seq^2, committed in the cursor's transaction; duplicates = sides that
+-- arrived again (tradeSeq not above the partition's last) and were refused.
+CREATE TABLE IF NOT EXISTS projection_accounting (
+ projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
+ sides BIGINT NOT NULL DEFAULT 0, max_seq BIGINT NOT NULL DEFAULT 0, sum_seq BIGINT NOT NULL DEFAULT 0,
+ sum_sq BIGINT NOT NULL DEFAULT 0, duplicates BIGINT NOT NULL DEFAULT 0, epoch VARCHAR(64) NOT NULL DEFAULT '',
+ PRIMARY KEY (projection_scope, partition_id)
+);
+-- YU18 order view snapshot (FR-DRS-30): the memory-only order view's OPEN orders per partition, written with the
+-- partition's order cursor (projection_cursor, scope 'order-view:<scope>'); a restart loads them and replays from it.
+CREATE TABLE IF NOT EXISTS order_view_snapshot (
+ projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL, orderid VARCHAR(50) NOT NULL,
+ accountid INTEGER NOT NULL, status VARCHAR(32) NOT NULL, payload TEXT NOT NULL,
+ PRIMARY KEY (projection_scope, partition_id, orderid)
+);

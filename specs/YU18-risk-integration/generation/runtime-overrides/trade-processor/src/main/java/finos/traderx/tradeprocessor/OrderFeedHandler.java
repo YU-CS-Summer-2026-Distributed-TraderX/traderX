@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +43,8 @@ import org.springframework.beans.factory.annotation.Value;
  * all and {@code GET /accounts/{id}/orders} answers from the view (direction a: no row per order
  * event); with {@code traderx.feed.mode=jetstream} the updates are pulled from the capture stream,
  * one thread per owned partition (direction c). A memory-only view re-fills itself on restart from
- * the last {@code traderx.order-view.replay-seconds} of the stream.
+ * the last {@code traderx.order-view.replay-seconds} of the stream, or, with {@code traderx.order-view.snapshot-ms}
+ * above 0 (FR-DRS-30), from its last SQL snapshot of open orders plus a replay from that snapshot's cursor.
  */
 public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements DisposableBean {
   static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(OrderFeedHandler.class);
@@ -78,6 +80,9 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   // 256 MB default heap and the trade path thrashed in full GC. 50K = ~42 MB.
   @Value("${traderx.order-view.terminal-capacity:50000}") int terminalCapacity = 50_000;
   @Value("${traderx.order-view.replay-seconds:300}") long replaySeconds = 300;
+  // FR-DRS-30: > 0 = the memory-only view snapshots its open orders and per-partition cursor to SQL this often and a
+  // restart resumes from them, exact after any outage the stream retains; 0 = rebuild from the replay window.
+  @Value("${traderx.order-view.snapshot-ms:0}") long snapshotMillis = 0;
 
   private volatile OrderView view = new OrderView(50_000);
 
@@ -91,6 +96,34 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private finos.traderx.tradeprocessor.service.OrderProjectionService projectionService;
   @Autowired(required = false)
   private ProjectionWriteLock writeLock;
+  @Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.OrderViewSnapshotStore snapshotStore;
+  @Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.RunRegistry runRegistry;
+
+  /**
+   * One owned partition of a snapshotted view; touched only by that partition's pull thread. Memory is bounded by the
+   * open orders, not the update rate: an order that opens and ends between two snapshots never reaches SQL.
+   */
+  static final class ViewPartition {
+    final Map<String, Integer> dirtyOpen = new java.util.HashMap<>();   // open now, changed since the last snapshot
+    final java.util.Set<String> inSql = new java.util.HashSet<>();        // open in the last committed snapshot
+    final java.util.Set<String> gone = new java.util.HashSet<>();         // in SQL, no longer open
+    long streamSeq;
+    volatile long committed;
+    long nextAt;
+    ViewPartition(long cursor) { streamSeq = cursor; committed = cursor; }
+
+    void touched(String id, int account, OrderUpdate now) {
+      if (now != null && OrderView.OPEN.contains(now.getStatus())) { dirtyOpen.put(id, account); return; }
+      dirtyOpen.remove(id);
+      if (inSql.contains(id)) { gone.add(id); }
+    }
+  }
+  private final Map<Integer, ViewPartition> viewParts = new java.util.concurrent.ConcurrentHashMap<>();
+  private final AtomicLong viewSnapshots = new AtomicLong();
+  private final AtomicLong viewSnapshotFailures = new AtomicLong();
+  private volatile String viewScope;
 
   boolean jetstream() { return "jetstream".equalsIgnoreCase(feedMode); }
 
@@ -113,6 +146,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private void startJetStream() throws Exception {
     JetStreamFeed.ensureStream(connection(), stream, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
     if (persist && writeLock != null) { writeLock.ensurePartitions(partitionCount); }
+    if (viewSnapshots()) { startSnapshottedView(); return; }
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       String subject = JetStreamFeed.subject("/orders", p, partitionCount);
       // A persisted projection resumes at its durable cursor; a memory-only view has nothing to
@@ -125,6 +159,92 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     }
     log.info("order feed: jetstream mode, {} of {} partitions owned, persist={}", feedThreads.size(), partitionCount, persist);
   }
+
+  boolean viewSnapshots() { return !persist && snapshotMillis > 0 && snapshotStore != null; }
+
+  /**
+   * FR-DRS-30: per owned partition, load the committed open orders, refuse if the stream no longer holds the message
+   * after the cursor (or is a different stream), then replay from it. The consumer is ephemeral; the cursor is its ack.
+   */
+  private void startSnapshottedView() throws Exception {
+    viewScope = runRegistry == null ? finos.traderx.tradeprocessor.service.RunRegistry.UNKNOWN : runRegistry.activeScope();
+    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
+      final int partition = p;
+      long cursor = Math.max(0, snapshotStore.loadCursor(viewScope, p));
+      List<OrderUpdate> open = snapshotStore.load(viewScope, p);
+      ViewPartition vp = new ViewPartition(cursor);
+      for (OrderUpdate u : open) { view.apply(u); vp.inSql.add(u.getId()); }
+      JetStreamFeed.requireRetained(connection(), stream, "order view", p, cursor);
+      viewParts.put(p, vp);
+      String subject = JetStreamFeed.subject("/orders", p, partitionCount);
+      feedThreads.add(JetStreamFeed.startPipelined("order-feed-p" + p, connection(), stream, subject,
+          JetStreamFeed.fromSequence(subject, cursor + 1, BATCH_SIZE), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
+          msgs -> onViewBatch(partition, msgs), head -> onViewIdle(partition, head)));
+      log.info("order view: partition {} loaded {} open orders, cursor stream_seq={}", p, open.size(), cursor);
+    }
+  }
+
+  void onViewBatch(int partition, List<Message> msgs) {
+    ViewPartition part = viewParts.get(partition);
+    for (Message m : msgs) {
+      try {
+        OrderUpdate u = decode(m.getData());
+        if (u != null && u.getId() != null && u.getAccountId() != null) {
+          view.apply(u);
+          part.touched(u.getId(), u.getAccountId(), view.get(u.getAccountId(), u.getId()));
+        }
+      } catch (Exception x) {
+        log.error("undecodable /orders message skipped: {}", x.toString());
+      }
+      part.streamSeq = m.metaData().streamSequence();
+    }
+    snapshotIfDue(partition, part);
+  }
+
+  /** Caught up with nothing pending up to the stream head: the cursor may move there (TradeView.idle's rule). */
+  void onViewIdle(int partition, long head) {
+    ViewPartition part = viewParts.get(partition);
+    if (head > part.streamSeq) { part.streamSeq = head; }
+    snapshotIfDue(partition, part);
+  }
+
+  /**
+   * On the partition's own pull thread, so the copy is exact at {@code streamSeq}: no other thread applies this
+   * partition's orders. A failed write keeps the dirty set for the next one.
+   */
+  private void snapshotIfDue(int partition, ViewPartition part) {
+    long now = System.currentTimeMillis();
+    if (now < part.nextAt || (part.dirtyOpen.isEmpty() && part.gone.isEmpty() && part.streamSeq == part.committed)) { return; }
+    part.nextAt = now + snapshotMillis;
+    List<OrderUpdate> open = new ArrayList<>(part.dirtyOpen.size());
+    part.dirtyOpen.forEach((id, account) -> open.add(view.get(account, id)));
+    List<String> gone = new ArrayList<>(part.gone);
+    try {
+      snapshotStore.write(viewScope, partition, open, gone, part.streamSeq);
+      part.inSql.addAll(part.dirtyOpen.keySet());
+      part.inSql.removeAll(part.gone);
+      part.dirtyOpen.clear();
+      part.gone.clear();
+      part.committed = part.streamSeq;
+      viewSnapshots.incrementAndGet();
+    } catch (Exception x) {
+      viewSnapshotFailures.incrementAndGet();
+      log.error("order view: snapshot of partition {} failed ({} open, {} gone); kept for the next one",
+          partition, open.size(), gone.size(), x);
+    }
+  }
+
+  public String viewScope() { return viewScope; }
+  public long viewSnapshotCount() { return viewSnapshots.get(); }
+  public long viewSnapshotFailureCount() { return viewSnapshotFailures.get(); }
+  public Map<Integer, Long> viewCommitted() {
+    Map<Integer, Long> out = new java.util.TreeMap<>();
+    viewParts.forEach((p, v) -> out.put(p, v.committed));
+    return out;
+  }
+  public String streamName() { return stream; }
+  public int partitionCount() { return Math.max(1, partitionCount); }
+  public io.nats.client.Connection natsConnection() { return connection(); }
 
   void onJetStreamBatch(int partition, List<Message> msgs) {
     ProjectionWriteLock.partition(partition);

@@ -37,3 +37,15 @@ In row projection with one partition it also holds one row per cluster epoch, `p
 'trade-seq:<trade id prefix>'` (`e1-<epoch>-`, or empty for legacy ids), `partition_id = 0`, with the last
 `tradeSeq` committed to SQL in `stream_seq`. Each trade batch writes it in its own transaction. A restart
 counts the sides between it and the first `tradeSeq` it receives as missing (FR-DRS-02).
+With the order view snapshot (FR-DRS-30) it also holds one row per order partition, `projection_scope =
+'order-view:<scope>'`, with the stream sequence the partition's committed open orders are exact at.
+
+`projection_accounting(projection_scope VARCHAR(64), partition_id INTEGER, sides BIGINT, max_seq BIGINT, sum_seq
+BIGINT, sum_sq BIGINT, duplicates BIGINT, epoch VARCHAR(64))`, primary key `(projection_scope, partition_id)`, is the
+trade partition's exactly-once accounting (FR-DRS-29). It is written in the snapshot's transaction, with the cursor.
+The sums wrap at 2^64 (a signed BIGINT holding the low 64 bits).
+
+`order_view_snapshot(projection_scope VARCHAR(64), partition_id INTEGER, orderid VARCHAR(50), accountid INTEGER,
+status VARCHAR(32), payload TEXT)`, primary key `(projection_scope, partition_id, orderid)`, holds the memory-only
+order view's open orders, each as the JSON update the view holds (FR-DRS-30). Both tables come from `ri06.sql` and
+both init-configmap keys, like `projection_cursor`.

@@ -186,11 +186,12 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       for (Trade t : allTrades) { if (Math.floorMod(t.getAccountId(), partitionCount) == p) { myTrades.add(t); } }
       view.load(mine, myTrades, cursor == null ? 0 : cursor.streamSeq(), cursor == null ? 0 : cursor.consensusSeq());
       view.loadDays(snapshotStore.loadDays(scope, p));
+      view.loadAccounting(snapshotStore.loadAccounting(scope, p));
       requireRetained(p, view.streamSeq());
       views.put(p, view);
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
-      feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), stream, subject,
-          JetStreamFeed.fromSequence(subject, view.streamSeq() + 1), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
+      feedThreads.add(JetStreamFeed.startPipelined("trade-feed-p" + p, connection(), stream, subject,
+          JetStreamFeed.fromSequence(subject, view.streamSeq() + 1, BATCH_SIZE), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
           msgs -> onSnapshotBatch(partition, msgs), view::idle));
       Thread snap = new Thread(() -> snapshotLoop(partition), "trade-snapshot-p" + p);
       snap.setDaemon(true);
@@ -209,20 +210,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
    * stream head while idle ({@link TradeView#idle}).
    */
   private void requireRetained(int partition, long cursor) throws Exception {
-    var state = connection().jetStreamManagement().getStreamInfo(stream).getStreamState();
-    long first = state.getFirstSequence();
-    if (state.getLastSequence() < cursor) {
-      // Sequences never go backwards in one stream: this is a different (recreated) stream, e.g. NATS
-      // restarted on an emptyDir. Replaying it would ignore every seq <= cursor, i.e. drop it silently.
-      throw new IllegalStateException("STREAM_RESET trade store partition " + partition + ": the snapshot cursor is at"
-          + " stream sequence " + cursor + " but " + stream + " ends at " + state.getLastSequence()
-          + "; the stream was recreated, so it is not the ledger this snapshot was taken from");
-    }
-    if (first > cursor + 1) {
-      throw new IllegalStateException("RETENTION_GAP trade store partition " + partition + ": the snapshot cursor is at"
-          + " stream sequence " + cursor + " but the oldest message " + stream + " retains is " + first + "; sequences "
-          + (cursor + 1) + ".." + (first - 1) + " were discarded before this partition applied them");
-    }
+    JetStreamFeed.requireRetained(connection(), stream, "trade store", partition, cursor);
   }
 
   public String snapshotScope() { return snapshotScope; }
@@ -236,6 +224,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     TradeView view = views.get(partition);
     Map<String, Map<String, Object>> runs = new java.util.HashMap<>();
     Map<String, finos.traderx.tradeprocessor.model.InstrumentMetadata> bonds = new java.util.HashMap<>();
+    long duplicatesBefore = view.accounting().duplicates();
     for (Message m : msgs) {
       try {
         var envelope = envelope(m.getData());
@@ -247,6 +236,12 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       } catch (Exception x) {
         log.error("trade store: /trades message skipped: {}", x.toString());
       }
+    }
+    long duplicates = view.accounting().duplicates() - duplicatesBefore;
+    if (duplicates > 0) {
+      log.error("ALERT trade store partition {}: {} trade side(s) arrived again with a tradeSeq at or below the last one booked"
+          + " ({}); refused, not booked twice (total duplicates={})", partition, duplicates, view.accounting().maxSeq(),
+          view.accounting().duplicates());
     }
     if (partitionCount <= 1) { for (Message m : msgs) { try { TradeOrder t = decode(m.getData()); if (t != null) { gaps.observe(t.getId()); } } catch (Exception ignore) { } } }
   }
@@ -464,6 +459,9 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     }
 
     private static int start(String id) { return id.lastIndexOf('-', id.length() - 3) + 1; }
+
+    /** The id's epoch prefix ({@code e1-<epoch>-}, or "" for a legacy id); call only when {@link #seqOf} > 0. */
+    static String epochOf(String id) { return id.substring(0, start(id)); }
 
     public synchronized long missing() { return missing; }
     public synchronized long last() { return last; }

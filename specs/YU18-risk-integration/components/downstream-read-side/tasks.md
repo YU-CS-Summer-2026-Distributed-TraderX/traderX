@@ -20,6 +20,9 @@
       feed the recon waits for the replay to catch up (FR-DRS-22).
 - [x] The orderbook writer upserts each batch's final rows in multi-row statements, and reads the run row once
       per batch (FR-DRS-28): 929 to 58,315 updates/s across a 1 ms link.
+- [x] Exactly-once accounting committed with each trade partition's cursor, with duplicates refused, and
+      `/v2/projection-feed/accounting` (FR-DRS-29). The memory-only order view snapshots its open orders with
+      a cursor and resumes from them (FR-DRS-30). `SnapshotReadModelIT`, both A/Bs (SC-DRS-07).
 
 ## Still open
 

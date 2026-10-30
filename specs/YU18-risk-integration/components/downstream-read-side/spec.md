@@ -1,6 +1,6 @@
 # Downstream read side specification
 
-Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28; FR-DRS-28 2026-10-29). Dependencies: JetStream on the existing NATS server, the YU18 trade
+Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28; FR-DRS-28, FR-DRS-29..31 2026-10-29). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
 ## Requirements
@@ -164,6 +164,38 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     is read once per scope per batch, for managed and unattributed (`legacy-unknown`) runs alike.
   - No new configuration.
 
+### Exactly-once accounting and the order view snapshot (the production snapshot read model, ADR-097)
+
+- FR-DRS-29: In snapshot mode each trade partition SHALL keep, committed in the same transaction as its cursor
+  (`projection_accounting`), the count of sides it booked, the highest `tradeSeq`, and the sums of `tradeSeq` and
+  `tradeSeq²` modulo 2^64.
+  - Within a partition the bridge publishes in engine order (one receipt lane per partition), so a side whose
+    `tradeSeq` is not above the partition's last booked one (same epoch prefix) SHALL NOT be booked. It SHALL move
+    the cursor, be counted as a duplicate, and be logged as an ALERT.
+  - `GET /v2/projection-feed/accounting` SHALL return, per partition, the committed cursor and accounting, and the
+    stream's last sequence on that partition's subject, with the sums as unsigned decimal strings. It reads committed
+    state only, so every replica gives the same answer.
+  - With duplicates refused, the booked sides are distinct. Count, highest and the two sums equal to the closed form
+    over an expected range then establish the booked set as that range in O(P), at any volume (FR-PRG-19).
+- FR-DRS-30: With `traderx.order-feed.persist=false` and `traderx.order-view.snapshot-ms` above 0, each order
+  partition SHALL write, every `snapshot-ms`, its open orders that changed since the last snapshot (upsert, the update
+  as JSON in `order_view_snapshot`), delete those that are no longer open, and move its cursor
+  (`projection_cursor` scope `order-view:<scope>`), all in one transaction, on the partition's own pull thread.
+  - A restart SHALL load the partition's committed open orders, refuse (`RETENTION_GAP`, `STREAM_RESET`) when the
+    stream no longer holds the message after the cursor or is a different stream, and replay from `cursor + 1`.
+  - An order that opens and ends between two snapshots SHALL never be written, so the work is bounded by open orders
+    and not by the update rate.
+  - With `snapshot-ms` 0 (the default) the view SHALL rebuild from the last `replay-seconds`, as before. An order
+    that rested longer than that is then absent after a restart, which is why the production profile sets it
+    (FR-PRG-18).
+  - Terminal orders are not kept. After a restart the view holds the terminal ones the replay brings back.
+- FR-DRS-31: The consumers whose committed cursor is their acknowledgement (the trade store, the order view
+  snapshot) SHALL pull pipelined. A fetch thread keeps the next pull in flight while an apply thread applies the
+  previous batch, through a hand-off of two batches. The consumer SHALL allow 4 batches unacknowledged so the pulls can
+  overlap. Batches and idle notices SHALL reach the apply thread in fetch order. A stopped fetch thread SHALL stop
+  its apply thread. Ack-driven consumers (row projection, durable) SHALL keep the serial fetch-apply-ack loop: there a
+  batch acknowledged ahead of an earlier failed one would be lost.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
 - NFR-DRS-02: No engine, ack, snapshot or wire format changes.
@@ -185,6 +217,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   legacy run, and SIGKILL inside a batch that has written uncommitted rows. Opt-in
   `OrderBatchThroughputIT`, 1000-update batches, 1 ms added between the JVM and MariaDB: an unattributed
   stream (the CompSci render today) goes from 929 to 58,315 updates/s, a managed one from 3,017 to 38,949.
+- SC-DRS-07: `SnapshotReadModelIT` passes in an empty-root render, on the shipped schema with a real JetStream, P = 2.
+  A first lifetime books sides 1..1000 and opens 300 orders, then 100 of them fill. While it is down, for longer than
+  the 1 s replay window, sides 1001..1500 arrive, plus a second copy of side 1200 and 50 cancels. The second lifetime
+  then holds:
+  - 150 open orders, in both the view and the committed snapshot;
+  - accounting equal to the closed form over 1..1500, with the copy refused and counted as 1 duplicate;
+  - every position equal to the net of the sides.
+  Negative controls: with the view snapshot off (`-Dsrm.viewSnapshotMs=0`) the view holds 0 of 150, and with the
+  duplicate refusal removed 1,501 sides are booked. `TradeViewTest` covers the refusal and epoch handling directly.
 - SC-DRS-05: Live, `yu18-projection-effect-end.sh NEGATIVE=1` books a cross while trade-processor is scaled
   to 0. On the core feed, after it returns, SQL holds 4 of 6 sides and `missingTradeSides` is 2. On the
   production render (FR-DRS-25), SQL holds 6 of 6 sides, positions are +15/-15 and equal the rows, and

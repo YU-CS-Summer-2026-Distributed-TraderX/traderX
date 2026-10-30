@@ -103,7 +103,7 @@ class TradeSnapshotStoreConcurrencyIT {
       }
       blotters.put(a, window);
     }
-    return new TradeView.Cut(positions, blotters, Map.of(), round + 1L, round + 1L, 0);
+    return new TradeView.Cut(positions, blotters, Map.of(), round + 1L, round + 1L, 0, TradeView.Accounting.EMPTY);
   }
 
   private static void execute(String sql) throws Exception {
