@@ -186,11 +186,14 @@ gateway-2 accepted it at +12.1 s, once the lease lapsed and a retry came.
    renews, and a draining one releases within 1 s, so the Logon waits for that (up to TTL + 1 s) and takes the
    lease the moment it is free: the client gets in on its first attempt, about one TTL after the last renewal.
 3. **A stalled owner nobody replaced keeps its sessions.** A renewal that fails because the lease lapsed
-   re-creates it if it is still free. The cost of a short TTL is therefore paid only when a client has actually
+   re-creates it if it is still free, and keeps it only if `K.seq` is still at the revision this gateway last saw
+   (ADR-099 decision 3). The cost of a short TTL is therefore paid only when a client has actually
    moved: a live gateway stalled past 3 s loses a session only to a Logon made elsewhere meanwhile.
 4. **Never two answering.** Unchanged: every `K.seq` write is a compare-and-set on the revision this gateway
-   last saw. A retake after someone else served the session fails on that write and drops the session; a stale
-   owner never stores or sends. The TTL bounds how fast a dead gateway's sessions move, not safety.
+   last saw. A retake after someone else served the session fails its own write of `K.seq` and is refused before
+   the gateway acts on anything. The first retake had no write of its own and relied on the next one, which comes
+   after `fromApp()` has submitted the request (codeX review 2026-10-30 §10). A stale owner never stores or
+   sends. The TTL bounds how fast a dead gateway's sessions move, not safety.
 5. **The bound.** Gen-ZGC pauses are sub-millisecond, so what stalls a gateway past 3 s is CPU starvation or a
    NATS round trip that slow, and then only a session whose client has reconnected elsewhere moves. Measured
    locally (`FixSessionPersistenceIT`): first Logon after the owner died accepted at 3,147 ms; a Logon against a

@@ -13,6 +13,8 @@ import quickfix.SessionID;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -90,7 +92,10 @@ class FixStoreGroupCommitIT {
 
                 final AtomicInteger lost = new AtomicInteger();
                 a.onLost = s -> lost.incrementAndGet();
-                send(ma, 6, "a-late");                                               // A still thinks it is the owner
+                // A still thinks it is the owner: its last renewal is fresh. (Older than FRESH_MILLIS, as on a slow
+                // box, A rechecks, finds B's lease and writes nothing at all: safe, but not the case under test.)
+                field(ma, "renewedAt", System.nanoTime());
+                send(ma, 6, "a-late");
                 assertThrows(IOException.class, () -> ma.get(6, 6, new ArrayList<>()), "A's late commit is refused");
                 assertTrue(stored(nc, mb, 6).contains("58=b\u0001"), "B's message 6 is what is stored");
                 for (int i = 0; i < 50 && lost.get() == 0; i++) {
@@ -102,6 +107,171 @@ class FixStoreGroupCommitIT {
                 b.close();
             }
         }
+    }
+
+    /**
+     * codeX review 2026-10-30 §10: A stalled past the TTL; B took the session, moved its numbers and left. A's renewal
+     * fails and the lease is free again, but that does not mean nobody served the session meanwhile: retake fences
+     * K.seq from the revision A last saw, which B moved, so A is refused rather than confirmed with stale numbers. In
+     * both modes: retake predates group commit. The control (nobody in between) is FixSessionPersistenceIT's
+     * aStalledOwnerThatNobodyReplacedKeepsItsSession.
+     */
+    @Test
+    void aStalledOwnerIsNotConfirmedAfterAnotherServedTheSessionAndLeft() throws Exception {
+        retakeAfterAnotherOwner(true);
+    }
+
+    @Test
+    void aStalledOwnerIsNotConfirmedAfterAnotherServedTheSessionAndLeftSynchronously() throws Exception {
+        retakeAfterAnotherOwner(false);
+    }
+
+    private static void retakeAfterAnotherOwner(final boolean group) throws Exception {
+        final SessionID sid = new SessionID("FIX.4.4", "TRADERX", group ? "RETAKE-G" : "RETAKE-S");
+        try (Connection nc = Nats.connect(url(NATS))) {
+            final FixSessionStore a = start(NATS, "gw-a");
+            final FixSessionStore b = start(NATS, "gw-b");
+            try {
+                field(a, "groupCommit", group);
+                field(b, "groupCommit", group);
+                a.renewalsStalled = true;
+                b.renewalsStalled = true;
+                final MessageStore ma = a.create(sid);
+                final MessageStore mb = b.create(sid);
+                assertTrue(a.acquire(sid));
+                assertTrue(a.confirm(sid), "control: A holds it");
+                nc.keyValue(FixSessionStore.LEASE_BUCKET).delete(FixSessionStore.keyOf(sid));   // A's lease lapses
+                assertTrue(b.acquire(sid));
+                mb.setNextTargetMsgSeqNum(9);
+                mb.setNextSenderMsgSeqNum(7);
+                b.close();                                                                      // B leaves
+                field(ma, "renewedAt", 0L);                                                     // A resumes
+                assertFalse(a.confirm(sid), "A's numbers (1/1) are stale: the session was served at 7/9 since");
+                assertEquals(null, nc.keyValue(FixSessionStore.LEASE_BUCKET).get(FixSessionStore.keyOf(sid)),
+                    "the refused retake leaves the lease free for the client's next Logon");
+                assertTrue(nc.keyValue(FixSessionStore.BUCKET).get(FixSessionStore.keyOf(sid) + ".seq")
+                    .getValueAsString().startsWith("7 9 "), "B's numbers stand");
+            } finally {
+                a.close();
+                b.close();
+            }
+        }
+    }
+
+    /**
+     * codeX review 2026-10-30 §11: a commit whose body the server refuses must not leave K.seq (with the inbound
+     * number it carries) durable past the request that body answers. Batch 1 is held in flight so that request 2 and
+     * its answer form batch 2; the stream refuses answer 2 (too large), as it would any body for its own reason.
+     */
+    @Test
+    void aRefusedBodyNeverCommitsTheInboundNumberPastItsRequest() throws Exception {
+        batchWithBody(true);
+    }
+
+    /** Control: the same two batches with a body the stream accepts commit both requests and keep both answers. */
+    @Test
+    void aBatchWhoseBodiesAreStoredCommitsItsInboundNumber() throws Exception {
+        batchWithBody(false);
+    }
+
+    private static void batchWithBody(final boolean refused) throws Exception {
+        try (GenericContainer<?> nats = nats("nats:2.14-alpine")) {
+            nats.start();
+            final SessionID sid = new SessionID("FIX.4.4", "TRADERX", "BATCH");
+            final FixSessionStore a = start(nats, "gw-a");
+            final FixSessionStore b = start(nats, "gw-b");
+            final CountDownLatch held = new CountDownLatch(1);
+            try (Connection nc = Nats.connect(url(nats))) {
+                final MessageStore ma = a.create(sid);
+                final MessageStore mb = b.create(sid);
+                assertTrue(a.acquire(sid));
+                if (refused) {
+                    final var jsm = nc.jetStreamManagement();
+                    jsm.updateStream(io.nats.client.api.StreamConfiguration.builder(
+                        jsm.getStreamInfo("KV_" + FixSessionStore.BUCKET).getConfiguration()).maxMsgSize(1024).build());
+                }
+                ((ExecutorService) field(a, "commits")).submit(() -> {   // batch 1's acknowledgement waits
+                    held.await();
+                    return null;
+                });
+                answer(ma, 1, "x");                                       // batch 1: answer 1, sent at once
+                ma.incrNextTargetMsgSeqNum();                             // batch 2: request 1's and 2's numbers,
+                answer(ma, 2, "x".repeat(refused ? 2000 : 20));           // and answer 2
+                ma.incrNextTargetMsgSeqNum();
+                held.countDown();
+                for (int i = 0; i < 250 && field(ma, "failed") == null && (int) field(ma, "persistedTarget") != 3; i++) {
+                    Thread.sleep(20);
+                }
+                assertEquals(refused, field(ma, "failed") != null);
+                a.close();
+                assertTrue(b.acquire(sid));
+                final ArrayList<String> got = new ArrayList<>();
+                mb.get(2, 2, got);
+                if (refused) {   // none of batch 2 is durable: the client resends requests 1 and 2 (ADR-099 §4)
+                    assertEquals(1, mb.getNextTargetMsgSeqNum(), "request 2 is not retired: its answer was not stored");
+                    assertEquals(2, mb.getNextSenderMsgSeqNum(), "answer 2's number is not claimed");
+                } else {
+                    assertEquals(3, mb.getNextTargetMsgSeqNum());
+                    assertEquals(3, mb.getNextSenderMsgSeqNum());
+                    assertEquals(1, got.size(), "answer 2 is stored");
+                }
+            } finally {
+                held.countDown();
+                a.close();
+                b.close();
+            }
+        }
+    }
+
+    private static void answer(final MessageStore ms, final int n, final String text) throws Exception {
+        ms.set(n, "8=FIX.4.4\u00019=60\u000135=8\u000134=" + n + "\u000149=TRADERX\u000156=BATCH\u000158=" + text
+            + "\u000110=000\u0001");
+        ms.incrNextSenderMsgSeqNum();
+    }
+
+    /**
+     * codeX review 2026-10-30 §12: FIX_STORE_MAX_UNCOMMITTED bounds every body taken and not yet committed, the batch
+     * in flight included. With the server paused nothing commits, so the message past the bound waits, and times out.
+     */
+    @Test
+    void theUncommittedBoundCountsTheBatchInFlight() throws Exception {
+        try (GenericContainer<?> nats = nats("nats:2.14-alpine")) {
+            nats.start();
+            final SessionID sid = new SessionID("FIX.4.4", "TRADERX", "BOUND");
+            final FixSessionStore a = start(nats, "gw-a");
+            try {
+                final MessageStore ma = a.create(sid);
+                assertTrue(a.acquire(sid));
+                a.renewalsStalled = true;   // the pause is not a lease loss: only the bound is under test
+                nats.getDockerClient().pauseContainerCmd(nats.getContainerId()).exec();
+                int taken = 0;
+                try {
+                    for (int n = 1; n <= FixSessionStore.MAX_UNCOMMITTED + 1; n++) {
+                        ma.set(n, "8=FIX.4.4\u000134=" + n + "\u0001");
+                        ma.incrNextSenderMsgSeqNum();
+                        taken++;
+                    }
+                } catch (final IOException waitedOutTheBound) {
+                    // the sender waited for room that never came
+                }
+                assertEquals(FixSessionStore.MAX_UNCOMMITTED, taken, "the in-flight batch counts against the bound");
+            } finally {
+                nats.getDockerClient().unpauseContainerCmd(nats.getContainerId()).exec();
+                a.close();
+            }
+        }
+    }
+
+    private static Object field(final Object o, final String name) throws Exception {
+        final java.lang.reflect.Field f = o.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(o);
+    }
+
+    private static void field(final Object o, final String name, final Object value) throws Exception {
+        final java.lang.reflect.Field f = o.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(o, value);
     }
 
     /**

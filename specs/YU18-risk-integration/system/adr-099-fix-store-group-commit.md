@@ -29,8 +29,12 @@ connection completes.
    - `set()` publishes the body asynchronously and returns.
    - The inbound number moves in memory.
    - While no commit is in flight, everything pending goes out as one batch: the bodies, then one compare-and-set
-     on `K.seq` that claims the batch's highest number and carries the inbound number. One acknowledgement
-     completes it.
+     on `K.seq` that claims the batch's highest number and carries the inbound number.
+   - The compare-and-set is sent only once every body of the batch is stored. A refused body leaves nothing of its
+     batch durable: neither its sender numbers nor its inbound numbers. The session recovers as if the gateway had
+     died before the batch: the client resends those requests and the engine answers duplicates (ADR-086 §4).
+     The first build sent the compare-and-set with the bodies. A refused body then left `K.seq` durable past a
+     request whose answer was never stored (codeX review 2026-10-30 §11).
    - Messages that arrive meanwhile wait for that acknowledgement and form the next batch, so the batch grows with
      the load and a session is no longer bound by the round trip.
 2. **The fence is unchanged in kind.**
@@ -43,6 +47,15 @@ connection completes.
    stored. A previous owner's bodies still in flight are then refused. If one of its commits lands first, the new
    owner rereads and fences again. A previous owner's unclaimed body that landed before the fence is for a number
    the new owner will store again before it can be sent or resent.
+   - **A retake is the continuity check.** A gateway stalled past the TTL that finds its lease free again rewrites
+     `K.seq` from the revision it last saw, unchanged. That write succeeds only if nobody served the session
+     meanwhile: every owner moves `K.seq`.
+   - If the write is refused, the session is not resumed: `confirm()` fails, the connection closes before the
+     message reaches the cluster, and the lease is freed for the client's next Logon, which rereads the session.
+   - The first retake only checked that the lease was free now. A gateway that took the session, moved its
+     numbers and left was invisible to it, so the stalled owner was confirmed with stale numbers. Its next write
+     was refused, but only after `fromApp()` had submitted the request to the engine (codeX review 2026-10-30
+     §10). That retake predates group commit (ADR-086 §6b) and the synchronous store had the same gap.
 4. **Store-before-send, by a write barrier.**
    - `FixWriteBarrier` sits at the tail of each connection's MINA chain, ahead of the FIX codec and TLS. It holds
      QuickFIX/J's write of message n until the store's committed number passes n, then releases writes in order.
@@ -76,8 +89,10 @@ connection completes.
      subject), so it falls back. NATS 2.14 accepts the first and refuses the second with 10071. Production runs
      `nats:2.14-alpine`.
 7. **Bounds.**
-   - A session holds at most `FIX_STORE_MAX_UNCOMMITTED` (1,024) uncommitted bodies. The next `set()` waits for
-     room, so a slow store slows the sender as it did before.
+   - A session holds at most `FIX_STORE_MAX_UNCOMMITTED` (1,024) uncommitted bodies, counting the batch in flight
+     until its commit completes or fails. The next `set()` waits for room, so a slow store slows the sender as it
+     did before. The first build stopped counting a batch once it was sent, so 1,025 could be pending (codeX review
+     2026-10-30 §12).
    - A commit not acknowledged in 5 s drops the session, as a failed synchronous write did.
    - Resets, sequence resets and resend reads first wait for every pending commit, then write synchronously as
      before.
@@ -118,6 +133,12 @@ Tests:
     does.
   - A server that does not enforce the fence keeps the synchronous store (NATS 2.10, bucket already holding
     messages).
+  - A stalled owner whose session another gateway served and left is not confirmed, in both modes (§10; the first
+    retake confirmed it at its stale numbers).
+  - A refused body leaves none of its batch durable (§11; the first build resumed past the request). The control
+    with a body the stream accepts commits the batch.
+  - With NATS paused, the 1,025th message waits: the batch in flight counts (§12; the first build took 1,025).
+  - All four fail on the first build. codeX's own `ReviewRetakeIT` and its body-refusal case pass now.
 - **`FixBarrierLossTest`:** a taken, uncommitted message is never sent once the lease is gone (fails on the first
   build), nor once its commit failed. Controls: with the lease held it waits and then goes; untaken and committed
   messages pass.
@@ -128,3 +149,13 @@ Tests:
   probe. A stale write refused with another error (10077) proves nothing.
 - **`FixSessionPersistenceIT.anAnswerReaches…`:** without the barrier, the answer arrives while NATS is paused.
 - **`FixSessionStoreBoundIT`:** passes. Its full-bucket case now uses a 512 KiB bucket, larger than one batch.
+
+Waiting for the bodies before the compare-and-set (§11) adds a round trip per batch, not per message. Measured with
+the same harness and the same box, alternating builds:
+
+| | sends the compare-and-set with the bodies | waits for the bodies |
+| --- | --- | --- |
+| gateway end to end, execution reports/s | 99,549 / 96,863 | 97,903 / 108,090 |
+| store alone, orders/s | 126,040 / 91,524 | 174,473 / 155,373 |
+
+Batches grow by the extra round trip, so the store alone gains.

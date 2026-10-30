@@ -729,6 +729,7 @@ final class FixSessionStore implements MessageStoreFactory {
         final List<Object[]> uncommitted = new ArrayList<>();
         int claim = 1;
         boolean committing;
+        int inFlightBodies;      // the committing batch's bodies: they count against MAX_UNCOMMITTED until it completes
         long epoch;
         IOException failed;
         long leaseRevision;      // 0 = not held here
@@ -830,10 +831,12 @@ final class FixSessionStore implements MessageStoreFactory {
         }
 
         /**
-         * FR-GFS-16: this gateway was stalled past the TTL and its lease lapsed. If nobody has taken it since, take it
-         * again and keep serving: a short TTL must not cost a live session its gateway for a pause nobody acted on.
-         * Safe because writes are fenced by the K.seq revision: had another gateway served the session meanwhile,
-         * this one's next write fails and drops it.
+         * FR-GFS-16: this gateway was stalled past the TTL and its lease lapsed. If nobody has served the session
+         * since, take it again and keep serving: a short TTL must not cost a live session its gateway for a pause
+         * nobody acted on. A free lease does not show that (codeX review 2026-10-30 §10: another gateway may have
+         * taken it, moved the numbers and left), K.seq does: every owner moves it (an acquisition fences it under
+         * group commit; every number taken or stored writes it). So retaking fences K.seq from the revision this
+         * gateway last saw, as any acquisition does (ADR-099 decision 3); if it moved, the session is not resumed.
          */
         private boolean retake() {
             try {
@@ -842,11 +845,22 @@ final class FixSessionStore implements MessageStoreFactory {
                 }
                 leaseRevision = leases.create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
                 renewedAt = System.nanoTime();
-                log.warn("FIX session {}: lease lapsed while {} was stalled and nobody took it; retaken", sid, owner);
-                return true;
             } catch (final Exception e) {
                 return false;
             }
+            try {
+                final byte[] same = (persistedSender + " " + persistedTarget + " " + created)
+                    .getBytes(StandardCharsets.UTF_8);
+                seqRevision = seqRevision == 0 ? kv.create(key + ".seq", same)
+                    : kv.update(key + ".seq", same, seqRevision);
+            } catch (final Exception e) {
+                log.warn("FIX session {}: lease lapsed while {} was stalled and the session was served elsewhere"
+                    + " meanwhile ({}); not resumed", sid, owner, e.toString());
+                release();   // free again for the client's next Logon, which rereads the session
+                return false;
+            }
+            log.warn("FIX session {}: lease lapsed while {} was stalled and nobody served it; retaken", sid, owner);
+            return true;
         }
 
         /** The lease's current holder, or null when it is free (lapsed or released). */
@@ -1047,6 +1061,7 @@ final class FixSessionStore implements MessageStoreFactory {
             epoch++;
             uncommitted.clear();
             committing = false;
+            inFlightBodies = 0;
             failed = null;
             for (int attempt = 0; groupCommit; attempt++) {
                 try {
@@ -1063,7 +1078,12 @@ final class FixSessionStore implements MessageStoreFactory {
             }
         }
 
-        /** ADR-099: commit what is uncommitted, unless a commit is in flight (its acknowledgement starts the next). */
+        /**
+         * ADR-099: commit what is uncommitted, unless a commit is in flight (its acknowledgement starts the next). The
+         * K.seq compare-and-set is sent only once every body it claims is stored (codeX review 2026-10-30 §11): a
+         * refused body then leaves nothing of its batch durable, neither its sender numbers nor the inbound ones, as
+         * if the gateway had died before the batch. One round trip more per batch, not per message.
+         */
         private void commit() {
             if (committing || failed != null || leaseRevision == 0
                 || uncommitted.isEmpty() && claim == persistedSender && target == persistedTarget) {
@@ -1077,21 +1097,23 @@ final class FixSessionStore implements MessageStoreFactory {
             try {
                 final Headers fenced = new Headers().put(EXPECTED_SEQ, Long.toString(seqRevision))
                     .put(EXPECTED_SUBJECT, seqSubject);
-                final CompletableFuture<?>[] acks = new CompletableFuture<?>[uncommitted.size() + 1];
+                final CompletableFuture<?>[] bodies = new CompletableFuture<?>[uncommitted.size()];
                 int i = 0;
                 for (final Object[] b : uncommitted) {
-                    acks[i++] = js.publishAsync(NatsMessage.builder().subject(PREFIX + messageKey(key, (int) b[0]))
+                    bodies[i++] = js.publishAsync(NatsMessage.builder().subject(PREFIX + messageKey(key, (int) b[0]))
                         .headers(fenced).data((byte[]) b[1]).build());
                 }
-                final CompletableFuture<PublishAck> cas = js.publishAsync(NatsMessage.builder().subject(seqSubject)
+                final NatsMessage seq = NatsMessage.builder().subject(seqSubject)
                     .headers(new Headers().put(EXPECTED_SEQ, Long.toString(seqRevision)))
-                    .data((claimed + " " + tgt + " " + created).getBytes(StandardCharsets.UTF_8)).build());
-                acks[i] = cas;
+                    .data((claimed + " " + tgt + " " + created).getBytes(StandardCharsets.UTF_8)).build();
+                inFlightBodies = bodies.length;
                 uncommitted.clear();
-                CompletableFuture.allOf(acks).orTimeout(COMMIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
-                    .whenCompleteAsync((v, e) -> committed(myEpoch, cas, claimed, tgt, e), commits);
+                CompletableFuture.allOf(bodies).thenComposeAsync(v -> js.publishAsync(seq), commits)
+                    .orTimeout(COMMIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                    .whenCompleteAsync((ack, e) -> committed(myEpoch, ack, claimed, tgt, e), commits);
             } catch (final RuntimeException e) {
                 committing = false;
+                inFlightBodies = 0;
                 failed = new IOException("FIX session " + sid + ": commit not sent: " + e, e);
                 notifyAll();
                 if (live) {
@@ -1100,17 +1122,18 @@ final class FixSessionStore implements MessageStoreFactory {
             }
         }
 
-        /** A commit's acknowledgement (or its failure), on a NATS callback thread. */
-        private void committed(final long myEpoch, final CompletableFuture<PublishAck> cas, final int claimed,
-                               final int tgt, final Throwable error) {
+        /** A commit's acknowledgement (or its failure), on the commit executor. */
+        private void committed(final long myEpoch, final PublishAck ack, final int claimed, final int tgt,
+                               final Throwable error) {
             final boolean lost;
             synchronized (this) {
                 if (myEpoch != epoch) {
                     return;   // the lease changed hands meanwhile; the next owner fenced this commit out
                 }
                 committing = false;
+                inFlightBodies = 0;
                 if (error == null) {
-                    seqRevision = cas.join().getSeqno();
+                    seqRevision = ack.getSeqno();
                     persistedSender = claimed;
                     persistedTarget = tgt;
                     lastUse = System.currentTimeMillis();
@@ -1246,7 +1269,7 @@ final class FixSessionStore implements MessageStoreFactory {
             }
             if (groupCommit) {
                 final long deadline = System.currentTimeMillis() + COMMIT_TIMEOUT_MILLIS;
-                while (failed == null && uncommitted.size() >= MAX_UNCOMMITTED) {
+                while (failed == null && uncommitted.size() + inFlightBodies >= MAX_UNCOMMITTED) {
                     awaitCommit(deadline);   // ADR-099 bound: the sender waits, as it did for every write before
                 }
                 if (failed != null) {

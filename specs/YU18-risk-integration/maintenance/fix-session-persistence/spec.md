@@ -22,7 +22,8 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 - FR-GFS-04: A gateway whose lease was last renewed more than half the TTL ago SHALL re-confirm it with NATS before
   acting on any application message. If another gateway holds it, or NATS cannot answer, it SHALL close the
   connection without submitting the message to the cluster and without writing the session. A lease that only
-  lapsed (nobody took it) SHALL be taken again (FR-GFS-16). Every sequence-record write SHALL be a
+  lapsed (nobody served the session meanwhile, shown by its sequence record still at the revision this gateway
+  last saw) SHALL be taken again (FR-GFS-16). Every sequence-record write SHALL be a
   compare-and-set on the revision the writer last read, so a gateway that lost the lease cannot write.
 - FR-GFS-05: A report generated while the counterparty is disconnected SHALL be stored under the session's
   lease and delivered by `ResendRequest`: the answer to a request in flight at the disconnect, and an
@@ -70,7 +71,8 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 - FR-GFS-16: A dead gateway's sessions SHALL be resumable on another gateway about one lease TTL
   (`FIX_SESSION_LEASE_MS`, default 3,000) after its last renewal, on the client's first Logon. The Logon is held
   while the holder is not seen renewing as live, up to TTL + 1 s, and accepted as soon as the lease is free. A
-  live owner stalled past the TTL SHALL keep its sessions unless another gateway took one meanwhile. An existing
+  live owner stalled past the TTL SHALL keep its sessions unless another gateway took one meanwhile, whether or
+  not that gateway still holds it. An existing
   lease bucket SHALL be moved to the TTL when a gateway connects.
 - FR-GFS-17: A Logon with ResetSeqNumFlag=Y SHALL be answered at MsgSeqNum 1 and expect 2 next, whatever the
   stored day and whether the lease was held elsewhere, free, or released while it waited. The reset SHALL be stored
@@ -78,13 +80,14 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   the Logon is answered. A Logon without the flag SHALL resume the stored sequence as before (ADR-086 §6c).
 - FR-GFS-18: Where the server enforces a write fenced on another subject's sequence, outbound messages SHALL be
   stored by group commit (ADR-099). Bodies are published without waiting, each fenced on the session's `K.seq`
-  revision, and one compare-and-set on `K.seq` per batch claims them with the inbound number. A message SHALL NOT
+  revision, and one compare-and-set on `K.seq` per batch, sent once every body of the batch is stored, claims them
+  with the inbound number. A message SHALL NOT
   reach the client before its number is committed; once its commit can no longer happen (lease or store lost, commit
   failed) it SHALL NOT be sent at all, and the connection SHALL end. Taking a lease SHALL rewrite `K.seq` before
   storing anything.
   Group commit SHALL be on only if the server accepts a probe write fenced on another subject's current revision
   and refuses the same write at a stale revision with wrong-last-sequence (10071). Otherwise, or with
-  `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted.
+  `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted, the batch in flight included.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
@@ -122,5 +125,8 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | probe vs a simulated server: honours / checks the destination; r = 1 and 8; stale refused with 10077 | 18 | `FixFenceProbeTest` | on only for the server that checks the named subject (first probe: on for the destination checker at r = 8, and on any API error) |
 | one gateway, 33 sessions, window 64, venue answers at once | 18 | `FixGatewayThroughputIT` (FIX_GW_BENCH=1) | 101,479 / 114,608 / 81,543 execution reports/s; synchronous store 16,587 / 16,117 / 20,857 |
 | A stalls, B takes over, A resumes | 04 | `FixSessionPersistenceIT.anExpiredOwnerIsFenced…` | unchanged: A answers nothing, submits nothing |
+| A stalls; B takes over, moves the numbers to 7/9 and leaves; A resumes to a free lease (group commit and synchronous) | 04, 16 | `FixStoreGroupCommitIT.aStalledOwnerIsNotConfirmed…` | A not confirmed, lease left free, `K.seq` stays 7/9 (first retake: confirmed at 1/1) |
+| batch 2 (requests 1-2, answer 2) with answer 2 refused by the stream; control accepted | 18 | `FixStoreGroupCommitIT.aRefusedBody…`, `.aBatchWhoseBodies…` | B resumes at target 1, sender 2: none of batch 2 durable (first build: 3/3, answer 2 missing); control 3/3 with answer 2 |
+| NATS paused; 1,025 messages set | 18 | `FixStoreGroupCommitIT.theUncommittedBound…` | 1,024 taken, the next waits and times out (first build: 1,025 taken) |
 | bucket created discard-new at 64 KiB, 2,000 messages | 15 | `FixSessionStoreBoundIT.aFullBucket…` | moved to discard-old; no write fails, session not lost (before: `maximum bytes exceeded [10077]`, the f15s cliff) |
 | f15s, 864 sessions at 20K/s, store on | 14, 15 | GKE arm (FIX-tail lane) | before: bucket full at 12 min (3,999,940 keys), every gateway dropped every session |
