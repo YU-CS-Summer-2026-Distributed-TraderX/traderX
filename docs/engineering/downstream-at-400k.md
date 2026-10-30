@@ -579,6 +579,73 @@ covers:
 - a child JVM killed with SIGKILL after it has executed a batch's upsert but before commit. Nothing of that
   batch remains, and replay from the last committed batch reaches the reference.
 
+### 7.12 Persistence on at high rates: what limits the snapshot read model (ADR-097)
+
+Rig: four throwaway VMs, 2026-10-29 8:06–10:15 PM ET, project-compsci-484414 / us-east1-b. Each VM had netem
+0.5 ms on every egress queue, so +1 ms RTT between any two of them.
+- **NATS:** c3-standard-8, production's nats-pool shape. NATS 2.14 with production's config and the GKE ingest
+  queue, on 340 GB pd-balanced.
+- **Database:** c4d-standard-8 running the profile's MariaDB, on Hyperdisk Balanced (12K IOPS, 400 MiB/s).
+- **trade-processor:** c4d-standard-16, the profile's settings (12 CPU, gen-ZGC 16g), built from this branch.
+- **Load generator:** c4d-standard-16 running `SnapLoad`, which publishes as the members' receipt lanes do: one
+  connection and one ordered thread per partition, and a reply subject on every message. It uses the legacy wire
+  that production runs, 2 trade sides and 3 order updates per cross, with 1% of orders left resting, over 1,000
+  accounts.
+
+Every step is checked against the exactly-once closed form over every side published since the stream began
+(FR-DRS-29). "Committed drain" is the time from the end of the load until every partition's committed cursor
+reached its subject's last message; one snapshot interval (5 s) is the floor.
+
+| Layout | P | NATS VM | Offered orders/s | Achieved | Events/s projected during load | Committed drain | Exactly-once |
+|---|---|---|---|---|---|---|---|
+| one stream | 8 | c3-standard-8 | 50K | 49.8K | 108K of 124K | 8.5 s | EXACT |
+| one stream | 8 | c3-standard-8 | 60K | 59.5K | 92K of 148K: falls behind | 12.6 s | EXACT |
+| per partition | 8 | c3-standard-8 | 75K | 75.3K | 188K = offered | 5.5 s | EXACT |
+| per partition | 8 | c3-standard-8 | 100K | 100.4K | 250K = offered | 5.6 s | EXACT |
+| per partition | 8 | c3-standard-8 | **125K** | 125.2K | **311K = offered** | 5.6 s | EXACT |
+| per partition | 16 | c3-standard-8 | 100K | 100.4K | 250K = offered | 6.5 s | EXACT |
+| per partition | 16 | c3-standard-22, Hyperdisk | 125K | 125.4K | 313K = offered | 6.5 s | EXACT |
+| per partition | 8 | c3-standard-8 | 150K | 138K | 56K: consumers starve | 38 s | EXACT |
+| per partition | 16 | c3-standard-22, Hyperdisk | 150K | 137K | 52K: consumers starve | 37 s | EXACT |
+
+**SIGKILL at volume.** At P=8 on per-partition streams, 100K orders/s for 60 s, trade-processor was SIGKILLed 30 s
+in and restarted 10 s later while the load went on. Afterwards:
+- the accounting was EXACT over 6,000,000 sides;
+- committed open orders were 30,000, the number published as resting.
+
+**What limits it, step by step:**
+
+1. **The database is not the limit.** On the per-partition steps it ran at ~5% CPU with its disk idle. Snapshot writes
+   are bounded by dirty state, not by trades (§7.3).
+2. **trade-processor is not the limit.** It ran at ≤16% of 16 vCPUs. Thread dumps showed its pull threads parked,
+   waiting on deliveries.
+3. **One stream was the limit.** With one stream, ingest only, 405K msgs/s offered with receipts: ~95K msgs/s
+   stored, 15.4M of 20.0M refused with 429. Eight per-partition streams: 357K msgs/s stored, 0 dropped (the loader
+   was the limit). NATS stayed ~50% CPU idle with its disk ~25% busy. Under ingest a lagging consumer was served at
+   ~70 ms per 1,000-message pull, whatever the batch size (1,000 or 5,000). The fix is FR-DRS-32: one stream per
+   partition.
+4. **The serial fetch-apply-ack loop.** It added the apply time to every slow pull. With pipelining (FR-DRS-31)
+   the single-stream 50K step drained in 3.1 s instead of 5.6 s.
+5. **NATS memory.** At 2Gi NATS was OOM-killed (exit 137) during a 100K step. It holds a 1 GB ingest queue.
+   The profile gives it 12Gi with `GOMEMLIMIT=10GiB`.
+6. **Above ~135K orders/s, one NATS server stops serving reads during ingest.** This happens on a c3-standard-8
+   and on a c3-standard-22 with Hyperdisk alike. The larger VM sat ~45% CPU idle while reading ~500 MB/s from disk
+   for the consumers that had fallen out of cache.
+   - Independent consumers, one connection each and no trade-processor, starved the same way. So the limit is in
+     the server, not in trade-processor or its connection.
+   - Ingest itself kept up: 0 receipts refused, and the backlog drained once the load stopped.
+   - A bigger machine does not move this. The next lever is more NATS servers, with the partition streams'
+     leaders spread across them. It is not built.
+
+**Two defects these runs found, both fixed:**
+
+- **The trade store's idle advance (since `0e624848`).** It moved the cursor when nothing was pending. A message
+  delivered to the client but not yet applied is not pending, so it was skipped as a replay: 1,408 of 3,000,000
+  sides at P=16. The accounting named the deficit, and nothing else did. Caught up now also requires nothing ack
+  pending (FR-DRS-31).
+- **Duplicates in my own load generator.** Bash integer division made each step republish the previous step's
+  last crosses, 2,400 sides in all. Every one was refused (FR-DRS-29) and the booked set stayed exact.
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K

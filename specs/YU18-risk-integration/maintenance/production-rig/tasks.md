@@ -61,4 +61,9 @@
         (as the hxb purge arm, `88681eae`). G4 is unchanged.
       - Clear the test accounts' SQL rows only together with `rig.sh unprojected` (or a per-account G3 variant), or G3
         refuses.
+- [x] Snapshot read-model profile (`prepare.py --read-model snapshot`, FR-PRG-20) and its G3 (FR-PRG-21), offline
+      (`test_prepare.SnapshotReadModel`, `test_rig.Up.*snapshot*`); measured on throwaway VMs (ADR-097 Evidence).
+- [ ] Before the profile runs on production: create `readmodel-pool` and `db-pool` in `rig.sh pools` and size them
+      in `up`/`down`; record `rig-snapshot-base` (members' `trades` after a passing row G3) at the switch; take the
+      VolumeSnapshot of `eod-price-db-data` with the database at 0.
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

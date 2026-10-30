@@ -596,4 +596,66 @@ class Population(unittest.TestCase):
             module.validate(docs,self.declared)
 
 
+class SnapshotReadModel(unittest.TestCase):
+    """ADR-097 (FR-PRG-20): the production profile for the read model with persistence ON at high rates."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10',read_model='snapshot',partitions=6)
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def doc(self,docs,kind,name):
+        return next(d for d in docs if d['kind']==kind and d['metadata']['name']==name)
+
+    def env(self,docs,kind,name):
+        return {e['name']:e.get('value') for e in module.podspec(self.doc(docs,kind,name))['containers'][0]['env']}
+
+    def test_every_part_is_on(self):
+        tp=self.env(self.docs,'Deployment','trade-processor')
+        self.assertEqual(self.env(self.docs,'StatefulSet','order-matcher-cluster')['BRIDGE_PARTITIONS'],'6')
+        self.assertEqual({k:tp[k] for k in ('PROJECTION_FEED_MODE','PROJECTION_FEED_PARTITIONS','PROJECTION_FEED_STREAM_LAYOUT',
+                                            'TRADE_PROJECTION_MODE','ORDER_FEED_PERSIST','ORDER_VIEW_SNAPSHOT_MS')},
+                         {'PROJECTION_FEED_MODE':'jetstream','PROJECTION_FEED_PARTITIONS':'6','PROJECTION_FEED_STREAM_LAYOUT':'partition',
+                          'TRADE_PROJECTION_MODE':'snapshot','ORDER_FEED_PERSIST':'false','ORDER_VIEW_SNAPSHOT_MS':'5000'})
+        self.assertEqual(int(tp['PROJECTION_FEED_STREAM_MAX_BYTES']),module.stream_retention_bytes())
+        self.assertIn('-XX:+ZGenerational',tp['JAVA_TOOL_OPTIONS'].split())
+        nats=module.podspec(self.doc(self.docs,'Deployment','nats'))['containers'][0]
+        self.assertEqual(nats['resources']['limits']['memory'],'12Gi')   # 2Gi was OOM-killed on the bench (ADR-097)
+        self.assertIn({'name':'GOMEMLIMIT','value':'10GiB'},nats['env'])
+        for name,pool in (('trade-processor','readmodel-pool'),('eod-price-db','db-pool')):
+            self.assertEqual(module.podspec(self.doc(self.docs,'Deployment',name))['nodeSelector'],{'cloud.google.com/gke-nodepool':pool})
+
+    def test_the_database_moves_by_restoring_its_old_disk(self):
+        db=module.podspec(self.doc(self.docs,'Deployment','eod-price-db'))
+        claim=next(v['persistentVolumeClaim']['claimName'] for v in db['volumes'] if 'persistentVolumeClaim' in v)
+        pvc=self.doc(self.docs,'PersistentVolumeClaim',claim)
+        self.assertEqual(pvc['spec']['storageClassName'],'eod-price-db-fast')
+        snap=self.doc(self.docs,'VolumeSnapshot',pvc['spec']['dataSource']['name'])
+        self.assertEqual(snap['spec']['source'],{'persistentVolumeClaimName':'eod-price-db-data'})
+        self.assertEqual(self.doc(self.docs,'StorageClass','eod-price-db-fast')['parameters']['type'],'hyperdisk-balanced')
+        docs=copy.deepcopy(self.docs)
+        self.doc(docs,'PersistentVolumeClaim',claim)['spec'].pop('dataSource')
+        with self.assertRaisesRegex(AssertionError,'would start empty'): module.validate(docs)
+
+    def test_parts_that_do_not_fit_together_are_refused(self):
+        def broken(change):
+            docs=copy.deepcopy(self.docs); change(docs); return docs
+        def tp_env(name,value):
+            def change(docs):
+                c=module.podspec(self.doc(docs,'Deployment','trade-processor'))['containers'][0]
+                next(e for e in c['env'] if e['name']==name)['value']=value
+            return change
+        def nats_store(docs):
+            cm=self.doc(docs,'ConfigMap','nats-server-config')
+            cm['data']['nats.conf']=cm['data']['nats.conf'].replace('max_file_store:','max_file_store: 1G #')
+        for change,message in ((tp_env('PROJECTION_FEED_PARTITIONS','4'),'never be read'),
+                               (tp_env('ORDER_VIEW_SNAPSHOT_MS','0'),'replay window'),
+                               (tp_env('PROJECTION_FEED_MODE','core'),'FR-'),
+                               (tp_env('PROJECTION_FEED_STREAM_LAYOUT','one'),'one capture stream'),
+                               (nats_store,'max_file_store')):
+            with self.assertRaisesRegex(AssertionError,message): module.validate(broken(change))
+
 if __name__=='__main__': unittest.main()

@@ -216,8 +216,19 @@ read_model(){ local f q name; f=$(mktemp) || return 1
            "orderbook|select orderid,accountid,security,side,status,quantity,remainingquantity from orderbook order by 1"; do
     name=${q%%|*}; sql "${q#*|}" > "$f" || { rm -f "$f"; return 1; }
     echo "$name=$(md5of < "$f")"
-  done; rm -f "$f"; }
+  done; rm -f "$f"
+  # Snapshot read model (ADR-097): its committed accounting, without the cursors (an idle partition's follows the head).
+  if [ "$(tp_mode)" = snapshot ]; then local acct; acct=$(accounting) && [ -n "$acct" ] || return 1
+    echo "accounting=$(jq -cS '[(.trades // {} | to_entries[] | .value | del(.cursor, .streamLast)),
+      (.orders // {} | to_entries[] | .value | del(.cursor, .streamLast))]' <<<"$acct" | md5of)"; fi; }
 sql_ready(){ [ "$(sql 'select 1')" = 1 ]; }
+# The read model's mode: "snapshot" (ADR-097, FR-PRG-20) or "" (a SQL row per trade side).
+tp_mode(){ kc get deploy trade-processor -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TRADE_PROJECTION_MODE")].value}' 2>/dev/null || true; }
+accounting(){ kc exec deploy/trade-processor -- curl -s -m15 localhost:18091/v2/projection-feed/accounting; }
+# Every partition's committed trade and order cursor at its subject's last stream message.
+accounting_caught_up(){
+  accounting | jq -e '([.trades[]] + [(.orders // {})[]]) | length > 0 and all(.cursor >= .streamLast)' >/dev/null
+}
 member(){ # member <i>: applied engineApplied trades orderHash positionHash snapshots
   local h m
   h=$(kc exec "order-matcher-cluster-$1" -c cluster-node -- wget -qO- localhost:8080/health)
@@ -305,6 +316,45 @@ past_restore_errors(){
   note "G-pre ok: no refused snapshot record in any member's error log"
 }
 
+# ---- G3 for the snapshot read model (ADR-097, FR-PRG-20) ----------------------------------------------------------------
+# SQL holds snapshots, not a row per trade side, so check B reads the committed accounting (FR-DRS-29/30) instead. It is
+# exact in O(P): a partition refuses a side whose tradeSeq is not above its last (duplicates), so the booked sides are
+# distinct; then count, highest and the wrapped sums of seq and seq^2 must equal the closed form over the expected set,
+# (base, trades] minus the `rig.sh unprojected` ranges. base is the rows-era count recorded at the switch to snapshot
+# mode (ConfigMap rig-snapshot-base; 0 on a read model born in snapshot mode). The order view's committed open orders
+# must equal the members' restored openOrders. Every committed cursor must have reached its subject's last message.
+g3_snapshot(){
+  local t=$1 digest=$2 acct base ranges verdict
+  wait_for 600 "every read-model partition committed up to the stream's last message (G3)" accounting_caught_up
+  acct=$(accounting); echo "$acct" > "$EVIDENCE/gate-accounting.json"
+  base=$(kc get configmap rig-snapshot-base -o jsonpath='{.data.base}' 2>/dev/null || true)
+  ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
+  verdict=$(python3 -c '
+import json,sys
+acct,t,base,ranges,open_=json.loads(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3] or 0),sys.argv[4].split(),int(sys.argv[5])
+M=1<<64
+def S(k,n): return [n, n*(n+1)//2, n*(n+1)*(2*n+1)//6][k]       # sum of i^k, i=1..n
+def span(k,a,b): return S(k,b)-S(k,a-1)                          # sum of i^k, i=a..b
+want=[span(k,base+1,t) for k in range(3)]
+for r in ranges:
+    a,b=map(int,r.split("-")); a,b=max(a,base+1),min(b,t)
+    if a<=b: want=[w-span(k,a,b) for k,w in enumerate(want)]
+tr=list(acct["trades"].values())
+got=[sum(p["sides"] for p in tr), sum(int(p["sumSeq"]) for p in tr)%M, sum(int(p["sumSq"]) for p in tr)%M]
+dups=sum(p["duplicates"] for p in tr); top=max([p["maxSeq"] for p in tr] or [0])
+resting=sum(p.get("resting",0) for p in (acct.get("orders") or {}).values())
+bad=[]
+if dups: bad.append(f"{dups} duplicate side(s) refused")
+if top>t: bad.append(f"highest tradeSeq {top} above the members trades {t}")
+if got!=[want[0],want[1]%M,want[2]%M]: bad.append(f"booked {got[0]} sides (sums {got[1]},{got[2]}), want {want[0]} ({want[1]%M},{want[2]%M})")
+if "orders" not in acct: bad.append("no order view snapshot (ORDER_VIEW_SNAPSHOT_MS unset): open orders cannot be checked")
+elif resting!=open_: bad.append(f"order view holds {resting} open orders, the members restored {open_}")
+print("; ".join(bad) or f"OK {got[0]} sides")
+' "$acct" "$t" "$base" "$ranges" "$(jq -r .openOrders <<<"$digest")")
+  [ "${verdict%% *}" = OK ] || die "G3 (snapshot read model): $verdict (base ${base:-0}, unprojected ${ranges:-none}): $EVIDENCE/gate-accounting.json"
+  note "G3 ok: the read model booked sides $((${base:-0} + 1))..$t${ranges:+ except $ranges}, each once; $(jq -r .openOrders <<<"$digest") open orders"
+}
+
 # ---- the restore gate (FR-PRG-03) --------------------------------------------------------------------------------
 # Applied alone proves nothing: a snapshot load that skipped a record still ends at the full log's applied. The
 # reference never comes from a snapshot: (A) a replay from log position 0, (B) the read model, which the members do
@@ -353,7 +403,7 @@ restore_gate(){
   fi
   # G2, check A (FR-ERH-F13): a strict replay of the whole log into a fresh shadow must hold exactly the restored state,
   # in the terms of /health?digest=1. Hashes are decimal strings (a 64-bit hash read as a JSON number loses digits).
-  local digest open_rows
+  local digest='' open_rows
   for i in 0 1 2; do
     shadow=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c "read -r t; wget -qO- \
       --header=\"Authorization: Bearer \$t\" http://localhost:8080$GATE_SHADOW_PATH" <<<"$token" 2>/dev/null || true)
@@ -370,27 +420,35 @@ restore_gate(){
       = "$(jq -c '{bookHash,positionHash,openOrders,positions,digestTrades}' <<<"$digest")" ] \
       || die "G2: member $i's restored state differs from its replay from 0: $EVIDENCE/gate-shadow.txt"
   done
-  if [ -n "$shadow" ]; then
-    note "G2 ok: each member's replay from 0 holds its restored book, positions and trades"
-    # Check B's member side: the open orders the members restored are the open rows the read model holds.
-    open_rows=$(sql "select count(*) from orderbook where status in ('NEW','PARTIALLY_FILLED')")
-    [ "$(jq -r .openOrders <<<"$digest")" = "$open_rows" ] \
-      || die "G3: members restored $(jq -r .openOrders <<<"$digest") open orders, the read model holds $open_rows"
+  [ -z "$shadow" ] || note "G2 ok: each member's replay from 0 holds its restored book, positions and trades"
+  if [ "$(tp_mode)" = snapshot ]; then
+    [ -n "$digest" ] || digest=$(kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- 'localhost:8080/health?digest=1')
+    # The closed form counts one tradeSeq numbering from 1; a managed run restarts it per epoch, so it is refused.
+    [ "$(jq -r '.projectionScope // "null"' <<<"$digest")" = null ] \
+      || die "G3: the members run a managed projection scope; the accounting check reads one legacy tradeSeq numbering"
+    g3_snapshot "$t" "$digest"
+  else
+    if [ -n "$shadow" ]; then
+      # Check B's member side: the open orders the members restored are the open rows the read model holds.
+      open_rows=$(sql "select count(*) from orderbook where status in ('NEW','PARTIALLY_FILLED')")
+      [ "$(jq -r .openOrders <<<"$digest")" = "$open_rows" ] \
+        || die "G3: members restored $(jq -r .openOrders <<<"$digest") open orders, the read model holds $open_rows"
+    fi
+    # Check B, trades: the engine's trade sides in the read model are exactly 1..trades, each number once. Legacy ids are
+    # <n>-B / <n>-S (seed rows are named otherwise); a managed run's e1-<epoch>- ids are not read here, so it is refused.
+    [ "$(jq -r '.projectionScope // "null"' <<<"${digest:-null}")" = null ] \
+      || die "G3: the members run a managed projection scope; this trade-count check reads legacy trade ids only"
+    # Ranges recorded with `rig.sh unprojected A-B` (a run with the bridges off) are excluded: SQL holds exactly
+    # 1..trades minus those ranges, each number once, and nothing inside them.
+    local ranges removed=0 inr=0 r a b want
+    ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
+    for r in $ranges; do a=${r%-*}; b=${r#*-}; removed=$((removed + b - a + 1)); inr="$inr + (n between $a and $b)"; done
+    read -r n distinct top inside <<<"$(sql "select count(*), count(distinct n), coalesce(max(n),0), coalesce(sum($inr),0) from (select cast(substring_index(id,'-',1) as unsigned) n from trades where right(id,2) in ('-B','-S') and concat(cast(substring_index(id,'-',1) as unsigned),right(id,2))=id) x")"
+    want=$((t - removed))
+    [ "$n" = "$want" ] && [ "$distinct" = "$want" ] && [ "$top" -le "$t" ] && [ "$inside" = 0 ] \
+      || die "G3: the members booked $t trade sides (${removed} unprojected: ${ranges:-none}), the read model holds $n (distinct $distinct, highest $top, $inside inside an unprojected range)"
+    note "G3 ok: the read model holds trade sides 1..$t${ranges:+ except $ranges}, each once"
   fi
-  # Check B, trades: the engine's trade sides in the read model are exactly 1..trades, each number once. Legacy ids are
-  # <n>-B / <n>-S (seed rows are named otherwise); a managed run's e1-<epoch>- ids are not read here, so it is refused.
-  [ "$(jq -r '.projectionScope // "null"' <<<"${digest:-null}")" = null ] \
-    || die "G3: the members run a managed projection scope; this trade-count check reads legacy trade ids only"
-  # Ranges recorded with `rig.sh unprojected A-B` (a run with the bridges off) are excluded: SQL holds exactly
-  # 1..trades minus those ranges, each number once, and nothing inside them.
-  local ranges removed=0 inr=0 r a b want
-  ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
-  for r in $ranges; do a=${r%-*}; b=${r#*-}; removed=$((removed + b - a + 1)); inr="$inr + (n between $a and $b)"; done
-  read -r n distinct top inside <<<"$(sql "select count(*), count(distinct n), coalesce(max(n),0), coalesce(sum($inr),0) from (select cast(substring_index(id,'-',1) as unsigned) n from trades where right(id,2) in ('-B','-S') and concat(cast(substring_index(id,'-',1) as unsigned),right(id,2))=id) x")"
-  want=$((t - removed))
-  [ "$n" = "$want" ] && [ "$distinct" = "$want" ] && [ "$top" -le "$t" ] && [ "$inside" = 0 ] \
-    || die "G3: the members booked $t trade sides (${removed} unprojected: ${ranges:-none}), the read model holds $n (distinct $distinct, highest $top, $inside inside an unprojected range)"
-  note "G3 ok: the read model holds trade sides 1..$t${ranges:+ except $ranges}, each once"
   after=$(read_model) || die "G3: the read model could not be read after the members started"
   echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"

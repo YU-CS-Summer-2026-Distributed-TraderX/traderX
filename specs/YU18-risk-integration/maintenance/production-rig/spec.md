@@ -1,7 +1,8 @@
 # Production rig specification
 
 Status: new 2026-10-29. Scope: bringing production `traderx` up at bench parity and down to zero, its restore gate,
-and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-lifecycle.md).
+and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-lifecycle.md); the snapshot read-model profile
+and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-production-read-model-at-volume.md).
 
 ## Requirements
 
@@ -113,6 +114,40 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-21:** When trade-processor runs `TRADE_PROJECTION_MODE=snapshot`, G3 SHALL check the committed accounting
+  (`/v2/projection-feed/accounting`, FR-DRS-29/30). SQL then holds snapshots, not a row per trade side, so the row
+  checks do not apply. It SHALL:
+  - wait (at most 600 s) until every trade and order partition's committed cursor has reached its subject's last
+    stream message;
+  - refuse on any duplicate, on a highest `tradeSeq` above the members' `trades`, on a side count or wrapped sum of
+    seq or seq² different from the closed form over (base, trades] minus the `rig.sh unprojected` ranges, on a
+    missing order-view snapshot, and on committed open orders (NEW, PARTIALLY_FILLED) different from the members'
+    restored `openOrders`;
+  - take `base` from ConfigMap `rig-snapshot-base` (the members' `trades` when the read model switched from rows,
+    after a passing row G3). With none recorded, base is 0.
+  - refuse a managed projection scope, as the row G3 does.
+  The read-model fingerprint SHALL then add the accounting without its cursors, so it must not move while the members
+  start.
+- **FR-PRG-20:** `prepare.py --read-model snapshot [--partitions P]` SHALL render the production read model with
+  persistence on at high rates ([ADR-097](../../system/adr-097-production-read-model-at-volume.md)):
+  - the members' `BRIDGE_PARTITIONS=P`;
+  - trade-processor on `PROJECTION_FEED_MODE=jetstream` with P partitions (default 8), one stream per partition
+    (`PROJECTION_FEED_STREAM_LAYOUT=partition`, FR-DRS-32), `TRADE_PROJECTION_MODE=snapshot`,
+    `ORDER_FEED_PERSIST=false` and `ORDER_VIEW_SNAPSHOT_MS=5000`;
+  - NATS at 12Gi with `GOMEMLIMIT=10GiB` (2Gi was OOM-killed under load);
+  - the stream limit sized as rate (125K orders/s, the measured hold, ADR-097) x stored bytes per order x the outage
+    window, with NATS's `max_file_store` and its claim above it;
+  - trade-processor on `readmodel-pool` and the database on `db-pool`, each tainted and guaranteed;
+  - the database's claim moved to class `eod-price-db-fast` (Hyperdisk Balanced, provisioned IOPS and throughput),
+    restored from a VolumeSnapshot of the old claim, never created empty.
+  `validate()` SHALL refuse:
+  - trade-processor's partitions different from the members' (a partition nobody reads);
+  - the single-stream layout (it holds ~50K orders/s, not the profile's 125K);
+  - a memory-only view without its snapshot (FR-DRS-30);
+  - the snapshot projection off the stream;
+  - a stream limit not under `max_file_store`, or `max_file_store` not under the NATS claim;
+  - a moved database claim with no snapshot source.
+  The default render keeps the row read model.
 - **FR-PRG-19:** A read-model query that fails SHALL fail `read_model`, never be hashed as an empty table. `up` SHALL
   wait until the database answers before taking G3's before-reading, and refuse (G3) if either reading fails; the
   shutdown baseline SHALL refuse the same way. The hashes stay over the query's exact output, so earlier recordings
@@ -194,6 +229,11 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
 | read model trade sides missing, duplicated, gapped or extra | 03 | `test_rig.Up.test_the_read_model_must_hold_exactly_the_members_trade_sides` | REFUSED G3; on production the query reads 18/18/18 against trades 18 |
 | managed projection scope | 03 | `test_rig.Up.test_a_managed_projection_scope_is_refused_not_guessed` | REFUSED G3 |
 | an engine behind the log, or one member restored idle | 03 | `test_rig.Up.test_an_engine_behind_the_log_is_refused` | REFUSED G0 |
+| profile rendered | 18 | `test_prepare.SnapshotReadModel` | partitions on both sides, snapshot env, pools, retention = the sizing, the DB claim restored from a snapshot of the old one |
+| profile parts that do not fit | 18 | same | partitions 4 vs 6, view snapshot 0, core feed, a 1G store, a DB claim without its source: each refused |
+| snapshot read model at restore | 19 | `test_rig.Up.test_the_snapshot_read_model_is_checked_by_its_accounting` | G3 ok over 1..5, 2 open orders; the row check never runs |
+| a side lost, duplicated, doubled across partitions, beyond the members, or open orders that differ | 19 | `test_rig.Up.test_a_snapshot_read_model_that_lost_or_doubled_a_side_is_refused` | REFUSED G3 each; with the sums check removed (counts only) the cross-partition double passes and the test fails |
+| a rows-era base, an unprojected window | 19 | `test_rig.Up.test_the_snapshot_check_starts_at_the_recorded_rows_era_base` | 3..5 passes with base 2, is refused without it; 4-4 unprojected passes |
 | each gate check failing | 03 | `test_rig.Up.*refused*` | REFUSED Gn; no gateway scaled up; no `rig-gate` |
 | a past partial restore in a member's error log | 03 | `test_rig.Up.test_a_member_that_once_restored_partially…` | REFUSED G-pre for each of the three messages; no member started |
 | error log unreadable, or members running | 03 | `test_rig.Up.test_an_unreadable…`, `…not_read_while_members_run` | refused |

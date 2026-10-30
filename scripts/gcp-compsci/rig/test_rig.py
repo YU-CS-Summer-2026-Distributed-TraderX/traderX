@@ -27,6 +27,9 @@ kubectl(){
   case "$*" in
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; echo "$REINDEX";;
+    *TRADE_PROJECTION_MODE*) echo "${TP_MODE:-}";;
+    *projection-feed/accounting*) echo "$ACCT";;
+    *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
     *shadow-state*) echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
@@ -60,6 +63,15 @@ GOOD = {'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
         'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded', 'ERRLOG': 'No errors'}
+
+# The snapshot read model's committed accounting for trades = 5: sides 1,3,5 on partition 0 and 2,4 on partition 1 (sums of
+# seq and seq^2 as the trade store writes them), one open order on each, every cursor at its subject's last message.
+def acct(p0=(3, 5, 9, 35, 0), p1=(2, 4, 6, 20, 0), resting=(1, 1), orders=True):
+    import json
+    t = {str(i): {'cursor': 50, 'sides': s, 'maxSeq': m, 'sumSeq': str(a), 'sumSq': str(b), 'duplicates': d, 'epoch': '',
+                  'streamLast': 40} for i, (s, m, a, b, d) in enumerate((p0, p1))}
+    o = {str(i): {'cursor': 60, 'open': r, 'resting': r, 'streamLast': 55} for i, r in enumerate(resting)}
+    return json.dumps({'scope': 'legacy-unknown', 'partitions': 2, 'trades': t, **({'orders': o} if orders else {})})
 
 
 def run(body, **env):
@@ -240,6 +252,32 @@ class Up(unittest.TestCase):
 
     def test_an_unreadable_read_model_is_refused_not_hashed(self):
         self.refused('G3', RM_FAIL='1')
+
+    def test_the_snapshot_read_model_is_checked_by_its_accounting(self):
+        # ADR-097 (FR-PRG-20): no SQL row per side; the committed accounting must be the closed form over sides 1..5.
+        rc, out, calls = run('rig_up', TP_MODE='snapshot', ACCT=acct(), TRADE_ROWS='0\t0\t0\t0', OPEN_ROWS='0')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3 ok: the read model booked sides 1..5, each once; 2 open orders', out)
+        self.assertIsNone(first(calls, r'from trades where right'), 'the row check ran on the snapshot read model')
+
+    def test_a_snapshot_read_model_that_lost_or_doubled_a_side_is_refused(self):
+        for bad, why in ((acct(p1=(1, 2, 2, 4, 0)), 'booked 4 sides'),                 # side 4 lost
+                         (acct(p1=(2, 4, 6, 20, 1)), 'duplicate'),                     # a copy refused: the feed published twice
+                         (acct(p1=(2, 4, 5, 17, 0)), 'want 5'),                        # 1 twice instead of 2 (cross-partition)
+                         (acct(p0=(3, 6, 10, 46, 0)), 'above the members trades'),     # a side the members never booked
+                         (acct(resting=(1, 0)), 'order view holds 1 open orders, the members restored 2'),
+                         (acct(orders=False), 'no order view snapshot')):
+            self.assertIn(why, self.refused('G3', TP_MODE='snapshot', ACCT=bad))
+
+    def test_the_snapshot_check_starts_at_the_recorded_rows_era_base(self):
+        # Sides 1..2 were projected as rows before the switch (rig-snapshot-base 2); the accounting holds 3..5.
+        three_to_five = acct(p0=(2, 5, 8, 34, 0), p1=(1, 4, 4, 16, 0))
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', ACCT=three_to_five, SNAP_BASE='2')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('booked sides 3..5', out)
+        self.assertIn('booked 3 sides', self.refused('G3', TP_MODE='snapshot', ACCT=three_to_five))   # no base recorded
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)))  # 4 unprojected
+        self.assertEqual(rc, 0, out)
 
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')

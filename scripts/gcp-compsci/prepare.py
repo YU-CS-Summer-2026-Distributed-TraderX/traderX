@@ -204,6 +204,131 @@ def without_bridges(docs):
         c['env'] = [e for e in c.get('env', []) if e['name'] != 'TRADE_BRIDGE_NATS_URL']
 
 
+# ADR-097 (FR-PRG-20): production's read model with persistence ON at high rates. The capture stream TRADERX_FEED is the
+# system of record (every trade side and order update, durable on the NATS PVC); trades are booked in memory and SQL
+# takes a snapshot every 5 s (positions, settlement counts, each account's blotter window, the cursor and the exactly-
+# once accounting, FR-DRS-29); orders live in the memory-only view with its own SQL snapshot of open orders (FR-DRS-30).
+# P partitions spread both over P pull threads by account, each partition in its own stream (FR-DRS-32: one stream was
+# the ceiling). Measured (downstream-at-400k.md §7.12, +1 ms RTT): P=8 on production's nats-pool shape holds 125K
+# orders/s with every hop persisting and the exactly-once accounting exact; 150K does not, on c3-standard-8 or -22.
+READ_MODEL_PARTITIONS = 8
+READ_MODEL_RATE = 125_000            # orders/s the sizing below holds with every hop persisting
+READ_MODEL_OUTAGE_MINUTES = 30       # the longest outage the stream must replay (a node replacement + a DB restart)
+STREAM_BYTES_PER_ORDER = 462 + 588 * 3 // 2   # stored: one trade side + 1.5 order updates per order (§7.7)
+READ_MODEL_POOLS = {'trade-processor': ('readmodel-pool', 'traderx-readmodel'), 'eod-price-db': ('db-pool', 'traderx-db')}
+READ_MODEL_TP = {'cpu': '12', 'memory': '24Gi', 'jvm': '-XX:+UseZGC -XX:+ZGenerational -Xms16g -Xmx16g -XX:+ExitOnOutOfMemoryError'}
+READ_MODEL_DB = {'cpu': '6', 'memory': '24Gi', 'bufferPool': '16G', 'disk': '200Gi'}
+# NATS at 2Gi was OOM-killed under the bench's 100K orders/s step (its 1 GB ingest queue filled): 12Gi with the Go heap
+# held under it (GOMEMLIMIT), on nats-pool's c3-standard-8 (32 GB).
+READ_MODEL_NATS = {'cpu': '4', 'memory': '12Gi', 'gomemlimit': '10GiB'}
+READ_MODEL_DB_CLASS = 'eod-price-db-fast'
+READ_MODEL_DB_CLAIM = 'eod-price-db-fast'
+READ_MODEL_DB_SNAPSHOT = 'eod-price-db-pre-fast'   # taken of eod-price-db-data while the database is at 0
+
+
+def stream_retention_bytes(rate=READ_MODEL_RATE, minutes=READ_MODEL_OUTAGE_MINUTES):
+    return rate * STREAM_BYTES_PER_ORDER * minutes * 60
+
+
+def set_env(c, values):
+    c['env'] = [e for e in c.get('env', []) if e['name'] not in values] + [{'name': k, 'value': v} for k, v in values.items()]
+
+
+def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
+    """ADR-097 (FR-PRG-20): the members partition both bridges by account, trade-processor runs the snapshot read model
+    on its own pool, NATS keeps the outage window, and the database moves to its own pool on a faster disk. The move
+    is a copy, not a re-create: the new claim is restored from a VolumeSnapshot of the old one (taken at 0 replicas),
+    so the read model the restore gate fingerprints is the one the old disk held."""
+    retention = stream_retention_bytes()
+    store_gb = -(-retention * 5 // 4 // 10**9)                  # stream + 25% for the EOD streams and compaction
+    for doc in docs:
+        name, kind = doc['metadata']['name'], doc['kind']
+        pod = podspec(doc)
+        if kind == 'StatefulSet' and name == 'order-matcher-cluster':
+            set_env(pod['containers'][0], {'BRIDGE_PARTITIONS': str(partitions)})
+        elif kind == 'Deployment' and name == 'trade-processor':
+            c = pod['containers'][0]
+            set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
+                        'PROJECTION_FEED_STREAM_LAYOUT': 'partition',
+                        'TRADE_PROJECTION_MODE': 'snapshot', 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000',
+                        'PROJECTION_FEED_STREAM_MAX_BYTES': str(retention), 'PROJECTION_FEED_STREAM_MAX_AGE_HOURS': '2'})
+            jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
+            kept = [t for t in jvm['value'].split() if not t.startswith(('-Xms', '-Xmx', '-XX:MaxRAMPercentage', '-XX:+Use',
+                                                                          '-XX:+ZGenerational', '-XX:+ExitOnOutOfMemoryError'))]
+            jvm['value'] = ' '.join([READ_MODEL_TP['jvm']] + kept)
+            c['resources'] = {'requests': {'cpu': READ_MODEL_TP['cpu'], 'memory': READ_MODEL_TP['memory']},
+                              'limits': {'cpu': READ_MODEL_TP['cpu'], 'memory': READ_MODEL_TP['memory']}}
+        elif kind == 'Deployment' and name == 'nats':
+            c = pod['containers'][0]
+            c['resources'] = {'requests': {'cpu': READ_MODEL_NATS['cpu'], 'memory': READ_MODEL_NATS['memory']},
+                              'limits': {'memory': READ_MODEL_NATS['memory']}}
+            set_env(c, {'GOMEMLIMIT': READ_MODEL_NATS['gomemlimit']})
+        elif kind == 'ConfigMap' and name == 'nats-server-config':
+            doc['data']['nats.conf'] = re.sub(r'max_file_store: \S+', f'max_file_store: {store_gb}G', doc['data']['nats.conf'])
+        elif kind == 'PersistentVolumeClaim' and name == 'nats-data':
+            doc['spec']['resources']['requests']['storage'] = f'{store_gb * 11 // 10 + 1}Gi'
+        elif kind == 'Deployment' and name == 'eod-price-db':
+            c = next(x for x in pod['containers'] if x['name'] == 'mariadb')
+            c['resources'] = {'requests': {'cpu': READ_MODEL_DB['cpu'], 'memory': READ_MODEL_DB['memory']},
+                              'limits': {'cpu': READ_MODEL_DB['cpu'], 'memory': READ_MODEL_DB['memory']}}
+            c['args'] = [a for a in c.get('args', []) if not a.startswith('--innodb-buffer-pool-size')] + \
+                        [f'--innodb-buffer-pool-size={READ_MODEL_DB["bufferPool"]}']
+            for v in pod['volumes']:
+                if v.get('persistentVolumeClaim', {}).get('claimName') == 'eod-price-db-data':
+                    v['persistentVolumeClaim']['claimName'] = READ_MODEL_DB_CLAIM
+        if pod and name in READ_MODEL_POOLS and kind == 'Deployment':
+            pool, taint = READ_MODEL_POOLS[name]
+            pod['nodeSelector'] = {'cloud.google.com/gke-nodepool': pool}
+            pod['tolerations'] = [{'key': taint, 'operator': 'Equal', 'value': 'true', 'effect': 'NoSchedule'}]
+    # Hyperdisk Balanced with provisioned IOPS/throughput: the DB pool is C4D, which attaches Hyperdisk only.
+    docs.append({'apiVersion': 'storage.k8s.io/v1', 'kind': 'StorageClass', 'metadata': {'name': READ_MODEL_DB_CLASS},
+                 'provisioner': 'pd.csi.storage.gke.io',
+                 'parameters': {'type': 'hyperdisk-balanced', 'provisioned-iops-on-create': '12000',
+                                'provisioned-throughput-on-create': '400Mi', 'csi.storage.k8s.io/fstype': 'ext4'},
+                 'volumeBindingMode': 'WaitForFirstConsumer', 'reclaimPolicy': 'Retain', 'allowVolumeExpansion': True})
+    docs.append({'apiVersion': 'snapshot.storage.k8s.io/v1', 'kind': 'VolumeSnapshotClass',
+                 'metadata': {'name': 'traderx-pd-snapshots'}, 'driver': 'pd.csi.storage.gke.io', 'deletionPolicy': 'Retain'})
+    docs.append({'apiVersion': 'snapshot.storage.k8s.io/v1', 'kind': 'VolumeSnapshot',
+                 'metadata': {'name': READ_MODEL_DB_SNAPSHOT, 'namespace': NAMESPACE},
+                 'spec': {'volumeSnapshotClassName': 'traderx-pd-snapshots',
+                          'source': {'persistentVolumeClaimName': 'eod-price-db-data'}}})
+    docs.append({'apiVersion': 'v1', 'kind': 'PersistentVolumeClaim',
+                 'metadata': {'name': READ_MODEL_DB_CLAIM, 'namespace': NAMESPACE},
+                 'spec': {'accessModes': ['ReadWriteOnce'], 'storageClassName': READ_MODEL_DB_CLASS,
+                          'resources': {'requests': {'storage': READ_MODEL_DB['disk']}},
+                          'dataSource': {'apiGroup': 'snapshot.storage.k8s.io', 'kind': 'VolumeSnapshot',
+                                         'name': READ_MODEL_DB_SNAPSHOT}}})
+
+
+def validate_read_model(docs, require):
+    """FR-PRG-20 preconditions: the parts of the snapshot read model only work together."""
+    def env(name, kind='Deployment'):
+        d = next((d for d in docs if d['kind'] == kind and d['metadata']['name'] == name), None)
+        return {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])} if d else {}
+    tp, members = env('trade-processor'), env('order-matcher-cluster', 'StatefulSet')
+    if tp.get('TRADE_PROJECTION_MODE') != 'snapshot':
+        return
+    require(tp.get('PROJECTION_FEED_MODE') == 'jetstream', 'the trade store reads the stream: PROJECTION_FEED_MODE=jetstream (FR-PRG-20)')
+    require(tp.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition',
+            'one capture stream holds ~50K orders/s; the profile is sized for one stream per partition (FR-DRS-32, ADR-097)')
+    require(tp.get('PROJECTION_FEED_PARTITIONS') == members.get('BRIDGE_PARTITIONS', '1'),
+            "trade-processor's partitions differ from the members' BRIDGE_PARTITIONS: a partition would never be read (FR-PRG-20)")
+    require(tp.get('ORDER_FEED_PERSIST') != 'false' or int(tp.get('ORDER_VIEW_SNAPSHOT_MS') or 0) > 0,
+            'a memory-only order view without its snapshot loses every order older than the replay window on restart (FR-DRS-30)')
+    conf = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')['data']['nats.conf']
+    store = int(re.search(r'max_file_store: (\d+)G', conf).group(1)) * 10**9
+    claim = next(d for d in docs if d['kind'] == 'PersistentVolumeClaim' and d['metadata']['name'] == 'nats-data')
+    require(int(tp.get('PROJECTION_FEED_STREAM_MAX_BYTES') or 0) < store
+            and int(claim['spec']['resources']['requests']['storage'][:-2]) * 2**30 > store,
+            'the stream limit must sit under max_file_store, and max_file_store under the NATS claim (FR-PRG-20)')
+    db = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'eod-price-db')
+    claims = [v['persistentVolumeClaim']['claimName'] for v in podspec(db)['volumes'] if 'persistentVolumeClaim' in v]
+    restored = next((d for d in docs if d['kind'] == 'PersistentVolumeClaim' and d['metadata']['name'] in claims), None)
+    require(restored is not None and (restored['metadata']['name'] == 'eod-price-db-data'
+                                      or restored['spec'].get('dataSource', {}).get('kind') == 'VolumeSnapshot'),
+            'the database moved to a new claim that is not restored from the old one: it would start empty (FR-PRG-20)')
+
+
 def refuse_sequenced_binary(docs, declared):
     """ADR-096 §6: in front of members built from an older commit (pre-ADR-090), a sequenced binary NEW must never
     reach the cluster, so the gateway refuses the flag (BINARY_SEQUENCED=refuse)."""
@@ -423,10 +548,11 @@ def validate(docs, declared=None):
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
+    validate_read_model(docs, require)
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
-            fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False):
+            fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -573,6 +699,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
         without_bridges(docs)
     if throughput:
         throughput_members(docs)
+    if read_model == 'snapshot':
+        snapshot_read_model(docs, partitions or READ_MODEL_PARTITIONS)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
@@ -650,9 +778,12 @@ if __name__=='__main__':
     p.add_argument('--binary-port',type=int,help='in-cluster binary entry for a throughput run (FR-PRG-13)')
     p.add_argument('--no-bridges',action='store_true',help="members' NATS bridges off for a throughput run (FR-PRG-14)")
     p.add_argument('--throughput-members',action='store_true',help="the bench's 450K member settings (FR-PRG-15)")
+    p.add_argument('--read-model',choices=['rows','snapshot'],default='rows',
+                   help='snapshot = the stream-backed read model with SQL snapshots, sized for high rates (FR-PRG-20)')
+    p.add_argument('--partitions',type=int,help=f'read-model partitions with --read-model snapshot (default {READ_MODEL_PARTITIONS})')
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
-            args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members)
+            args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members,args.read_model,args.partitions)
