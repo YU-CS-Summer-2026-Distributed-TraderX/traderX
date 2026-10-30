@@ -206,6 +206,17 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   stream. The default `one` keeps the single stream. A stream is one serial ingest-and-delivery path in NATS. On
   the bench one stream stored ~95K of 405K msgs/s offered, while eight per-partition streams stored 357K msgs/s with
   none dropped (ADR-097).
+- FR-DRS-33: No JetStream feed SHALL let a cumulative ack (AckPolicy.All, the last message of each batch) retire a
+  message it was delivered and did not apply. The server redelivers such a message only after ackWait (60 s), and
+  the next batch's ack covers it first. That happens to a batch delivered to a process killed before applying it,
+  and to a pull response lost with its connection. Every delivery carries the next consumer sequence, so the feed
+  SHALL check that the deliveries it receives are contiguous. On a jump, or when its handler throws, it SHALL
+  recreate its consumer at the last message it applied + 1. A durable SHALL be recreated the same way at every
+  start, from its ack floor (the ack follows the apply). The redelivered messages are applied twice, and both row
+  projections already take that safely: a trade side whose id is booked is skipped, and an order update at or below
+  the row's consensus sequence and ordinal is ignored. `JetStreamFeedAckGapIT` runs on a real JetStream. Before this
+  rule the durable resumed after a kill -9 lost the batch lifetime A was delivered, and the running durable and the
+  pipelined feed each lost a stolen pull response.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

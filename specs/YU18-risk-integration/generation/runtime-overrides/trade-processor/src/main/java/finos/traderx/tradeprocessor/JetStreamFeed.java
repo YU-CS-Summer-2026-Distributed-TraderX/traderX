@@ -194,7 +194,7 @@ public final class JetStreamFeed {
   /**
    * Pull loop on its own daemon thread: fetch up to {@code batch} messages (waiting at most
    * {@code maxWait} for the first), hand them to {@code handler}, ack the last one. A handler that
-   * throws leaves the batch unacked, so it is redelivered after ackWait.
+   * throws has the batch redelivered: the feed resubscribes at its first message (FR-DRS-33).
    */
   public static Thread start(String threadName, Connection nc, String stream, String filterSubject,
                              ConsumerConfiguration consumer, int batch, Duration maxWait,
@@ -264,21 +264,39 @@ public final class JetStreamFeed {
     return fetch;
   }
 
+  /**
+   * FR-DRS-33: every consumer here acks cumulatively (AckPolicy.All, the last of each batch), and the server redelivers
+   * a delivered-but-unacked message only after ackWait. So a message delivered and never applied (lifetime A killed
+   * after the fetch; a pull response lost with its connection) is retired by the next batch's ack. Measured on a real
+   * JetStream (JetStreamFeedAckGapIT): without this, all three such cases lose the messages. The consumer sequence
+   * names every delivery, so a jump is exactly such a loss: the feed then recreates its consumer at the last message
+   * it applied + 1. A durable resumes the same way at every start, from its ack floor (the ack follows the apply).
+   */
   private static void run(Connection nc, String stream, String filterSubject, ConsumerConfiguration consumer,
                           int batch, Duration maxWait, Consumer<List<Message>> handler,
                           java.util.function.LongConsumer idle, boolean ackHere) {
     long nextIdle = 0;
-    JetStreamSubscription sub;
-    try {
-      sub = nc.jetStream().subscribe(filterSubject,
-          PullSubscribeOptions.builder().stream(stream).configuration(consumer).build());
-    } catch (Exception x) {
-      log.error("JetStream feed {} could not subscribe; this partition is NOT being projected", filterSubject, x);
-      return;
-    }
-    log.info("JetStream feed {} pulling from stream {} ({})", filterSubject, stream,
-        consumer.getDurable() == null ? "ephemeral replay window" : "durable " + consumer.getDurable());
+    JetStreamSubscription sub = null;
+    long last = -1;     // stream sequence of the last message handed to the handler, -1 before the first
+    long expect = 0;    // consumer sequence the next delivery must carry
     while (!Thread.currentThread().isInterrupted()) {
+      if (sub == null) {
+        try {
+          sub = nc.jetStream().subscribe(filterSubject,
+              PullSubscribeOptions.builder().stream(stream).configuration(resume(nc, stream, consumer, last)).build());
+          expect = sub.getConsumerInfo().getDelivered().getConsumerSequence() + 1;
+        } catch (Exception x) {
+          if (last < 0) {
+            log.error("JetStream feed {} could not subscribe; this partition is NOT being projected", filterSubject, x);
+            return;
+          }
+          log.warn("JetStream feed {} could not resubscribe at {}: {}", filterSubject, last + 1, x.toString());
+          try { Thread.sleep(1000); } catch (InterruptedException ie) { return; }
+          continue;
+        }
+        log.info("JetStream feed {} pulling from stream {} ({})", filterSubject, stream,
+            consumer.getDurable() == null ? "ephemeral" : "durable " + consumer.getDurable());
+      }
       List<Message> msgs;
       try {
         msgs = sub.fetch(batch, maxWait);
@@ -287,6 +305,17 @@ public final class JetStreamFeed {
         log.warn("JetStream feed {} fetch failed: {}", filterSubject, x.toString());
         try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
         continue;
+      }
+      if (!msgs.isEmpty()) {
+        long first = msgs.get(0).metaData().consumerSequence();
+        long end = msgs.get(msgs.size() - 1).metaData().consumerSequence();
+        if (first != expect || end - first != msgs.size() - 1) {
+          log.warn("JetStream feed {} deliveries {}..{} expected from {}: some were delivered and never reached this feed;"
+              + " resuming at stream sequence {}", filterSubject, first, end, expect, last + 1);
+          sub = drop(sub);
+          continue;
+        }
+        expect = end + 1;
       }
       if (msgs.isEmpty()) {
         if (idle != null && System.nanoTime() >= nextIdle) {
@@ -310,10 +339,39 @@ public final class JetStreamFeed {
       try {
         handler.accept(msgs);
         if (ackHere) { msgs.get(msgs.size() - 1).ack(); }
+        last = msgs.get(msgs.size() - 1).metaData().streamSequence();
       } catch (Exception x) {
         if (Thread.currentThread().isInterrupted()) { return; }
-        log.error("JetStream feed {} batch of {} failed; left unacked for redelivery", filterSubject, msgs.size(), x);
+        log.error("JetStream feed {} batch of {} failed; redelivering it from stream sequence {}", filterSubject, msgs.size(), last + 1, x);
+        sub = drop(sub);
+        try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
       }
     }
+  }
+
+  /**
+   * The consumer to subscribe with: {@code consumer} itself, except that it starts after {@code last} once anything
+   * was applied, and an existing durable is recreated at its ack floor + 1 so nothing it was delivered and did not
+   * apply is left for a later cumulative ack to retire (FR-DRS-33).
+   */
+  static ConsumerConfiguration resume(Connection nc, String stream, ConsumerConfiguration consumer, long last) throws Exception {
+    long from = last;
+    if (consumer.getDurable() != null) {
+      try {
+        var info = nc.jetStreamManagement().getConsumerInfo(stream, consumer.getDurable());
+        if (from < 0) { from = info.getAckFloor().getStreamSequence(); }
+        nc.jetStreamManagement().deleteConsumer(stream, consumer.getDurable());
+      } catch (JetStreamApiException none) {
+        if (none.getErrorCode() != 404) { throw none; }
+      }
+    }
+    if (from < 0) { return consumer; }
+    return ConsumerConfiguration.builder(consumer).startTime(null)
+        .deliverPolicy(DeliverPolicy.ByStartSequence).startSequence(from + 1).build();
+  }
+
+  private static JetStreamSubscription drop(JetStreamSubscription sub) {
+    try { sub.unsubscribe(); } catch (Exception ignore) { }
+    return null;
   }
 }

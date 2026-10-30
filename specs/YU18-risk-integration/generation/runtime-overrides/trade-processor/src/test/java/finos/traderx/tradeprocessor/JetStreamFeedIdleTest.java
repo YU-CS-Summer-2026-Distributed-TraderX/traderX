@@ -33,6 +33,7 @@ class JetStreamFeedIdleTest {
     ConsumerInfo info = mock(ConsumerInfo.class);
     when(info.getNumPending()).thenReturn(pending);
     when(info.getNumAckPending()).thenReturn(ackPending);
+    when(info.getDelivered()).thenReturn(mock(io.nats.client.api.SequenceInfo.class));
     when(sub.getConsumerInfo()).thenReturn(info);
     List<Long> idles = new CopyOnWriteArrayList<>();
     var consumer = JetStreamFeed.fromSequence("/trades.0", 1, 10);

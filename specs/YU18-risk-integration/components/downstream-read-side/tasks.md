@@ -26,6 +26,9 @@
 - [x] Cursor-acknowledged feeds pull pipelined, and the idle advance requires nothing ack pending (FR-DRS-31; the
       pending-only rule lost 1,408 of 3,000,000 sides at P=16). One stream per partition (FR-DRS-32), with the
       gateway's fill feed reading each (FR-FFR-13).
+- [x] No feed acks past a delivery it did not apply: a jump in the consumer sequence, or a failed batch, recreates
+      the consumer at the last applied message + 1, and a durable resumes from its ack floor (FR-DRS-33).
+      `JetStreamFeedAckGapIT`: kill -9, a lost pull response to the durable and to the pipelined feed.
 
 ## Still open
 
