@@ -91,6 +91,12 @@ reference never comes from a snapshot.
 | G3 (check B) | the read model's md5s are unchanged since before the members started, its open rows equal the members' open orders, and its engine trade sides are exactly 1..trades (the members' count), each once |
 | G4 | the members equal the last `down`'s shutdown baseline, when one exists |
 
+G3 has two forms. The row read model uses the one above. The snapshot read model
+([ADR-097](adr-097-production-read-model-at-volume.md), FR-PRG-21) holds snapshots, not a row per side, and is checked
+by its committed exactly-once accounting against a base `rig.sh snapshot-base` recorded once at the switch. The choice
+fails closed (FR-PRG-22): an unreadable or unknown `TRADE_PROJECTION_MODE`, a failed accounting fetch, or a missing
+base refuses G3, and neither form is ever assumed.
+
 Gateways stay at 0 until all of these pass. A build without `/recon/shadow-state` fails G2 on `traderx`.
 `GATE_ALLOW_NO_SHADOW=1` exists for rehearsals in a side namespace only. A pass is recorded in ConfigMap `rig-gate`
 with the member pod UIDs, and `gateways.sh` refuses to run for members the gate did not cover.

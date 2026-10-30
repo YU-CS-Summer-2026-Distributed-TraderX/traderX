@@ -75,6 +75,30 @@ So the scale-out that pays is a stream per partition (FR-DRS-32): `TRADERX_FEED_
 `/orders.<p>`. The gateway's FIX fill feed reads each of them (FR-FFR-13). Separate SQL tables or database instances
 per partition would not help, because SQL is not where the time goes.
 
+### 5. The cutover from rows on `TRADERX_FEED` to the profile, with no gap (FR-PRG-20..22)
+
+Production today: row read model, one stream `TRADERX_FEED`. The two stream layouts overlap on subjects, so the old
+stream must go before the per-partition ones are created. Nothing may be published in between, or it would be
+captured by neither. The cutover therefore happens with no input and no publisher:
+1. **Gateways at 0** (`rig.sh down` drains them, or `gateways.sh 0`). No order enters, and the gateways' fill feed is
+   off.
+2. **Row read model caught up and checked.** The members are up and gated. Every durable `tp-*` consumer on
+   `TRADERX_FEED` has nothing pending and nothing ack pending. Then `rig.sh snapshot-base` re-runs the row check (SQL
+   holds sides 1..t, each once) and records base = t, once.
+3. **Members to 0 behind the snapshot barrier** (the `down` path), then trade-processor to 0. With nothing running,
+   nothing can publish.
+4. **The database disk moves.** VolumeSnapshot of `eod-price-db-data` at 0 replicas, restored into
+   `eod-price-db-fast` (rendered by the profile).
+5. **Delete `TRADERX_FEED`** (`nats stream rm TRADERX_FEED -f`). It holds only sides already in SQL (step 2).
+6. **Apply the profile.** trade-processor starts first. Support workloads are Ready before the members, and it
+   creates `TRADERX_FEED_P0..P7`. The members then start with `BRIDGE_PARTITIONS=8`. That is an egress setting, read
+   at start, with no apply-path effect.
+7. **Restore gate** with the snapshot G3: it expects exactly (base, trades]. Any side published into neither stream
+   would be a count deficit, and G3 refuses. The gateways start only after it passes, on a build with FR-FFR-13
+   (`053b3e25`), whose fill feed reads `TRADERX_FEED_P<p>`.
+
+A gap is impossible by construction, because steps 3–6 run with no publisher. G3 checks this afterwards by counting.
+
 ## Consequences
 
 - Production's read model keeps every trade side and order update durable (stream, then SQL snapshots) at the

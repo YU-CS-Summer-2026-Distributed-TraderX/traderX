@@ -63,9 +63,10 @@
         refuses.
 - [x] Snapshot read-model profile (`prepare.py --read-model snapshot`, FR-PRG-20) and its G3 (FR-PRG-21), offline
       (`test_prepare.SnapshotReadModel`, `test_rig.Up.*snapshot*`); measured on throwaway VMs (ADR-097 Evidence).
+- [x] The G3 dispatch and the snapshot G3 fail closed; `rig.sh snapshot-base` writes the base once (FR-PRG-22).
 - [ ] Before the profile runs on production: create `readmodel-pool` and `db-pool` in `rig.sh pools` and size them
-      in `up`/`down`; record `rig-snapshot-base` (members' `trades` after a passing row G3) at the switch; take the
-      VolumeSnapshot of `eod-price-db-data` with the database at 0.
+      in `up`/`down` (rollout lane); then the cutover in ADR-097 §5, which records the base with `rig.sh snapshot-base`,
+      snapshots `eod-price-db-data` with the database at 0, and replaces `TRADERX_FEED` with `TRADERX_FEED_P<p>`.
 - [ ] FIX at scale (2026-10-29 night):
       - The KV session store caps 600 sessions at ~29K/s answered.
       - Long reconnects resend past the idempotency window: ~1,600 double-bookings on 9900002–08. Needs ADR-090
@@ -75,5 +76,5 @@
       member change must go through the snapshot barrier first (issue: engine roll needs a snapshot barrier).
 - [ ] The binary load's measured bound is the client in-flight window (16 pods reached ~430K/s). For the real
       ceiling: more pods, or `--max-in-flight` above 2,000.
-- [ ] Review and land `450c195b` (FR-PRG-22, branch `claude/g3-fail-closed`).
+- [x] Review and land `450c195b` (FR-PRG-22, branch `claude/g3-fail-closed`).
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

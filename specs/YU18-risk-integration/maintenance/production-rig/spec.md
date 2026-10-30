@@ -114,6 +114,19 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-22:** The restore gate's choice between the row G3 and the snapshot G3 SHALL fail closed.
+  - trade-processor's `TRADE_PROJECTION_MODE` SHALL be read from its Deployment. Unset or `rows` is the row G3,
+    `snapshot` the snapshot G3. A Deployment that cannot be read, or any other value, SHALL refuse G3, never fall back
+    to either.
+  - The accounting fetch SHALL fail on an HTTP error or an empty body (`curl -f`). A failed fetch SHALL fail
+    `read_model`, never hash as `accounting=md5("")`, and refuse G3.
+  - The snapshot G3 SHALL refuse while ConfigMap `rig-snapshot-base` is missing or not a number.
+  - `rig.sh snapshot-base` SHALL be the only writer of `rig-snapshot-base`, and SHALL write it once. It SHALL refuse
+    while the ConfigMap exists, while the read model is not rows, while any gateway runs, while the running members
+    are not the ones a passing gate covered, or while the members disagree on `trades`. It SHALL then run the row
+    check (SQL holds sides 1..trades, minus the unprojected ranges, each once) and record `trades` only if that check
+    passes, with `create`, never `apply`.
+  - The before/after equality of `read_model` is unchanged; the accounting line takes part in it in snapshot mode.
 - **FR-PRG-21:** When trade-processor runs `TRADE_PROJECTION_MODE=snapshot`, G3 SHALL check the committed accounting
   (`/v2/projection-feed/accounting`, FR-DRS-29/30). SQL then holds snapshots, not a row per trade side, so the row
   checks do not apply. It SHALL:
@@ -231,11 +244,15 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 | read model trade sides missing, duplicated, gapped or extra | 03 | `test_rig.Up.test_the_read_model_must_hold_exactly_the_members_trade_sides` | REFUSED G3; on production the query reads 18/18/18 against trades 18 |
 | managed projection scope | 03 | `test_rig.Up.test_a_managed_projection_scope_is_refused_not_guessed` | REFUSED G3 |
 | an engine behind the log, or one member restored idle | 03 | `test_rig.Up.test_an_engine_behind_the_log_is_refused` | REFUSED G0 |
-| profile rendered | 18 | `test_prepare.SnapshotReadModel` | partitions on both sides, snapshot env, pools, retention = the sizing, the DB claim restored from a snapshot of the old one |
-| profile parts that do not fit | 18 | same | partitions 4 vs 6, view snapshot 0, core feed, a 1G store, a DB claim without its source: each refused |
-| snapshot read model at restore | 19 | `test_rig.Up.test_the_snapshot_read_model_is_checked_by_its_accounting` | G3 ok over 1..5, 2 open orders; the row check never runs |
-| a side lost, duplicated, doubled across partitions, beyond the members, or open orders that differ | 19 | `test_rig.Up.test_a_snapshot_read_model_that_lost_or_doubled_a_side_is_refused` | REFUSED G3 each; with the sums check removed (counts only) the cross-partition double passes and the test fails |
-| a rows-era base, an unprojected window | 19 | `test_rig.Up.test_the_snapshot_check_starts_at_the_recorded_rows_era_base` | 3..5 passes with base 2, is refused without it; 4-4 unprojected passes |
+| profile rendered | 20 | `test_prepare.SnapshotReadModel` | partitions on both sides, snapshot env, pools, retention = the sizing, the DB claim restored from a snapshot of the old one |
+| profile parts that do not fit | 20 | same | partitions 4 vs 6, view snapshot 0, core feed, a 1G store, a DB claim without its source: each refused |
+| snapshot read model at restore | 21 | `test_rig.Up.test_the_snapshot_read_model_is_checked_by_its_accounting` | G3 ok over 1..5, 2 open orders; the row check never runs |
+| a side lost, duplicated, doubled across partitions, beyond the members, or open orders that differ | 21 | `test_rig.Up.test_a_snapshot_read_model_that_lost_or_doubled_a_side_is_refused` | REFUSED G3 each; with the sums check removed (counts only) the cross-partition double passes and the test fails |
+| projection mode unreadable, or not rows/snapshot | 22 | `test_rig.Up.test_an_unreadable_projection_mode…`, `…unknown_projection_mode…` | REFUSED G3, no gateway; unset and `rows` still run the row G3; controls: with the guard removed (`|| true`, any value = rows) both fail |
+| accounting fetch fails | 22 | `test_rig.Up.test_an_accounting_that_cannot_be_read…`, `test_rig.ReadModel.test_a_failed_accounting_fetch…` | REFUSED G3; `read_model` fails, never hashes md5(""); control: `curl -s` with no failure check fails the test |
+| snapshot G3 with no recorded base | 22 | `test_rig.Up.test_a_snapshot_g3_without_a_recorded_base_is_refused` | REFUSED G3; control: a missing base read as 0 fails the test |
+| `rig.sh snapshot-base` | 22 | `test_rig.SnapshotBase.*` | records `trades` once with `create`; refuses a second run, snapshot mode, an unreadable mode, running gateways, ungated or disagreeing members, and a row check that fails; control: without the existing-value check, a second run writes |
+| a rows-era base, an unprojected window | 21 | `test_rig.Up.test_the_snapshot_check_starts_at_the_recorded_rows_era_base` | 3..5 passes with base 2, is refused without it; 4-4 unprojected passes |
 | each gate check failing | 03 | `test_rig.Up.*refused*` | REFUSED Gn; no gateway scaled up; no `rig-gate` |
 | a past partial restore in a member's error log | 03 | `test_rig.Up.test_a_member_that_once_restored_partially…` | REFUSED G-pre for each of the three messages; no member started |
 | error log unreadable, or members running | 03 | `test_rig.Up.test_an_unreadable…`, `…not_read_while_members_run` | refused |

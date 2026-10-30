@@ -27,8 +27,8 @@ kubectl(){
   case "$*" in
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; echo "$REINDEX";;
-    *TRADE_PROJECTION_MODE*) echo "${TP_MODE:-}";;
-    *projection-feed/accounting*) echo "$ACCT";;
+    *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
+    *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
     *shadow-state*) echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
@@ -255,7 +255,7 @@ class Up(unittest.TestCase):
 
     def test_the_snapshot_read_model_is_checked_by_its_accounting(self):
         # ADR-097 (FR-PRG-20): no SQL row per side; the committed accounting must be the closed form over sides 1..5.
-        rc, out, calls = run('rig_up', TP_MODE='snapshot', ACCT=acct(), TRADE_ROWS='0\t0\t0\t0', OPEN_ROWS='0')
+        rc, out, calls = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', ACCT=acct(), TRADE_ROWS='0\t0\t0\t0', OPEN_ROWS='0')
         self.assertEqual(rc, 0, out)
         self.assertIn('G3 ok: the read model booked sides 1..5, each once; 2 open orders', out)
         self.assertIsNone(first(calls, r'from trades where right'), 'the row check ran on the snapshot read model')
@@ -267,7 +267,7 @@ class Up(unittest.TestCase):
                          (acct(p0=(3, 6, 10, 46, 0)), 'above the members trades'),     # a side the members never booked
                          (acct(resting=(1, 0)), 'order view holds 1 open orders, the members restored 2'),
                          (acct(orders=False), 'no order view snapshot')):
-            self.assertIn(why, self.refused('G3', TP_MODE='snapshot', ACCT=bad))
+            self.assertIn(why, self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT=bad))
 
     def test_the_snapshot_check_starts_at_the_recorded_rows_era_base(self):
         # Sides 1..2 were projected as rows before the switch (rig-snapshot-base 2); the accounting holds 3..5.
@@ -275,9 +275,31 @@ class Up(unittest.TestCase):
         rc, out, _ = run('rig_up', TP_MODE='snapshot', ACCT=three_to_five, SNAP_BASE='2')
         self.assertEqual(rc, 0, out)
         self.assertIn('booked sides 3..5', out)
-        self.assertIn('booked 3 sides', self.refused('G3', TP_MODE='snapshot', ACCT=three_to_five))   # no base recorded
-        rc, out, _ = run('rig_up', TP_MODE='snapshot', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)))  # 4 unprojected
+        self.assertIn('booked 3 sides', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT=three_to_five))   # base 0
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)))  # 4 unprojected
         self.assertEqual(rc, 0, out)
+
+    # FR-PRG-22: the dispatch and the snapshot G3 fail closed. Each case has an A/B control in the gate (the guard removed,
+    # the test fails).
+    def test_an_unreadable_projection_mode_is_refused_never_taken_as_rows(self):
+        out = self.refused('G3', TP_MODE_FAIL='1')
+        self.assertIn('projection mode is unreadable or unknown', out)
+
+    def test_an_unknown_projection_mode_is_refused(self):
+        for mode in ('snapshots', 'ROWS', 'off'):
+            self.assertIn('projection mode is unreadable or unknown', self.refused('G3', TP_MODE=mode))
+
+    def test_rows_or_unset_is_the_row_g3(self):
+        for mode in ('', 'rows'):
+            rc, out, _ = run('rig_up', TP_MODE=mode)
+            self.assertEqual(rc, 0, out)
+            self.assertIn('G3 ok: the read model holds trade sides 1..5, each once', out)
+
+    def test_a_snapshot_g3_without_a_recorded_base_is_refused(self):
+        self.assertIn('no rig-snapshot-base recorded', self.refused('G3', TP_MODE='snapshot', ACCT=acct()))
+
+    def test_an_accounting_that_cannot_be_read_is_refused_at_g3(self):
+        self.assertIn('the accounting could not be read', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT_FAIL='1'))
 
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')
@@ -470,10 +492,22 @@ class Clients(unittest.TestCase):
 
 
 class ReadModel(unittest.TestCase):
-    """FR-PRG-19: the real read_model, with sql stubbed: a failed query fails it; it never hashes an error as a table."""
-    def rm(self, sql_body):
-        script = f'set -uo pipefail; RIG_LIB=1 . "{RIG}"; sql(){{ {sql_body}; }}; if out=$(read_model); then echo rc=0; else echo rc=1; fi; echo "$out"'
+    """FR-PRG-19: the real read_model, with sql stubbed: a failed query fails it; it never hashes an error as a table.
+    FR-PRG-22: the same for the snapshot read model's accounting, and for a mode that cannot be read."""
+    def rm(self, sql_body, kubectl_body='echo ""'):
+        script = (f'set -uo pipefail; RIG_LIB=1 . "{RIG}"; sql(){{ {sql_body}; }}; kubectl(){{ {kubectl_body}; }}; '
+                  'if out=$(read_model); then echo rc=0; else echo rc=1; fi; echo "$out"')
         return subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30).stdout
+
+    def test_a_failed_accounting_fetch_fails_the_read(self):
+        snapshot = 'case "$*" in *TRADE_PROJECTION_MODE*) echo snapshot;; *accounting*) {};; esac'
+        self.assertIn('rc=1', self.rm('echo row', snapshot.replace('{}', 'return 22')))
+        ok = self.rm('echo row', snapshot.replace('{}', """echo '{"trades":{}}'"""))
+        self.assertIn('rc=0', ok)
+        self.assertIn('accounting=', ok)
+
+    def test_a_mode_that_cannot_be_read_fails_the_read(self):
+        self.assertIn('rc=1', self.rm('echo row', 'return 1'))
 
     def test_a_failed_query_fails_the_read(self):
         self.assertIn('rc=1', self.rm('case "$1" in *positions*) return 1;; *) echo row;; esac'))
@@ -483,6 +517,35 @@ class ReadModel(unittest.TestCase):
         import hashlib
         want = hashlib.md5(b'row-select id,accountid,security,side,quantity,price,state from trades order by 1\n').hexdigest()[:16]
         self.assertIn('rc=0', out); self.assertIn(f'trades={want}', out)
+
+
+class SnapshotBase(unittest.TestCase):
+    """FR-PRG-22: `rig.sh snapshot-base` records the row read model's side count once, only where the row check holds."""
+    GOOD = 'members_gated(){ true; }; '
+
+    def test_it_records_the_members_trades_once(self):
+        rc, out, calls = run(self.GOOD + 'rig_snapshot_base')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'create configmap rig-snapshot-base --from-literal=base=5 '), out)
+        self.assertIsNone(first(calls, r'rig-snapshot-base.*(apply|--dry-run)'), 'written with apply, so not write-once')
+
+    def test_a_second_run_is_refused(self):
+        rc, out, calls = run(self.GOOD + 'rig_snapshot_base', SNAP_BASE='3')
+        self.assertEqual(rc, 2, out)
+        self.assertIn('written once', out)
+        self.assertIsNone(first(calls, r'create configmap rig-snapshot-base'))
+
+    def test_it_is_refused_unless_the_row_read_model_holds_the_sides_with_nothing_trading(self):
+        for body, env, why in ((self.GOOD, {'TP_MODE': 'snapshot'}, "already 'snapshot'"),
+                               (self.GOOD, {'TP_MODE_FAIL': '1'}, 'unreadable or unknown'),
+                               (self.GOOD + 'no_pods(){ false; }; ', {}, 'gateways are running'),
+                               ('members_gated(){ false; }; ', {}, 'passing restore gate'),
+                               (self.GOOD, {'M1': '100 100 6 11 22 7'}, 'members disagree'),
+                               (self.GOOD, {'TRADE_ROWS': '4\t4\t4\t0'}, 'the members booked 5 trade sides')):
+            rc, out, calls = run(body + 'rig_snapshot_base', **env)
+            self.assertEqual(rc, 2, (why, out))
+            self.assertIn(why, out)
+            self.assertIsNone(first(calls, r'create configmap rig-snapshot-base'), why)
 
 
 class Loadgen(unittest.TestCase):
