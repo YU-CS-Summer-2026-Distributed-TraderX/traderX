@@ -34,7 +34,10 @@ kubectl(){
     *"health?digest=1"*) echo "$DIGEST";;
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
     *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
-    *"get configmap rig-shutdown-baseline"*) echo "${BASELINE:-}";;
+    *"get configmap rig-shutdown-baseline"*)   # BASELINE unset = NotFound; BASELINE_FAIL = any other error
+      [ -n "${BASELINE_FAIL:-}" ] && { echo "Error from server (ServiceUnavailable): the server is currently unable to handle the request" >&2; return 1; }
+      [ -n "${BASELINE+x}" ] || { echo 'Error from server (NotFound): configmaps "rig-shutdown-baseline" not found' >&2; return 1; }
+      jq -cn --arg m "$BASELINE" '{data: ({members: $m} | if $m == "" then {} else . end)}';;
     *"get configmap rig-unprojected"*) echo "${UNPROJECTED:-}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec.template.spec.containers[0].env[*].name}"*) echo "${MEMBER_ENV:-JAVA_TOOL_OPTIONS TRADE_BRIDGE_NATS_URL}";;
     *"get pvc data-order-matcher-cluster-"*"requests.storage"*) echo "${PVC_SIZE:-32Gi}";;
@@ -47,7 +50,7 @@ kubectl(){
     *"get sts order-matcher-cluster -o jsonpath={.spec"*) echo member-image;;
     *"get sts order-matcher-cluster -o jsonpath"*) echo 3;;
     *"get pod rig-errlog-"*phase*) echo "$ERRLOG_PHASE";;
-    *"logs rig-errlog-"*) echo "$ERRLOG";;
+    *"logs rig-errlog-"*) [ -n "${ERRLOG_FETCH_FAIL:-}" ] && { echo "Error from server: service unavailable" >&2; return 1; }; printf '%s\n' "${ERRLOG%$'\n'}";;
     *"localhost:8080/health"*) a="$*"; [[ "$a" == *"order-matcher-cluster-$LEADER "* ]] && echo '{"role":"LEADER"}' || echo '{"role":"FOLLOWER"}';;
     *"get pods -l app=order-matcher-cluster -w"*)
       i=0; for code in $EXITS; do
@@ -62,7 +65,8 @@ GOOD = {'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
-        'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded', 'ERRLOG': 'No errors'}
+        'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded',
+        'ERRLOG': 'mark files in /data/cluster: consensus=1 service=1\nerrlog complete'}
 
 # The snapshot read model's committed accounting for trades = 5: sides 1,3,5 on partition 0 and 2,4 on partition 1 (sums of
 # seq and seq^2 as the trade store writes them), one open order on each, every cursor at its subject's last message.
@@ -304,6 +308,30 @@ class Up(unittest.TestCase):
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')
 
+    def test_a_baseline_that_cannot_be_read_is_refused_not_taken_as_a_first_bring_up(self):
+        # FR-PRG-23 (codeX review 2026-10-30 §3): any read error became "no baseline" and the gate recorded PASS.
+        out = self.refused('G4', BASELINE_FAIL='1')
+        self.assertIn('rig-shutdown-baseline could not be read', out)
+        self.assertNotIn('first bring-up', out)
+        rc, out, _ = run('rig_up')   # control: a NotFound is a first bring-up
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G4: no shutdown baseline recorded', out)
+
+    def test_a_baseline_that_exists_but_is_empty_or_malformed_is_refused(self):
+        for bad in ('', '100 100 5', 'x 100 5 11 22 7'):
+            out = self.refused('G4', BASELINE=bad)
+            self.assertIn('empty or malformed', out)
+        rc, out, _ = run('rig_up', BASELINE='100 -1 5 11 22 7')   # control: well-formed (a baseline taken cold)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G4 ok', out)
+
+    def test_the_baseline_shape_accepts_productions_own(self):
+        # The live rig-shutdown-baseline on 2026-10-30, a negative position hash and a cold engineApplied included.
+        line = '695423942 -1 662922190 0 -4922934033839070311 1'
+        rc, out, _ = run(f"m0='{line}'; rig_shutdown_baseline_ok '{line}' && echo SHAPE-OK")
+        self.assertEqual(rc, 0, out)
+        self.assertIn('SHAPE-OK', out)
+
     def test_a_restore_that_differs_from_the_shutdown_baseline_is_refused(self):
         self.refused('G4', BASELINE='101 101 5 11 22 7')
         rc, out, _ = run('rig_up', BASELINE='100 100 5 11 22 9')   # snapshot counter differs: not compared
@@ -316,6 +344,24 @@ class Up(unittest.TestCase):
             self.assertEqual(rc, 2, out)
             self.assertIn('G-pre: member 0 restored a snapshot partially', out)
             self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'), 'members started')
+
+    def test_an_error_log_whose_fetch_fails_is_refused_and_its_pod_kept(self):
+        # FR-PRG-23 (codeX review 2026-10-30 §2): the fetch's error text matched no pattern, so G-pre printed ok.
+        rc, out, calls = run('rig_up', ERRLOG_FETCH_FAIL='1')
+        self.assertEqual(rc, 2, out)
+        self.assertIn("G-pre: member 0's error log could not be fetched", out)
+        self.assertIsNone(first(calls, r'delete pod rig-errlog-0 --wait'), 'the pod was deleted before its log was read')
+        self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'))
+        rc, out, _ = run('rig_up')   # control: the same run with the fetch working passes
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G-pre ok', out)
+
+    def test_an_empty_or_truncated_error_log_is_refused(self):
+        for log in ('', 'mark files in /data/cluster: consensus=1 service=1', 'errlog complete'):
+            rc, out, calls = run('rig_up', ERRLOG=log)
+            self.assertEqual(rc, 2, (log, out))
+            self.assertIn("error log is incomplete", out)
+            self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'))
 
     def test_an_unreadable_error_log_is_refused(self):
         rc, out, calls = run('rig_up', ERRLOG_PHASE='Failed')

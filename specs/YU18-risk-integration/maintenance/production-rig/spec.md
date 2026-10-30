@@ -114,6 +114,14 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-23:** G-pre and G4 SHALL fail closed on evidence they could not read (codeX review 2026-10-30, §2 and
+  §3: each turned a failed read into a pass).
+  - G-pre: a failed `kubectl logs` of a reader pod SHALL refuse, before that pod is deleted (it is kept for a look).
+    The reader's output SHALL begin with its `mark files in` line and end with `errlog complete`; an empty or truncated
+    log SHALL refuse. A found corruption pattern still refuses first.
+  - G4: only a `NotFound` for ConfigMap `rig-shutdown-baseline` SHALL mean a first bring-up. Any other failed read
+    SHALL refuse. A baseline that exists SHALL carry a well-formed members line (applied, engineApplied, trades, two
+    hashes, snapshots), or G4 refuses.
 - **FR-PRG-22:** The restore gate's choice between the row G3 and the snapshot G3 SHALL fail closed.
   - trade-processor's `TRADE_PROJECTION_MODE` SHALL be read from its Deployment. Unset or `rows` is the row G3,
     `snapshot` the snapshot G3. A Deployment that cannot be read, or any other value, SHALL refuse G3, never fall back

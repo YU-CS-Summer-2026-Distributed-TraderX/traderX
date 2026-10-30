@@ -266,7 +266,8 @@ PAST_RESTORE_ERRORS='snapshot corrupt|NEWER|unknown snapshot record type'
 # Not `ClusterTool errors`: in Aeron 1.51 it prints the consensus module's log, then throws on the absent driver's
 # cnc.dat before it reaches the service container's mark file, which is where a refused snapshot record is logged; and
 # it maps the mark file read-write. An error log stores each error's text as UTF-8, so this reads the bytes of both
-# mark files on the read-only claim, and fails if either file is missing or unreadable.
+# mark files on the read-only claim, and fails if either file is missing or unreadable. Its first line names the mark
+# files and its last is "errlog complete", so G-pre can tell a whole log from an empty or truncated fetch (FR-PRG-23).
 # sh -c "$ERRLOG_SCRIPT" errlog <cluster dir> <pattern>
 ERRLOG_SCRIPT='d=$1
 c=$(ls "$d"/cluster-mark.dat 2>/dev/null | wc -l | tr -d " "); s=$(ls "$d"/cluster-mark-service-*.dat 2>/dev/null | wc -l | tr -d " ")
@@ -277,7 +278,8 @@ for f in "$d"/cluster-mark.dat "$d"/cluster-mark-service-*.dat; do
   out=$(grep -aoiE "[[:print:]]{0,160}($2)[[:print:]]{0,160}" "$f"); rc=$?
   [ "$rc" -le 1 ] || { echo "cannot read $f"; exit 4; }
   [ -z "$out" ] || printf "%s\n" "$out" | sed "s|^|$f: |"
-done'
+done
+echo "errlog complete"'
 errlog_pod(){ # errlog_pod <ordinal> <image>: the pod manifest
   cat <<EOF
 apiVersion: v1
@@ -317,11 +319,15 @@ past_restore_errors(){
     errlog_pod "$i" "$image" | kc apply -f - >/dev/null
     wait_for 300 "member $i's error log read" pod_done "rig-errlog-$i"
     phase=$(kc get pod "rig-errlog-$i" -o jsonpath='{.status.phase}')
-    kc logs "rig-errlog-$i" > "$EVIDENCE/past-errors-$i.txt" 2>&1 || true
+    # FR-PRG-23: a failed fetch is a log not read, never an empty one; the pod is kept for a look.
+    kc logs "rig-errlog-$i" > "$EVIDENCE/past-errors-$i.txt" 2> "$EVIDENCE/past-errors-$i.err" \
+      || die "G-pre: member $i's error log could not be fetched (pod rig-errlog-$i kept): $EVIDENCE/past-errors-$i.err"
     kc delete pod "rig-errlog-$i" --wait >/dev/null
     [ "$phase" = Succeeded ] || die "G-pre: member $i's error log could not be read ($phase): $EVIDENCE/past-errors-$i.txt"
     ! grep -Eiq "$PAST_RESTORE_ERRORS" "$EVIDENCE/past-errors-$i.txt" \
       || die "G-pre: member $i restored a snapshot partially in the past: $EVIDENCE/past-errors-$i.txt"
+    grep -q '^mark files in ' "$EVIDENCE/past-errors-$i.txt" && [ "$(tail -n 1 "$EVIDENCE/past-errors-$i.txt")" = "errlog complete" ] \
+      || die "G-pre: member $i's error log is incomplete (no reader start or end line): $EVIDENCE/past-errors-$i.txt"
   done
   note "G-pre ok: no refused snapshot record in any member's error log"
 }
@@ -475,19 +481,29 @@ restore_gate(){
   echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
   note "G3 ok: read model unchanged"
-  base=$(kc get configmap rig-shutdown-baseline -o jsonpath='{.data.members}' 2>/dev/null || true)
-  if [ -n "$base" ]; then
+  # FR-PRG-23: only a NotFound is a first bring-up. Any other failed read, or a baseline that exists without a
+  # well-formed members line, refuses: a read error must never stand in for "no baseline".
+  local cm base
+  if cm=$(kc get configmap rig-shutdown-baseline -o json 2> "$EVIDENCE/g4-baseline.err"); then
+    base=$(jq -r '.data.members // ""' <<<"$cm") || die "G4: rig-shutdown-baseline is not readable JSON"
+    rig_shutdown_baseline_ok "$base" \
+      || die "G4: rig-shutdown-baseline exists but its members line is empty or malformed: '$base'"
     [ "$(cut -d' ' -f1,3-5 <<<"$base")" = "$(cut -d' ' -f1,3-5 <<<"$m0")" ] \
       || die "G4: shutdown baseline '$base' != restored '$m0'"
     note "G4 ok: equals the shutdown baseline"
-  else
+  elif grep -q '(NotFound)' "$EVIDENCE/g4-baseline.err"; then
     note "G4: no shutdown baseline recorded (first bring-up under this script)"
+  else
+    die "G4: rig-shutdown-baseline could not be read: $(head -c 300 "$EVIDENCE/g4-baseline.err")"
   fi
   kc create configmap rig-gate --from-literal=status=PASS --from-literal=at="$(date -u +%FT%TZ)" \
     --from-literal=members="$(kc get pods -l app=order-matcher-cluster -o jsonpath='{range .items[*]}{.metadata.uid} {end}')" \
     --dry-run=client -o yaml | kc apply -f - >/dev/null
   note "gate PASS recorded in ConfigMap rig-gate"
 }
+
+# A members line as `rig.sh down` records it: applied engineApplied trades orderHash positionHash snapshots.
+rig_shutdown_baseline_ok(){ [[ $1 =~ ^[0-9]+\ -?[0-9]+\ [0-9]+\ [^\ ]+\ [^\ ]+\ [0-9]+$ ]]; }
 
 # ---- gateways, LB, autoscale -------------------------------------------------------------------------------------
 gateways_up(){
