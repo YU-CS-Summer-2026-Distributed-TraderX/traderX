@@ -51,14 +51,19 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   (`StreamInfo.createTime`, ISO-8601 at full precision), recorded in `history_cursor` (stream, table, part,
   incarnation) before the lane's first row from that incarnation. This is trade-processor's scheme (FR-DRS-36). A
   lane SHALL open only on the incarnation its rows came from. A lane binds to the current incarnation when it has no
-  rows (a cursor at 0 skips nothing) or when none is recorded (rows written before this rule are accepted once). A
+  rows (a cursor at 0 skips nothing) or when its binding is `0`, ATTESTED: written only by an operator who has
+  reconciled the lane's rows with the current stream, and used up by that bind (the latest binding wins; the bind wins
+  a same-millisecond tie). A lane with rows and no binding SHALL refuse with `STREAM_UNBOUND <durable>`: the rows'
+  stream is unknown, and binding them to whatever stream exists now would skip that stream's first messages on the
+  first upgrade (codeX re-review, FR-DRS-36's first-binding rule). Its message gives the remedy: reconcile, then attest
+  with the `INSERT INTO history_cursor ... '0'` it prints, or move the rows aside to rebuild. A
   lane with rows and a different incarnation SHALL refuse: no consumer is opened and no row is written, `/health`
   reports it not ready (503) with `STREAM_RESET <durable>`, an `ALERT history-feed STREAM_RESET` line names the cursor
   and both creation times, and it re-checks every 30 s. A sequence number alone cannot tell a recreated stream from
   the original. A stream deleted and recreated under the same name restarts at 1, and once it passed the cursor,
   opening at cursor + 1 would skip its first messages for good (codeX review 2026-10-30 §6). A limits update keeps
   the creation time; a delete and recreate changes it. Recovery is an operator decision: move the lane's rows aside,
-  then restart.
+  or reconcile them and attest (`0`), then restart.
 - NFR-HST-01: No engine, bridge wire, stream, trade-processor, production or GKE change. The feed is a reader of
   the existing streams with its own durables; the render gains one module (`history-feed`).
 - NFR-HST-02: On one c4d-standard-16 store host the store SHALL sustain the full-rate volume, 1,000,000 rows/s
@@ -90,4 +95,7 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
 - SC-HST-05: `HistoryFeedIncarnationIT` (NATS 2.14 + ClickHouse 25.8 containers, P = 2): a restart on unchanged
   streams resumes and takes new load (control). After `TRADERX_FEED_P0` is deleted, recreated and refilled past the
   cursor, the restarted feed writes no row from it, `/health` is 503 with `STREAM_RESET` on both P0 lanes and not
-  on P1, and P1 keeps flowing. With the check removed the same test fails.
+  on P1, and P1 keeps flowing. With P1's binding removed and P0 attested (`0`), the next start writes no P1 row,
+  reports `STREAM_UNBOUND` on both P1 lanes, resumes P0 on the new stream and replaces the attestation with its
+  creation time; attesting P1 then makes every lane ready (200). With the check removed the test fails at the reset;
+  with unbound rows accepted it fails at the unbound lane (expected 10000 rows, was 10500).

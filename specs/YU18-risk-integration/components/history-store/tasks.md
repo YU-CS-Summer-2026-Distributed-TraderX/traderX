@@ -11,3 +11,4 @@
 - [x] `HistoryFeedKillIT`: two SIGKILLs mid-drain, exactly once; fails under a duplicate mutation and a loss mutation.
 - [x] Opt-in kind manifests and `scripts/history-feed/kind-smoke.sh`; ADR-098; render module loop.
 - [x] Cursor bound to the stream incarnation; a recreated stream is refused, not skipped (FR-HST-07, codeX §6).
+- [x] Rows with no binding past cursor 0 are refused (`STREAM_UNBOUND`) until operator-attested (`0`) (FR-HST-07, codeX re-review).

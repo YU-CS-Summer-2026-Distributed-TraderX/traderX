@@ -28,7 +28,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * FR-HST-07 (codeX review §6) on real infrastructure: TRADERX_FEED_P0 deleted and recreated under the same name,
  * refilled past the store's cursor while the feed is down. The feed must refuse P0 (no row written from the new stream,
  * /health 503, STREAM_RESET) instead of resuming at cursor + 1, which would skip the new stream's first messages;
- * P1, untouched, keeps flowing. Control: a restart on the unchanged streams resumes and takes new load.
+ * P1, untouched, keeps flowing. Control: a restart on the unchanged streams resumes and takes new load. Then the
+ * first-binding rule: rows past cursor 0 with no recorded stream are refused (STREAM_UNBOUND) until an operator attests.
  */
 @Tag("integration")
 @Testcontainers
@@ -74,7 +75,7 @@ class HistoryFeedIncarnationIT {
       long newP0Last = nc.jetStreamManagement().getStreamInfo("TRADERX_FEED_P0").getStreamState().getLastSequence();
       assertTrue(newP0Last > p0Last, "the new stream must reach past the old cursor (" + newP0Last + " vs " + p0Last + ")");
 
-      start();
+      Process c = start();
       HistoryFeedKillIT.waitFor(() -> count(ch, 1) > part1Before, 120_000);   // P1 untouched: flows
       Thread.sleep(5000);                                                     // time for P0 to (wrongly) write
       assertEquals(part0Before, count(ch, 0), "no row of the recreated P0 may be written");
@@ -82,7 +83,37 @@ class HistoryFeedIncarnationIT {
       assertEquals(503, h.statusCode(), h.body());
       assertTrue(h.body().contains("STREAM_RESET history-trades-p0") && h.body().contains("STREAM_RESET history-orders-p0"), h.body());
       assertTrue(!h.body().contains("STREAM_RESET history-trades-p1"), h.body());
+      c.destroyForcibly().waitFor();
+
+      // Rows with no recorded stream (from before the binding existed: P1's record removed) past cursor 0 are refused
+      // too, STREAM_UNBOUND, not bound to whatever stream exists now. P0 is reconciled and attested by the operator.
+      ch.exec("ALTER TABLE history_cursor DELETE WHERE part = 1 SETTINGS mutations_sync = 1");
+      for (String t : new String[] {"trades", "orders"}) attest(ch, 0, t);
+      long part1Unbound = count(ch, 1);
+      HistoryFeedKillIT.publish(js, 4000, 4200, published);
+      Process d = start();
+      HistoryFeedKillIT.waitFor(() -> count(ch, 0) > part0Before, 120_000);   // attested P0 resumes on the new stream
+      Thread.sleep(5000);
+      assertEquals(part1Unbound, count(ch, 1), "no row may be written to an unbound lane past cursor 0");
+      h = health();
+      assertEquals(503, h.statusCode(), h.body());
+      assertTrue(h.body().contains("STREAM_UNBOUND history-trades-p1") && h.body().contains("STREAM_UNBOUND history-orders-p1"), h.body());
+      assertTrue(!h.body().contains("STREAM_RESET") && !h.body().contains("STREAM_UNBOUND history-trades-p0"), h.body());
+      String newP0 = FeedLane.incarnationOf(nc.jetStreamManagement().getStreamInfo("TRADERX_FEED_P0"));
+      assertEquals(newP0, ch.incarnation("TRADERX_FEED_P0", "trades", 0), "the attestation is used up by the bind");
+      d.destroyForcibly().waitFor();
+
+      // P1 attested; every lane opens and the feed is healthy.
+      for (String t : new String[] {"trades", "orders"}) attest(ch, 1, t);
+      start();
+      HistoryFeedKillIT.waitFor(() -> count(ch, 1) > part1Unbound, 120_000);
+      HistoryFeedKillIT.waitFor(() -> { try { return health().statusCode() == 200; } catch (Exception e) { return false; } }, 60_000);
     }
+  }
+
+  static void attest(ClickHouseStore ch, int part, String table) throws Exception {
+    ch.exec("INSERT INTO history_cursor (stream, tbl, part, incarnation) VALUES ('TRADERX_FEED_P" + part + "', '" + table
+        + "', " + part + ", '" + FeedLane.ATTESTED + "')");
   }
 
   static void stream(Connection nc, int p) throws Exception {

@@ -29,7 +29,9 @@ below the rate.
    and moves only the stream's ack floor. Exactly-once does not rest on the ack: resuming a durable lost 19 of 360M
    events in the bake-off. A batch never crosses a UTC day, because one INSERT is atomic only within one date partition.
    The cursor is bound to the stream's incarnation, its creation time (FR-HST-07). A lane refuses to resume on a
-   stream recreated under the same name, because the number alone would skip that stream's first messages.
+   stream recreated under the same name, because the number alone would skip that stream's first messages. Rows with no recorded stream are refused
+   too (`STREAM_UNBOUND`) until an operator reconciles and attests them with the binding `0`, which the next bind
+   uses up: the same values as trade-processor's `projection_cursor` (NULL unbound, 0 attested).
 4. **Exactly one writer.** The lanes are not fenced, so the Deployment has one replica and `Recreate`. Scaling past
    one process means one process per partition set, by configuration, not replicas.
 5. **The queries go through the service**, never straight to ClickHouse: the four paths the bake-off measured, plus
