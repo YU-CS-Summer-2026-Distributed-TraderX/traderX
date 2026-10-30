@@ -1,6 +1,7 @@
 package finos.traderx.ordermatcher.cluster;
 
 import io.nats.client.Connection;
+import io.nats.client.JetStream;
 import io.nats.client.JetStreamApiException;
 import io.nats.client.KeyValue;
 import io.nats.client.Nats;
@@ -16,6 +17,9 @@ import io.nats.client.api.KeyValueWatcher;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import io.nats.client.api.StreamInfo;
+import io.nats.client.api.PublishAck;
+import io.nats.client.impl.Headers;
+import io.nats.client.impl.NatsMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import quickfix.MessageStore;
@@ -30,6 +34,7 @@ import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -94,6 +99,35 @@ final class FixSessionStore implements MessageStoreFactory {
      * per message.
      */
     static final int RESEND_WINDOW = Integer.parseInt(System.getenv().getOrDefault("FIX_RESEND_WINDOW", "2048"));
+    /**
+     * ADR-099: a session's outbound messages are stored by group commit. set() publishes the body without waiting,
+     * fenced on the session's K.seq revision, and one compare-and-set on K.seq commits each batch; FixWriteBarrier
+     * holds every message off the socket until its number is committed. FIX_STORE_GROUP_COMMIT=false, or a server
+     * that does not honour the cross-subject fence, keeps the synchronous path (a claim and a put per message).
+     */
+    static final boolean GROUP_COMMIT = !"false".equalsIgnoreCase(System.getenv("FIX_STORE_GROUP_COMMIT"));
+    /** Bodies a session may have uncommitted; the next set() waits for room (ADR-099, a count per session as ADR-092). */
+    static final int MAX_UNCOMMITTED =
+        Integer.parseInt(System.getenv().getOrDefault("FIX_STORE_MAX_UNCOMMITTED", "1024"));
+    /** A commit not acknowledged within this long drops the session, as a failed synchronous write did. */
+    private static final long COMMIT_TIMEOUT_MILLIS = 5_000;
+    private static final String EXPECTED_SEQ = "Nats-Expected-Last-Subject-Sequence";
+    private static final String EXPECTED_SUBJECT = "Nats-Expected-Last-Subject-Sequence-Subject";
+    private static final String PREFIX = "$KV." + BUCKET + ".";
+    private volatile boolean groupCommit;
+    private volatile JetStream js;
+    /**
+     * ADR-099: commit acknowledgements are handled here, never on jnats' reader thread. That thread also delivers
+     * the reply a lease renewal waits for while holding a session's lock; a callback blocked on the same lock
+     * would stall every reply (found locally: every lease timed out).
+     */
+    private final java.util.concurrent.ExecutorService commits = Executors.newSingleThreadExecutor(r -> {
+        final Thread t = new Thread(r, "fix-store-commit");
+        t.setDaemon(true);
+        return t;
+    });
+    /** Told each time a session's numbers below the given one are committed: the write barrier releases them. */
+    volatile BiConsumer<SessionID, Integer> onDurable = (s, n) -> { };
     private static final long CAPACITY_CHECK_TICKS = 60_000 / TICK_MILLIS;   // once a minute
     private final AtomicLong gapFilled = new AtomicLong();
     private long ticks;
@@ -173,11 +207,57 @@ final class FixSessionStore implements MessageStoreFactory {
             kv = nats.keyValue(BUCKET);
             leases = nats.keyValue(LEASE_BUCKET);
             orders = nats.keyValue(ORDER_BUCKET);
+            js = nats.jetStream();
+            groupCommit = GROUP_COMMIT && fenceHonoured();
             available = true;
             log.warn("FIX session store available (NATS connected, buckets {} and {}); Logons accepted",
                 BUCKET, LEASE_BUCKET);
         } catch (final IOException | JetStreamApiException | RuntimeException e) {
             log.warn("FIX session store not ready yet: {}", e.toString());
+        }
+    }
+
+    /**
+     * ADR-099 precondition, checked rather than assumed: the server refuses a body fenced on another subject's stale
+     * sequence (NATS 2.11+). One that ignores the header would let a replaced owner overwrite a stored message.
+     */
+    private boolean fenceHonoured() {
+        final String probe = "_fence-probe-" + owner.replaceAll("[^A-Za-z0-9-]", "_");
+        try {
+            final long r = kv.put(probe + ".seq", new byte[] { '1' });
+            try {
+                js.publish(NatsMessage.builder().subject(PREFIX + probe + ".m").data(new byte[] { '1' })
+                    .headers(new Headers().put(EXPECTED_SEQ, Long.toString(r - 1)).put(EXPECTED_SUBJECT, PREFIX + probe + ".seq"))
+                    .build());
+                log.error("ALERT FIX session store: NATS did not refuse a write fenced on a stale sequence; every"
+                    + " message is stored synchronously (ADR-099 group commit off)");
+                return false;
+            } catch (final JetStreamApiException refused) {
+                log.info("FIX session store: group commit on (ADR-099)");
+                return true;
+            } finally {
+                kv.purge(probe + ".seq");
+                kv.purge(probe + ".m");
+            }
+        } catch (final IOException | JetStreamApiException e) {
+            log.warn("FIX session store: fence check failed ({}); storing synchronously", e.toString());
+            return false;
+        }
+    }
+
+    /** ADR-099: messages are group-committed (the server honours the fence and FIX_STORE_GROUP_COMMIT is not false). */
+    boolean groupCommit() {
+        return groupCommit;
+    }
+
+    /** ADR-099, for the write barrier: has this session's message {@code seq} still to be committed? */
+    boolean pending(final SessionID sid, final int seq) {
+        final Store s = stores.get(sid);
+        if (s == null || !groupCommit) {
+            return false;
+        }
+        synchronized (s) {
+            return s.leaseRevision > 0 && seq >= s.persistedSender;
         }
     }
 
@@ -506,6 +586,7 @@ final class FixSessionStore implements MessageStoreFactory {
 
     void close() {
         ticker.shutdownNow();
+        commits.shutdownNow();
         for (final Store s : stores.values()) {
             synchronized (s) {
                 s.release();
@@ -540,7 +621,8 @@ final class FixSessionStore implements MessageStoreFactory {
                 if (s.leaseRevision == 0) {
                     continue;
                 }
-                if (s.live || s.inFlight > 0 || now - s.lastUse < HOLD_MILLIS) {
+                if (s.live || s.inFlight > 0 || s.committing || !s.uncommitted.isEmpty()
+                    || now - s.lastUse < HOLD_MILLIS) {
                     lost = !s.renew() && s.live;
                 } else {
                     s.release();
@@ -596,6 +678,15 @@ final class FixSessionStore implements MessageStoreFactory {
         long created = System.currentTimeMillis();
         long seqRevision;        // 0 = no K.seq record yet
         int persistedSender = 1;
+        int persistedTarget = 1;
+        // ADR-099 group commit, owner only. claim: the next-sender number the next commit stores; uncommitted: bodies
+        // {seq, bytes} waiting for it; committing: one commit in flight; epoch: moved by every acquisition and release,
+        // so a commit acknowledged after the lease changed hands is ignored; failed: the session's store is gone.
+        final List<Object[]> uncommitted = new ArrayList<>();
+        int claim = 1;
+        boolean committing;
+        long epoch;
+        IOException failed;
         long leaseRevision;      // 0 = not held here
         long renewedAt;          // System.nanoTime() of the last take/renew: a wall-clock step cannot fake freshness
         boolean adoptPending;    // taken, but the acceptor has not seen the log yet
@@ -642,6 +733,7 @@ final class FixSessionStore implements MessageStoreFactory {
             adoptPending = true;
             try {
                 load();
+                fence();
             } catch (final IOException | RuntimeException e) {
                 log.warn("FIX session {}: reload after acquiring failed: {}", sid, e.toString());
                 release();
@@ -667,6 +759,7 @@ final class FixSessionStore implements MessageStoreFactory {
             adoptPending = true;
             try {
                 load();
+                fence();
             } catch (final IOException | RuntimeException e) {
                 release();
                 return false;
@@ -745,6 +838,7 @@ final class FixSessionStore implements MessageStoreFactory {
             }
             leaseRevision = 0;
             adoptPending = false;
+            epoch++;
             log.info("FIX session {} released by {}", sid, owner);
         }
 
@@ -790,6 +884,8 @@ final class FixSessionStore implements MessageStoreFactory {
                     seqRevision = e.getRevision();
                 }
                 persistedSender = sender;
+                persistedTarget = target;
+                claim = sender;
             } catch (final JetStreamApiException e) {
                 throw new IOException(e);
             }
@@ -898,6 +994,136 @@ final class FixSessionStore implements MessageStoreFactory {
             }
         }
 
+        /**
+         * ADR-099: a new owner moves K.seq before it stores anything, so a body its predecessor still has in flight
+         * (fenced on the revision that one last wrote) is refused from here on. A commit of the predecessor's that
+         * lands first only moves the revision again: reread, and fence on that.
+         */
+        private void fence() throws IOException {
+            epoch++;
+            uncommitted.clear();
+            committing = false;
+            failed = null;
+            for (int attempt = 0; groupCommit; attempt++) {
+                try {
+                    final byte[] value = (sender + " " + target + " " + created).getBytes(StandardCharsets.UTF_8);
+                    seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)
+                        : kv.update(key + ".seq", value, seqRevision);
+                    return;
+                } catch (final JetStreamApiException e) {
+                    if (attempt == 3) {
+                        throw new IOException("FIX session " + sid + ": could not fence K.seq", e);
+                    }
+                    load();
+                }
+            }
+        }
+
+        /** ADR-099: commit what is uncommitted, unless a commit is in flight (its acknowledgement starts the next). */
+        private void commit() {
+            if (committing || failed != null || leaseRevision == 0
+                || uncommitted.isEmpty() && claim == persistedSender && target == persistedTarget) {
+                return;
+            }
+            committing = true;
+            final long myEpoch = epoch;
+            final int claimed = claim;
+            final int tgt = target;
+            final String seqSubject = PREFIX + key + ".seq";
+            try {
+                final Headers fenced = new Headers().put(EXPECTED_SEQ, Long.toString(seqRevision))
+                    .put(EXPECTED_SUBJECT, seqSubject);
+                final CompletableFuture<?>[] acks = new CompletableFuture<?>[uncommitted.size() + 1];
+                int i = 0;
+                for (final Object[] b : uncommitted) {
+                    acks[i++] = js.publishAsync(NatsMessage.builder().subject(PREFIX + messageKey(key, (int) b[0]))
+                        .headers(fenced).data((byte[]) b[1]).build());
+                }
+                final CompletableFuture<PublishAck> cas = js.publishAsync(NatsMessage.builder().subject(seqSubject)
+                    .headers(new Headers().put(EXPECTED_SEQ, Long.toString(seqRevision)))
+                    .data((claimed + " " + tgt + " " + created).getBytes(StandardCharsets.UTF_8)).build());
+                acks[i] = cas;
+                uncommitted.clear();
+                CompletableFuture.allOf(acks).orTimeout(COMMIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                    .whenCompleteAsync((v, e) -> committed(myEpoch, cas, claimed, tgt, e), commits);
+            } catch (final RuntimeException e) {
+                committing = false;
+                failed = new IOException("FIX session " + sid + ": commit not sent: " + e, e);
+                notifyAll();
+                if (live) {
+                    ticker.execute(() -> onLost.accept(sid));
+                }
+            }
+        }
+
+        /** A commit's acknowledgement (or its failure), on a NATS callback thread. */
+        private void committed(final long myEpoch, final CompletableFuture<PublishAck> cas, final int claimed,
+                               final int tgt, final Throwable error) {
+            final boolean lost;
+            synchronized (this) {
+                if (myEpoch != epoch) {
+                    return;   // the lease changed hands meanwhile; the next owner fenced this commit out
+                }
+                committing = false;
+                if (error == null) {
+                    seqRevision = cas.join().getSeqno();
+                    persistedSender = claimed;
+                    persistedTarget = tgt;
+                    lastUse = System.currentTimeMillis();
+                    notifyAll();
+                    commit();
+                    lost = false;
+                } else {
+                    final Throwable cause = error instanceof java.util.concurrent.CompletionException
+                        && error.getCause() != null ? error.getCause() : error;
+                    failed = new IOException("FIX session " + sid + ": commit failed (" + cause + "); not sending",
+                        cause);
+                    if (cause instanceof JetStreamApiException) {
+                        release();   // someone else wrote this session: we are not its owner any more
+                    }
+                    lost = true;   // logged on or not: the barrier drops what it held for this commit
+                    notifyAll();
+                }
+            }
+            if (error == null) {
+                onDurable.accept(sid, claimed);
+            } else {
+                log.warn("{}", failed.getMessage());
+                if (lost) {
+                    ticker.execute(() -> onLost.accept(sid));
+                }
+            }
+        }
+
+        /** Wait (releasing the lock) for a commit to finish, until {@code deadline}. */
+        private void awaitCommit(final long deadline) throws IOException {
+            final long left = deadline - System.currentTimeMillis();
+            if (left <= 0) {
+                throw dropped(new IOException("FIX session " + sid + ": store commit timed out; not sending"));
+            }
+            try {
+                wait(left);
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException(e);
+            }
+        }
+
+        /** Before a synchronous write (a reset, a sequence reset, a reread): everything group-committed has landed. */
+        private void quiesce() throws IOException {
+            if (!groupCommit || leaseRevision == 0) {
+                return;
+            }
+            commit();
+            final long deadline = System.currentTimeMillis() + COMMIT_TIMEOUT_MILLIS;
+            while (failed == null && (committing || !uncommitted.isEmpty())) {
+                awaitCommit(deadline);
+            }
+            if (failed != null) {
+                throw failed;
+            }
+        }
+
         /** The fencing write: move K.seq only from the revision this gateway last saw. */
         private void writeSeq(final int nextSender) throws IOException {
             final byte[] value = (nextSender + " " + target + " " + created).getBytes(StandardCharsets.UTF_8);
@@ -905,6 +1131,8 @@ final class FixSessionStore implements MessageStoreFactory {
                 seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)
                     : kv.update(key + ".seq", value, seqRevision);
                 persistedSender = nextSender;
+                persistedTarget = target;
+                claim = nextSender;   // group commit writes synchronously only once quiesced
             } catch (final JetStreamApiException e) {
                 // Someone else wrote this session since we read it: we are not its owner any more.
                 final boolean wasLive = live;
@@ -972,6 +1200,19 @@ final class FixSessionStore implements MessageStoreFactory {
             if (!writable()) {
                 return true;
             }
+            if (groupCommit) {
+                final long deadline = System.currentTimeMillis() + COMMIT_TIMEOUT_MILLIS;
+                while (failed == null && uncommitted.size() >= MAX_UNCOMMITTED) {
+                    awaitCommit(deadline);   // ADR-099 bound: the sender waits, as it did for every write before
+                }
+                if (failed != null) {
+                    throw failed;
+                }
+                uncommitted.add(new Object[] { sequence, message.getBytes(StandardCharsets.UTF_8) });
+                claim = Math.max(claim, sequence + 1);
+                commit();
+                return true;
+            }
             writeSeq(sequence + 1);   // claim the number first: a body without its claim would be unfenced
             try {
                 kv.put(messageKey(key, sequence), message.getBytes(StandardCharsets.UTF_8));
@@ -986,6 +1227,9 @@ final class FixSessionStore implements MessageStoreFactory {
         @Override
         public synchronized void get(final int startSequence, final int endSequence,
                                      final Collection<String> messages) throws IOException {
+            if (groupCommit && endSequence >= persistedSender) {
+                quiesce();   // ADR-099: what the resend reads is committed first
+            }
             // FR-GFS-14: only the last RESEND_WINDOW are kept; a missing body is gap-filled by QuickFIX/J.
             final int from = Math.max(startSequence, endSequence - RESEND_WINDOW + 1);
             int missing = Math.max(0, from - startSequence);
@@ -1022,6 +1266,7 @@ final class FixSessionStore implements MessageStoreFactory {
         @Override
         public synchronized void setNextSenderMsgSeqNum(final int next) throws IOException {
             if (writable()) {   // transient (refusing a Logon here): the cache stays what the store says
+                quiesce();
                 writeSeq(next);
                 sender = next;
             }
@@ -1032,6 +1277,7 @@ final class FixSessionStore implements MessageStoreFactory {
             if (!writable()) {
                 return;   // a refused Logon must not move the number the next Logon is checked against
             }
+            quiesce();
             final int before = target;
             target = next;
             try {
@@ -1047,6 +1293,15 @@ final class FixSessionStore implements MessageStoreFactory {
             if (!writable()) {
                 return;
             }
+            if (groupCommit) {
+                if (failed != null) {
+                    throw failed;
+                }
+                sender++;
+                claim = Math.max(claim, sender);
+                commit();
+                return;
+            }
             if (sender + 1 != persistedSender) {   // set() persisted it for a stored message
                 writeSeq(sender + 1);
             }
@@ -1055,6 +1310,19 @@ final class FixSessionStore implements MessageStoreFactory {
 
         @Override
         public synchronized void incrNextTargetMsgSeqNum() throws IOException {
+            if (groupCommit) {
+                // ADR-099: committed with the next batch, not on its own. A crash before that resumes one number
+                // short; the client resends that message and the engine answers a duplicate ClOrdID (§4).
+                if (!writable()) {
+                    return;
+                }
+                if (failed != null) {
+                    throw failed;
+                }
+                target++;
+                commit();
+                return;
+            }
             setNextTargetMsgSeqNum(target + 1);
         }
 
@@ -1086,6 +1354,7 @@ final class FixSessionStore implements MessageStoreFactory {
 
         /** Under the lease: purge the day's messages and order rings, and store 1/1 (fenced). */
         void wipe() throws IOException {
+            quiesce();
             try {
                 nats.jetStreamManagement().purgeStream("KV_" + BUCKET,
                     PurgeOptions.subject("$KV." + BUCKET + "." + key + ".m.>"));
@@ -1106,6 +1375,7 @@ final class FixSessionStore implements MessageStoreFactory {
             if (!available) {
                 return;   // QuickFIX/J refreshes on every Logon; with the store down that Logon is refused next
             }
+            quiesce();
             load();
         }
     }

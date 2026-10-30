@@ -303,9 +303,12 @@ public final class FixGatewayAcceptor {
             settings.setString(sid, "KeyStoreType", "PKCS12");
             settings.setString(sid, "EnabledProtocols", "TLSv1.3,TLSv1.2");
         }
+        final FixWriteBarrier barrier = persistent ? new FixWriteBarrier(sessionStore) : null;
         if (persistent) {
             sessionStore.onAcquired = this::adopt;
+            sessionStore.onDurable = barrier::durable;   // ADR-099
             sessionStore.onLost = sid -> {
+                barrier.drop(sid);
                 final Session session = sessionOf(sid);
                 try {
                     if (session != null) {
@@ -324,6 +327,9 @@ public final class FixGatewayAcceptor {
             .withMessageFactory(new DefaultMessageFactory())
             .withQueueCapacity(INBOUND_QUEUE)   // ADR-092
             .build();
+        if (persistent) {
+            acceptor.setIoFilterChainBuilder(barrier.installer());   // ADR-099: stored before sent
+        }
         acceptor.start();
         log.info("FIX gateway acceptor on :{} for {} CompID(s), sessions {}", port, compIds.size(),
             persistent ? "in JetStream (ADR-086)" : "in memory");

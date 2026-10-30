@@ -21,5 +21,8 @@
 - [x] A reset Logon wins over the stored day (FR-GFS-17, ADR-086 §6c): the 10-29 rehearsal wedged CLIENT4/6/8
       for 50 min on "MsgSeqNum too low, expecting 180146". The reset is applied again under the lease.
 - [ ] Ship FR-GFS-17 at the next bring-up (rollout chat).
+- [x] Group commit with a write barrier (FR-GFS-18, ADR-099): ~6x per gateway locally (16.6K -> 101K execution
+      reports/s at 33 sessions), fence, lease and store-before-send kept.
+- [ ] Measure FR-GFS-18 on kind or GKE with the hxb FIX arm, store on.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

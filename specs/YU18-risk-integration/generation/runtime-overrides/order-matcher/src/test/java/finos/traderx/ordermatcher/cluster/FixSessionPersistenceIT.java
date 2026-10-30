@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -432,6 +433,42 @@ class FixSessionPersistenceIT {
         assertEquals("slow", er.get("11"), "the order in flight at the drain is answered on resume: " + er);
         assertEquals("Y", er.get("43"));
         c2.close();
+    }
+
+    /**
+     * ADR-099 (FR-GFS-18): with group commit the answer leaves the gateway only once its number is committed. NATS
+     * paused: nothing reaches the client. Resumed: the answer arrives, and it is the stored message. Falsifiable:
+     * without the write barrier the answer arrives while NATS is paused.
+     */
+    @Test
+    void anAnswerReachesTheClientOnlyOnceItIsStored() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT11");
+        assertTrue(stores.get(0).groupCommit(), "group commit is on against NATS 2.14");
+        final Client c1 = new Client(a, "CLIENT11");
+        assertEquals("A", c1.logon().get("35"));
+        final var docker = NATS.getDockerClient();
+        docker.pauseContainerCmd(NATS.getContainerId()).exec();
+        try {
+            c1.order("held", '2', 10);
+            c1.socket.setSoTimeout(1_200);
+            assertThrows(java.net.SocketTimeoutException.class, c1::read,
+                "an answer reached the client while NATS could store nothing");
+        } finally {
+            docker.unpauseContainerCmd(NATS.getContainerId()).exec();
+        }
+        c1.socket.setSoTimeout(15_000);
+        final Map<String, String> er = c1.awaitType("8");
+        assertEquals("held", er.get("11"));
+        try (io.nats.client.Connection nc = io.nats.client.Nats.connect(
+                "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222))) {
+            final int seq = Integer.parseInt(er.get("34"));
+            final var stored = nc.keyValue(FixSessionStore.BUCKET).get(FixSessionStore.messageKey(
+                FixSessionStore.keyOf(new quickfix.SessionID("FIX.4.4", "TRADERX", "CLIENT11")), seq));
+            assertEquals(seq, FixSessionStore.seqOf(stored.getValueAsString()), "the answer sent is the one stored");
+            assertTrue(stored.getValueAsString().contains("\u000111=held\u0001"));
+        }
+        c1.close();
     }
 
     /** A client that sent three orders and logged out; the session's lease stays with A, draining, for ~1 s. */

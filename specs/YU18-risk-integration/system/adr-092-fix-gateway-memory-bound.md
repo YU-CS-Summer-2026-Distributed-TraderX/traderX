@@ -72,6 +72,7 @@ once its ack had completed it: 22K orders/s × 12 s ≈ 264K. Every ingress path
      by jnats's default pending limit, plus ≤ 8,192 orders in the deadline queue (~3.4 MB; FR-FGM-06).
    - Per session: 256 × 2.5 KB inbound plus 2,048 × 0.7 KB unread.
    - Example: 64 sessions ≈ 230 MB.
+   - ADR-099 (group commit) adds at most ~0.6 MB per session: uncommitted bodies and the writes its barrier holds.
    - Neither term depends on how long a session has run, how many orders it has sent, or the FIX day. The 17:00
      reset changes nothing: no term grows between resets.
 5. **Answered orders leave the deadline queue** (FR-FGM-06). Once it holds more than 2 × the window, answered

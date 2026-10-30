@@ -89,7 +89,8 @@ class FixSessionStoreBoundIT {
                 }
                 final KeyValue kv = nc.keyValue(FixSessionStore.BUCKET);
                 final String prefix = FixSessionStore.keyOf(SID) + ".m.";
-                final long stored = kv.keys().stream().filter(k -> k.startsWith(prefix)).count();
+                // distinct: with ADR-099 the last batch may still be landing, and keys() lists a key written mid-scan twice
+                final long stored = kv.keys().stream().filter(k -> k.startsWith(prefix)).distinct().count();
                 assertTrue(stored <= window, sent + " messages left " + stored + " keys; the bound is " + window);
 
                 final List<String> resent = new ArrayList<>();
@@ -109,7 +110,9 @@ class FixSessionStoreBoundIT {
     @Test
     void aFullBucketDegradesInsteadOfEndingTheSession() throws Exception {
         try (Connection nc = Nats.connect(url())) {
-            freshBucket(nc, 64 * 1024);   // ~230 messages
+            // ~1,900 messages. ADR-099: larger than one group commit (FIX_STORE_MAX_UNCOMMITTED x ~270 B), as any real
+            // bucket is: a batch bigger than the whole bucket would evict its own K.seq before the commit lands.
+            freshBucket(nc, 512 * 1024);
             final FixSessionStore store = start("gw-full");
             final AtomicInteger lost = new AtomicInteger();
             store.onLost = sid -> lost.incrementAndGet();
@@ -118,13 +121,13 @@ class FixSessionStoreBoundIT {
                     .getConfiguration().getDiscardPolicy(), "the existing bucket was not moved to discard-oldest");
                 final MessageStore ms = store.create(SID);
                 assertTrue(store.acquire(SID), "lease");
-                for (int n = 1; n <= 2_000; n++) {
-                    send(ms, n);   // threw "maximum bytes exceeded" at ~230 before the amendment
+                for (int n = 1; n <= 6_000; n++) {
+                    send(ms, n);   // threw "maximum bytes exceeded" at ~1,900 before the amendment
                 }
                 assertEquals(0, lost.get(), "a full store ended the session");
-                assertEquals(2_001, ms.getNextSenderMsgSeqNum());
+                assertEquals(6_001, ms.getNextSenderMsgSeqNum());
                 final List<String> last = new ArrayList<>();
-                ms.get(2_000, 2_000, last);
+                ms.get(6_000, 6_000, last);
                 assertEquals(1, last.size(), "the newest message is still resendable");
             } finally {
                 store.close();

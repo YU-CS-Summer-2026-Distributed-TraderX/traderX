@@ -234,6 +234,12 @@ disconnect, and every reset Logon after it was refused the same way for 50 minut
      amendment too); neither was exercised on the rehearsal.
    - With FR-GFS-17 none is needed: the first reset Logon wins.
 
+### 6d. Amendment 2026-10-30: group commit (ADR-099, FR-GFS-18)
+
+The three synchronous writes per order (§1–§2) capped FIX at ~29K/s per gateway. Bodies and the `K.seq` claim are
+now committed per batch, still fenced on the session's `K.seq` revision, and a write barrier keeps every message off
+the socket until it is committed. See [ADR-099](adr-099-fix-store-group-commit.md).
+
 ### 7. NATS outage: no FIX without its store
 
 QuickFIX/J sends nothing it could not store, so without NATS no FIX message can go out. The gateway makes
