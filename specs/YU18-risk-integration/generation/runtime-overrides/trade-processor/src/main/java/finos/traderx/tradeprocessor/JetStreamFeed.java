@@ -219,8 +219,8 @@ public final class JetStreamFeed {
    * FR-DRS-31: the same loop split in two threads, so the next pull is in flight while the previous batch is applied.
    * Measured (downstream-at-400k.md §7.12): under ingest a lagging consumer is served ~70 ms per 1,000-message pull, and
    * the serial fetch-apply-ack loop added the apply time to every pull. Only for consumers whose cursor, committed
-   * with the view's snapshot, is the acknowledgement (the trade store, the order view snapshot): a batch acked ahead of
-   * an earlier one that failed would be lost to an ack-driven consumer, but a restart here resumes from the cursor.
+   * with the view's snapshot, is the acknowledgement (the trade store, the order view snapshot). A batch that fails is
+   * applied again until it succeeds (FR-DRS-35), so every batch handed to the apply thread is applied, in fetch order.
    * Batches and idle notices reach the apply thread in fetch order, so {@code idle} still follows every message the
    * stream held at its head.
    */
@@ -234,11 +234,18 @@ public final class JetStreamFeed {
           Object next = handoff.take();
           if (next instanceof Long head) { idle.accept(head); continue; }
           @SuppressWarnings("unchecked") List<Message> msgs = (List<Message>) next;
-          try {
-            handler.accept(msgs);
-            msgs.get(msgs.size() - 1).ack();
-          } catch (Exception x) {
-            log.error("JetStream feed {} batch of {} failed; the cursor still names the last applied message", filterSubject, msgs.size(), x);
+          // FR-DRS-35: a batch that fails is a barrier. It is applied again until it succeeds, and nothing queued behind
+          // it is applied first: a later batch would move the cursor past it. The handler skips a refused message itself.
+          for (long backoff = 100; ; backoff = Math.min(backoff * 2, 5000)) {
+            try {
+              handler.accept(msgs);
+              msgs.get(msgs.size() - 1).ack();
+              break;
+            } catch (RuntimeException x) {
+              log.error("JetStream feed {} batch of {} failed; applying it again in {} ms, and nothing after it before then",
+                  filterSubject, msgs.size(), backoff, x);
+              Thread.sleep(backoff);
+            }
           }
         }
       } catch (InterruptedException stop) {
@@ -279,14 +286,16 @@ public final class JetStreamFeed {
     JetStreamSubscription sub = null;
     long last = -1;     // stream sequence of the last message handed to the handler, -1 before the first
     long expect = 0;    // consumer sequence the next delivery must carry
+    boolean started = false;
     while (!Thread.currentThread().isInterrupted()) {
       if (sub == null) {
         try {
           sub = nc.jetStream().subscribe(filterSubject,
               PullSubscribeOptions.builder().stream(stream).configuration(resume(nc, stream, consumer, last)).build());
           expect = sub.getConsumerInfo().getDelivered().getConsumerSequence() + 1;
+          started = true;
         } catch (Exception x) {
-          if (last < 0) {
+          if (!started) {
             log.error("JetStream feed {} could not subscribe; this partition is NOT being projected", filterSubject, x);
             return;
           }
@@ -302,7 +311,10 @@ public final class JetStreamFeed {
         msgs = sub.fetch(batch, maxWait);
       } catch (Exception x) {
         if (Thread.currentThread().isInterrupted()) { return; }
-        log.warn("JetStream feed {} fetch failed: {}", filterSubject, x.toString());
+        // E.g. an ephemeral consumer the server deleted past its inactive threshold while the apply thread held this
+        // one at a barrier (FR-DRS-35): a new consumer resumes after the last message handed to the handler.
+        log.warn("JetStream feed {} fetch failed: {}; resuming at stream sequence {}", filterSubject, x.toString(), last + 1);
+        sub = drop(sub);
         try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
         continue;
       }
@@ -330,6 +342,10 @@ public final class JetStreamFeed {
             long head = nc.jetStreamManagement().getStreamInfo(stream).getStreamState().getLastSequence();
             var info = sub.getConsumerInfo();
             if (info.getNumPending() == 0 && info.getNumAckPending() == 0) { idle.accept(head); }
+          } catch (JetStreamApiException gone) {
+            if (gone.getErrorCode() != 404) { log.debug("JetStream feed {} idle check failed: {}", filterSubject, gone.toString()); continue; }
+            log.warn("JetStream feed {} consumer is gone ({}); resuming at stream sequence {}", filterSubject, gone.getMessage(), last + 1);
+            sub = drop(sub);
           } catch (Exception x) {
             log.debug("JetStream feed {} idle check failed: {}", filterSubject, x.toString());
           }
@@ -368,6 +384,34 @@ public final class JetStreamFeed {
     if (from < 0) { return consumer; }
     return ConsumerConfiguration.builder(consumer).startTime(null)
         .deliverPolicy(DeliverPolicy.ByStartSequence).startSequence(from + 1).build();
+  }
+
+  /**
+   * FR-DRS-35: a failure of the store (the database), not of the message. The message is valid and must be applied
+   * again, so it is a barrier: nothing after it is applied and no ack or cursor passes it. Anything else is a refusal of
+   * that one message (malformed, failed validation, a constraint), which a handler may skip, logged and counted. A
+   * refusal anywhere in the cause chain wins: a constraint inside a transaction exception is still a refusal.
+   * ponytail: classified by exception type; a store failure the driver reports as something else is skipped as a refusal.
+   */
+  public static boolean retryable(Throwable x) {
+    for (Throwable c = x; c != null; c = c.getCause()) {
+      if (c instanceof org.springframework.dao.DataIntegrityViolationException
+          || c instanceof java.sql.SQLIntegrityConstraintViolationException || c instanceof java.sql.SQLDataException) {
+        return false;
+      }
+    }
+    for (Throwable c = x; c != null; c = c.getCause()) {
+      if (c instanceof org.springframework.dao.DataAccessException
+          || c instanceof org.springframework.transaction.TransactionException || c instanceof java.sql.SQLException) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** {@code x} as an unchecked exception, for a handler rethrowing a {@link #retryable} failure to its feed. */
+  public static RuntimeException barrier(Exception x) {
+    return x instanceof RuntimeException r ? r : new IllegalStateException(x);
   }
 
   private static JetStreamSubscription drop(JetStreamSubscription sub) {

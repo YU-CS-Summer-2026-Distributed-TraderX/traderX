@@ -338,6 +338,9 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
         orderRepository.save(preserveTraceId(toRow(update))); // Standalone legacy test seam.
       } else {throw new IllegalStateException("managed order requires projection service");}
     } catch (Exception x) {
+      // FR-DRS-35: on the jetstream feed a store failure is redelivered (an update already applied is ignored by its
+      // (seq, ordinal)), not counted as rejected and acked. The core feed has no redelivery: it can only count.
+      if (jetstream() && JetStreamFeed.retryable(x)) { throw JetStreamFeed.barrier(x); }
       long n = rejected.incrementAndGet();
       log.warn("orderbook write rejected for order {} (rejected={}): {}",
           update.getId(), n, x.getMessage());

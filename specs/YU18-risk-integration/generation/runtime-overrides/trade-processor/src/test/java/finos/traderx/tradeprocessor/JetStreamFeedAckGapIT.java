@@ -137,6 +137,40 @@ class JetStreamFeedAckGapIT {
     }
   }
 
+  /**
+   * FR-DRS-35: a batch whose apply fails with a store failure is a barrier in the pipelined feed. It is applied again
+   * until it succeeds, and nothing after it is applied first. The failure outlasts the ephemeral consumer's
+   * inactive threshold (the fetch thread is held while the apply thread retries), so the feed must also come back
+   * on a consumer the server deleted. The handler applies like the trade store: a seq at or below its cursor is a replay.
+   */
+  @Test void aStoreFailureIsABarrierInThePipelinedFeed() throws Exception {
+    try (Connection nc = connect()) {
+      stream(nc, "BARRIER");
+      List<Long> applied = new java.util.concurrent.CopyOnWriteArrayList<>();
+      long[] cursor = {0};
+      long failUntil = System.currentTimeMillis() + 4000;
+      var consumer = io.nats.client.api.ConsumerConfiguration.builder(JetStreamFeed.fromSequence(SUBJECT, 1, 10))
+          .inactiveThreshold(Duration.ofSeconds(1)).build();
+      Thread feed = JetStreamFeed.startPipelined("t", nc, "BARRIER", SUBJECT, consumer, 10, Duration.ofMillis(200), msgs -> {
+        for (Message m : msgs) {
+          long seq = m.metaData().streamSequence();
+          if (seq <= cursor[0]) { continue; }
+          if (seq == 25 && System.currentTimeMillis() < failUntil) {
+            throw new org.springframework.dao.DataAccessResourceFailureException("database unavailable");
+          }
+          applied.add(seq);
+          cursor[0] = seq;
+        }
+      }, head -> { });
+      publish(nc, 1, 100);
+      await(() -> applied.size() >= 100, Duration.ofSeconds(30));
+      publish(nc, 101, 150);
+      await(() -> applied.size() >= 150, Duration.ofSeconds(30));
+      feed.interrupt();
+      assertThat(applied).as("every message applied, in order, none skipped").containsExactlyElementsOf(range(1, 150));
+    }
+  }
+
   private static List<String> names(Connection nc, String stream) {
     try { return nc.jetStreamManagement().getConsumerNames(stream); } catch (Exception x) { return List.of(); }
   }

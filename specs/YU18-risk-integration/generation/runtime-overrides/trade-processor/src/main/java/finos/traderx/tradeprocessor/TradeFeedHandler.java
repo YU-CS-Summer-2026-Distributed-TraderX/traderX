@@ -88,6 +88,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private final AtomicLong snapshots = new AtomicLong();
   private final AtomicLong snapshotRows = new AtomicLong();
   private final AtomicLong snapshotFailures = new AtomicLong();
+  private final AtomicLong refused = new AtomicLong();   // snapshot mode: messages skipped as refused (FR-DRS-35)
   // Row projection on the jetstream feed: per owned partition, the latest instant at which every side the
   // stream held had committed to SQL. The recon needs it after an outage, while the replay is still running.
   private final Map<Integer, Long> caughtUpAt = new ConcurrentHashMap<>();
@@ -237,7 +238,11 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
         if (runRegistry != null) { runRegistry.validate(t, runs.computeIfAbsent(t.getProjectionScope(), runRegistry::scope)); }
         if (view.apply(t, m.metaData().streamSequence(), (o, p) -> tradeService.book(o, p, bonds, at))) { applied.incrementAndGet(); }
       } catch (Exception x) {
-        log.error("trade store: /trades message skipped: {}", x.toString());
+        // FR-DRS-35: a store failure is a barrier. The feed applies this batch again (the view ignores what it already
+        // booked); booking the next side here would move the cursor, and the snapshot, past a valid one.
+        if (JetStreamFeed.retryable(x)) { throw JetStreamFeed.barrier(x); }
+        log.error("trade store: /trades message at stream sequence {} refused and skipped (refused={}): {}",
+            m.metaData().streamSequence(), refused.incrementAndGet(), x.toString());
       }
     }
     long duplicates = view.accounting().duplicates() - duplicatesBefore;
@@ -272,6 +277,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   public long snapshots() { return snapshots.get(); }
   public long snapshotRows() { return snapshotRows.get(); }
   public long snapshotFailures() { return snapshotFailures.get(); }
+  public long refused() { return refused.get(); }
   public Map<Integer, TradeView> views() { return views; }
   public String projectionMode() { return snapshotMode() ? "snapshot" : "rows"; }
 
@@ -369,6 +375,9 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
           tradeService.processTrade(order);
           applied.incrementAndGet();
         } catch (Exception individualFailure) {
+          // FR-DRS-35: on the jetstream feed a store failure is redelivered (the sides already booked are ignored as
+          // duplicates), not counted as refused and acked. The core feed has no redelivery: it can only count.
+          if (jetstream() && JetStreamFeed.retryable(individualFailure)) { throw JetStreamFeed.barrier(individualFailure); }
           refused++;
           log.error("Error processing trade order {}", order, individualFailure);
         }

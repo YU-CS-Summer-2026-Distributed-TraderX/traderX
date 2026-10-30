@@ -217,6 +217,22 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   the row's consensus sequence and ordinal is ignored. `JetStreamFeedAckGapIT` runs on a real JetStream. Before this
   rule the durable resumed after a kill -9 lost the batch lifetime A was delivered, and the running durable and the
   pipelined feed each lost a stolen pull response.
+- FR-DRS-35: A store failure SHALL be a barrier on every JetStream feed: no message after it is applied, and no
+  cursor, snapshot or ack passes it, until it is applied. A store failure is a failure of the database rather than
+  the message (a Spring `DataAccessException` or `TransactionException`, or an `SQLException`, other than a
+  constraint or data violation). The feed applies the message again: the serial feed by recreating its consumer
+  (FR-DRS-33), and the pipelined feed by retrying the failed batch, with backoff, before anything queued behind it.
+  Any other failure refuses that one message, which the handler SHALL skip, log and count. That covers a malformed
+  message, a failed run validation and a constraint, even when a transaction exception wraps the constraint. The
+  trade store counts refusals in `refused` on `/v2/projection-feed`. The row projections keep counting them in
+  `missingTradeSides` and `rejected`; on the core feed, which cannot redeliver, a store failure is still counted
+  there. A pipelined consumer the server deleted while its apply thread was held at a barrier (the inactive
+  threshold) SHALL be recreated after the last message it handed to the handler. Found by the codeX review of
+  2026-10-30 (§1): snapshot mode logged a side whose run lookup failed as skipped, booked the next one, and its
+  snapshot saved the cursor past a valid trade, which replay then ignored. `FeedBarrierTest` covers the trade
+  store, both row projections and the classification. The pipelined case of `JetStreamFeedAckGapIT` holds stream
+  sequence 25 at a barrier for 4 s against a 1 s inactive threshold. Before this rule, these four tests failed:
+  sequences 25..30 were lost, and nothing was thrown.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
@@ -229,7 +245,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   and every position equals an independent recomputation.
 - SC-DRS-03: `TradeSeqGapsTest`, `JetStreamFeedTest`, `OrderViewTest`, `TradeViewTest`,
   `BridgePartitionsTest`, `LedgerSettlementReconTest`, `ReconciliationProjectionGraceTest`,
-  `TradeSnapshotStoreConcurrencyIT`, `ReceiptLanesIT`, `ClusterReconPriceTest` and `TradeFeedRefusalTest` pass in an empty-root render.
+  `TradeSnapshotStoreConcurrencyIT`, `ReceiptLanesIT`, `ClusterReconPriceTest`, `TradeFeedRefusalTest` and `FeedBarrierTest` pass in an empty-root render.
 - SC-DRS-04: Live, with the default ingest queue and a 400K/s burst, the bridges' rejected ids equal
   the engine's fills minus the stream, which equal the recon's MISSING set. With the GKE queue, the
   same burst rejects 0.

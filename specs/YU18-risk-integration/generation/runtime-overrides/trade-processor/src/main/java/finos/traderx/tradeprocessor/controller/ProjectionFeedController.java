@@ -121,6 +121,7 @@ public final class ProjectionFeedController {
           m.put("snapshots", t.snapshots());
           m.put("snapshotRows", t.snapshotRows());
           m.put("snapshotFailures", t.snapshotFailures());
+          m.put("refused", t.refused());
           Map<String, Object> parts = new LinkedHashMap<>();
           t.views().forEach((p, v) -> parts.put(String.valueOf(p), Map.of("streamSeq", v.streamSeq(), "applied", v.applied(),
               "positions", v.positionCount(), "dirty", v.dirtyCount(), "duplicates", v.accounting().duplicates())));
