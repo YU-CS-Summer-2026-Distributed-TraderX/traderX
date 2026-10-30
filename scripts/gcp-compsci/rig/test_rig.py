@@ -591,7 +591,7 @@ class ReadModel(unittest.TestCase):
     def test_a_failed_accounting_fetch_fails_the_read(self):
         snapshot = 'case "$*" in *TRADE_PROJECTION_MODE*) echo snapshot;; *accounting*) {};; esac'
         self.assertIn('rc=1', self.rm('echo row', snapshot.replace('{}', 'return 22')))
-        ok = self.rm('echo row', snapshot.replace('{}', """echo '{"trades":{}}'"""))
+        ok = self.rm("printf '7\\t1\\t2\\n'", snapshot.replace('{}', """echo '{"trades":{}}'"""))
         self.assertIn('rc=0', ok)
         self.assertIn('accounting=', ok)
 
@@ -601,12 +601,13 @@ class ReadModel(unittest.TestCase):
     def test_a_failed_query_fails_the_read(self):
         self.assertIn('rc=1', self.rm('case "$1" in *positions*) return 1;; *) echo row;; esac'))
 
-    def test_the_hashes_are_of_the_exact_rows(self):
-        out = self.rm('echo "row-$1"')
-        import hashlib
-        want = hashlib.md5(b'row-select id,accountid,security,side,quantity,price,state from trades order by 1\n').hexdigest()[:16]
-        self.assertIn('rc=0', out); self.assertIn(f'trades={want}', out)
-
+    def test_each_table_is_one_in_db_aggregate(self):
+        # FR-PRG-27: count and two md5 sums per table, computed by MariaDB; never a dump (no ORDER BY, no row stream)
+        out = self.rm('printf \'7\\t1\\t2\\n\'')
+        self.assertIn('rc=0', out)
+        for t in ('trades', 'positions', 'orderbook'):
+            self.assertIn(f'{t}=7:1:2', out)
+        self.assertIn('rc=1', self.rm('echo row'))   # an answer that is not count:sum:sum is a failure, not a hash
 
 class SnapshotBase(unittest.TestCase):
     """FR-PRG-22: `rig.sh snapshot-base` records the row read model's side count once, only where the row check holds."""
