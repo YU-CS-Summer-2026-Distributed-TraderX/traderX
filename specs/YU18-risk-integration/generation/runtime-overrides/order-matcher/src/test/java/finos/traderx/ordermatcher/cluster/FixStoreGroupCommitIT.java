@@ -104,11 +104,23 @@ class FixStoreGroupCommitIT {
         }
     }
 
-    /** A server that does not refuse the probe keeps the synchronous store (a claim and a put per message). */
+    /**
+     * A server that ignores the cross-subject header keeps the synchronous store (a claim and a put per message). The
+     * bucket already holds messages, as production's does: the first probe passed NATS 2.10 here (codeX review
+     * 2026-10-30 §4), because 2.10 refused its stale write by checking the destination subject instead.
+     */
     @Test
     void aServerWithoutTheFenceKeepsTheSynchronousStore() throws Exception {
         try (GenericContainer<?> old = nats("nats:2.10-alpine")) {
             old.start();
+            try (Connection nc = Nats.connect(url(old))) {
+                nc.keyValueManagement().create(io.nats.client.api.KeyValueConfiguration.builder()
+                    .name(FixSessionStore.BUCKET).maxHistoryPerKey(1).ttl(java.time.Duration.ofDays(7))
+                    .maxBucketSize(1L << 30).storageType(io.nats.client.api.StorageType.File).build());
+                for (int i = 0; i < 7; i++) {
+                    nc.keyValue(FixSessionStore.BUCKET).put("other.seq" + i, "1".getBytes());   // probe revision r > 1
+                }
+            }
             final FixSessionStore store = start(old, "gw-old");
             try {
                 assertFalse(store.groupCommit(), "NATS 2.10 ignores the cross-subject fence");

@@ -113,6 +113,8 @@ final class FixSessionStore implements MessageStoreFactory {
     private static final long COMMIT_TIMEOUT_MILLIS = 5_000;
     private static final String EXPECTED_SEQ = "Nats-Expected-Last-Subject-Sequence";
     private static final String EXPECTED_SUBJECT = "Nats-Expected-Last-Subject-Sequence-Subject";
+    /** JetStream's "wrong last sequence" API error. */
+    static final int WRONG_LAST_SEQUENCE = 10071;
     private static final String PREFIX = "$KV." + BUCKET + ".";
     private volatile boolean groupCommit;
     private volatile JetStream js;
@@ -218,30 +220,61 @@ final class FixSessionStore implements MessageStoreFactory {
     }
 
     /**
-     * ADR-099 precondition, checked rather than assumed: the server refuses a body fenced on another subject's stale
-     * sequence (NATS 2.11+). One that ignores the header would let a replaced owner overwrite a stored message.
+     * ADR-099 precondition, checked rather than assumed: the server fences a write on ANOTHER subject's sequence
+     * (NATS 2.11+). One that ignores the cross-subject header would let a replaced owner overwrite a stored message.
      */
     private boolean fenceHonoured() {
         final String probe = "_fence-probe-" + owner.replaceAll("[^A-Za-z0-9-]", "_");
         try {
-            final long r = kv.put(probe + ".seq", new byte[] { '1' });
-            try {
-                js.publish(NatsMessage.builder().subject(PREFIX + probe + ".m").data(new byte[] { '1' })
-                    .headers(new Headers().put(EXPECTED_SEQ, Long.toString(r - 1)).put(EXPECTED_SUBJECT, PREFIX + probe + ".seq"))
-                    .build());
-                log.error("ALERT FIX session store: NATS did not refuse a write fenced on a stale sequence; every"
-                    + " message is stored synchronously (ADR-099 group commit off)");
-                return false;
-            } catch (final JetStreamApiException refused) {
+            final boolean honoured = fenceHonoured(kv, js, probe);
+            if (honoured) {
                 log.info("FIX session store: group commit on (ADR-099)");
-                return true;
-            } finally {
-                kv.purge(probe + ".seq");
-                kv.purge(probe + ".m");
+            } else {
+                log.error("ALERT FIX session store: NATS does not fence a write on another subject's sequence; every"
+                    + " message is stored synchronously (ADR-099 group commit off)");
             }
+            return honoured;
         } catch (final IOException | JetStreamApiException e) {
             log.warn("FIX session store: fence check failed ({}); storing synchronously", e.toString());
             return false;
+        } finally {
+            try {
+                kv.purge(probe + ".seq");
+                kv.purge(probe + ".m");
+            } catch (final IOException | JetStreamApiException e) {
+                log.debug("FIX session store: probe cleanup: {}", e.toString());
+            }
+        }
+    }
+
+    /**
+     * Two arms, so that neither outcome can come from the wrong check. A body subject's own last revision is never
+     * the probe's {@code .seq} revision r (they are different messages).
+     * <ol>
+     *   <li>Fenced on {@code .seq} at r, its current revision: only a server that checks the NAMED subject accepts
+     *       it. One that checks the destination subject refuses it.</li>
+     *   <li>Fenced on {@code .seq} at r - 1, stale: refused with wrong-last-sequence (10071), and by nothing
+     *       else.</li>
+     * </ol>
+     * The first probe checked only a stale write, onto a fresh subject; on a bucket already holding messages (r > 1) a
+     * server that ignores the header refused it too, and group commit came on (codeX review 2026-10-30 §4).
+     */
+    static boolean fenceHonoured(final KeyValue kv, final JetStream js, final String probe)
+            throws IOException, JetStreamApiException {
+        final String named = PREFIX + probe + ".seq";
+        final long r = kv.put(probe + ".seq", new byte[] { '1' });
+        try {
+            js.publish(NatsMessage.builder().subject(PREFIX + probe + ".m").data(new byte[] { '1' })
+                .headers(new Headers().put(EXPECTED_SEQ, Long.toString(r)).put(EXPECTED_SUBJECT, named)).build());
+        } catch (final JetStreamApiException checkedTheDestination) {
+            return false;
+        }
+        try {
+            js.publish(NatsMessage.builder().subject(PREFIX + probe + ".m").data(new byte[] { '2' })
+                .headers(new Headers().put(EXPECTED_SEQ, Long.toString(r - 1)).put(EXPECTED_SUBJECT, named)).build());
+            return false;
+        } catch (final JetStreamApiException refused) {
+            return refused.getApiErrorCode() == WRONG_LAST_SEQUENCE;
         }
     }
 

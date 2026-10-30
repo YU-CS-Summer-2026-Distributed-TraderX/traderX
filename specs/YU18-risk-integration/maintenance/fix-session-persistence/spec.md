@@ -79,9 +79,10 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 - FR-GFS-18: Where the server enforces a write fenced on another subject's sequence, outbound messages SHALL be
   stored by group commit (ADR-099). Bodies are published without waiting, each fenced on the session's `K.seq`
   revision, and one compare-and-set on `K.seq` per batch claims them with the inbound number. A message SHALL NOT
-  reach the client before its number is committed. Taking a lease SHALL rewrite `K.seq` before storing anything. A
-  server that accepts the stale-fenced probe, or `FIX_STORE_GROUP_COMMIT=false`, SHALL keep the synchronous store
-  with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted.
+  reach the client before its number is committed. Taking a lease SHALL rewrite `K.seq` before storing anything.
+  Group commit SHALL be on only if the server accepts a probe write fenced on another subject's current revision
+  and refuses the same write at a stale revision with wrong-last-sequence (10071). Otherwise, or with
+  `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
@@ -113,7 +114,8 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | Logon without reset on B through the same handover | 17 | `FixSessionPersistenceIT.aLogonWithoutReset…` | B continues A's numbering after the Logout (control, unchanged) |
 | NATS paused after Logon; an order sent | 18 | `FixSessionPersistenceIT.anAnswerReaches…` | no answer while paused; after, the answer arrives and is the stored message (barrier removed: arrives while paused) |
 | A replaced while its lease still looks fresh; A writes 6 after B stored 6 | 18 | `FixStoreGroupCommitIT.aReplacedOwners…` | A's commit refused, A's session dropped, slot 6 holds B's (fence header removed: A's overwrites it) |
-| NATS 2.10 (ignores the cross-subject fence) | 18 | `FixStoreGroupCommitIT.aServerWithout…` | group commit off, ALERT, messages stored synchronously |
+| NATS 2.10 (skips the cross-subject check), bucket already holding messages | 18 | `FixStoreGroupCommitIT.aServerWithout…` | group commit off, ALERT, messages stored synchronously |
+| probe vs a simulated server: honours / checks the destination; r = 1 and 8; stale refused with 10077 | 18 | `FixFenceProbeTest` | on only for the server that checks the named subject (first probe: on for the destination checker at r = 8, and on any API error) |
 | one gateway, 33 sessions, window 64, venue answers at once | 18 | `FixGatewayThroughputIT` (FIX_GW_BENCH=1) | 101,479 / 114,608 / 81,543 execution reports/s; synchronous store 16,587 / 16,117 / 20,857 |
 | A stalls, B takes over, A resumes | 04 | `FixSessionPersistenceIT.anExpiredOwnerIsFenced…` | unchanged: A answers nothing, submits nothing |
 | bucket created discard-new at 64 KiB, 2,000 messages | 15 | `FixSessionStoreBoundIT.aFullBucket…` | moved to discard-old; no write fails, session not lost (before: `maximum bytes exceeded [10077]`, the f15s cliff) |

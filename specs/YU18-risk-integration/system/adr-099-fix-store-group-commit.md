@@ -52,12 +52,19 @@ connection completes.
    - If the store fails, everything held is dropped, never sent.
 5. **Commit acknowledgements run on their own thread**, never jnats' reader thread. That thread also delivers the
    reply a lease renewal waits for under a session's lock, and the first build stalled every lease that way.
-6. **Checked, not assumed.**
-   - On connect the store writes a probe body fenced on a stale sequence. Only if the server refuses it is group
-     commit on.
-   - NATS 2.10 accepts it, as `FixStoreGroupCommitIT` shows, so a 2.10 server gets the synchronous store and an
-     ALERT. Production runs `nats:2.14-alpine`.
-   - `FIX_STORE_GROUP_COMMIT=false` also keeps the synchronous store.
+6. **Checked, not assumed.** On connect the store makes two writes to a probe subject, both fenced on the probe's
+   `.seq` record at revision r.
+   - Fenced at r, the current revision: it must be accepted. A server that checks the destination subject instead
+     refuses it.
+   - Fenced at r - 1, stale: it must be refused with wrong-last-sequence (10071). Any other refusal proves nothing.
+
+   Only a server that passes both gets group commit. Any other server gets the synchronous store with an ALERT, as
+   does `FIX_STORE_GROUP_COMMIT=false`.
+   - The first probe made only the stale write. That passed any API error, and a server that checks the destination
+     subject whenever the bucket held messages (codeX review 2026-10-30 §4; `FixFenceProbeTest`).
+   - Measured with r = 8: NATS 2.10 accepts both fenced writes (it skips the check when the header names another
+     subject), so it falls back. NATS 2.14 accepts the first and refuses the second with 10071. Production runs
+     `nats:2.14-alpine`.
 7. **Bounds.**
    - A session holds at most `FIX_STORE_MAX_UNCOMMITTED` (1,024) uncommitted bodies. The next `set()` waits for
      room, so a slow store slows the sender as it did before.
@@ -99,6 +106,10 @@ Tests:
 - **`FixStoreGroupCommitIT`:**
   - A replaced owner's late write never overwrites the new owner's message. Without the cross-subject header, it
     does.
-  - A server that does not enforce the fence keeps the synchronous store.
+  - A server that does not enforce the fence keeps the synchronous store (NATS 2.10, bucket already holding
+    messages).
+- **`FixFenceProbeTest`:** with a simulated server, the probe trusts only one that checks the named subject. The
+  case from the review, a server that checks the destination subject on a busy bucket, returned true with the first
+  probe. A stale write refused with another error (10077) proves nothing.
 - **`FixSessionPersistenceIT.anAnswerReaches…`:** without the barrier, the answer arrives while NATS is paused.
 - **`FixSessionStoreBoundIT`:** passes. Its full-bucket case now uses a 512 KiB bucket, larger than one batch.
