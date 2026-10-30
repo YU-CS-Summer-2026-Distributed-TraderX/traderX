@@ -45,3 +45,4 @@
 - The production render sets `PROJECTION_FEED_MODE=jetstream`, but the next rollout has not deployed it yet.
 - In snapshot mode no consumer replays a rejected trade side from the archive yet. The recon reports it
   MISSING, and the bridge names it (FR-DRS-16, FR-DRS-18).
+- [x] FR-DRS-36 migration for a persistent eod-price-db volume (`migrate-fr-drs-36.sql`), idempotent, with its rollback note.

@@ -264,6 +264,10 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   idempotent row projections) reads the new stream from its first message, as a restart would. An update of the
   stream's limits keeps its creation time. Found by the codeX review of 2026-10-30 (§6): cursor 5, a recreated
   stream of 8, and only 6..8 delivered. `StreamIdentityIT` and `StreamRecreateIT` run on NATS 2.10 and 2.14.
+  A persistent eod-price-db volume never runs `ri06.sql` again, so `stream_created_ns` reaches it only through
+  `scripts/gcp-compsci/rig/migrate-fr-drs-36.sql` (the same two idempotent statements), applied before the build runs
+  snapshot mode or order-view snapshots; rows mode never reads the column. Rolling the image back needs no schema
+  change: the earlier build names its columns, and a binding it leaves stale is refused, not skipped.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
