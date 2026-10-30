@@ -35,11 +35,14 @@ ORDER BY o.projectionscope, o.updatedat
 LIMIT 200;
 
 -- 3. Trade sides whose order has no row at all: the order's every update was lost. Expected 0.
---    Excludes "<epoch>-0": a booking through the gateway's /trades (the demo ticket, TYPE_TRADE_NEW) is a trade with no
---    order, carrying the reserved orderRef 0; the engine issues refs only on ORDER_NEW, from 1 (FR-DRS-33 recon note).
+--    A booking through the gateway's /trades (the demo ticket, TYPE_TRADE_NEW) is a trade with no order and since
+--    ADR-100 carries NO sourceorderid (bookingSource TICKET on the wire), so the IS NOT NULL guard is the whole
+--    exclusion. Rows published before ADR-100 carried the reserved "<epoch>-0" for a ticket; the generator now fails
+--    closed at 2^31-1 instead of wrapping onto 0, so that suffix can only be an old ticket, never an order.
 --    Those sides are still counted by G3's 1..N trade check.
 SELECT t.projectionscope, COUNT(DISTINCT t.sourceorderid) AS orders_without_row, COUNT(*) AS sides
 FROM trades t
 LEFT JOIN orderbook o ON o.projectionscope = t.projectionscope AND o.orderid = t.sourceorderid
-WHERE t.sourceorderid IS NOT NULL AND o.orderid IS NULL AND t.sourceorderid NOT LIKE '%-0'
+WHERE t.sourceorderid IS NOT NULL AND o.orderid IS NULL
+  AND t.sourceorderid NOT LIKE '%-0'   -- pre-ADR-100 ticket rows only; drop this line once those rows are purged
 GROUP BY t.projectionscope;

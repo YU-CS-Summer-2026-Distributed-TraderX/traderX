@@ -136,6 +136,12 @@ final class TradeNatsPublisher {
         return publisher.encode(new StringBuilder(512),publisher.lanes.poll());
     }
 
+    /** Test seam: the next queued record as the lane would publish it (null when the queue is empty). */
+    byte[] encodeQueued() {
+        final Rec r = lanes.poll();
+        return r == null ? null : encode(new StringBuilder(512), r);
+    }
+
     /** The trade side's id exactly as encode() publishes it (and as the projection's recon reports it). */
     String idOf(final Rec r) {
         return descriptor==null ? r.tradeSeq+(r.side == 0 ? "-B" : "-S") : descriptor.tradeId(r.tradeSeq,r.side);
@@ -161,12 +167,19 @@ final class TradeNatsPublisher {
             sb.append((char) ('0' + (frac / div) % 10));
         }
         sb.append(",\"accountId\":").append(r.accountId)
-          .append(",\"side\":\"").append(buy ? "Buy" : "Sell")
-          // sourceOrderId is already DECLARED on TradeOrder and already copied to Trade by
-          // TradeService, so this is a known property rather than an additive one — no
-          // FAIL_ON_UNKNOWN_PROPERTIES hazard, and no consumer change needed.
-          .append("\",\"sourceOrderId\":\"").append(epoch).append('-').append(r.orderRef)
-          .append('"');
+          .append(",\"side\":\"").append(buy ? "Buy" : "Sell").append('"');
+        // ADR-100: the booking's category is explicit. A /trades ticket (TYPE_TRADE_NEW) is a trade with
+        // no originating order: it carries NO sourceOrderId (the recon's join key is null, not a sentinel
+        // "<epoch>-0" a reader has to know about). A match names its order; orderRef 0 can only mean a
+        // ticket because the generator fails closed at MAX_ORDER_REF instead of wrapping onto 0.
+        // bookingSource is additive; trade-processor's TradeOrder ignores unknown properties, history-feed
+        // skips unknown keys. sourceOrderId is already DECLARED on TradeOrder and copied to Trade.
+        if (r.orderRef == 0) {
+            sb.append(",\"bookingSource\":\"TICKET\"");
+        } else {
+            sb.append(",\"bookingSource\":\"MATCH\",\"sourceOrderId\":\"").append(epoch).append('-')
+              .append(r.orderRef).append('"');
+        }
         if (descriptor!=null) {sb.append(descriptor.eventFields(r.consensusSequence));}
         sb.append("}}");
         return sb.toString().getBytes(StandardCharsets.UTF_8);

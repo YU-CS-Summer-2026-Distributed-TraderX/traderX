@@ -39,6 +39,12 @@
 - FR-ERH-F9: A PRE_OPEN retry of a key the engine already decided SHALL NOT be queued.
 - FR-ERH-F10: An out-of-range `securityId` on a price tick SHALL be ignored, and on a market trade SHALL be
   answered UNKNOWN_SECURITY.
+- FR-ERH-F13 (ADR-100): The order-reference generator SHALL issue references in `[1, 2^31-1]` only. An ORDER_NEW
+  arriving once the epoch has issued 2^31-1 SHALL be refused with `ORDER_REF_EXHAUSTED` before it consumes a
+  reference or an applied sequence; cancels and replaces SHALL still apply. A snapshot header whose `nextOrderRef`
+  is outside `[1, 2^31]` or whose `highestIssuedRef` exceeds 2^31-1 SHALL be refused at load. The member SHALL
+  expose `traderx_cluster_order_ref_headroom`. A `/trades` ticket booking SHALL publish `bookingSource: TICKET`
+  and no `sourceOrderId`; a matched fill SHALL publish `bookingSource: MATCH` and `<epoch>-<ref>`.
 
 ## Requirements: recovery and FIX state
 
@@ -58,7 +64,7 @@
 ## Success Criteria
 
 - SC-ERH-01: `GatewayAccessTest`, `BoundedBodyTest`, `ClusterIngressAuthTest`, `AccountTableOverflowTest`,
-  `OutOfRangeSecurityEventsTest`, `BookCapacityTest` and `ClOrdIdLedgerTest` pass in an empty-root render,
+  `OutOfRangeSecurityEventsTest`, `BookCapacityTest`, `OrderRefExhaustionTest` and `ClOrdIdLedgerTest` pass in an empty-root render,
   inside the full order-matcher suite.
 - SC-ERH-02: The trade-service suite, including the four `GatewayBearer` and propagation tests, and the
   console's `risk-control-proxy.test.mjs`, pass.

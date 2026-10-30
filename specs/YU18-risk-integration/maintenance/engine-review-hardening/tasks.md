@@ -14,6 +14,11 @@
       On this branch it ships with FR-XOD-18 (ADR-090 §2a); production gets the reader alone from branch
       claude/snapshot-reader-failclosed-00b31d33.
 
+- [x] FR-ERH-F13 (ADR-100, codeX review §13): the ref generator fails closed at 2^31-1 instead of casting through
+      0 and 1 again; wrapped snapshot headers refused; `traderx_cluster_order_ref_headroom`; `/trades` tickets carry
+      `bookingSource: TICKET` and no `sourceOrderId`. `OrderRefExhaustionTest` fails on the previous service (refs
+      -2147483648, -2147483647, -2147483646 issued). Deterministic core: fresh epoch, same image on all members.
+
 ## Still open
 
 - A live check of the legacy UI ticket on GKE (signed in, and with a wrong account).

@@ -614,6 +614,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     private long nextOrderRef = 1;
     /**
+     * ADR-100: the last order reference this epoch can issue. The wire carries the ref as an int
+     * (SBE, ack bytes 8..11, snapshot order rows), so {@code (int) nextOrderRef++} past this value
+     * would stamp a real order with 0 (the reserved "no order" ref every /trades ticket booking
+     * carries) and then recycle 1, 2, ... while idempotency and the read model still hold the
+     * originals. A NEW that arrives once {@code nextOrderRef} is past this is refused before it
+     * consumes anything; the epoch is then closed to new orders until a fresh epoch.
+     */
+    static final long MAX_ORDER_REF = Integer.MAX_VALUE;
+    /**
      * YU17 (ADR-072): how many of the refs {@link #nextOrderRef} has issued went to REPLAYED TAPE
      * FLOW rather than to an operator. {@code nextOrderRef - 1 - externalOrderRefs} is the
      * operator-only count, and the replay cannot move it by construction.
@@ -1004,6 +1013,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // Routing it around MatchingEngine is what makes "a swap changes nothing for the
             // instruments that already work" a structural fact rather than a claim.
             onSwapBook(session, timestamp);
+            return;
+        }
+        // ADR-100: the generator's ceiling, BEFORE the stream gate and the generator. Refused with no
+        // state change, exactly as a stream gap is: no ref, no appliedSeq, no engine. Checked on every
+        // NEW including duplicate retries, which also consume a ref on the admitted path.
+        if (event.type == InputEvent.TYPE_ORDER_NEW && nextOrderRef > MAX_ORDER_REF) {
+            refuseSequenced(session, RiskReason.ORDER_REF_EXHAUSTED, 0);
             return;
         }
         // ADR-090: the stream gate, BEFORE the generator assigns a ref. A gap, a full stream table and a
@@ -2590,6 +2606,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             throw new IllegalStateException("snapshot incomplete: nextOrderRef " + nextOrderRef
                 + " <= highestIssuedRef " + highestIssuedRef);
         }
+        // ADR-100: a header past the ceiling + 1 was written by a build that wrapped refs; refuse it
+        // rather than inherit duplicate references (the ceiling + 1 itself is a legitimately exhausted epoch).
+        if (nextOrderRef < 1 || nextOrderRef > MAX_ORDER_REF + 1 || highestIssuedRef > MAX_ORDER_REF) {
+            throw new IllegalStateException("snapshot incomplete: nextOrderRef " + nextOrderRef
+                + " / highestIssuedRef " + highestIssuedRef + " outside [1, " + (MAX_ORDER_REF + 1) + "]");
+        }
         // YU18 format 11, checked after every inherited invariant so those keep their own refusal.
         if (restoredFormat >= 11 && (recordTypesSeen & (1 << T_ORDER_TYPES)) == 0) {
             throw new IllegalStateException("snapshot incomplete: format 11 without T_ORDER_TYPES");
@@ -2837,6 +2859,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  release-store (read {@code engine().blpSeq()} first). */
     public long nextOrderRef() {
         return nextOrderRef;
+    }
+
+    /** ADR-100: order references this epoch can still issue; 0 = every further NEW is refused. */
+    public long orderRefHeadroom() {
+        return Math.max(0L, MAX_ORDER_REF - nextOrderRef + 1);
     }
 
     /**

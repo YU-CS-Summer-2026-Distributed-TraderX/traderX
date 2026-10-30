@@ -28,7 +28,8 @@
       gateway's fill feed reading each (FR-FFR-13).
 - [x] No feed acks past a delivery it did not apply: a jump in the consumer sequence, or a failed batch, recreates
       the consumer at the last applied message + 1, and a durable resumes from its ack floor (FR-DRS-33).
-- [x] The FR-DRS-33 order-fill recon is in the repo; its orphan query excludes `/trades` ticket bookings (`<epoch>-0`).
+- [x] The FR-DRS-33 order-fill recon is in the repo; its orphan query excludes `/trades` ticket bookings, which since
+      ADR-100 carry no `sourceorderid` (`bookingSource: TICKET`); the `<epoch>-0` suffix line covers only older rows.
       `JetStreamFeedAckGapIT`: kill -9, a lost pull response to the durable and to the pipelined feed.
 - [x] A store failure is a barrier, a refusal is skipped and counted (FR-DRS-35, codeX review 2026-10-30 §1): the
       trade store rethrows, the pipelined feed retries the batch before anything behind it, the row projections

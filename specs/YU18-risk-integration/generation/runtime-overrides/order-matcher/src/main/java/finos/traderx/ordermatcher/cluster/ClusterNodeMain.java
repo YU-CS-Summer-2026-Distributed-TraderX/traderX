@@ -490,6 +490,8 @@ public final class ClusterNodeMain {
                 + "# TYPE traderx_book_order_hash gauge\ntraderx_book_order_hash" + m + (d == null ? 0L : d.orderHash()) + "\n"
                 + "# TYPE traderx_book_position_hash gauge\ntraderx_book_position_hash" + m + (d == null ? 0L : d.positionHash()) + "\n"
                 + "# TYPE traderx_cluster_next_order_ref gauge\ntraderx_cluster_next_order_ref" + m + service.nextOrderRef() + "\n"
+                // ADR-100: refs left before the epoch fails closed on NEW; alert well before 0 (~3 h at 400K/s from 2^31).
+                + "# TYPE traderx_cluster_order_ref_headroom gauge\ntraderx_cluster_order_ref_headroom" + m + service.orderRefHeadroom() + "\n"
                 // YU18 (§7.9): bridge publish accounting. ingest_rejected > 0 = NATS dropped messages the
                 // bridge published (429 receipts); dropped = lost before NATS (full lane queue / publish error).
                 + "# TYPE traderx_bridge_published counter\n"

@@ -83,5 +83,13 @@ public enum RiskReason {
     /** ADR-090: a sequenced NEW ahead of its stream's next sequence; the ack's orderRef names the expected one. */
     OUT_OF_SEQUENCE,
     /** ADR-090: a new stream while EXACTLY_ONCE_MAX_STREAMS streams were all used within the idle threshold. */
-    STREAM_LIMIT
+    STREAM_LIMIT,
+    /**
+     * ADR-100: the epoch's order-reference generator has issued its last value
+     * ({@code Integer.MAX_VALUE}); this NEW consumed nothing and the venue issues no further
+     * references until a fresh epoch. Fail-closed by design: the alternative was a cast that
+     * wrapped a real order onto the reserved ref 0 and then onto ref 1 again. APPENDED, never
+     * inserted (the ordinal rides every snapshot order row and every egress ack byte 22).
+     */
+    ORDER_REF_EXHAUSTED
 }
