@@ -175,7 +175,9 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
       List<OrderUpdate> open = snapshotStore.load(viewScope, p);
       ViewPartition vp = new ViewPartition(cursor);
       for (OrderUpdate u : open) { view.apply(u); vp.inSql.add(u.getId()); }
-      JetStreamFeed.requireRetained(connection(), streamName(p), "order view", p, cursor);
+      // FR-DRS-36: the cursor is bound to the stream it was taken on; a recreated stream is refused, not resumed.
+      snapshotStore.bindStream(viewScope, p, JetStreamFeed.requireRetained(connection(), streamName(p), "order view", p,
+          cursor, snapshotStore.boundStream(viewScope, p)));
       viewParts.put(p, vp);
       String subject = JetStreamFeed.subject("/orders", p, partitionCount);
       feedThreads.add(JetStreamFeed.startPipelined("order-feed-p" + p, connection(), streamName(p), subject,

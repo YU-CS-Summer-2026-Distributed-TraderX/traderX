@@ -233,6 +233,18 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   store, both row projections and the classification. The pipelined case of `JetStreamFeedAckGapIT` holds stream
   sequence 25 at a barrier for 4 s against a 1 s inactive threshold. Before this rule, these four tests failed:
   sequences 25..30 were lost, and nothing was thrown.
+- FR-DRS-36: A sequence is not an identity. Every saved cursor (the trade store's and the order view's, in
+  `projection_cursor`) SHALL be bound to the stream it was taken on, by that stream's creation time in
+  `stream_created_ns`, before the first message after the resume is applied. A restart SHALL refuse a cursor past 0
+  bound to another creation time (`STREAM_RESET`, naming both times). A stream deleted and recreated under the same
+  name restarts its sequences, and once it grows past the cursor it passes both sequence checks (FR-DRS-08's
+  retention gap and reset). Resuming at the cursor + 1 would then skip its first messages for good. The remedy is
+  explicit: reconcile, then set the row's `stream_seq` to 0 and `stream_created_ns` to NULL. A NULL binding, from a
+  row written before this rule, is accepted once and bound. A cursor at 0 skips nothing and rebinds. A running feed
+  SHALL NOT resubscribe across streams: a cursor-acknowledged view stops its partition (ALERT), and a durable (the
+  idempotent row projections) reads the new stream from its first message, as a restart would. An update of the
+  stream's limits keeps its creation time. Found by the codeX review of 2026-10-30 (§6): cursor 5, a recreated
+  stream of 8, and only 6..8 delivered. `StreamIdentityIT` and `StreamRecreateIT` run on NATS 2.10 and 2.14.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

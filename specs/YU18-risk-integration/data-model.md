@@ -28,11 +28,13 @@ Completed-export receipts carry the existing readiness payload: individual CSV h
 ## Projection cursor (downstream read side)
 
 `projection_cursor(projection_scope VARCHAR(64), partition_id INTEGER, stream_seq BIGINT, consensus_seq BIGINT,
-snapshot_at DATETIME)`, primary key `(projection_scope, partition_id)`, created by `ri06.sql` and by both keys
+snapshot_at DATETIME, stream_created_ns BIGINT)`, primary key `(projection_scope, partition_id)`, created by `ri06.sql` and by both keys
 (`001-initialSchema.sql`, `900-migrations.sql`) of the YU18 `kubernetes-runtime/manifests/base/database-init-configmap.yaml`. In `TRADE_PROJECTION_MODE=snapshot` it records where
 each partition's last SQL snapshot sits in the JetStream capture stream. The snapshot writes it in the same
 transaction as the changed positions and blotter windows. A restart replays from `stream_seq + 1`
-([ADR-080](system/adr-080-downstream-read-side.md)).
+([ADR-080](system/adr-080-downstream-read-side.md)). `stream_created_ns` is the creation time (epoch ns) of the stream the cursor was taken on, bound before the first
+message is applied and NULL for a row written before FR-DRS-36. A restart refuses a stream with another creation
+time (STREAM_RESET): a stream recreated under the same name restarts its sequences.
 In row projection with one partition it also holds one row per cluster epoch, `projection_scope =
 'trade-seq:<trade id prefix>'` (`e1-<epoch>-`, or empty for legacy ids), `partition_id = 0`, with the last
 `tradeSeq` committed to SQL in `stream_seq`. Each trade batch writes it in its own transaction. A restart

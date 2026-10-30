@@ -35,6 +35,9 @@
       `JetStreamFeedAckGapIT`.
 - [x] `yu18-jetstream-feed.sh` establishes its crash window: the restarted process must replay >= 1 side the killed
       one had not snapshotted, or the run is refused (SC-DRS-02; codeX review 2026-10-30 §5).
+- [x] A saved cursor is bound to its stream's creation time; a recreated stream is refused at a restart, and a running
+      feed never resubscribes across streams (FR-DRS-36, codeX review 2026-10-30 §6). `StreamIdentityIT`,
+      `StreamRecreateIT` on NATS 2.10 and 2.14.
 
 ## Still open
 

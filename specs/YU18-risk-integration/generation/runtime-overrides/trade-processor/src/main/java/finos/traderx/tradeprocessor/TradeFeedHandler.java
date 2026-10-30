@@ -209,10 +209,12 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
    * holds that message the projection would silently skip whatever was discarded. Refuse to start
    * instead, naming both sequences. The remedy is retention sized to the outage (manifests) or a
    * rebuild from the archive; an idle partition does not trip this because its cursor follows the
-   * stream head while idle ({@link TradeView#idle}).
+   * stream head while idle ({@link TradeView#idle}). The cursor is bound to the stream it was taken on, and a recreated
+   * stream is refused rather than resumed (FR-DRS-36).
    */
   private void requireRetained(int partition, long cursor) throws Exception {
-    JetStreamFeed.requireRetained(connection(), streamName(partition), "trade store", partition, cursor);
+    snapshotStore.bindStream(snapshotScope, partition, JetStreamFeed.requireRetained(connection(), streamName(partition),
+        "trade store", partition, cursor, snapshotStore.boundStream(snapshotScope, partition)));
   }
 
   public String snapshotScope() { return snapshotScope; }

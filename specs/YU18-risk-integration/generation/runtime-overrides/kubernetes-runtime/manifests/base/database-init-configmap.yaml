@@ -335,8 +335,10 @@ data:
     CREATE TABLE IF NOT EXISTS projection_cursor (
      projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
      stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,
-     snapshot_at DATETIME, PRIMARY KEY (projection_scope, partition_id)
+     snapshot_at DATETIME, stream_created_ns BIGINT, PRIMARY KEY (projection_scope, partition_id)
     );
+    -- FR-DRS-36: the creation time of the stream the cursor was taken on; a recreated stream is refused.
+    ALTER TABLE projection_cursor ADD COLUMN IF NOT EXISTS stream_created_ns BIGINT;
     -- YU18 trade store, settlement on the ledger (§7.6): booked sides per partition and UTC trade date,
     -- written in the same transaction as the cursor. A side settles when its trade date + T+N business
     -- days has passed, so these counts are the ledger's settlement state.
@@ -728,8 +730,10 @@ data:
     CREATE TABLE IF NOT EXISTS projection_cursor (
      projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
      stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,
-     snapshot_at DATETIME, PRIMARY KEY (projection_scope, partition_id)
+     snapshot_at DATETIME, stream_created_ns BIGINT, PRIMARY KEY (projection_scope, partition_id)
     );
+    -- FR-DRS-36: the creation time of the stream the cursor was taken on; a recreated stream is refused.
+    ALTER TABLE projection_cursor ADD COLUMN IF NOT EXISTS stream_created_ns BIGINT;
     -- YU18 trade store, settlement on the ledger (§7.6): booked sides per partition and UTC trade date,
     -- written in the same transaction as the cursor. A side settles when its trade date + T+N business
     -- days has passed, so these counts are the ledger's settlement state.

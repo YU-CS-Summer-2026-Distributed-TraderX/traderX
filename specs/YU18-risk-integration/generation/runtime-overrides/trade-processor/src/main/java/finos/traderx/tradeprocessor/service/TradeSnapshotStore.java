@@ -50,6 +50,22 @@ public final class TradeSnapshotStore {
     return rows.isEmpty() ? null : rows.get(0);
   }
 
+  /** FR-DRS-36: creation time (epoch ns) of the stream {@code cursorScope}'s cursor was taken on; null if never bound. */
+  public static Long boundStream(JdbcTemplate jdbc, String cursorScope, int partition) {
+    List<Long> rows = jdbc.query("SELECT stream_created_ns FROM projection_cursor WHERE projection_scope=? AND partition_id=?",
+        (rs, i) -> (Long) rs.getObject(1, Long.class), cursorScope, partition);
+    return rows.isEmpty() ? null : rows.get(0);
+  }
+
+  /** Binds the cursor to the stream it resumes on, before the first message is applied (a new row starts at 0). */
+  public static void bindStream(JdbcTemplate jdbc, String cursorScope, int partition, long createdNs) {
+    jdbc.update("INSERT INTO projection_cursor(projection_scope,partition_id,stream_seq,consensus_seq,stream_created_ns)"
+        + " VALUES (?,?,0,0,?) ON DUPLICATE KEY UPDATE stream_created_ns=VALUES(stream_created_ns)", cursorScope, partition, createdNs);
+  }
+
+  public Long boundStream(String scope, int partition) { return boundStream(jdbc, scope, partition); }
+  public void bindStream(String scope, int partition, long createdNs) { bindStream(jdbc, scope, partition, createdNs); }
+
   public List<Position> loadPositions(String scope) {
     return jdbc.query("SELECT projectionscope, accountid, security, quantity, averagecostbasis, updated FROM positions WHERE projectionscope=?",
         (rs, i) -> {

@@ -43,6 +43,12 @@ public final class OrderViewSnapshotStore {
     return rows.isEmpty() ? -1 : rows.get(0);
   }
 
+  /** FR-DRS-36: the stream the partition's order cursor was taken on (TradeSnapshotStore.boundStream). */
+  public Long boundStream(String scope, int partition) { return TradeSnapshotStore.boundStream(jdbc, CURSOR_PREFIX + scope, partition); }
+  public void bindStream(String scope, int partition, long createdNs) {
+    TradeSnapshotStore.bindStream(jdbc, CURSOR_PREFIX + scope, partition, createdNs);
+  }
+
   public List<OrderUpdate> load(String scope, int partition) {
     return jdbc.query("SELECT payload FROM order_view_snapshot WHERE projection_scope=? AND partition_id=?",
         (rs, i) -> {

@@ -119,9 +119,24 @@ public final class JetStreamFeed {
    * Precondition for a cursor-resumed view (the trade store, the order view snapshot): replay starts at
    * {@code cursor + 1}, so a stream that no longer holds that message, or is not the stream the cursor was taken
    * from, would skip messages silently. Refuse instead, naming both sequences ({@code what} names the view).
+   *
+   * <p>FR-DRS-36: a sequence is not an identity. A stream deleted and recreated under the same name (NATS storage lost,
+   * SQL kept) that has grown past the cursor passes both sequence checks, and resuming at {@code cursor + 1} skips its
+   * first {@code cursor} messages. {@code bound} is the creation time (epoch ns) of the stream the cursor was taken on,
+   * null for a cursor recorded before it was; a cursor past 0 on another stream is refused. Returns this stream's
+   * creation time, for the caller to bind to its cursor.
    */
-  public static void requireRetained(Connection nc, String stream, String what, int partition, long cursor) throws Exception {
-    var state = nc.jetStreamManagement().getStreamInfo(stream).getStreamState();
+  public static long requireRetained(Connection nc, String stream, String what, int partition, long cursor, Long bound)
+      throws Exception {
+    var info = nc.jetStreamManagement().getStreamInfo(stream);
+    long created = createdNs(info);
+    if (cursor > 0 && bound != null && bound != created) {
+      throw new IllegalStateException("STREAM_RESET " + what + " partition " + partition + ": the snapshot cursor (stream"
+          + " sequence " + cursor + ") was taken on the stream " + stream + " created at " + instant(bound) + ", but " + stream
+          + " was created at " + instant(created) + "; resuming would skip its first " + cursor + " messages. Reconcile, then"
+          + " rebind: UPDATE projection_cursor SET stream_seq=0, stream_created_ns=NULL for this scope and partition");
+    }
+    var state = info.getStreamState();
     long first = state.getFirstSequence();
     if (state.getLastSequence() < cursor) {
       // Sequences never go backwards in one stream: this is a different (recreated) stream, e.g. NATS
@@ -135,6 +150,17 @@ public final class JetStreamFeed {
           + " stream sequence " + cursor + " but the oldest message " + stream + " retains is " + first + "; sequences "
           + (cursor + 1) + ".." + (first - 1) + " were discarded before this partition applied them");
     }
+    return created;
+  }
+
+  /** A stream's identity: its creation time in epoch ns. An update (limits) keeps it; a recreate does not. */
+  static long createdNs(io.nats.client.api.StreamInfo info) {
+    java.time.Instant t = info.getCreateTime().toInstant();
+    return t.getEpochSecond() * 1_000_000_000L + t.getNano();
+  }
+
+  private static java.time.Instant instant(long ns) {
+    return java.time.Instant.ofEpochSecond(Math.floorDiv(ns, 1_000_000_000L), Math.floorMod(ns, 1_000_000_000L));
   }
 
   /** The stream sequence of the last message stored on {@code subject}, 0 if it holds none. */
@@ -287,9 +313,26 @@ public final class JetStreamFeed {
     long last = -1;     // stream sequence of the last message handed to the handler, -1 before the first
     long expect = 0;    // consumer sequence the next delivery must carry
     boolean started = false;
+    long created = 0;   // FR-DRS-36: the stream this feed's sequences belong to
     while (!Thread.currentThread().isInterrupted()) {
       if (sub == null) {
         try {
+          long now = createdNs(nc.jetStreamManagement().getStreamInfo(stream));
+          if (started && now != created) {
+            // Recreated under this feed (NATS lost its storage): resuming at last + 1 would skip the new stream's
+            // first messages. A durable (the idempotent row projections) reads the new stream from its start, as a
+            // restart would. A cursor-acknowledged view stops: a restart resumes from its committed cursor, which
+            // requireRetained refuses on another stream.
+            if (consumer.getDurable() == null) {
+              log.error("ALERT JetStream feed {}: stream {} was recreated ({} -> {}); this partition is NOT being projected"
+                  + " and will not resume across streams", filterSubject, stream, instant(created), instant(now));
+              return;
+            }
+            log.warn("JetStream feed {}: stream {} was recreated ({} -> {}); reading it from its first message",
+                filterSubject, stream, instant(created), instant(now));
+            last = -1;
+          }
+          created = now;
           sub = nc.jetStream().subscribe(filterSubject,
               PullSubscribeOptions.builder().stream(stream).configuration(resume(nc, stream, consumer, last)).build());
           expect = sub.getConsumerInfo().getDelivered().getConsumerSequence() + 1;
