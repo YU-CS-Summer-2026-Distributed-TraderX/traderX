@@ -39,7 +39,7 @@ spec:
       - name: load
         image: $IMAGE
         command: ["node", "/load/binary-load.mjs"${args}, "--out", "/tmp/results.json"]
-        resources: {requests: {cpu: "1500m", memory: 1Gi}, limits: {memory: 2Gi}}
+        resources: {requests: {cpu: "400m", memory: 1Gi}, limits: {memory: 2Gi}}
         volumeMounts: [{name: load, mountPath: /load}]
       volumes: [{name: load, configMap: {name: binary-load}}]
 EOF

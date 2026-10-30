@@ -179,7 +179,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not
     resolve;
   - send limit orders of 1 at one operator-given price, unflagged (never sequenced);
-  - track every clOrdId until its first ack and never resend (a resend past the 256Ki-key window can book twice);
+  - track every clOrdId until its first ack and never resend (a resend past the 256Ki-key window can book twice), in
+    memory bounded by the in-flight window: an answer for a seq no longer open is a duplicate, so no per-answer set is
+    kept (production 2026-10-29 11:04 pm: that set outgrew node's heap after 18 minutes);
   - in each phase's closing pause (`--pause-ms`), stop sending, wait for its answers and send the difference between
     its accepted buys and sells on the other side until they are equal; a session still unbalanced at the boundary
     SHALL stop the pod (exit 1) before the roles swap. A pod that exits 0 leaves nothing of its own resting;

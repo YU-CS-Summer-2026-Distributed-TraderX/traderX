@@ -62,7 +62,6 @@ function session(index) {
   const s = {index, sent: 0, accepted: 0, rejected: 0, ambiguous: 0, protocolErrors: 0, duplicates: 0, unexpected: 0,
              acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, rejectReasons: {}, closed: false};
   const open = new Map();            // seq -> side, until the first ack
-  const answered = new Set();
   let seq = 0, buf = Buffer.alloc(0), credit = 0, up = false;
   const picks = [0, 0];   // per side: sides alternate with seq, so seq % n would give one side only half the set's accounts
   const sock = net.connect(cfg.port, cfg.host);
@@ -86,10 +85,11 @@ function session(index) {
       const status = buf[3], kind = buf[4], risk = buf[5], lo = buf.readUInt32LE(10), hi = buf.readUInt32LE(14);
       const q = lo & 0xffffff;
       if (hi !== NONCE || lo >>> 24 !== index) { s.unexpected++; continue; }
-      if (answered.has(q)) { s.duplicates++; continue; }
       const side = open.get(q);
-      if (side === undefined) { s.unexpected++; continue; }
-      open.delete(q); answered.add(q);
+      // Not open: a second answer if this session sent it (seq is per session, from 1), else not ours. No set of every
+      // answered seq: at 2,000/s per session that grew past node's heap in 18 minutes (production 2026-10-29 11:04 pm).
+      if (side === undefined) { q >= 1 && q <= seq ? s.duplicates++ : s.unexpected++; continue; }
+      open.delete(q);
       if (status === 1) { s.accepted++; side === 0 ? s.acceptedBuys++ : s.acceptedSells++; }
       else if (status === 0) { s.rejected++; s.rejectReasons[`kind${kind}:risk${risk}`] = (s.rejectReasons[`kind${kind}:risk${risk}`] ?? 0) + 1; }
       else if (status === 2) s.ambiguous++;
