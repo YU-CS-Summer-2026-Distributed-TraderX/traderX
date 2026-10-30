@@ -646,6 +646,116 @@ in and restarted 10 s later while the load went on. Afterwards:
 - **Duplicates in my own load generator.** Bash integer division made each step republish the previous step's
   last crosses, 2,400 sides in all. Every one was refused (FR-DRS-29) and the booked set stayed exact.
 
+### 7.13 Capture stream sizing for 1M msgs/s (FR-DRS-34)
+
+**Question.** Which capture layout and publish mode carry 400K orders/s of the bridges' JSON wire (1M msgs/s,
+~540 MB/s: 400K trade sides + 600K order updates) into JetStream with nothing lost? The history-store bake-off
+(`history-store-bakeoff.md` §5.1) left one `TRADERX_FEED` stream at 240–280K acked msgs/s and four per-partition
+streams at ~390K.
+
+**Answer.** One NATS server does not carry it, at any stream count. Three servers in one NATS cluster do: R1 streams
+`TRADERX_FEED_P<p>` (FR-DRS-32's layout) at P=12, spread four per server, with the receipt publish (§7.10). That
+stored exactly 1,000,000 msgs/s for 180 s with 0 lost and 0 backlog. It also held 1.25M msgs/s with 0 lost, and with
+24 reader lanes draining it concurrently. Use **3× c4d-standard-16** for NATS: c4d-standard-8 also held 1M msgs/s
+but at ~80% CPU on its busiest member.
+
+**Rig** (2026-10-30, 12:13–2:13 am ET, project-compsci-484414 / us-east1-b):
+- **NATS:** nats 2.14 (`nats:2.14-alpine`) on c4d-standard-32 with the production JetStream settings
+  (`vm/nats.conf`: 2M / 1 GB ingest queue). Store on Hyperdisk Balanced: 1 TB at 1,200 MiB/s, raised to 2,400 MiB/s
+  for the 180 s single-server runs.
+- **Load generator:** c4d-standard-32 running `HsbLoad` (`scripts/history-store-bakeoff/`, the bridges' exact JSON
+  encode), 16 publisher threads, each on its own connection.
+- **Reader:** c4d-standard-16 running `HistoryFeed sink=null`.
+- **Latency:** netem 0.5 ms on every VM's egress.
+
+**Method.** Each cell recreates the layout's streams and offers 400K orders/s (= 1M msgs/s), paced, for 60–180 s.
+- `mode=js`: `publishAsync` with an 8K window per thread.
+- `mode=receipt`: core publish with a reply subject and no wait, as `ReceiptLanes`. One unlimited dispatcher per
+  connection counts PubAcks and 429s.
+- **Loss** is published minus the stream message counts summed at the server, read once the streams stop growing.
+  Every receipt row below also satisfies stored = PubAcks and lost = 429s exactly.
+
+**One server** (c4d-standard-32, offered 1M msgs/s):
+
+| Layout | Streams | Publish | Run | Stored of published | Lost | Rate the server took |
+|---|---|---|---|---|---|---|
+| one stream | 1 | JetStream-acked | 60 s | 16.5M (publisher held back) | 0 | 276K msgs/s |
+| per partition, P=4 / 8 / 16 | 4 / 8 / 16 | JetStream-acked | 60 s | 21.5M / 21.6M / 20.9M | 0 | 358K / 361K / 348K |
+| per partition, P=16, 64 threads | 16 | JetStream-acked | 60 s | 18.1M | 0 | 302K |
+| per (feed, partition), P=4 / 8 / 16 | 8 / 16 / 32 | JetStream-acked | 60 s | 18.8M / 17.3M / 19.0M | 0 | 314K / 288K / 272K |
+| one stream | 1 | receipt | 60 s | 15.7M of 60.0M | 44.3M | ~260K |
+| per partition, P=8 | 8 | receipt | 180 s | 105.8M of 180.0M | 74.2M, all 429 | 415–505K |
+| per partition, P=16 | 16 | receipt | 180 s | 118.7M of 180.0M | 61.3M, all 429 | 416–490K |
+| per (feed, partition), P=8 | 16 | receipt | 180 s | 117.2M of 180.0M | 62.8M, all 429 | 411–480K |
+| per (feed, partition), P=16 | 32 | receipt | 180 s | 146.3M of 180.0M | 33.7M, all 429 | 424–470K |
+| per partition, P=16, no netem | 16 | receipt | 120 s | 94.9M of 120.0M | 25.1M, all 429 | 422–510K |
+
+The receipt rate is a range: stored ÷ (publish + the time until the streams stopped growing). That time includes up
+to 45 s of settle polling, so the low end is a floor and the high end removes the polling.
+
+**Three servers, one cluster** (R1 streams placed by server tag, publishers on the three-server URL list, offered
+1M msgs/s unless stated):
+
+| NATS hosts | Layout | Streams | Publish | Run | Stored of published | Lost | Backlog after the publish | Busiest-member CPU sampled |
+|---|---|---|---|---|---|---|---|---|
+| 3× c4d-standard-32 | per partition, P=3 | 3 | receipt | 60 s | 60.0M of 60.0M | 0 | <5 s | 3.1 cores |
+| 3× c4d-standard-32 | **per partition, P=12** | 12 | receipt | 180 s | **180.0M of 180.0M** | **0** | 0 s; 1.00M msgs/s in every 5 s window | 4.6 cores |
+| 3× c4d-standard-32 | per (feed, partition), P=12 | 24 | receipt | 180 s | 180.0M of 180.0M | 0 | 0 s | 7.4 cores |
+| 3× c4d-standard-32 | per partition, P=12, **1.25M msgs/s** offered | 12 | receipt | 120 s | 150.0M of 150.0M | 0 | 0 s | 8.2 cores |
+| 3× c4d-standard-32 | per partition, P=12, **24 reader lanes draining** | 12 | receipt | 180 s | 180.0M of 180.0M | 0 | 0 s; readers ~1.0M rows/s, 0.2–0.3 s behind, caught up at the end | 9.6 cores |
+| **3× c4d-standard-16** | per partition, P=12 | 12 | receipt | 180 s | 180.0M of 180.0M | 0 | 0 s | 4.5 of 16 cores |
+| 3× c4d-standard-8 | per partition, P=12 | 12 | receipt | 180 s | 180.0M of 180.0M | 0 | 0 s | 6.4 of 8 cores |
+| 3× c4d-standard-32 | per partition, P=12, 48 threads | 12 | JetStream-acked | 60 s | 32.9M (publisher held back) | 0 | — | 2.5 cores |
+
+**What the numbers say:**
+
+1. **One server is the wall, not one stream.** Past 8 streams, more streams (8, 16, 32) do not raise what one server
+   stores. Its disk was ≤16% busy and its CPU 35–60% idle. More streams only add per-stream ingest queues (2M each),
+   so more of the burst is buffered, fewer 429s are counted, and the drain is longer.
+   - The 60 s runs looked better than they were. Read 30 s after the publish, the queues still held millions
+     (32 streams × 2M), so a short run overstates one server. These runs used 180 s, settled before reading.
+   - Doubling the disk's provisioned throughput did not move the rate. Removing netem did not either.
+2. **The JetStream-acked publish is the wrong mode at this rate.** It never lost a message, but it never reached the
+   offered rate either. It held 270–360K msgs/s on one server and 548K on three, while the servers sat mostly idle.
+   More publisher threads did not help (64 threads: 302K). The publish/ack round trip is the limit, as §7.9 found.
+3. **Three servers carry it, with headroom.**
+   - At P=12 on three servers, ingest tracked the offered rate in every 5 s window for 180 s. That held at 1.25M
+     msgs/s, and with 24 reader lanes draining concurrently.
+   - The concurrent read matters because of §7.12 step 6, where one server stopped serving reads above ~135K
+     orders/s. Spread over three servers, the readers stayed 0.2–0.3 s behind.
+   - c4d-standard-8 members also held 1M msgs/s, but at 80% CPU there is no margin. c4d-standard-16 ran at 28%.
+4. **Per (feed, partition) is not needed for ingest.** At P=12 it stored the same as per partition, for twice the
+   streams and about 60% more CPU. The bake-off's slow consumer create (§5.2) is avoided anyway: that cost came from
+   a filtered consumer deep in a 150M-message shard. At 12 partitions spread over three servers each shard is 4×
+   smaller, and the cost is paid once per NATS restart.
+5. **The receipt count is exact when the loader is.**
+   - With the jnats dispatcher's default pending limits, the loader itself dropped receipts at ~1M/s (23M missing
+     at P=8). `ReceiptLanes` already sets `setPendingLimits(-1, -1)`, so the bridges do not have this gap. `HsbLoad`
+     now does too.
+   - With that fixed, every run satisfied stored = PubAcks and lost = 429s.
+   - Receipts arrive late under load: one single-server run had no reply for 10 s. A drop count should be judged
+     after the replies settle, not at a fixed timeout.
+
+**Recommendation** (FR-DRS-34):
+- **Layout:** `PROJECTION_FEED_STREAM_LAYOUT=partition` with P=12. That is 12 R1 `TRADERX_FEED_P<p>` streams placed
+  four per server on a three-server NATS cluster of c4d-standard-16, each with the production ingest queue.
+- **Publish:** keep the bridges on the receipt publish.
+- **Bridge connections:** a bridge lane should connect to the server holding its partition's stream, to avoid a
+  route hop. These runs did not: publishers spread over the URL list, so about two thirds of messages crossed a
+  route, and it still held 1.25M msgs/s.
+- **Production today:** one server (`cluster/gke/nats.yaml`, the 1-CPU pod of §7.8). It is good for the ~125K
+  orders/s of §7.12, not for 400K.
+
+**Reproduce** (from a checkout of commit `3ecfa9d8`, which carries the `HsbLoad` receipt mode, `vm/capture.sh` and
+`vm/nats-cluster.conf`; they are not on this branch):
+- On the NATS VMs: `vm/setup.sh feed`.
+- For a cluster: `vm/nats-cluster.conf` with `SERVER_NAME`, `TAG` (`s0`..`s2`) and `ROUTES` filled per member.
+- On the load VM: `vm/setup.sh load`, then `NATS_URL=a,b,c EXTRA=servers=3 TAG=c3 vm/capture.sh receipt 12 12 400000 180`.
+
+Raw logs (`cells.log`, per-cell `load.log` / `varz.log`, the reader's log, NATS iostat) are in the side-session
+notes, `feed-capture-1m-20261030/`. All five VMs and their disks were deleted at 2:13 am ET (verified: no `fc1m`
+instance or disk remains). Cloud cost: about $13.
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K

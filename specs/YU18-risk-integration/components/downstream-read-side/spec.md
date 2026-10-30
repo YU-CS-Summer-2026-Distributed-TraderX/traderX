@@ -224,6 +224,18 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   The engine issues order refs only on `ORDER_NEW`, from 1, so excluding `-0` cannot hide a real order; the ticket's
   sides are still counted by the rig's G3 trade check. Production 2026-10-30: disagree 0 against 3,392,648 agreeing
   filled orders; the only order without a row was `1-0`, the 2026-10-27 roll's ticket check (`13-B`, `14-S`).
+- FR-DRS-34: The capture SHALL be sized to store 1M msgs/s of the bridges' JSON wire (400K orders/s) with 0 lost
+  and 0 backlog, with the bridges publishing receipts (FR-DRS-32's layout, §7.10's publish):
+  - `PROJECTION_FEED_STREAM_LAYOUT=partition` with P=12;
+  - R1 streams `TRADERX_FEED_P<p>` placed four per server on a three-server NATS cluster of c4d-standard-16;
+  - each server with the GKE ingest queue (2M / 1 GB).
+
+  One NATS server stores ~0.4–0.5M msgs/s whatever the stream count (8–32), so it SHALL NOT be the 400K-tier capture.
+  The JetStream-acked publish held 270–548K msgs/s and SHALL NOT be the bridges' mode at that tier.
+  Measured: `docs/engineering/downstream-at-400k.md` §7.13, with `HsbLoad mode=receipt servers=3` (the bench harness
+  and `vm/capture.sh` are on commit `3ecfa9d8`, not landed here). On three servers, 180M of 180M were stored at 1.00M msgs/s, and
+  1.25M msgs/s was held with 0 lost and 24 reader lanes 0.2–0.3 s behind. Loss is read at the server, as published
+  minus stored after the streams settle, and every receipt run satisfies stored = PubAcks and lost = 429s.
 - FR-DRS-35: A store failure SHALL be a barrier on every JetStream feed: no message after it is applied, and no
   cursor, snapshot or ack passes it, until it is applied. A store failure is a failure of the database rather than
   the message (a Spring `DataAccessException` or `TransactionException`, or an `SQLException`, other than a
