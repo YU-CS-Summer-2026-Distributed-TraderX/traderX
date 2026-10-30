@@ -63,8 +63,31 @@ public final class JetStreamFeed {
     return out;
   }
 
+  /**
+   * ADR-097 (FR-DRS-32): the stream partition {@code p} is captured in. Layout "one" (the default): every subject in
+   * {@code base}. Layout "partition" with P > 1: one stream per partition, {@code <base>_P<p>}, capturing
+   * {@code /trades.<p>} and {@code /orders.<p>}. A stream is one serial ingest and delivery path in the server, and with
+   * one stream it was the read model's ceiling (downstream-at-400k.md §7.12).
+   */
+  public static String streamFor(String base, String layout, int partition, int partitionCount) {
+    return "partition".equalsIgnoreCase(layout) && partitionCount > 1 ? base + "_P" + partition : base;
+  }
+
+  /** Create (or bring to its limits) every stream the layout needs; per-partition streams share the byte limit. */
+  public static void ensureStreams(Connection nc, String base, String layout, int partitionCount, long maxBytes, Duration maxAge)
+      throws Exception {
+    if (streamFor(base, layout, 0, partitionCount).equals(base)) { ensureStream(nc, base, maxBytes, maxAge); return; }
+    for (int p = 0; p < partitionCount; p++) {
+      ensureStream(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, "/trades." + p, "/orders." + p);
+    }
+  }
+
   /** Idempotently create the capture stream over both feeds' subjects (bare and partitioned). */
   public static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge) throws Exception {
+    ensureStream(nc, stream, maxBytes, maxAge, "/trades", "/trades.*", "/orders", "/orders.*");
+  }
+
+  static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge, String... subjects) throws Exception {
     var jsm = nc.jetStreamManagement();
     StreamConfiguration existing = null;
     try {
@@ -84,7 +107,7 @@ public final class JetStreamFeed {
     }
     jsm.addStream(StreamConfiguration.builder()
         .name(stream)
-        .subjects("/trades", "/trades.*", "/orders", "/orders.*")
+        .subjects(subjects)
         .storageType(StorageType.File)
         .maxBytes(maxBytes)
         .maxAge(maxAge)
@@ -269,10 +292,15 @@ public final class JetStreamFeed {
         if (idle != null && System.nanoTime() >= nextIdle) {
           nextIdle = System.nanoTime() + IDLE_EVERY.toNanos();
           try {
-            // Stream head FIRST, then pending: pending 0 afterwards means no message of this subject at or
-            // below that head is undelivered, and every delivered one was handled before this fetch.
+            // Stream head FIRST, then the consumer: no message of this subject at or below that head may be
+            // undelivered (pending) or delivered and not yet applied (ack pending: the ack follows the apply).
+            // Pending alone is not enough: a message delivered to this client after the empty fetch is not
+            // pending, and moving the cursor past it made the next fetch ignore it as a replay. Measured
+            // (downstream-at-400k.md §7.12, P=16 at 50K orders/s): 1,408 of 3,000,000 sides lost, caught by the
+            // FR-DRS-29 accounting; with ack pending required, every step exact.
             long head = nc.jetStreamManagement().getStreamInfo(stream).getStreamState().getLastSequence();
-            if (sub.getConsumerInfo().getNumPending() == 0) { idle.accept(head); }
+            var info = sub.getConsumerInfo();
+            if (info.getNumPending() == 0 && info.getNumAckPending() == 0) { idle.accept(head); }
           } catch (Exception x) {
             log.debug("JetStream feed {} idle check failed: {}", filterSubject, x.toString());
           }

@@ -1,6 +1,6 @@
 # Downstream read side specification
 
-Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28; FR-DRS-28, FR-DRS-29..31 2026-10-29). Dependencies: JetStream on the existing NATS server, the YU18 trade
+Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28; FR-DRS-28, FR-DRS-29..32 2026-10-29). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
 ## Requirements
@@ -176,7 +176,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     stream's last sequence on that partition's subject, with the sums as unsigned decimal strings. It reads committed
     state only, so every replica gives the same answer.
   - With duplicates refused, the booked sides are distinct. Count, highest and the two sums equal to the closed form
-    over an expected range then establish the booked set as that range in O(P), at any volume (FR-PRG-19).
+    over an expected range then establish the booked set as that range in O(P), at any volume (FR-PRG-21).
 - FR-DRS-30: With `traderx.order-feed.persist=false` and `traderx.order-view.snapshot-ms` above 0, each order
   partition SHALL write, every `snapshot-ms`, its open orders that changed since the last snapshot (upsert, the update
   as JSON in `order_view_snapshot`), delete those that are no longer open, and move its cursor
@@ -187,7 +187,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     and not by the update rate.
   - With `snapshot-ms` 0 (the default) the view SHALL rebuild from the last `replay-seconds`, as before. An order
     that rested longer than that is then absent after a restart, which is why the production profile sets it
-    (FR-PRG-18).
+    (FR-PRG-20).
   - Terminal orders are not kept. After a restart the view holds the terminal ones the replay brings back.
 - FR-DRS-31: The consumers whose committed cursor is their acknowledgement (the trade store, the order view
   snapshot) SHALL pull pipelined. A fetch thread keeps the next pull in flight while an apply thread applies the
@@ -195,6 +195,17 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   overlap. Batches and idle notices SHALL reach the apply thread in fetch order. A stopped fetch thread SHALL stop
   its apply thread. Ack-driven consumers (row projection, durable) SHALL keep the serial fetch-apply-ack loop: there a
   batch acknowledged ahead of an earlier failed one would be lost.
+  - A cursor-acknowledged view SHALL move its cursor to the stream head when idle only when, read after the head,
+    its consumer has nothing pending AND nothing ack pending (the ack follows the apply). Before this rule only
+    "pending" was checked. A message delivered to the client after an empty fetch is not pending, so the cursor
+    passed it and the next fetch ignored it as a replay: 1,408 of 3,000,000 sides were lost at P=16 and 50K orders/s,
+    and the FR-DRS-29 accounting named the deficit. `JetStreamFeedIdleTest` pins the rule on both loops.
+- FR-DRS-32: `traderx.feed.stream-layout=partition` (`PROJECTION_FEED_STREAM_LAYOUT`) with P > 1 SHALL capture each
+  partition in its own stream, `<stream>_P<p>`, subjects `/trades.<p>` and `/orders.<p>`, each with the stream
+  limit divided by P. Every feed, retention check, accounting read and ledger-recon reader SHALL use the partition's
+  stream. The default `one` keeps the single stream. A stream is one serial ingest-and-delivery path in NATS. On
+  the bench one stream stored ~95K of 405K msgs/s offered, while eight per-partition streams stored 357K msgs/s with
+  none dropped (ADR-097).
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
@@ -226,6 +237,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - every position equal to the net of the sides.
   Negative controls: with the view snapshot off (`-Dsrm.viewSnapshotMs=0`) the view holds 0 of 150, and with the
   duplicate refusal removed 1,501 sides are booked. `TradeViewTest` covers the refusal and epoch handling directly.
+  It runs on the per-partition layout by default and on the single stream with `-Dsrm.layout=one`, and passes on both.
 - SC-DRS-05: Live, `yu18-projection-effect-end.sh NEGATIVE=1` books a cross while trade-processor is scaled
   to 0. On the core feed, after it returns, SQL holds 4 of 6 sides and `missingTradeSides` is 2. On the
   production render (FR-DRS-25), SQL holds 6 of 6 sides, positions are +15/-15 and equal the rows, and

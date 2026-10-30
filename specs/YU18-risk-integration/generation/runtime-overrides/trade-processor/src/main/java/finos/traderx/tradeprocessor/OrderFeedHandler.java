@@ -68,6 +68,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   @Value("${traderx.feed.partition-count:1}") int partitionCount = 1;
   @Value("${traderx.feed.owned:all}") String ownedPartitions = "all";
   @Value("${traderx.feed.stream:TRADERX_FEED}") String stream = "TRADERX_FEED";
+  @Value("${traderx.feed.stream-layout:one}") String streamLayout = "one";
   @Value("${traderx.feed.stream-max-bytes:8589934592}") long streamMaxBytes = 8L << 30;
   @Value("${traderx.feed.stream-max-age-hours:24}") long streamMaxAgeHours = 24;
   // How long a pull waits for a FULL batch. Measured: at 10 ms the fetch returned partial batches
@@ -144,7 +145,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   }
 
   private void startJetStream() throws Exception {
-    JetStreamFeed.ensureStream(connection(), stream, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
+    JetStreamFeed.ensureStreams(connection(), stream, streamLayout, partitionCount, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
     if (persist && writeLock != null) { writeLock.ensurePartitions(partitionCount); }
     if (viewSnapshots()) { startSnapshottedView(); return; }
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
@@ -154,7 +155,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
       var consumer = persist
           ? JetStreamFeed.durable("tp-orders-p" + p, subject)
           : JetStreamFeed.replayWindow(subject, Duration.ofSeconds(replaySeconds));
-      feedThreads.add(JetStreamFeed.start("order-feed-p" + p, connection(), stream, subject, consumer,
+      feedThreads.add(JetStreamFeed.start("order-feed-p" + p, connection(), streamName(p), subject, consumer,
           BATCH_SIZE, Duration.ofMillis(fetchWaitMillis), msgs -> onJetStreamBatch(p, msgs)));
     }
     log.info("order feed: jetstream mode, {} of {} partitions owned, persist={}", feedThreads.size(), partitionCount, persist);
@@ -174,10 +175,10 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
       List<OrderUpdate> open = snapshotStore.load(viewScope, p);
       ViewPartition vp = new ViewPartition(cursor);
       for (OrderUpdate u : open) { view.apply(u); vp.inSql.add(u.getId()); }
-      JetStreamFeed.requireRetained(connection(), stream, "order view", p, cursor);
+      JetStreamFeed.requireRetained(connection(), streamName(p), "order view", p, cursor);
       viewParts.put(p, vp);
       String subject = JetStreamFeed.subject("/orders", p, partitionCount);
-      feedThreads.add(JetStreamFeed.startPipelined("order-feed-p" + p, connection(), stream, subject,
+      feedThreads.add(JetStreamFeed.startPipelined("order-feed-p" + p, connection(), streamName(p), subject,
           JetStreamFeed.fromSequence(subject, cursor + 1, BATCH_SIZE), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
           msgs -> onViewBatch(partition, msgs), head -> onViewIdle(partition, head)));
       log.info("order view: partition {} loaded {} open orders, cursor stream_seq={}", p, open.size(), cursor);
@@ -243,6 +244,8 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     return out;
   }
   public String streamName() { return stream; }
+  /** The stream partition {@code p} is read from (FR-DRS-32). */
+  public String streamName(int p) { return JetStreamFeed.streamFor(stream, streamLayout, p, Math.max(1, partitionCount)); }
   public int partitionCount() { return Math.max(1, partitionCount); }
   public io.nats.client.Connection natsConnection() { return connection(); }
 

@@ -35,7 +35,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * FR-DRS-29 and FR-DRS-30, the production snapshot read model across a restart, on the shipped schema with a real
- * JetStream: P = 2, trades in the trade store, orders in the memory-only view with its SQL snapshot.
+ * JetStream: P = 2, trades in the trade store, orders in the memory-only view with its SQL snapshot, one stream per
+ * partition (FR-DRS-32; {@code -Dsrm.layout=one} for the single stream).
  *
  * <p>Lifetime A books 1,000 sides and opens 300 orders (100 then fill). It stops; the outage outlasts the view's
  * replay window (1 s); 500 more sides, one second copy of side 1200 and 50 cancels arrive while it is down.
@@ -56,6 +57,8 @@ class SnapshotReadModelIT {
   private static final int P = 2, ACCOUNTS = 20;
   // A/B: -Dsrm.viewSnapshotMs=0 is the replay-window view; the open orders of lifetime A must then be missing.
   private static final String VIEW_SNAPSHOT_MS = System.getProperty("srm.viewSnapshotMs", "500");
+  // FR-DRS-32: the production profile's layout, one stream per partition; -Dsrm.layout=one runs the single stream.
+  private static final String LAYOUT = System.getProperty("srm.layout", "partition");
   private final ObjectMapper json = new ObjectMapper();
   private final HttpClient http = HttpClient.newHttpClient();
 
@@ -158,6 +161,7 @@ class SnapshotReadModelIT {
         "--spring.jpa.hibernate.ddl-auto=none", "--spring.sql.init.mode=never",
         "--nats.address=nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222),
         "--traderx.feed.mode=jetstream", "--traderx.feed.partition-count=" + P, "--traderx.feed.fetch-wait-ms=50",
+        "--traderx.feed.stream-layout=" + LAYOUT,
         "--traderx.trade-projection.mode=snapshot", "--traderx.trade-projection.snapshot-ms=500",
         "--traderx.order-feed.persist=false", "--traderx.order-view.replay-seconds=1",
         "--traderx.order-view.snapshot-ms=" + VIEW_SNAPSHOT_MS,

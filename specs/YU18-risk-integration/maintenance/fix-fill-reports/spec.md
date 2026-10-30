@@ -50,6 +50,11 @@ subscription. No engine, wire, snapshot or consensus change.
   the gateway. Every gateway with FIX on receives every order update on the venue; `FIX_FILL_FEED=0` is the
   opt-out for a throughput rig.
 
+- FR-FFR-13: The fill feed SHALL read every capture stream of the base name (`PROJECTION_FEED_STREAM`): the one
+  stream, or one stream per partition, `<base>_P<p>` (ADR-097). Each order subject of each stream gets its own
+  ordered consumer bound to that stream, so each partition's fills arrive in order, once each. `jetstream` mode
+  SHALL refuse while no such stream captures an order subject. `FixFillFeedIT.perPartitionStreamsAreEachReadThroughTheirOwnOrderedConsumer`.
+
 ## Acceptance
 
 | Case | FR | Test | Expected |

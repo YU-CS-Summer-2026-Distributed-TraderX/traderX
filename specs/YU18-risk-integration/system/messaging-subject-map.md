@@ -202,9 +202,13 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
 - JetStream stream `TRADERX_FEED` (`PROJECTION_FEED_STREAM`), file storage, subjects `/trades`,
   `/trades.*`, `/orders`, `/orders.*`. trade-processor creates it idempotently and consumes it with one
   durable pull consumer per owned partition when `PROJECTION_FEED_MODE=jetstream`.
+  With `PROJECTION_FEED_STREAM_LAYOUT=partition` (ADR-097, FR-DRS-32) and P > 1 there is instead one stream per
+  partition, `TRADERX_FEED_P<p>`, subjects `/trades.<p>` and `/orders.<p>`, each with the stream limit divided by P.
+  The two layouts overlap on subjects, so a switch deletes `TRADERX_FEED` first (after the projection has drained).
 - `cluster-gateway` with `FIX_FILL_FEED=jetstream` (ADR-084, the CompSci render) reads `/orders` and
   `/orders.*` from `TRADERX_FEED` through two ephemeral JetStream ordered (push) consumers per gateway,
-  starting at "new", recreated at the last delivered sequence after a gap. `core` subscribes the same
+  starting at "new", recreated at the last delivered sequence after a gap. Under the partition layout it opens one ordered consumer per
+  `TRADERX_FEED_P<p>` on that stream's `/orders.<p>` (FR-FFR-13). `core` subscribes the same
   two subjects without the stream.
 - FIX session store (ADR-086, `FIX_SESSION_STORE=jetstream`): KV bucket `FIX_SESSIONS` (stream
   `KV_FIX_SESSIONS`, subjects `$KV.FIX_SESSIONS.<K>.seq` and `$KV.FIX_SESSIONS.<K>.m.<n>`, history 1, max age 7 d,

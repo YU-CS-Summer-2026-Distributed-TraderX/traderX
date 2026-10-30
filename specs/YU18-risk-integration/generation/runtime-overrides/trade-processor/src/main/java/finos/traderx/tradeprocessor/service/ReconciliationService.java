@@ -232,7 +232,10 @@ public class ReconciliationService {
         List<BlotterEntry> fresh = page.stream().filter(e -> e.tradeSeq() > cursor).toList();
         if (fresh.isEmpty()) return;
         if (ledger == null) {
-            ledger = new LedgerReader(ledgerFeed.natsConnection(), ledgerFeed.streamName(), ledgerFeed.partitionCount(),
+            int n = ledgerFeed.partitionCount();
+            String[] streams = new String[n];
+            for (int p = 0; p < n; p++) { streams[p] = ledgerFeed.streamName(p); }
+            ledger = new LedgerReader(ledgerFeed.natsConnection(), streams, n,
                 fresh.get(0).execTimeMillis() - LEDGER_START_SLACK.toMillis());
         }
         int partitions = ledgerFeed.partitionCount();
@@ -315,34 +318,46 @@ public class ReconciliationService {
         final Map<String, LedgerSide> pending = new java.util.HashMap<>();
         final PartitionHeads heads = new PartitionHeads();
         long headOf(String subject) { return heads.headOf(subject); }
-        private final io.nats.client.JetStreamSubscription sub;
+        private final List<io.nats.client.JetStreamSubscription> subs = new java.util.ArrayList<>();
         private final ObjectMapper json = new ObjectMapper();
 
-        LedgerReader(io.nats.client.Connection nc, String stream, int partitions, long startMillis) throws Exception {
-            String filter = partitions <= 1 ? "/trades" : "/trades.*";
-            var config = io.nats.client.api.ConsumerConfiguration.builder().filterSubject(filter)
-                .ackPolicy(io.nats.client.api.AckPolicy.None)
-                .deliverPolicy(io.nats.client.api.DeliverPolicy.ByStartTime)
-                .startTime(java.time.ZonedDateTime.ofInstant(Instant.ofEpochMilli(Math.max(0, startMillis)), java.time.ZoneOffset.UTC))
-                .inactiveThreshold(java.time.Duration.ofMinutes(5)).build();
-            sub = nc.jetStream().subscribe(filter, io.nats.client.PullSubscribeOptions.builder().stream(stream).configuration(config).build());
+        /** One subscription per distinct stream: the one capture stream, or one per partition (FR-DRS-32). */
+        LedgerReader(io.nats.client.Connection nc, String[] streams, int partitions, long startMillis) throws Exception {
+            java.util.Map<String, String> filters = new java.util.LinkedHashMap<>();
+            for (int p = 0; p < streams.length; p++) {
+                boolean shared = streams.length < 2 || streams[0].equals(streams[streams.length - 1]);
+                filters.putIfAbsent(streams[p], partitions <= 1 ? "/trades" : shared ? "/trades.*" : "/trades." + p);
+            }
+            for (var f : filters.entrySet()) {
+                var config = io.nats.client.api.ConsumerConfiguration.builder().filterSubject(f.getValue())
+                    .ackPolicy(io.nats.client.api.AckPolicy.None)
+                    .deliverPolicy(io.nats.client.api.DeliverPolicy.ByStartTime)
+                    .startTime(java.time.ZonedDateTime.ofInstant(Instant.ofEpochMilli(Math.max(0, startMillis)), java.time.ZoneOffset.UTC))
+                    .inactiveThreshold(java.time.Duration.ofMinutes(5)).build();
+                subs.add(nc.jetStream().subscribe(f.getValue(),
+                    io.nats.client.PullSubscribeOptions.builder().stream(f.getKey()).configuration(config).build()));
+            }
         }
 
-        /** Read until EVERY partition subject has passed the target, or the stream has nothing more. */
+        /** Read until EVERY partition subject has passed the target, or no stream has anything more. */
         void readThrough(long targetTradeSeq, long classifiedThrough, String[] subjects) throws Exception {
             while (heads.min(subjects) < targetTradeSeq) {
-                List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(500));
-                if (msgs.isEmpty()) return;
-                for (var m : msgs) {
-                    var p = json.readTree(m.getData()).path("payload");
-                    String id = p.path("id").asText();
-                    long ts = tradeSeqOf(id);
-                    heads.observe(m.getSubject(), ts);
-                    if (ts <= classifiedThrough) continue;
-                    pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
-                        p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it
-                        m.metaData().streamSequence()));
+                boolean any = false;
+                for (var sub : subs) {
+                    List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(subs.size() > 1 ? 50 : 500));
+                    any |= !msgs.isEmpty();
+                    for (var m : msgs) {
+                        var p = json.readTree(m.getData()).path("payload");
+                        String id = p.path("id").asText();
+                        long ts = tradeSeqOf(id);
+                        heads.observe(m.getSubject(), ts);
+                        if (ts <= classifiedThrough) continue;
+                        pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
+                            p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it
+                            m.metaData().streamSequence()));
+                    }
                 }
+                if (!any) return;
             }
         }
 

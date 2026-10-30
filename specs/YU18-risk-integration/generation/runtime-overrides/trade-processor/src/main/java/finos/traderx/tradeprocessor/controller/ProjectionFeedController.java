@@ -66,19 +66,25 @@ public final class ProjectionFeedController {
           "accounting needs TRADE_PROJECTION_MODE=snapshot with PROJECTION_FEED_MODE=jetstream");
     }
     var nc = trades.natsConnection();
-    String stream = trades.streamName();
     int p = trades.partitionCount();
-    var state = nc.jetStreamManagement().getStreamInfo(stream).getStreamState();
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("scope", trades.snapshotScope());
     out.put("partitions", p);
-    out.put("stream", Map.of("name", stream, "first", state.getFirstSequence(), "last", state.getLastSequence()));
+    Map<String, Object> streams = new LinkedHashMap<>();   // FR-DRS-32: one stream, or one per partition
+    for (int i = 0; i < p; i++) {
+      String name = trades.streamName(i);
+      if (streams.containsKey(name)) { continue; }
+      var state = nc.jetStreamManagement().getStreamInfo(name).getStreamState();
+      streams.put(name, Map.of("first", state.getFirstSequence(), "last", state.getLastSequence()));
+    }
+    out.put("streams", streams);
     Map<Integer, Map<String, Object>> committed = snapshotStore.committedAccounting(trades.snapshotScope());
     Map<String, Object> tp = new LinkedHashMap<>();
     for (int i = 0; i < p; i++) {
       Map<String, Object> m = new LinkedHashMap<>(committed.getOrDefault(i, Map.of("cursor", 0L, "sides", 0L, "maxSeq", 0L,
           "sumSeq", "0", "sumSq", "0", "duplicates", 0L, "epoch", "")));
-      m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, stream,
+      m.put("stream", trades.streamName(i));
+      m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, trades.streamName(i),
           finos.traderx.tradeprocessor.JetStreamFeed.subject("/trades", i, p)));
       tp.put(String.valueOf(i), m);
     }
@@ -88,7 +94,7 @@ public final class ProjectionFeedController {
       Map<String, Object> op = new LinkedHashMap<>();
       for (int i = 0; i < p; i++) {
         Map<String, Object> m = new LinkedHashMap<>(oc.getOrDefault(i, Map.of("cursor", -1L, "open", 0L, "resting", 0L)));
-        m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, stream,
+        m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, orders.streamName(i),
             finos.traderx.tradeprocessor.JetStreamFeed.subject("/orders", i, p)));
         op.put(String.valueOf(i), m);
       }

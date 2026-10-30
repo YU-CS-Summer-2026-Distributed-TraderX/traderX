@@ -2730,7 +2730,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     /** One attempt: connect and subscribe {@code /orders} and {@code /orders.*} (every
-     *  BRIDGE_PARTITIONS layout). Returns the connection, which reconnects by itself from here on. */
+     *  BRIDGE_PARTITIONS layout). Returns the connection, which reconnects by itself from here on.
+     *  ADR-097 (FR-FIX05): the capture is the stream {@code stream}, or one stream per partition
+     *  ({@code <stream>_P<p>}); each order subject of each is read through its own ordered consumer. */
     static io.nats.client.Connection connectFillFeed(final String url, final String mode, final String stream,
                                                      final java.util.function.Consumer<byte[]> sink)
         throws Exception {
@@ -2738,29 +2740,46 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             new io.nats.client.Options.Builder().server(url).maxReconnects(-1)
                 .errorListener(new QuietUntilSubscribed()).build());
         try {
-            final boolean durable = !"core".equals(mode)
-                && nats.jetStreamManagement().getStreamNames("/orders").contains(stream);
+            final java.util.Map<String, java.util.List<String>> captured = new java.util.TreeMap<>();
+            if (!"core".equals(mode)) {
+                final io.nats.client.JetStreamManagement jsm = nats.jetStreamManagement();
+                for (final String name : jsm.getStreamNames()) {
+                    if (!name.equals(stream) && !name.startsWith(stream + "_P")) {
+                        continue;
+                    }
+                    for (final String subject : jsm.getStreamInfo(name).getConfiguration().getSubjects()) {
+                        if (subject.equals("/orders") || subject.startsWith("/orders.")) {
+                            captured.computeIfAbsent(name, k -> new java.util.ArrayList<>()).add(subject);
+                        }
+                    }
+                }
+            }
+            final boolean durable = !captured.isEmpty();
             if ("jetstream".equals(mode) && !durable) {
                 throw new IllegalStateException("stream " + stream + " does not capture /orders yet");
             }
             final io.nats.client.Dispatcher d = nats.createDispatcher();
-            for (final String subject : new String[] {"/orders", "/orders.*"}) {
-                if (durable) {
-                    // Ordered consumer: from "now" (FIX sessions are ephemeral, TD-AC01), in stream
-                    // order, and recreated at the last delivered sequence + 1 on any gap or missed
-                    // heartbeat.
-                    nats.jetStream().subscribe(subject, d, m -> sink.accept(m.getData()), false,
-                        io.nats.client.PushSubscribeOptions.builder().stream(stream).ordered(true)
-                            .configuration(io.nats.client.api.ConsumerConfiguration.builder()
-                                .deliverPolicy(io.nats.client.api.DeliverPolicy.New).build())
-                            .build());
-                } else {
+            if (durable) {
+                for (final var e : captured.entrySet()) {
+                    for (final String subject : e.getValue()) {
+                        // Ordered consumer: from "now" (FIX sessions are ephemeral, TD-AC01), in stream
+                        // order, and recreated at the last delivered sequence + 1 on any gap or missed
+                        // heartbeat.
+                        nats.jetStream().subscribe(subject, d, m -> sink.accept(m.getData()), false,
+                            io.nats.client.PushSubscribeOptions.builder().stream(e.getKey()).ordered(true)
+                                .configuration(io.nats.client.api.ConsumerConfiguration.builder()
+                                    .deliverPolicy(io.nats.client.api.DeliverPolicy.New).build())
+                                .build());
+                    }
+                }
+            } else {
+                for (final String subject : new String[] {"/orders", "/orders.*"}) {
                     d.subscribe(subject, m -> sink.accept(m.getData()));
                 }
             }
             nats.flush(java.time.Duration.ofSeconds(5));   // the server holds the interest before we say so
             System.out.println(durable
-                ? "FIX fill feed: JetStream " + stream + " ordered consumers on /orders and /orders.* (" + url + ")"
+                ? "FIX fill feed: JetStream ordered consumers " + captured + " (" + url + ")"
                 : "FIX fill feed WARN: core NATS on /orders and /orders.* (" + url + "): a missed message"
                     + " loses a fill report; a later fill of the same order ALERTs, the last one cannot");
             return nats;

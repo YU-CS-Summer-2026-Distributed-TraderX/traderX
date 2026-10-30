@@ -72,6 +72,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   @Value("${traderx.feed.partition-count:1}") int partitionCount = 1;
   @Value("${traderx.feed.owned:all}") String ownedPartitions = "all";
   @Value("${traderx.feed.stream:TRADERX_FEED}") String stream = "TRADERX_FEED";
+  @Value("${traderx.feed.stream-layout:one}") String streamLayout = "one";
   @Value("${traderx.feed.stream-max-bytes:8589934592}") long streamMaxBytes = 8L << 30;
   @Value("${traderx.feed.stream-max-age-hours:24}") long streamMaxAgeHours = 24;
   // How long a pull waits for a FULL batch. Measured: at 10 ms the fetch returned partial batches
@@ -152,13 +153,13 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   }
 
   private void startJetStream() throws Exception {
-    JetStreamFeed.ensureStream(connection(), stream, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
+    JetStreamFeed.ensureStreams(connection(), stream, streamLayout, partitionCount, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
     if (writeLock != null) { writeLock.ensurePartitions(partitionCount); }
     if (snapshotMode()) { startSnapshotMode(); return; }
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
       caughtUpAt.put(p, 0L);
-      feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), stream, subject,
+      feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), streamName(p), subject,
           JetStreamFeed.durable("tp-trades-p" + p, subject), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
           msgs -> onJetStreamBatch(p, msgs), head -> caughtUpAt.put(p, System.currentTimeMillis())));
     }
@@ -190,7 +191,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       requireRetained(p, view.streamSeq());
       views.put(p, view);
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
-      feedThreads.add(JetStreamFeed.startPipelined("trade-feed-p" + p, connection(), stream, subject,
+      feedThreads.add(JetStreamFeed.startPipelined("trade-feed-p" + p, connection(), streamName(p), subject,
           JetStreamFeed.fromSequence(subject, view.streamSeq() + 1, BATCH_SIZE), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
           msgs -> onSnapshotBatch(partition, msgs), view::idle));
       Thread snap = new Thread(() -> snapshotLoop(partition), "trade-snapshot-p" + p);
@@ -210,13 +211,15 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
    * stream head while idle ({@link TradeView#idle}).
    */
   private void requireRetained(int partition, long cursor) throws Exception {
-    JetStreamFeed.requireRetained(connection(), stream, "trade store", partition, cursor);
+    JetStreamFeed.requireRetained(connection(), streamName(partition), "trade store", partition, cursor);
   }
 
   public String snapshotScope() { return snapshotScope; }
   /** For the ledger recon: the stream, its partitioning and the connection the feed already holds. */
   public io.nats.client.Connection natsConnection() { return connection(); }
   public String streamName() { return stream; }
+  /** The stream partition {@code p} is read from (FR-DRS-32). */
+  public String streamName(int p) { return JetStreamFeed.streamFor(stream, streamLayout, p, Math.max(1, partitionCount)); }
   public int partitionCount() { return Math.max(1, partitionCount); }
   public boolean ledgerMode() { return jetstream() && snapshotMode(); }
 

@@ -105,6 +105,38 @@ class FixFillFeedIT {
         }
     }
 
+    /** ADR-097: with one capture stream per partition, every partition's fills reach the gateway, in order, once. */
+    @Test
+    void perPartitionStreamsAreEachReadThroughTheirOwnOrderedConsumer() throws Exception {
+        final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+        try (Connection admin = Nats.connect(url)) {
+            final JetStreamManagement jsm = admin.jetStreamManagement();
+            for (final String name : jsm.getStreamNames()) {
+                jsm.deleteStream(name);
+            }
+            for (int p = 0; p < 2; p++) {
+                jsm.addStream(StreamConfiguration.builder().name("TRADERX_FEED_P" + p).storageType(StorageType.File)
+                    .subjects("/trades." + p, "/orders." + p).build());
+            }
+            final List<Integer> got = new CopyOnWriteArrayList<>();
+            try (Connection js = ClusterGatewayMain.connectFillFeed(url, "jetstream", "TRADERX_FEED",
+                     b -> got.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                admin.publish("/orders.0", update(1, 10, (byte) 0, 0));
+                admin.publish("/orders.1", update(2, 10, (byte) 0, 0));
+                admin.publish("/orders.0", update(1, 0, (byte) 2, 10));
+                admin.publish("/orders.1", update(2, 4, (byte) 1, 6));
+                assertTrue(await(() -> got.size() >= 4, Duration.ofSeconds(10)), "a partition stream was not read: " + got);
+                Thread.sleep(500);
+                assertEquals(List.of(110, 100), got.stream().filter(v -> v / 100 == 1).toList(), "partition 0 in order, once");
+                assertEquals(List.of(210, 204), got.stream().filter(v -> v / 100 == 2).toList(), "partition 1 in order, once");
+            } finally {
+                for (int p = 0; p < 2; p++) {
+                    jsm.deleteStream("TRADERX_FEED_P" + p);   // the other test starts from no capture stream
+                }
+            }
+        }
+    }
+
     /** A TCP forwarder to NATS that can drop every connection through it and refuse new ones. */
     private static final class CutProxy implements AutoCloseable {
         private final java.net.ServerSocket server = new java.net.ServerSocket(0);

@@ -23,6 +23,9 @@
 - [x] Exactly-once accounting committed with each trade partition's cursor, with duplicates refused, and
       `/v2/projection-feed/accounting` (FR-DRS-29). The memory-only order view snapshots its open orders with
       a cursor and resumes from them (FR-DRS-30). `SnapshotReadModelIT`, both A/Bs (SC-DRS-07).
+- [x] Cursor-acknowledged feeds pull pipelined, and the idle advance requires nothing ack pending (FR-DRS-31; the
+      pending-only rule lost 1,408 of 3,000,000 sides at P=16). One stream per partition (FR-DRS-32), with the
+      gateway's fill feed reading each (FR-FFR-13).
 
 ## Still open
 
