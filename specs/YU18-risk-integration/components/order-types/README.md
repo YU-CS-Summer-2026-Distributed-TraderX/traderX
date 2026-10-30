@@ -101,7 +101,8 @@ The coordinator has not waived NFR-OT06.
 - There is no live, cluster or failover proof, and no GKE run. These need separate authorization
   (NFR-OT04: this is a core, wire and snapshot-format change, so it is never rolled gradually).
 - `ThreeMemberClusterTest` once timed out in a full run under load. It passed alone (28 s) and in
-  the fresh-root run.
+  the fresh-root run. Cause and fix (a test race after a sub-second failover, not an election
+  stall): [cluster test failover race](../../maintenance/cluster-test-failover/README.md).
 - On FIX, peg offsets are accepted only in whole ticks (PegOffsetType 2) or as zero. Trailing
   offsets are accepted as a price (0) or in whole bps (1). Anything else is refused with a named
   Text. This is specified in FR-OT04's unit table and pinned by `sc48_fixRefuses…` and

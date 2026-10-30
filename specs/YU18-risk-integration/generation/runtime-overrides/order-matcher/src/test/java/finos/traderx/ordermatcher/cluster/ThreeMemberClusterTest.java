@@ -176,9 +176,20 @@ class ThreeMemberClusterTest {
         IoUtil.delete(new File(tempDir.toFile(), "aeron-" + id), true);
     }
 
+    /**
+     * A member's service seeing LEADER is not the client seeing it: the NewLeader event reaches the
+     * client after the new leader's election closes. Offered in between, an order clears into the
+     * DEAD leader's still-connected ingress publication and is lost — Aeron ingress is not
+     * delivered across a failover; production gateways answer such orders ambiguous for a deduped
+     * resend (ClusterGatewayMain#onNewLeader). Only a fast election opens that window (the dead
+     * leader's end-of-stream reached the followers: sub-second, vs the 10 s heartbeat timeout),
+     * and load made it common: three full-suite failures on 2026-10-30, every one an egress wait
+     * after a sub-second failover. So a failover is over for the test once its client is on the
+     * new leader, which still fails here if the client never gets there.
+     */
     private int awaitLeader(final int excluded) {
         final int[] leader = { -1 };
-        await(() -> {
+        await("a leader other than member " + excluded, () -> {
             for (final Node node : nodes) {
                 if (node != null && node.id != excluded && node.service.role() == Cluster.Role.LEADER) {
                     leader[0] = node.id;
@@ -187,6 +198,20 @@ class ThreeMemberClusterTest {
             }
             return false;
         });
+        if (client != null) {
+            await("the client on new leader " + leader[0], () -> {
+                try {
+                    if (client.isClosed()) {
+                        connectClientKeepingAcks();
+                    } else {
+                        client.pollEgress();
+                    }
+                } catch (final Exception ignore) {
+                    // election window; the next poll retries
+                }
+                return !client.isClosed() && client.leaderMemberId() == leader[0];
+            });
+        }
         return leader[0];
     }
 
@@ -200,7 +225,7 @@ class ThreeMemberClusterTest {
         assertTrue(ClusterTool.snapshot(
             nodes[leaderId].driver.consensusModule().context().clusterDir(),
             new PrintStream(OutputStream.nullOutputStream())), "snapshot trigger accepted");
-        await(() -> {
+        await("every member's snapshot", () -> {
             for (final Node node : nodes) {
                 if (node != null && node.service.snapshotsTaken() <= before[node.id]) {
                     return false;
@@ -212,7 +237,7 @@ class ThreeMemberClusterTest {
 
     /** The recovered member has converged when it reaches the most advanced applied sequence. */
     private void awaitCatchUp(final int id) {
-        await(() -> {
+        await("member " + id + " caught up", () -> {
             long maxSeq = 0;
             for (final Node node : nodes) {
                 if (node != null && node.service.engine() != null) {
@@ -347,7 +372,7 @@ class ThreeMemberClusterTest {
     }
 
     private void awaitEgress(final BooleanSupplier until) {
-        await(() -> {
+        await("egress acks", () -> {
             try {
                 if (!client.isClosed()) {
                     client.pollEgress();
@@ -367,11 +392,12 @@ class ThreeMemberClusterTest {
         return acks.stream().filter(a -> a[1] == kind).map(a -> a[0]).toList();
     }
 
-    private void await(final BooleanSupplier condition) {
+    /** {@code what} names the wait: Gradle prints only the message and this line, not the caller. */
+    private void await(final String what, final BooleanSupplier condition) {
         final long deadline = System.currentTimeMillis() + 120_000;
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
-                throw new IllegalStateException("condition not met within 120s");
+                throw new IllegalStateException("not met within 120s: " + what);
             }
             Thread.yield();
         }
