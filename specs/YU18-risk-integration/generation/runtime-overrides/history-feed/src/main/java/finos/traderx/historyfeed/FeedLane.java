@@ -60,6 +60,11 @@ final class FeedLane implements Runnable {
         consume();
       } catch (InterruptedException e) {
         return;
+      } catch (IncarnationRefused e) {
+        // FR-HST-07: stay down, loudly, until an operator reconciles the store with the new stream.
+        lastError = e.getMessage();
+        System.err.println("ALERT " + e.getMessage());
+        try { Thread.sleep(30_000); } catch (InterruptedException ie) { return; }
       } catch (Exception e) {
         lastError = e.toString();
         System.err.printf("%s: %s; reopening at the store's cursor%n", durable, e);
@@ -70,8 +75,10 @@ final class FeedLane implements Runnable {
 
   /** One consumer lifetime: open at cursor + 1, then fetch, write, ack until a gap or a failure ends it. */
   private void consume() throws Exception {
+    ready = false;
     long c = store.maxSeq(table, part);
     cursor.set(c);
+    checkIncarnation(c);
     open(c);
     ready = true;
     Rows b = new Rows(table.equals("trades"), batchRows);
@@ -123,6 +130,38 @@ final class FeedLane implements Runnable {
     cursor.set(b.lastSeq());
     b.n = 0;
     if (last != null) last.ack();
+  }
+
+  /**
+   * FR-HST-07: a cursor is only a number. A stream deleted and recreated under the same name restarts its sequences,
+   * and once it passes the cursor, opening at cursor + 1 would silently skip its first messages (codeX review §6).
+   * So the rows are bound to the stream's incarnation, its creation time (the scheme trade-processor uses, FR-DRS-36),
+   * and a lane opens only on the incarnation its rows came from.
+   */
+  private void checkIncarnation(long c) throws Exception {
+    String current = incarnationOf(nc.jetStreamManagement(jso).getStreamInfo(stream));
+    String bound = store.incarnation(stream, table, part);
+    if (current.equals(bound)) return;
+    // Bind when nothing is recorded (rows from before this rule are accepted once, the same rule as trade-processor's
+    // FR-DRS-36) or when the lane is empty (a cursor at 0 skips nothing).
+    if (bound == null || c == 0) {
+      store.bind(stream, table, part, current);
+      System.out.printf("%s: bound to %s incarnation %s%s%n", durable, stream, current, bound == null && c > 0 ? " (existing rows, none recorded)" : "");
+      return;
+    }
+    throw new IncarnationRefused("history-feed STREAM_RESET " + durable + ": the store holds " + table + " part " + part
+        + " up to seq " + c + " from " + stream + " created " + bound + ", but " + stream + " was recreated at " + current
+        + "; resuming at seq " + (c + 1) + " would skip its first " + c + " messages. Reconcile the store (move this lane's"
+        + " rows aside), then restart.");
+  }
+
+  /** A stream's incarnation: its creation time, unchanged for its whole life, new whenever it is recreated. */
+  static String incarnationOf(io.nats.client.api.StreamInfo si) {
+    return si.getCreateTime().toInstant().toString();
+  }
+
+  static final class IncarnationRefused extends Exception {
+    IncarnationRefused(String message) { super(message); }
   }
 
   private void open(long c) throws Exception {

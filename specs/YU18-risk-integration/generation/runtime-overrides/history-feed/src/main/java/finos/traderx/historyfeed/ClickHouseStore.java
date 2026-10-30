@@ -35,6 +35,24 @@ final class ClickHouseStore {
         + " account UInt32, security LowCardinality(String), side FixedString(1), qty UInt32, remaining UInt32,"
         + " limit_px Float64, status LowCardinality(String), last_px Float64, last_qty UInt32, created DateTime64(3),"
         + " cseq UInt64, ordinal UInt16, client_key UInt64)" + SETTINGS);
+    // FR-HST-07: which incarnation of which stream each lane's rows came from (a cursor is only a number).
+    exec("CREATE TABLE IF NOT EXISTS history_cursor (stream String, tbl String, part UInt16, incarnation String,"
+        + " bound DateTime64(3) DEFAULT now64(3)) ENGINE=MergeTree ORDER BY (stream, tbl, part, bound)"
+        + " SETTINGS fsync_after_insert=1, fsync_part_directory=1");
+  }
+
+  /** The incarnation this lane's rows are bound to, or null when none was ever bound. The latest binding wins. */
+  String incarnation(String stream, String table, int part) throws Exception {
+    String v = query("SELECT incarnation FROM history_cursor WHERE stream = {s:String} AND tbl = {t:String}"
+        + " AND part = {p:UInt16} ORDER BY bound DESC LIMIT 1", Map.of("s", stream, "t", table, "p", "" + part)).trim();
+    return v.isEmpty() ? null : v;
+  }
+
+  /** Durably binds the lane to an incarnation, before the lane's first row from it. */
+  void bind(String stream, String table, int part, String incarnation) throws Exception {
+    String row = stream + "\t" + table + "\t" + part + "\t" + incarnation + "\n";
+    post("INSERT INTO history_cursor (stream, tbl, part, incarnation) FORMAT TabSeparated", Map.of(),
+        row.getBytes(StandardCharsets.UTF_8));
   }
 
   /** The store's cursor for one (table, partition): the highest stream sequence it holds, 0 when empty. */

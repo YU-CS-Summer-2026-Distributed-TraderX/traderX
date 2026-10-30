@@ -47,6 +47,18 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   ClickHouse as a bound query parameter; a malformed value SHALL be a 400. Exactly one instance SHALL run (its lanes
   are not fenced): one replica, `Recreate`. Its manifests (`history-feed/k8s/`) are opt-in, applied by
   `scripts/history-feed/kind-smoke.sh`, and in no base kustomization, CompSci render or GKE manifest.
+- FR-HST-07: A lane's cursor SHALL be bound to its stream's incarnation, the stream's creation time
+  (`StreamInfo.createTime`, ISO-8601 at full precision), recorded in `history_cursor` (stream, table, part,
+  incarnation) before the lane's first row from that incarnation. This is trade-processor's scheme (FR-DRS-36). A
+  lane SHALL open only on the incarnation its rows came from. A lane binds to the current incarnation when it has no
+  rows (a cursor at 0 skips nothing) or when none is recorded (rows written before this rule are accepted once). A
+  lane with rows and a different incarnation SHALL refuse: no consumer is opened and no row is written, `/health`
+  reports it not ready (503) with `STREAM_RESET <durable>`, an `ALERT history-feed STREAM_RESET` line names the cursor
+  and both creation times, and it re-checks every 30 s. A sequence number alone cannot tell a recreated stream from
+  the original. A stream deleted and recreated under the same name restarts at 1, and once it passed the cursor,
+  opening at cursor + 1 would skip its first messages for good (codeX review 2026-10-30 §6). A limits update keeps
+  the creation time; a delete and recreate changes it. Recovery is an operator decision: move the lane's rows aside,
+  then restart.
 - NFR-HST-01: No engine, bridge wire, stream, trade-processor, production or GKE change. The feed is a reader of
   the existing streams with its own durables; the render gains one module (`history-feed`).
 - NFR-HST-02: On one c4d-standard-16 store host the store SHALL sustain the full-rate volume, 1,000,000 rows/s
@@ -75,3 +87,7 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
 - SC-HST-04: `scripts/history-feed/kind-smoke.sh`: the image and `k8s/` manifests on a throwaway kind cluster,
   per-partition streams (P = 2), load on the bridges' wire while the pod is force-deleted twice; every message stored
   exactly once, the four query paths and the export answer.
+- SC-HST-05: `HistoryFeedIncarnationIT` (NATS 2.14 + ClickHouse 25.8 containers, P = 2): a restart on unchanged
+  streams resumes and takes new load (control). After `TRADERX_FEED_P0` is deleted, recreated and refilled past the
+  cursor, the restarted feed writes no row from it, `/health` is 503 with `STREAM_RESET` on both P0 lanes and not
+  on P1, and P1 keeps flowing. With the check removed the same test fails.

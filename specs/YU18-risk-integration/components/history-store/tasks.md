@@ -10,3 +10,4 @@
       (FR-DRS-33), day-bounded batches, `/health` and the history queries with bound parameters (FR-HST-06).
 - [x] `HistoryFeedKillIT`: two SIGKILLs mid-drain, exactly once; fails under a duplicate mutation and a loss mutation.
 - [x] Opt-in kind manifests and `scripts/history-feed/kind-smoke.sh`; ADR-098; render module loop.
+- [x] Cursor bound to the stream incarnation; a recreated stream is refused, not skipped (FR-HST-07, codeX §6).

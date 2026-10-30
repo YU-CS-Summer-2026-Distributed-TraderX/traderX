@@ -212,8 +212,8 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   two subjects without the stream.
 - `history-feed` (ADR-098, FR-HST-02/03) reads `/trades.<p>` and `/orders.<p>` from the same stream(s) as
   trade-processor (same `PROJECTION_FEED_*` settings) with its own durable pull consumers `history-<feed>-p<p>`,
-  recreated at the history store's max(seq) + 1 at every start and after a consumer-sequence gap. It never creates
-  a stream. Opt-in; not in any base manifest.
+  recreated at the history store's max(seq) + 1 at every start and after a consumer-sequence gap, only on the
+  stream incarnation (creation time) its rows came from (FR-HST-07). It never creates a stream. Opt-in; not in any base manifest.
 - FIX session store (ADR-086, `FIX_SESSION_STORE=jetstream`): KV bucket `FIX_SESSIONS` (stream
   `KV_FIX_SESSIONS`, subjects `$KV.FIX_SESSIONS.<K>.seq` and `$KV.FIX_SESSIONS.<K>.m.<n>`, history 1, max age 7 d,
   1 GiB, discard new) and KV bucket `FIX_SESSION_LEASE` (stream `KV_FIX_SESSION_LEASE`, subject
