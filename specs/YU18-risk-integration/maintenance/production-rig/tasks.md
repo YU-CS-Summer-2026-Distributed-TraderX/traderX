@@ -68,6 +68,7 @@
 - [x] The gateway shrink deletes only nodes a successful listing shows empty (FR-PRG-24, codeX review 2026-10-30).
 - [x] G1 and G2 mint a fresh admin token per member, so a long replay cannot expire the next member's (FR-PRG-25).
 - [x] `CLIENTS=1` names one client VM, not "1 2 1" (FR-PRG-26).
+- [x] The read-model fingerprint is an in-DB aggregate, never a dump (FR-PRG-27).
 - [ ] Before the profile runs on production: create `readmodel-pool` and `db-pool` in `rig.sh pools` and size them
       in `up`/`down` (rollout lane); then the cutover in ADR-097 §5, which records the base with `rig.sh snapshot-base`,
       snapshots `eod-price-db-data` with the database at 0, and replaces `TRADERX_FEED` with `TRADERX_FEED_P<p>`.

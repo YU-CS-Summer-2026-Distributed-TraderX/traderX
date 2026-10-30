@@ -208,16 +208,22 @@ members_gated(){
 row_status_is(){ [ "$(sql "select status from orderbook where orderid like '%-$1'")" = "$2" ]; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
 md5of(){ python3 -c 'import hashlib,sys; print(hashlib.md5(sys.stdin.buffer.read()).hexdigest()[:16])'; }
-# FR-PRG-19: a query that fails is not an empty table. sql() discards stderr, so piping it straight into md5of recorded
-# md5("") as the read model's state (production 8:42 pm: the DB was not answering yet, and G3 then refused a "move").
-# Each query's exact bytes go through a file, so the hashes are the same as before, and a failed query fails read_model.
-read_model(){ local f q name; f=$(mktemp) || return 1
-  for q in "trades|select id,accountid,security,side,quantity,price,state from trades order by 1" \
-           "positions|select accountid,security,quantity,averagecostbasis from positions order by 1,2" \
-           "orderbook|select orderid,accountid,security,side,status,quantity,remainingquantity from orderbook order by 1"; do
-    name=${q%%|*}; sql "${q#*|}" > "$f" || { rm -f "$f"; return 1; }
-    echo "$name=$(md5of < "$f")"
-  done; rm -f "$f"
+# FR-PRG-19: a query that fails is not an empty table. sql() discards stderr, so an empty answer is a failure.
+# FR-PRG-27: each table is fingerprinted inside MariaDB in one pass: its row count and two exact sums of each row's md5
+# (64-bit halves; SUM over BIGINT UNSIGNED is an exact DECIMAL). That is a multiset hash over every column, as strong a
+# comparison as the sorted dump it replaces, but no sort, no result set and no client transfer: the dump of ~3.4M rows
+# ran eod-price-db out of memory at shutdown (production 2026-10-30 12:45 pm). QUOTE keeps NULL apart from 'NULL'.
+rm_fingerprint(){ local table=$1 cols=$2 row
+  row="md5(concat_ws(',',$(sed 's/[^,][^,]*/quote(&)/g' <<<"$cols")))"
+  sql "select count(*), sum(cast(conv(left($row,16),16,10) as unsigned)), sum(cast(conv(right($row,16),16,10) as unsigned)) from $table" \
+    | tr '\t' ':'; }
+read_model(){ local q name fp
+  for q in "trades|id,accountid,security,side,quantity,price,state" \
+           "positions|accountid,security,quantity,averagecostbasis" \
+           "orderbook|orderid,accountid,security,side,status,quantity,remainingquantity"; do
+    name=${q%%|*}; fp=$(rm_fingerprint "$name" "${q#*|}") && [[ $fp =~ ^[0-9]+:([0-9]+|NULL):([0-9]+|NULL)$ ]] || return 1
+    echo "$name=$fp"
+  done
   # Snapshot read model (ADR-097): its committed accounting, without the cursors (an idle partition's follows the head).
   local mode acct; mode=$(tp_mode) || return 1
   if [ "$mode" = snapshot ]; then acct=$(accounting) || return 1

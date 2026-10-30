@@ -114,6 +114,11 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-27:** The read-model fingerprint (G3's before/after, the shutdown baseline) SHALL be computed inside MariaDB
+  as one aggregate per table: its row count and two exact sums of each row's md5 over every compared column, NULL kept
+  apart from 'NULL'. It SHALL NOT dump a table (production 2026-10-30 12:45 pm: the sorted dumps of ~3.4M trade and
+  3.5M order rows, buffered by the mariadb client inside the 768Mi eod-price-db container, OOM-killed it and refused
+  `rig.sh down`). Measured on mariadb:11.4 at that size: container peak +3 MiB, against +470 MiB for the dumps.
 - **FR-PRG-26:** `CLIENTS=N` SHALL name exactly traderx-client-1..N (production 2026-10-30: BSD `seq 2 1` counts down,
   so `CLIENTS=1` started and stopped traderx-client-2 as well, and listed client-1 twice).
 - **FR-PRG-25:** G1 and G2 SHALL mint the admin token for each member's replay request just before that request
