@@ -51,4 +51,14 @@
       `--phase-secs` short enough that one phase's buys per account (aggregate rate ÷ 2 ÷ 4 × phase) stay under the
       position limit; the policy itself stays as it is. Kind run done:
       every accepted order traded (members' trade sides rose by exactly the accepted count).
+- [x] G1 above the full-history index cap defers to G2 (FR-PRG-18, 2026-10-29).
+- [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Not tonight. Estimate about
+      1 day, plus a kind proof and one production cycle.
+      - Purge the members' log behind a snapshot (archive purge, the bench's B2, proven on hxb at 250K/s). This bounds
+        B1's growth and G2's replay time.
+      - Once the log is purged, G1 and G2 cannot replay from 0. They switch to snapshot plus tail: replay from the
+        latest snapshot, then compare against the members. An empty snapshot-plus-tail is INCONCLUSIVE, never a pass
+        (as the hxb purge arm, `88681eae`). G4 is unchanged.
+      - Clear the test accounts' SQL rows only together with `rig.sh unprojected` (or a per-account G3 variant), or G3
+        refuses.
 - [ ] FIX session rebalancing after a scale-up (sessions already connected stay where they are): not decided.

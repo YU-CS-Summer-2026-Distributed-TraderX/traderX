@@ -25,7 +25,8 @@ read_model(){ if [ -f "$EVIDENCE/.rm" ]; then echo "$RM_AFTER"; else touch "$EVI
 kubectl(){
   call "kubectl $*"
   case "$*" in
-    *reindex*) echo "$REINDEX";;
+    *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
+    *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; echo "$REINDEX";;
     *shadow-state*) echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
@@ -114,6 +115,18 @@ class Up(unittest.TestCase):
 
     def test_a_replay_from_zero_that_differs_is_refused(self):
         self.refused('G1', REINDEX='{"replayedAppliedSeq":100,"indexedTrades":4}')
+
+    def test_over_the_index_cap_g1_defers_to_g2_and_never_calls_the_capped_index(self):
+        rc, out, calls = run('rig_up', CAP='4', REINDEX='{"error":"exceeded"}')   # trades 5 > cap 4
+        self.assertEqual(rc, 0, out); self.assertIn('G1 deferred to G2', out); self.assertIn('G2 ok', out)
+        self.assertIsNone(first(calls, r'reindex'))
+        self.refused('G1', CAP='5', REINDEX='{"replayedAppliedSeq":100,"indexedTrades":4}')   # at the cap G1 still runs
+
+    def test_a_deferred_g1_never_lets_g2_be_skipped(self):
+        self.refused('G2', CAP='4', SHADOW='', GATE_ALLOW_NO_SHADOW='1', NS='traderx-side')
+
+    def test_a_failed_replay_request_is_a_named_refusal(self):
+        self.refused('G1', REINDEX_FAIL='1')
 
     def test_a_restored_state_that_differs_from_the_replay_is_refused(self):
         good = GOOD['SHADOW']

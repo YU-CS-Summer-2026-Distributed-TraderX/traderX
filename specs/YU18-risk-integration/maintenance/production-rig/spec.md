@@ -113,6 +113,12 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-18:** G1 SHALL read the members' `RECON_FULL_HISTORY_MAX` (default 200000) from the running StatefulSet. When the
+  restored `trades` exceed it, the full-history index cannot answer (it refuses rather than truncate), so G1 SHALL defer
+  to G2 and record that in the gate evidence; G2's whole-log replay into a shadow proves the same property by hashes,
+  with no cap. A deferred G1 SHALL make G2 mandatory, even where `GATE_ALLOW_NO_SHADOW` would otherwise skip it. A
+  failed replay request SHALL be a named G1 refusal, not a bare exit. (Production 2026-10-29 8:15 pm: 3,392,664 trades
+  against a 200,000 cap; HTTP 500 and `up` exited 8 without a reason.)
 - **FR-PRG-17:** A combined run SHALL drive binary and FIX at once:
   - `CLIENTS=N` (1..3) client VMs `traderx-client-1..N`, each created by `rig.sh pools`, started by `up`, stopped by
     `down`, and each its own /32 in the internal LB's source ranges;

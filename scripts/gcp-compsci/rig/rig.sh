@@ -326,13 +326,25 @@ restore_gate(){
   [ "$a" -gt 0 ] && { [ "$e" = "$a" ] || [ "$e" = -1 ]; } || die "G0: applied $a, engineApplied $e"
   note "G0 ok: applied $a, trades $t, hashes $oh $ph on all three"
   token=$(admin_token); [ -n "$token" ] || die "G1: could not mint an admin token in trade-processor"
-  for i in 0 1 2; do
-    rep=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c 'read -r t; wget -qO- --post-data="" \
-      --header="Authorization: Bearer $t" http://localhost:8080/recon/full-history/reindex' <<<"$token")
-    [ "$(jq -r .replayedAppliedSeq <<<"$rep")" = "$a" ] && [ "$(jq -r .indexedTrades <<<"$rep")" = "$t" ] \
-      || die "G1: member $i's replay from 0 gives $(jq -c '{replayedAppliedSeq,indexedTrades}' <<<"$rep"), the restored state applied $a trades $t"
-  done
-  note "G1 ok: each replay from 0 reaches applied $a with $t trades"
+  # FR-PRG-18: the full-history index refuses past RECON_FULL_HISTORY_MAX trades (members' default 200000), so above it
+  # G1 cannot answer; it defers to G2, whose whole-log replay into a shadow proves the same property by hashes, uncapped.
+  local cap g1_deferred=0
+  cap=$(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[?(@.name=="cluster-node")].env[?(@.name=="RECON_FULL_HISTORY_MAX")].value}')
+  [[ "${cap:=200000}" =~ ^[0-9]+$ ]] || die "G1: RECON_FULL_HISTORY_MAX is not a number: $cap"
+  if [ "$t" -gt "$cap" ]; then
+    g1_deferred=1
+    note "G1 deferred to G2: $t trades are over the full-history index cap $cap (RECON_FULL_HISTORY_MAX)"
+    echo "G1 deferred: trades $t > RECON_FULL_HISTORY_MAX $cap" >> "$EVIDENCE/gate-g1.txt"
+  else
+    for i in 0 1 2; do
+      rep=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c 'read -r t; wget -qO- --post-data="" \
+        --header="Authorization: Bearer $t" http://localhost:8080/recon/full-history/reindex' <<<"$token") \
+        || die "G1: member $i's replay request failed (HTTP error)"
+      [ "$(jq -r .replayedAppliedSeq <<<"$rep")" = "$a" ] && [ "$(jq -r .indexedTrades <<<"$rep")" = "$t" ] \
+        || die "G1: member $i's replay from 0 gives $(jq -c '{replayedAppliedSeq,indexedTrades}' <<<"$rep"), the restored state applied $a trades $t"
+    done
+    note "G1 ok: each replay from 0 reaches applied $a with $t trades"
+  fi
   # G2, check A (FR-ERH-F13): a strict replay of the whole log into a fresh shadow must hold exactly the restored state,
   # in the terms of /health?digest=1. Hashes are decimal strings (a 64-bit hash read as a JSON number loses digits).
   local digest open_rows
@@ -340,7 +352,7 @@ restore_gate(){
     shadow=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c "read -r t; wget -qO- \
       --header=\"Authorization: Bearer \$t\" http://localhost:8080$GATE_SHADOW_PATH" <<<"$token" 2>/dev/null || true)
     if [ -z "$shadow" ] || ! jq -e '.bookHash and .positionHash' <<<"$shadow" >/dev/null 2>&1; then
-      [ "${GATE_ALLOW_NO_SHADOW:-0}" = 1 ] && [ "$NS" != traderx ] \
+      [ "${GATE_ALLOW_NO_SHADOW:-0}" = 1 ] && [ "$NS" != traderx ] && [ "$g1_deferred" = 0 ] \
         || die "G2: member $i has no $GATE_SHADOW_PATH (check A); this build cannot prove its snapshot restore"
       note "G2 SKIPPED on $NS (GATE_ALLOW_NO_SHADOW=1, never allowed on traderx)"; shadow=''; break
     fi
