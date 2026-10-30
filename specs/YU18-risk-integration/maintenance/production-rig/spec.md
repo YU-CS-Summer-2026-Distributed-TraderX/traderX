@@ -114,6 +114,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-24:** A gateway shrink SHALL delete only gateway-pool nodes a successful listing shows empty (codeX review
+  2026-10-30, §8: a failed pod listing read as "no gateway here", and an occupied node was cordoned and deleted). It
+  SHALL first read every node's gateways; a node list or any node's pod list that cannot be read SHALL refuse the
+  whole deletion phase, and no node is cordoned or deleted.
 - **FR-PRG-23:** G-pre and G4 SHALL fail closed on evidence they could not read (codeX review 2026-10-30, §2 and
   §3: each turned a failed read into a pass).
   - G-pre: a failed `kubectl logs` of a reader pod SHALL refuse, before that pod is deleted (it is kept for a look).

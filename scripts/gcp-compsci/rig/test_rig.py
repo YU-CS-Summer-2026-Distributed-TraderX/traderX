@@ -26,6 +26,11 @@ kubectl(){
   call "kubectl $*"
   case "$*" in
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
+    *"get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name"*)
+      [ -n "${NODES_FAIL:-}" ] && { echo "Error from server: etcdserver: request timed out" >&2; return 1; }; printf 'node/%s\n' ${GW_NODES:-n1 n2};;
+    *"--field-selector spec.nodeName="*)   # GW_ON_<node>: the gateway pod on it; POD_LIST_FAIL: the node whose listing fails
+      n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
+      v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; echo "$REINDEX";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
@@ -451,6 +456,30 @@ class Up(unittest.TestCase):
         rc, out, _ = run(body)
         self.assertEqual(rc, 2, out)
         self.assertIn('one per node does not hold', out)
+
+
+class GatewayShrink(unittest.TestCase):
+    """FR-PRG-24 (codeX review 2026-10-30 §8): the shrink deletes only nodes a successful listing shows empty."""
+    BODY = 'GATEWAYS_LIB=1 . "$GW" 3; DRY=0; delete_empty_nodes mig-1'
+
+    def shrink(self, **env):
+        return run(self.BODY, GW=str(RIG.with_name('gateways.sh')), GW_ON_n1='still-serving', **env)
+
+    def test_only_the_empty_node_is_deleted(self):   # control
+        rc, out, calls = self.shrink()
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'cordon n2$'), out)
+        self.assertIsNotNone(first(calls, r'delete-instances mig-1 --instances=n2 '), out)
+        self.assertIsNone(first(calls, r'cordon n1$'), 'an occupied node was cordoned')
+        self.assertIsNone(first(calls, r'--instances=n1 '), 'an occupied node was deleted')
+
+    def test_an_unreadable_occupancy_refuses_and_deletes_nothing(self):
+        for env in ({'POD_LIST_FAIL': 'n1'}, {'POD_LIST_FAIL': 'n2'}, {'NODES_FAIL': '1'}):
+            rc, out, calls = self.shrink(**env)
+            self.assertEqual(rc, 2, (env, out))
+            self.assertIn('no node is deleted', out)
+            self.assertIsNone(first(calls, r'cordon '), (env, 'a node was cordoned'))
+            self.assertIsNone(first(calls, r'delete-instances'), (env, 'a node was deleted'))
 
 
 class MemberDisk(unittest.TestCase):

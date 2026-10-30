@@ -15,8 +15,10 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RIG_LIB=1 . "$HERE/rig.sh"
 
-N=${1:-}; [ "${2:-}" = --dry-run ] && DRY=1
-GATEWAYS=$N; validate_args; preflight
+if [ "${GATEWAYS_LIB:-0}" != 1 ]; then
+  N=${1:-}; [ "${2:-}" = --dry-run ] && DRY=1
+  GATEWAYS=$N; validate_args; preflight
+fi
 
 gate_covers_members(){
   [ "$DRY" = 1 ] && { note "would require: ConfigMap rig-gate PASS for the running members' pod UIDs"; return 0; }
@@ -75,16 +77,30 @@ shrink(){
   done
   python3 "$HERE/fix-resume.py" "$EVIDENCE" | tee "$EVIDENCE/fix-resume.txt"
   mig=$(basename "$(gc container node-pools describe gateway-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(instanceGroupUrls)' | tr ';' '\n' | head -1)")
-  for node in $(kubectl --context "$CTX" get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name | sed 's#node/##'); do
-    if [ -z "$(kc get pods -l app=cluster-gateway --field-selector spec.nodeName="$node" -o name)" ]; then
-      do_ kubectl --context "$CTX" cordon "$node"
-      do_ gcloud compute instance-groups managed delete-instances "$mig" --instances="$node" --zone "$ZONE" --project "$PROJECT" --quiet
-    fi
-  done
+  delete_empty_nodes "$mig"
   wait_for 600 "gateway-pool at $N instances" pool_instances_are gateway-pool "$N"
   one_per_node
 }
 
+# FR-PRG-24 (codeX review 2026-10-30 §8): `[ -z "$(kc get pods ...)" ]` was true when the listing FAILED, so a node
+# still running a gateway was cordoned and deleted. Every node's occupancy is read first; any unreadable listing refuses
+# the whole deletion phase, and only a node a successful listing shows empty is cordoned and deleted.
+delete_empty_nodes(){
+  local mig=$1 nodes node pods empty=""
+  nodes=$(kubectl --context "$CTX" get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name) \
+    || die "gateway-pool's nodes could not be listed; no node is deleted"
+  for node in ${nodes//node\//}; do
+    pods=$(kc get pods -l app=cluster-gateway --field-selector spec.nodeName="$node" -o name) \
+      || die "the gateways on $node could not be listed; no node is deleted"
+    [ -n "$pods" ] || empty="$empty $node"
+  done
+  for node in $empty; do
+    do_ kubectl --context "$CTX" cordon "$node"
+    do_ gcloud compute instance-groups managed delete-instances "$mig" --instances="$node" --zone "$ZONE" --project "$PROJECT" --quiet
+  done
+}
+
+[ "${GATEWAYS_LIB:-0}" = 1 ] && return 0
 note "gateways: set $N on context=$CTX namespace=$NS evidence=$EVIDENCE"
 gate_covers_members
 if [ "$DRY" = 0 ] && hpa_exists; then
