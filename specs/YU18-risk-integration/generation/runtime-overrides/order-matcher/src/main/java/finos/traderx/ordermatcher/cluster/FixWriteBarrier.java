@@ -26,6 +26,7 @@ final class FixWriteBarrier extends IoFilterAdapter {
         final IoSession io;
         final ArrayDeque<Object[]> queue = new ArrayDeque<>();   // {seq, NextFilter, WriteRequest}
         NextFilter close;   // a close QuickFIX/J asked for while writes were held: done once they are out
+        boolean poisoned;   // a write was dropped: nothing after it is sent on this connection
 
         Held(final IoSession io) {
             this.io = io;
@@ -56,14 +57,27 @@ final class FixWriteBarrier extends IoFilterAdapter {
         }
         final SessionID sid = ((Session) qf).getSessionID();
         final Held h = held.compute(sid, (k, v) -> v == null || v.io != io ? new Held(io) : v);
+        final int seq = FixSessionStore.seqOf(msg);
         synchronized (h) {
-            final int seq = FixSessionStore.seqOf(msg);
-            if (h.queue.isEmpty() && !store.pending(sid, seq)) {
+            // Decided under h: a commit landing between the decision and the enqueue would otherwise never release it.
+            final FixSessionStore.Release release = store.release(sid, seq);
+            if (h.poisoned || release == FixSessionStore.Release.DROP) {
+                // Never stored, and never will be: not sent, nor anything after it. The connection ends here.
+                h.poisoned = true;
+                fail(wr, sid);
+                h.queue.forEach(w -> fail((WriteRequest) w[2], sid));
+                h.queue.clear();
+                io.closeNow();
+            } else if (h.queue.isEmpty() && release == FixSessionStore.Release.SEND) {
                 next.filterWrite(io, wr);
             } else {
                 h.queue.addLast(new Object[] { seq, next, wr });
             }
         }
+    }
+
+    private static void fail(final WriteRequest wr, final SessionID sid) {
+        wr.getFuture().setException(new java.io.IOException("FIX session " + sid + ": not stored, not sent (ADR-099)"));
     }
 
     /** The store committed every number below {@code nextSender}: send what was held for them, in order. */
@@ -110,11 +124,11 @@ final class FixWriteBarrier extends IoFilterAdapter {
 
     /** The session lost its store or lease: what was held was never stored, so it is never sent. */
     void drop(final SessionID sid) {
-        final Held h = held.remove(sid);
+        final Held h = held.get(sid);   // kept, poisoned, until its connection closes
         if (h != null) {
             synchronized (h) {
-                h.queue.forEach(w -> ((WriteRequest) w[2]).getFuture().setException(
-                    new java.io.IOException("FIX session " + sid + ": not stored, not sent (ADR-099)")));
+                h.poisoned = true;
+                h.queue.forEach(w -> fail((WriteRequest) w[2], sid));
                 h.queue.clear();
                 closeIfDrained(h);
             }

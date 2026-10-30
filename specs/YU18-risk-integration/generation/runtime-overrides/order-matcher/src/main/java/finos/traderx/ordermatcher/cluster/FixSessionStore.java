@@ -283,14 +283,25 @@ final class FixSessionStore implements MessageStoreFactory {
         return groupCommit;
     }
 
-    /** ADR-099, for the write barrier: has this session's message {@code seq} still to be committed? */
-    boolean pending(final SessionID sid, final int seq) {
+    /** ADR-099: what the write barrier does with a session's outbound message {@code seq}. */
+    enum Release { SEND, HOLD, DROP }
+
+    /**
+     * ADR-099, for the write barrier. SEND: committed, or a write group commit never took (a refused Logon's Logout,
+     * stored transiently as before). HOLD: taken, its commit still to come. DROP: taken and never to be committed,
+     * because the lease or the store is gone; it is never sent. Losing the lease is not a reason to send
+     * (codeX review 2026-10-30 §7: it once was, between the loss and the disconnect).
+     */
+    Release release(final SessionID sid, final int seq) {
         final Store s = stores.get(sid);
         if (s == null || !groupCommit) {
-            return false;
+            return Release.SEND;
         }
         synchronized (s) {
-            return s.leaseRevision > 0 && seq >= s.persistedSender;
+            if (seq < s.persistedSender || seq >= s.claim) {
+                return Release.SEND;
+            }
+            return s.leaseRevision > 0 && s.failed == null ? Release.HOLD : Release.DROP;
         }
     }
 
@@ -1111,9 +1122,9 @@ final class FixSessionStore implements MessageStoreFactory {
                         && error.getCause() != null ? error.getCause() : error;
                     failed = new IOException("FIX session " + sid + ": commit failed (" + cause + "); not sending",
                         cause);
-                    if (cause instanceof JetStreamApiException) {
-                        release();   // someone else wrote this session: we are not its owner any more
-                    }
+                    // Fenced (someone else wrote the session) or unanswered: either way this owner is done with it. The
+                    // next Logon, here or elsewhere, takes the lease afresh: reread and fence.
+                    release();
                     lost = true;   // logged on or not: the barrier drops what it held for this commit
                     notifyAll();
                 }

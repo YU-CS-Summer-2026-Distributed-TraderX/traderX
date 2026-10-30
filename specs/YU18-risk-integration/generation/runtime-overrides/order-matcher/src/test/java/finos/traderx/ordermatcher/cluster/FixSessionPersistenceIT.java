@@ -471,6 +471,64 @@ class FixSessionPersistenceIT {
         c1.close();
     }
 
+    /**
+     * ADR-099 (FR-GFS-18), codeX review 2026-10-30 §7: an outage that outlasts the commit. The answer is taken by
+     * group commit but its commit never completes, so the client never sees it and the session ends. Once NATS is back
+     * the client resumes, and either the answer was stored after all (it is resent, PossDup) or its number is reused:
+     * what the client saw and what the store holds agree.
+     */
+    @Test
+    void anAnswerWhoseCommitOutlastsAnOutageIsNeverSent() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT12");
+        final Client c1 = new Client(a, "CLIENT12");
+        assertEquals("A", c1.logon().get("35"));
+        final var docker = NATS.getDockerClient();
+        docker.pauseContainerCmd(NATS.getContainerId()).exec();
+        try {
+            c1.order("lost", '2', 10);
+            final List<String> seen = new ArrayList<>();
+            try {
+                while (true) {
+                    seen.add(c1.read().get("35"));
+                }
+            } catch (final java.net.SocketTimeoutException stillOpen) {
+                throw new AssertionError("the session was not ended within 15 s of an outage that outlasts the commit");
+            } catch (final IOException ended) {
+                // the session ends: commit timeout, or the store's outage
+            }
+            assertTrue(!seen.contains("8"), "an answer reached the client though its commit never completed: " + seen);
+        } finally {
+            docker.unpauseContainerCmd(NATS.getContainerId()).exec();
+        }
+        Map<String, String> logon = Map.of();
+        for (int i = 0; i < 40 && !"A".equals(logon.get("35")); i++) {
+            Thread.sleep(500);
+            final Client c2 = new Client(a, "CLIENT12");
+            c2.out = 3;   // sent: Logon 1, order 2
+            try {
+                logon = c2.logon();
+            } catch (final IOException refused) {
+                logon = Map.of();
+            }
+            if ("A".equals(logon.get("35"))) {
+                final int next = Integer.parseInt(logon.get("34"));
+                if (next > 2) {   // the answer was stored after all: it is resendable, as what was committed
+                    c2.send("2", "7=2\u000116=2");
+                    final Map<String, String> er = c2.awaitType("8");
+                    assertEquals("lost", er.get("11"));
+                    assertEquals("Y", er.get("43"));
+                } else {
+                    assertEquals(2, next, "the unsent answer's number is reused");
+                }
+                c2.close();
+            } else {
+                c2.close();
+            }
+        }
+        assertEquals("A", logon.get("35"), "the session resumes once NATS is back: " + logon);
+    }
+
     /** A client that sent three orders and logged out; the session's lease stays with A, draining, for ~1 s. */
     private Client dayOnA(final int a, final String compId, final boolean resetLogon) throws Exception {
         final Client c1 = new Client(a, compId);

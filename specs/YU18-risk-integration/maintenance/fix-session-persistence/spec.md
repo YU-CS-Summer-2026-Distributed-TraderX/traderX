@@ -79,7 +79,9 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 - FR-GFS-18: Where the server enforces a write fenced on another subject's sequence, outbound messages SHALL be
   stored by group commit (ADR-099). Bodies are published without waiting, each fenced on the session's `K.seq`
   revision, and one compare-and-set on `K.seq` per batch claims them with the inbound number. A message SHALL NOT
-  reach the client before its number is committed. Taking a lease SHALL rewrite `K.seq` before storing anything.
+  reach the client before its number is committed; once its commit can no longer happen (lease or store lost, commit
+  failed) it SHALL NOT be sent at all, and the connection SHALL end. Taking a lease SHALL rewrite `K.seq` before
+  storing anything.
   Group commit SHALL be on only if the server accepts a probe write fenced on another subject's current revision
   and refuses the same write at a stale revision with wrong-last-sequence (10071). Otherwise, or with
   `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted.
@@ -113,6 +115,8 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | reset Logon on B, lease free, A's own reset Logon started the day | 17 | `FixSessionPersistenceIT.aResetLogonWinsWithTheLeaseFree` | Logon answered at 1, next order answered; green before too (QuickFIX/J's refresh runs first) |
 | Logon without reset on B through the same handover | 17 | `FixSessionPersistenceIT.aLogonWithoutReset…` | B continues A's numbering after the Logout (control, unchanged) |
 | NATS paused after Logon; an order sent | 18 | `FixSessionPersistenceIT.anAnswerReaches…` | no answer while paused; after, the answer arrives and is the stored message (barrier removed: arrives while paused) |
+| a taken message reaches the barrier after the lease was cleared, before the disconnect | 18 | `FixBarrierLossTest` | not sent, connection closed, nothing after it sent (first build: sent); controls send untaken and committed, hold then send with the lease |
+| NATS paused longer than the commit timeout | 18 | `FixSessionPersistenceIT.anAnswerWhoseCommit…` | no answer, session ended; on resume the answer is resent from the store or its number reused |
 | A replaced while its lease still looks fresh; A writes 6 after B stored 6 | 18 | `FixStoreGroupCommitIT.aReplacedOwners…` | A's commit refused, A's session dropped, slot 6 holds B's (fence header removed: A's overwrites it) |
 | NATS 2.10 (skips the cross-subject check), bucket already holding messages | 18 | `FixStoreGroupCommitIT.aServerWithout…` | group commit off, ALERT, messages stored synchronously |
 | probe vs a simulated server: honours / checks the destination; r = 1 and 8; stale refused with 10077 | 18 | `FixFenceProbeTest` | on only for the server that checks the named subject (first probe: on for the destination checker at r = 8, and on any API error) |

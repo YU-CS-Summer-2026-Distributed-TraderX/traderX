@@ -49,7 +49,17 @@ connection completes.
    - A resend (n already committed) passes straight through, unless writes are held ahead of it.
    - QuickFIX/J ends a session with `closeOnFlush`, which flushes MINA's queue but not the barrier. So the close
      waits for what is held, for example the Logout answering the client's.
-   - If the store fails, everything held is dropped, never sent.
+   - The store decides each write from its own state:
+     - **send:** committed, or a write group commit never took, such as a refused Logon's transient Logout;
+     - **hold:** taken, its commit still to come;
+     - **drop:** taken and never to be committed, because the lease or the store is gone.
+
+     Losing the lease is never a reason to send. A dropped write ends the connection, and nothing after it is sent
+     on that connection. The first build let a write through when the lease was cleared between QuickFIX/J's
+     `set()` and its write reaching the barrier, before the disconnect: it read "not pending" (codeX review
+     2026-10-30 §7, `FixBarrierLossTest`).
+   - Every failed commit, fenced or unanswered, releases the lease, so the next Logon here or elsewhere rereads and
+     fences.
 5. **Commit acknowledgements run on their own thread**, never jnats' reader thread. That thread also delivers the
    reply a lease renewal waits for under a session's lock, and the first build stalled every lease that way.
 6. **Checked, not assumed.** On connect the store makes two writes to a probe subject, both fenced on the probe's
@@ -108,6 +118,11 @@ Tests:
     does.
   - A server that does not enforce the fence keeps the synchronous store (NATS 2.10, bucket already holding
     messages).
+- **`FixBarrierLossTest`:** a taken, uncommitted message is never sent once the lease is gone (fails on the first
+  build), nor once its commit failed. Controls: with the lease held it waits and then goes; untaken and committed
+  messages pass.
+- **`FixSessionPersistenceIT.anAnswerWhoseCommit…`:** NATS paused longer than the commit timeout. The client gets no
+  answer and the session ends. On resume, the answer is either resent from the store or its number reused.
 - **`FixFenceProbeTest`:** with a simulated server, the probe trusts only one that checks the named subject. The
   case from the review, a server that checks the destination subject on a busy bucket, returned true with the first
   probe. A stale write refused with another error (10077) proves nothing.
