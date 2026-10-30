@@ -32,7 +32,8 @@ CLIENT_VM=${CLIENT_VM:-traderx-client-1}
 # FR-PRG-17: CLIENTS=N client VMs (traderx-client-1..N, 1..3) for a combined run's FIX load; each is its own /32 on the LB.
 CLIENTS=${CLIENTS:-1}
 [[ "$CLIENTS" =~ ^[1-3]$ ]] || { echo "CLIENTS is 1..3" >&2; exit 2; }
-CLIENT_VMS=$CLIENT_VM; for i in $(seq 2 "$CLIENTS"); do CLIENT_VMS="$CLIENT_VMS traderx-client-$i"; done
+# FR-PRG-26: not `seq 2 $CLIENTS`; BSD seq counts DOWN for CLIENTS=1 ("2 1"), which started and stopped client-2 too.
+CLIENT_VMS=$CLIENT_VM; for ((i = 2; i <= CLIENTS; i++)); do CLIENT_VMS="$CLIENT_VMS traderx-client-$i"; done
 GATE_SHADOW_PATH=${GATE_SHADOW_PATH:-/recon/shadow-state}
 EVIDENCE=${EVIDENCE:-$PWD/rig-evidence/$(date +%Y%m%d-%H%M%S)}
 DRY=0

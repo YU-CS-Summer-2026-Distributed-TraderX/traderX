@@ -572,6 +572,10 @@ class Clients(unittest.TestCase):
             self.assertIsNotNone(first(calls, rf'instances stop {v} '), v)
 
     def test_more_than_three_is_refused(self):
+        rc, out, _ = run('echo "vms=$CLIENT_VMS"', CLIENTS='1')   # FR-PRG-26: one VM, not "1 2 1" (BSD seq 2 1)
+        self.assertIn('vms=traderx-client-1\n', out)
+        rc, out, _ = run('echo "vms=$CLIENT_VMS"', CLIENTS='3')
+        self.assertIn('vms=traderx-client-1 traderx-client-2 traderx-client-3\n', out)
         rc, out, _ = run('true', CLIENTS='4')
         self.assertEqual(rc, 2, out); self.assertIn('CLIENTS is 1..3', out)
 

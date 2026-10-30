@@ -114,6 +114,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-26:** `CLIENTS=N` SHALL name exactly traderx-client-1..N (production 2026-10-30: BSD `seq 2 1` counts down,
+  so `CLIENTS=1` started and stopped traderx-client-2 as well, and listed client-1 twice).
 - **FR-PRG-25:** G1 and G2 SHALL mint the admin token for each member's replay request just before that request
   (production bring-up 2026-10-30: one token minted up front, with a 600 s TTL, expired during the first two members'
   ~8 minute strict replays, so member 2 answered 401 and G2 refused with "no /recon/shadow-state"). A token that cannot
