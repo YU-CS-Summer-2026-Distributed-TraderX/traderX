@@ -1,0 +1,47 @@
+# The history store (FR-HST-04, FR-HST-06): one ClickHouse on its own volume. Opt-in: applied by
+# scripts/history-feed/kind-smoke.sh, not part of the base kustomization.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: traderx
+spec:
+  selector: { app: clickhouse }
+  ports:
+    - { name: http, port: 8123, targetPort: 8123 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: traderx
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels: { app: clickhouse }
+  template:
+    metadata:
+      labels: { app: clickhouse }
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.8
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: CLICKHOUSE_SKIP_USER_SETUP, value: "1" }   # in-cluster only; no Service is exposed outside
+          ports:
+            - { containerPort: 8123 }
+          readinessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "500m", memory: 1Gi }
+            limits: { memory: 4Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/clickhouse }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 20Gi } }

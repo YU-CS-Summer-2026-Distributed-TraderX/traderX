@@ -1,8 +1,9 @@
 # History store specification
 
-Status: prototype, 2026-10-29. Dependencies: the `TRADERX_FEED` capture stream (downstream-read-side, FR-DRS-05
-and §7 of `docs/engineering/downstream-at-400k.md`), ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X
-Community 5f by the bake-off in `docs/engineering/history-store-bakeoff.md`.
+Status: implemented 2026-10-30 as the `history-feed` service, local and kind only (FR-HST-06); bake-off prototype
+2026-10-29. Dependencies: the `TRADERX_FEED` capture streams (downstream-read-side FR-DRS-05, FR-DRS-32, FR-DRS-33),
+ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-off in
+`docs/engineering/history-store-bakeoff.md`. Decision: [ADR-098](../../system/adr-098-history-store.md).
 
 ## Requirements
 
@@ -13,15 +14,20 @@ Community 5f by the bake-off in `docs/engineering/history-store-bakeoff.md`.
   orders keep `order_ref`, `account`, `security`, `side`, `qty`, `remaining`, `limit_px`, `status`, `last_px`,
   `last_qty`, `created`, `cseq`, `ordinal` (output ordinal), `client_key` and `ts` (`updatedAt`). Ids are stored
   as their numeric parts (the epoch prefix is the run's, not the row's).
-- FR-HST-02: The feed (`HistoryFeed`) SHALL run one lane per (feed, partition) on a durable pull consumer
-  `hs-<name>-<feed>-p<p>` (AckPolicy.All, ackWait 30 s), buffer up to `batch` rows (100,000) or `flushMs`
-  (500 ms), write the buffer in one atomic store write, and ack the stream only up to the store's durable
-  watermark for that (table, partition). It SHALL NOT ack a message before the row it carries is durable.
+- FR-HST-02: The feed SHALL run one lane per (feed, partition) on a durable pull consumer, `history-<feed>-p<p>`
+  on the partition's stream (`<stream>_P<p>` with `PROJECTION_FEED_STREAM_LAYOUT=partition`, the single stream
+  otherwise, the same naming as trade-processor's `JetStreamFeed.streamFor`), AckPolicy.All, ackWait 60 s. It SHALL
+  buffer up to `HISTORY_BATCH_ROWS` rows (100,000) or `HISTORY_FLUSH_MS` (500 ms), write the buffer in one atomic
+  store write, and ack the last message only after that write is durable. A buffer SHALL NOT cross a UTC day: one
+  INSERT is atomic only within one date partition. The bake-off prototype (`scripts/history-store-bakeoff`) uses
+  `hs-<name>-<feed>-p<p>` and acks to a store-reported watermark, which also serves KDB-X's write-down.
 - FR-HST-03: Exactly once. The store SHALL be the cursor: on start a lane reads max(`seq`) for its (table,
   partition), deletes its durable and recreates it at `seq + 1`, and skips any delivered message at or below
   the cursor. It SHALL NOT resume the old durable: that redelivers the dead process's unacked window
   interleaved with new messages, and an AckPolicy.All ack of a later message retires earlier redeliveries that
-  were never written (measured: 19 of 360,000,000 order events lost across one `kill -9`).
+  were never written (measured: 19 of 360,000,000 order events lost across one `kill -9`). The same reopening SHALL
+  happen, in the running process, when a delivery's consumer sequence is not the previous one + 1 (a pull response
+  lost with its connection, FR-DRS-33), after it writes what it holds, and after any failed write.
 - FR-HST-04: ClickHouse writes SHALL be one `INSERT ... SELECT ... FROM input(...) FORMAT TabSeparated` per
   batch into MergeTree tables `PARTITION BY toDate(ts) ORDER BY (account, ts)` with `fsync_after_insert=1` and
   `fsync_part_directory=1`; the INSERT returning is the durability point the ack waits for.
@@ -29,9 +35,20 @@ Community 5f by the bake-off in `docs/engineering/history-store-bakeoff.md`.
   `ORDER BY ts DESC, seq DESC LIMIT 100 OFFSET n`; (b) one account's VWAP against the market's per security
   over a window (TCA), and VWAP by account and security over the window; (c) the full end-of-day export of both
   tables; (d) one account's position and average buy price per security as of a time. The queries are the ones
-  `HsbQuery` runs.
+  `HsbQuery` runs; the service answers them over HTTP (FR-HST-06).
+- FR-HST-06: The `history-feed` service (`generation/runtime-overrides/history-feed`, rendered; image
+  `traderx/history-feed:yu18`) SHALL read the capture streams only, never create or size one, with trade-processor's
+  environment names (`NATS_ADDRESS`, `PROJECTION_FEED_STREAM`, `PROJECTION_FEED_PARTITIONS`,
+  `PROJECTION_FEED_STREAM_LAYOUT`) plus `CLICKHOUSE_URL`. It SHALL serve `GET /health` (per lane: stream, cursor,
+  rows, pending, recreates, write failures; 503 until every lane is open) and, on port 18095,
+  `/history/accounts/{id}/fills?day=&limit=(≤1000)&offset=`, `/history/accounts/{id}/tca?from=&to=`,
+  `/history/accounts/{id}/positions?asOf=`, `/history/vwap?from=&to=` (JSON) and `/history/export/{trades|orders}?day=`
+  (CSV, streamed). Times are ISO-8601 instants or epoch ms, days ISO dates, UTC. Every caller value SHALL reach
+  ClickHouse as a bound query parameter; a malformed value SHALL be a 400. Exactly one instance SHALL run (its lanes
+  are not fenced): one replica, `Recreate`. Its manifests (`history-feed/k8s/`) are opt-in, applied by
+  `scripts/history-feed/kind-smoke.sh`, and in no base kustomization, CompSci render or GKE manifest.
 - NFR-HST-01: No engine, bridge wire, stream, trade-processor, production or GKE change. The feed is a reader of
-  the existing stream with its own durables.
+  the existing streams with its own durables; the render gains one module (`history-feed`).
 - NFR-HST-02: On one c4d-standard-16 store host the store SHALL sustain the full-rate volume, 1,000,000 rows/s
   (400K orders/s: 1 trade side and 1.5 order updates per order).
 
@@ -46,3 +63,15 @@ Community 5f by the bake-off in `docs/engineering/history-store-bakeoff.md`.
   240 s, 1.10M over the whole drain, at the feed's own ceiling (1.37M rows/s with no store), 3.8 cores and 2.9 GiB
   anon on the store host; 21.8 GiB of active parts for the 10-minute volume; queries (a) 5.9 ms, (b) 298 ms,
   (b2) 502 ms, (d) 4.9 ms warm; export 600M rows in 61 s. Recorded in `docs/engineering/history-store-bakeoff.md`.
+- SC-HST-03: `HistoryFeedKillIT` (`./gradlew integrationTest`; NATS 2.14 JetStream and ClickHouse 25.8 containers):
+  the shipped jar in its own JVM, partition layout P = 2, 120,000 crosses (240,000 trade sides, 360,000 order events)
+  published before, between and during two SIGKILLs mid-drain; every row exactly once (rows = distinct (part, seq) =
+  distinct key = published) and the fills page and `/health` answer. Met 2026-10-30. Negative controls (the test
+  must be able to fail both ways): replaying from the stream start without the cursor filter FAILS it (duplicates);
+  reopening 200 sequences past the cursor FAILS it (loss). Acking before the insert passes, as designed: the restart
+  reads the store's cursor, not the ack floor. A plainly resumed durable also passed this kill pattern on NATS 2.14
+  (FR-DRS-33 measured the loss on 2.10, the bake-off on 2.14 with an ackWait wait); the recreate stays for those
+  cases and for consumer-sequence gaps.
+- SC-HST-04: `scripts/history-feed/kind-smoke.sh`: the image and `k8s/` manifests on a throwaway kind cluster,
+  per-partition streams (P = 2), load on the bridges' wire while the pod is force-deleted twice; every message stored
+  exactly once, the four query paths and the export answer.

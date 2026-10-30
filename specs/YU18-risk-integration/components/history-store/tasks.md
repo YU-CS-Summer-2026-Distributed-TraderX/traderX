@@ -6,3 +6,7 @@
 - [x] Restart recreates the durable at the store's cursor + 1; the resume-the-durable loss measured (19 of 360M).
 - [x] Bake-off on GCE, VMs deleted; KDB-X licence answers from the agreement text and a mapped-read measurement.
 - [x] Decision record `docs/engineering/history-store-bakeoff.md`.
+- [x] `history-feed` service: per-partition streams with trade-processor's names, consumer-sequence gap rule
+      (FR-DRS-33), day-bounded batches, `/health` and the history queries with bound parameters (FR-HST-06).
+- [x] `HistoryFeedKillIT`: two SIGKILLs mid-drain, exactly once; fails under a duplicate mutation and a loss mutation.
+- [x] Opt-in kind manifests and `scripts/history-feed/kind-smoke.sh`; ADR-098; render module loop.

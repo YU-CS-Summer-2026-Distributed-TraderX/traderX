@@ -20,3 +20,6 @@ postgres-database-replacement and kubernetes-runtime overrides already listed, p
 (YU10 FIX ledger, YU16 trade-service, YU17 GKE manifests). Every component, its spec and its render path are
 listed in [component-coverage.md](component-coverage.md), which `scripts/check-state-render-coverage.py`
 checks against a render.
+
+History store (ADR-098, 2026-10-30) adds `history-feed` to the render's module loop: a plain-Java service with its own
+Gradle wrapper, rendered to `target-generated/history-feed/`, with opt-in kind manifests under its `k8s/`.

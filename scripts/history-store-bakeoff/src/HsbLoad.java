@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.*;
  * silently dropped.
  *
  * <p>Args (key=value): url, orders (per second), seconds, total (orders; fill flat out instead of pacing), threads, partitions, accounts, securities, window,
- * stream, maxBytesGiB, maxAgeHours (2, as TRADERX_FEED), streams (1, or P: one stream per partition), create (true: delete+recreate).
+ * seqBase (first tradeSeq - 1, so two runs never share a business key), stream, maxBytesGiB, maxAgeHours (2, as TRADERX_FEED), streams (1, or P: one stream per partition), create (true: delete+recreate).
  */
 public final class HsbLoad {
   static final String EPOCH = "hsb20261029";
@@ -39,6 +39,7 @@ public final class HsbLoad {
     int window = Integer.parseInt(o.getOrDefault("window", "8192"));
     String stream = o.getOrDefault("stream", "TRADERX_FEED");
     int streams = Integer.parseInt(o.getOrDefault("streams", "1"));
+    long seqBase = Long.parseLong(o.getOrDefault("seqBase", "0"));   // a second run into the same streams starts here
     if (Boolean.parseBoolean(o.getOrDefault("create", "false"))) {
       try (Connection nc = Nats.connect(url)) {
         JetStreamManagement jsm = nc.jetStreamManagement();
@@ -78,7 +79,7 @@ public final class HsbLoad {
             if (now >= end || (totalPerThread > 0 && done >= totalPerThread)) break;
             long due = totalPerThread > 0 ? Long.MAX_VALUE : (long) ((now - t0) * crossesPerThreadPerNs);
             if (done >= due) { Thread.onSpinWait(); continue; }
-            long seq = ti + 1 + done * threads;     // global tradeSeq, unique across threads
+            long seq = seqBase + ti + 1 + done * threads;     // global tradeSeq, unique across threads (and runs, via seqBase)
             int buyer = r.nextInt(accounts) + 1, seller = r.nextInt(accounts) + 1;
             String sec = "S" + r.nextInt(secs);
             int qty = 1 + r.nextInt(1000);

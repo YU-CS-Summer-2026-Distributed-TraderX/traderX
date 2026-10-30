@@ -1,0 +1,47 @@
+# The history feed (FR-HST-02/03/06): every TRADERX_FEED message into ClickHouse, and the history queries.
+# Exactly ONE instance: its lanes are not fenced against a second writer, so the Deployment never surges (Recreate).
+# The PROJECTION_FEED_* values MUST equal trade-processor's (same streams, same partitions).
+apiVersion: v1
+kind: Service
+metadata:
+  name: history-feed
+  namespace: traderx
+spec:
+  selector: { app: history-feed }
+  ports:
+    - { name: http, port: 18095, targetPort: 18095 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: history-feed
+  namespace: traderx
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: history-feed }
+  template:
+    metadata:
+      labels: { app: history-feed }
+    spec:
+      containers:
+        - name: history-feed
+          image: traderx/history-feed:yu18
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: JAVA_TOOL_OPTIONS, value: "-XX:MaxRAMPercentage=75" }
+            - { name: NATS_ADDRESS, value: "nats://nats-broker:4222" }
+            - { name: CLICKHOUSE_URL, value: "http://clickhouse:8123" }
+            - { name: PROJECTION_FEED_STREAM, value: "TRADERX_FEED" }
+            - { name: PROJECTION_FEED_PARTITIONS, value: "1" }
+            - { name: PROJECTION_FEED_STREAM_LAYOUT, value: "one" }
+            - { name: HISTORY_HTTP_PORT, value: "18095" }
+          ports:
+            - { containerPort: 18095 }
+          readinessProbe:
+            httpGet: { path: /health, port: 18095 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "250m", memory: 512Mi }
+            limits: { memory: 1Gi }

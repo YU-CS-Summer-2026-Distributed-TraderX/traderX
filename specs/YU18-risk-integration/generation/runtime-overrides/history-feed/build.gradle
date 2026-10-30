@@ -1,0 +1,51 @@
+plugins {
+  id 'java'
+}
+
+group = 'finos.traderx.history-feed'
+version = '0.1.0'
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+  mavenCentral()
+}
+
+// Plain Java: jnats for the feed, the JDK's HttpClient for ClickHouse and com.sun.net.httpserver for the queries.
+dependencies {
+  implementation 'io.nats:jnats:2.20.5'
+
+  testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+  testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+  testImplementation 'org.testcontainers:testcontainers:1.20.4'
+  testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+}
+
+// One runnable jar (the Dockerfile copies build/libs/*.jar).
+jar {
+  manifest { attributes 'Main-Class': 'finos.traderx.historyfeed.HistoryFeedMain' }
+  from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+}
+
+test {
+  useJUnitPlatform { excludeTags 'integration' }
+}
+
+// Needs a Docker daemon (Testcontainers: NATS + ClickHouse); the kill -9 proof (FR-HST-03).
+tasks.register('integrationTest', Test) {
+  description = 'Kill -9 replay against real NATS JetStream and ClickHouse containers.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  useJUnitPlatform { includeTags 'integration' }
+  dependsOn jar
+  systemProperty 'historyfeed.jar', jar.archiveFile.get().asFile.absolutePath
+  // Docker Engine 29 refuses API versions below 1.40; docker-java inside Testcontainers 1.20 defaults to 1.32.
+  systemProperty 'api.version', '1.44'
+  environment 'DOCKER_API_VERSION', '1.44'
+  shouldRunAfter test
+}
