@@ -207,11 +207,17 @@ members_gated(){
 row_status_is(){ [ "$(sql "select status from orderbook where orderid like '%-$1'")" = "$2" ]; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
 md5of(){ python3 -c 'import hashlib,sys; print(hashlib.md5(sys.stdin.buffer.read()).hexdigest()[:16])'; }
-read_model(){
-  echo "trades=$(sql 'select id,accountid,security,side,quantity,price,state from trades order by 1' | md5of)"
-  echo "positions=$(sql 'select accountid,security,quantity,averagecostbasis from positions order by 1,2' | md5of)"
-  echo "orderbook=$(sql 'select orderid,accountid,security,side,status,quantity,remainingquantity from orderbook order by 1' | md5of)"
-}
+# FR-PRG-19: a query that fails is not an empty table. sql() discards stderr, so piping it straight into md5of recorded
+# md5("") as the read model's state (production 8:42 pm: the DB was not answering yet, and G3 then refused a "move").
+# Each query's exact bytes go through a file, so the hashes are the same as before, and a failed query fails read_model.
+read_model(){ local f q name; f=$(mktemp) || return 1
+  for q in "trades|select id,accountid,security,side,quantity,price,state from trades order by 1" \
+           "positions|select accountid,security,quantity,averagecostbasis from positions order by 1,2" \
+           "orderbook|select orderid,accountid,security,side,status,quantity,remainingquantity from orderbook order by 1"; do
+    name=${q%%|*}; sql "${q#*|}" > "$f" || { rm -f "$f"; return 1; }
+    echo "$name=$(md5of < "$f")"
+  done; rm -f "$f"; }
+sql_ready(){ [ "$(sql 'select 1')" = 1 ]; }
 member(){ # member <i>: applied engineApplied trades orderHash positionHash snapshots
   local h m
   h=$(kc exec "order-matcher-cluster-$1" -c cluster-node -- wget -qO- localhost:8080/health)
@@ -385,7 +391,8 @@ restore_gate(){
   [ "$n" = "$want" ] && [ "$distinct" = "$want" ] && [ "$top" -le "$t" ] && [ "$inside" = 0 ] \
     || die "G3: the members booked $t trade sides (${removed} unprojected: ${ranges:-none}), the read model holds $n (distinct $distinct, highest $top, $inside inside an unprojected range)"
   note "G3 ok: the read model holds trade sides 1..$t${ranges:+ except $ranges}, each once"
-  after=$(read_model); echo "$after" > "$EVIDENCE/read-model-after.txt"
+  after=$(read_model) || die "G3: the read model could not be read after the members started"
+  echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
   note "G3 ok: read model unchanged"
   base=$(kc get configmap rig-shutdown-baseline -o jsonpath='{.data.members}' 2>/dev/null || true)
@@ -487,7 +494,11 @@ rig_up(){
       done; note "ok"
     fi
     local before=''
-    if [ "$DRY" = 0 ]; then before=$(read_model); echo "$before" > "$EVIDENCE/read-model-before.txt"; fi
+    if [ "$DRY" = 0 ]; then
+      wait_for 300 "the read model answers" sql_ready
+      before=$(read_model) || die "G3: the read model could not be read before the members started"
+      echo "$before" > "$EVIDENCE/read-model-before.txt"
+    fi
     past_restore_errors
     step "members: 3, from their retained claims"
     do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=3
@@ -550,8 +561,9 @@ rig_down(){
         java -cp "/opt/app/classes:/opt/app/lib/*" io.aeron.cluster.ClusterTool /data/cluster snapshot >/dev/null \
         || die "ClusterTool snapshot failed on member $leader"
       wait_for 120 "snapshot counter past $s0 on all three" snapshots_past "$s0"
-      local m; m=$(member 0)
-      kc create configmap rig-shutdown-baseline --from-literal=members="$m" --from-literal=readModel="$(read_model)" \
+      local m rm; m=$(member 0)
+      rm=$(read_model) || die "baseline: the read model could not be read (FR-PRG-19); the rig is still up"
+      kc create configmap rig-shutdown-baseline --from-literal=members="$m" --from-literal=readModel="$rm" \
         --from-literal=at="$(date -u +%FT%TZ)" --dry-run=client -o yaml | kc apply -f - >/dev/null
       echo "$m" > "$EVIDENCE/shutdown-baseline.txt"; note "baseline: $m"
     fi

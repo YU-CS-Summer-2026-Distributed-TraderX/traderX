@@ -17,11 +17,11 @@ DRY=0; mkdir -p "$EVIDENCE"
 call(){ echo "$*" >> "$LOG"; }
 sleep(){ :; }
 preflight(){ :; }; require_pools(){ :; }
-pool_ready(){ true; }; ready_replicas(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
+pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
 pool_autoscaling(){ false; }; row_status_is(){ true; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
 snapshots_past(){ true; }; admin_token(){ echo tok; }
 member(){ local v="M$1"; echo "${!v:-$M}"; }
-read_model(){ if [ -f "$EVIDENCE/.rm" ]; then echo "$RM_AFTER"; else touch "$EVIDENCE/.rm"; echo "$RM"; fi; }
+read_model(){ [ -n "${RM_FAIL:-}" ] && return 1; if [ -f "$EVIDENCE/.rm" ]; then echo "$RM_AFTER"; else touch "$EVIDENCE/.rm"; echo "$RM"; fi; }
 kubectl(){
   call "kubectl $*"
   case "$*" in
@@ -238,6 +238,9 @@ class Up(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('G2 SKIPPED on traderx-side', out)
 
+    def test_an_unreadable_read_model_is_refused_not_hashed(self):
+        self.refused('G3', RM_FAIL='1')
+
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')
 
@@ -426,6 +429,22 @@ class Clients(unittest.TestCase):
     def test_more_than_three_is_refused(self):
         rc, out, _ = run('true', CLIENTS='4')
         self.assertEqual(rc, 2, out); self.assertIn('CLIENTS is 1..3', out)
+
+
+class ReadModel(unittest.TestCase):
+    """FR-PRG-19: the real read_model, with sql stubbed: a failed query fails it; it never hashes an error as a table."""
+    def rm(self, sql_body):
+        script = f'set -uo pipefail; RIG_LIB=1 . "{RIG}"; sql(){{ {sql_body}; }}; if out=$(read_model); then echo rc=0; else echo rc=1; fi; echo "$out"'
+        return subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30).stdout
+
+    def test_a_failed_query_fails_the_read(self):
+        self.assertIn('rc=1', self.rm('case "$1" in *positions*) return 1;; *) echo row;; esac'))
+
+    def test_the_hashes_are_of_the_exact_rows(self):
+        out = self.rm('echo "row-$1"')
+        import hashlib
+        want = hashlib.md5(b'row-select id,accountid,security,side,quantity,price,state from trades order by 1\n').hexdigest()[:16]
+        self.assertIn('rc=0', out); self.assertIn(f'trades={want}', out)
 
 
 class Loadgen(unittest.TestCase):

@@ -113,6 +113,11 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-19:** A read-model query that fails SHALL fail `read_model`, never be hashed as an empty table. `up` SHALL
+  wait until the database answers before taking G3's before-reading, and refuse (G3) if either reading fails; the
+  shutdown baseline SHALL refuse the same way. The hashes stay over the query's exact output, so earlier recordings
+  still compare. (Production 2026-10-29 8:42 pm: the database was not answering yet, the before-reading was md5("")
+  for all three tables, and G3 refused a read model that had not moved.)
 - **FR-PRG-18:** G1 SHALL read the members' `RECON_FULL_HISTORY_MAX` (default 200000) from the running StatefulSet. When the
   restored `trades` exceed it, the full-history index cannot answer (it refuses rather than truncate), so G1 SHALL defer
   to G2 and record that in the gate evidence; G2's whole-log replay into a shadow proves the same property by hashes,
