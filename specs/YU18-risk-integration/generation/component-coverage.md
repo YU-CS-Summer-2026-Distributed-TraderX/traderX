@@ -86,6 +86,7 @@ last section).
 | VaR/ES end to end | `specs/YU18-risk-integration/components/risk-pipeline/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/risk-portfolio-tools/var_es_e2e.py` | `tg:risk-portfolio-tools/var_es_e2e.py`, `tg:order-matcher/src/test/java/finos/traderx/ordermatcher/cluster/VarEsEndToEndTest.java` | FR-RP-VARES-01/02 |
 | Recovery identity | `specs/YU18-risk-integration/components/recovery-identity/spec.md` | `specs/YU18-risk-integration/generation/runtime-overrides/recovery-identity` | `tg:recovery-identity` | |
 | CompSci render and admission | `specs/YU18-risk-integration/maintenance/compsci-gke-admission/spec.md` | `scripts/gcp-compsci/admit.py` | `root:scripts/gcp-compsci/prepare.py` | Writes the `cand:` rows above |
+| History store feed (bake-off winner: ClickHouse) | `specs/YU18-risk-integration/components/history-store/spec.md` | `scripts/history-store-bakeoff/src/HistoryFeed.java`, `scripts/history-store-bakeoff/src/HsbLoad.java`, `scripts/history-store-bakeoff/src/HsbQuery.java`, `scripts/history-store-bakeoff/kdb/hsb.q`, `scripts/history-store-bakeoff/vm/bench.sh` | `root:scripts/history-store-bakeoff` | FR-HST-01..05; prototype, root-owned and not rendered or deployed; evidence `docs/engineering/history-store-bakeoff.md` |
 | State spec source | `specs/YU18-risk-integration/spec.md` | `specs/YU18-risk-integration/README.md` | `tg:YU18-risk-integration/spec-source/components/downstream-read-side/spec.md`, `tg:YU18-risk-integration/spec-source/maintenance/gke-member-runtime/spec.md` | |
 
 ## Gaps
