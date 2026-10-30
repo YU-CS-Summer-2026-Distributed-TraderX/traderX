@@ -64,6 +64,7 @@ function session(index) {
   const open = new Map();            // seq -> side, until the first ack
   const answered = new Set();
   let seq = 0, buf = Buffer.alloc(0), credit = 0, up = false;
+  const picks = [0, 0];   // per side: sides alternate with seq, so seq % n would give one side only half the set's accounts
   const sock = net.connect(cfg.port, cfg.host);
   sock.setNoDelay(true);
   sock.on('connect', () => { up = true; });
@@ -73,7 +74,7 @@ function session(index) {
     if (++seq > 0xffffff) throw Error('session sequence exhausted');
     const accounts = SETS[side === 0 ? role : 1 - role], b = Buffer.alloc(34);
     b.writeUInt16LE(32, 0); b[2] = 1; b[3] = side;   // flags 0: never sequenced
-    b.writeUInt32LE(accounts[seq % accounts.length], 6); b.writeUInt32LE(SECURITY, 10); b.writeInt32LE(1, 14);
+    b.writeUInt32LE(accounts[picks[side]++ % accounts.length], 6); b.writeUInt32LE(SECURITY, 10); b.writeInt32LE(1, 14);
     b.writeBigInt64LE(PX, 18); b.writeUInt32LE((index << 24 | seq) >>> 0, 26); b.writeUInt32LE(NONCE, 30);
     open.set(seq, side); s.sent++;
     return b;

@@ -18,7 +18,7 @@ class Gateway:
     """reject_every: refuse every Nth NEW (a risk reject); drop: never answer the Nth; dup: answer the Nth twice."""
     def __init__(self, test, reject_every=0, drop=0, dup=0):
         self.book = collections.deque()   # resting (side, account), all at one price, FIFO
-        self.self_trades, self.buyers = 0, set()
+        self.self_trades, self.buyers, self.sides = 0, set(), collections.defaultdict(set)
         self.orders, self.errors, self.n, self.lock = 0, [], 0, threading.Lock()
         self.reject_every, self.drop, self.dup = reject_every, drop, dup
         self.srv = socket.create_server(('127.0.0.1', 0)); test.addCleanup(self.srv.close)
@@ -54,6 +54,7 @@ class Gateway:
                     kind = 0
                     if status == 1:
                         if side == 0: self.buyers.add(acct)
+                        self.sides[acct].add(side)
                         if self.book and self.book[0][0] != side:
                             self.self_trades += self.book.popleft()[1] == acct
                         else:
@@ -82,6 +83,9 @@ class BinaryLoad(unittest.TestCase):
         self.assertEqual((r['unanswered'], r['duplicates'], r['imbalance']), (0, 0, 0))
         self.assertEqual(len(g.book), 0); self.assertEqual(g.self_trades, 0)
         self.assertTrue(g.buyers & SETS[0] and g.buyers & SETS[1], 'the account sets swap roles each phase')
+        # Every account buys in one role and sells in the other, so none drifts toward the position limit (production
+        # 2026-10-29: seq % n gave each side half the accounts, and those reached POSITION_LIMIT in minutes).
+        self.assertEqual({a: s for a, s in g.sides.items()}, {a: {0, 1} for a in SETS[0] | SETS[1]})
         self.assertEqual(r['acceptedBuys'], r['acceptedSells'])
         self.assertEqual(r['securityId'], 7)
 

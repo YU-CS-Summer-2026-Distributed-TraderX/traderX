@@ -137,7 +137,10 @@ and the gateway count. Decision: [ADR-096](../../system/adr-096-production-rig-l
     (even, odd): at any moment one set buys and the other sells, so no order can meet its own account (no self-trade
     cancel);
   - swap the sets' roles every wall-clock-aligned phase (`--phase-secs`, the same on every pod), so no account
-    accumulates a position beyond one phase's buys; production's global risk policy is left as it is;
+    accumulates a position beyond one phase's buys; production's global risk policy is left as it is. Each side SHALL
+    pick its accounts with its own counter, so every account trades both sides across phases (production 2026-10-29
+    9:09 pm: `seq % n`, with sides alternating on `seq`, gave each side half the accounts; those only ever bought or
+    only ever sold and hit POSITION_LIMIT within minutes, 5.4M rejects);
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not
     resolve;
   - send limit orders of 1 at one operator-given price, unflagged (never sequenced);
