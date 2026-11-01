@@ -7,8 +7,23 @@ header {
    fixed height made them spill over the page content instead of growing the bar. */
 .inner {
   max-width: 1400px; margin: 0 auto; padding: 7px 20px;
-  min-height: 52px; display: flex; align-items: center; gap: 14px 18px; flex-wrap: wrap;
+  min-height: 52px; display: flex; align-items: flex-start; gap: 14px 18px;
 }
+/* Three fixed columns: brand, nav (flex: 1, wraps inside itself), and the right cluster (never wraps, never
+   shrinks). Each column is at least one nav row tall and centres its own content, so on one row everything lines
+   up as before and on two the brand and Sign in stay on the first. */
+.inner > .brand, .inner > .right { min-height: 38px; }
+.inner > nav { flex: 1 1 0; min-width: 0; min-height: 38px; align-items: center; align-content: center; }
+.right { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 1600px) { .site > span:not(.ext) { display: none; } }
+/* A phone: the brand and the right cluster share the first row (Sign in at its right end), the nav takes the
+   whole second row. */
+@media (max-width: 700px) {
+  .inner { flex-wrap: wrap; column-gap: 8px; padding: 7px 12px; }
+  .inner > .right { margin-left: auto; }
+  .inner > nav { order: 3; flex-basis: 100%; }
+}
+@media (max-width: 520px) { .right > .pill { display: none; } }
 .brand { display: flex; align-items: center; gap: 6px; text-decoration: none; flex: 0 0 auto; }
 .brand:hover .console { color: #000; }
 .brand .yu { height: 32px; width: auto; }

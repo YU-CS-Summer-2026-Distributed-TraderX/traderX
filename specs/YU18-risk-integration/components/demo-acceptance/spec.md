@@ -61,6 +61,21 @@ named evidence and remove only their own resources. The component reuses the ord
   - A trailing stop's level is labelled as of the last update.
   - A live order's reason is labelled as the last refused change.
   - A missing limit shows `—`, not `0`.
+- FR-DA08 **The console masthead keeps its place at every width.** Brand, nav and the right-hand cluster
+  (status pills, Sign in, project link) are three columns; the nav wraps inside its own column and the
+  right-hand cluster never wraps, so Sign in stays at the top right. Below 700 px the nav takes a full second
+  row under the brand and Sign in (before: the cluster dropped to the left of a second row on resize).
+- FR-DA09 **Gateway count, live, on the System tab.** A card reads `/gateways/count` every 3 s (the console
+  server's one `kubectl get pods -l app=cluster-gateway`, cached 2 s) and shows the Ready count, gateways
+  still starting and those draining, a 10-minute strip of the Ready count, and a time-stamped log of every
+  change of the Ready count (`3 → 4 scaled out`), so an HPA scale-out is visible as it happens.
+- FR-DA10 **Live q against a demo account's history.** `scripts/demo-kdb/demo-hdb.q` builds once
+  (deterministic seed) and then loads a date-partitioned KDB-X HDB of N trades (default 5,000,000) for account
+  99000001 over a year of weekdays, and answers `POST /q` with `{columns, rows (≤2000), count, ms}` or
+  `{error, ms}`, every query under `reval` (read-only: assignments and system commands refused), `\T 10`.
+  The console proxies `/kdbq` to `KDB_Q_URL`: six presets run for anyone, free-form q (≤2000 characters)
+  only for a signed-in operator; with no `KDB_Q_URL` it answers 503 and the Kdb tab says so. The KDB-X
+  licence never leaves the machine it was installed on.
 
 ## Acceptance evidence (2026-09-24, local-live unless stated)
 

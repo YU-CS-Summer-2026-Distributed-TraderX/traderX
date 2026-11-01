@@ -1278,6 +1278,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-CUI-19` | LIVE |  | yu18-desk | FAILS: suspect 16 (a pre-send refusal shown as "Outcome unknown"); typed-payload half = tier gap |
 | YU18 | `FR-CUI-20` | LIVE |  | yu18-desk | PASS on the hosted Desk (CUI-20 in the DESTRUCTIVE=1 arm) |
 | YU18 | `FR-CUI-21` | LIVE |  | yu18-desk | signed-out raw proxy order 403; membership rule is non-admin local-mode (spec gap 19) |
+| YU18 | `FR-CUI-22` | CI |  |  | management.spec: an older poll's answer never confirms and readState stays `ready` through background polls (no Loading redraw) |
+| YU18 | `FR-CUI-23` | CI |  |  | rig.spec: operator reads the legacy projection of an empty registry, history refused, cross-account rows refused; management.spec: operator cancel goes to /order-matcher/cancel, a trader-only session sends nothing |
 | YU18 | `FR-DA01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1285,6 +1287,9 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DA05` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA06` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA07` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
+| YU18 | `FR-DA08` | MANUAL |  |  | browser pane 2026-11-01: Sign in on row 1 at the right end at 375, 1000 and 1500 px; nav wraps inside its column |
+| YU18 | `FR-DA09` | CI |  |  | gateway-count.test.mjs (ready/starting/draining from the kubectl line), gateway-scale.spec (a change is logged only when Ready moves) |
+| YU18 | `FR-DA10` | CI |  |  | kdb-query.test.mjs: presets for anyone, free-form q only for an operator, bounded; demo-hdb.q live locally: 5,000,000 rows, assignment `noupdate` and `system` `sys` refused |
 | YU18 | `FR-DRS-01` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |
 | YU18 | `FR-DRS-02` | LIVE | yu18-jetstream-feed yu18-projection-effect-end |  | NEGATIVE=1 PASS on both feeds (suspect 3 closed); a DB-refused side is not counted: suspect 14 |
 | YU18 | `FR-DRS-03` | CI |  |  | queue bound/batching/flush: unit + bench (downstream-at-400k) |

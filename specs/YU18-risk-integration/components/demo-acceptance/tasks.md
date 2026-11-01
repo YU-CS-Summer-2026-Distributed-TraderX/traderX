@@ -11,3 +11,4 @@
 - [x] T9 F3 fixed on `claude/f3-trailing-stop`: the exercise judges the ratchet as an ordinary case; 31/31, exit 0, twice, on a disposable rig
 - [x] T11 Review corrections R1 (known gaps never acceptance), R2 (failed or malformed reads abort), R3 (complete-row digest, enforced queries, ownership before upsert), with negative controls
 - [ ] T10 Second-person reproduction from the guide with named evidence
+- [x] T12 Masthead three-column layout (FR-DA08), System-tab gateway count (FR-DA09), live q Kdb card (FR-DA10), 2026-11-05 demo

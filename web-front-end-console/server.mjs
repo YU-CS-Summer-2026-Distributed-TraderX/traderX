@@ -29,6 +29,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { parseGatewayCount } from './gateway-count.mjs';
+import { KDB_PRESETS, kdbQueryText } from './kdb-query.mjs';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const NS = process.env.NAMESPACE ?? 'traderx';
@@ -557,6 +559,24 @@ function podsFor(label) {
 const gatewayPods = () => podsFor('cluster-gateway');
 // Members are a StatefulSet, so their names already sort into ordinal order.
 const memberPods = () => podsFor('order-matcher-cluster');
+
+// FR-DA09: the gateway count for the System tab's scale card, every pod (not only those with an IP), so a scale-out
+// shows its new gateways as "starting" before they are Ready and a drain shows "draining". One kubectl get, 2 s cache.
+const gwCountCache = { at: 0, body: '' };
+function gatewayCount(req, res) {
+  try {
+    if (Date.now() - gwCountCache.at > 2000) {
+      const out = execSync(`kubectl -n ${NS} get pods -l app=cluster-gateway -o jsonpath=` +
+        `'{range .items[*]}{.metadata.name}|{.status.phase}|{.metadata.deletionTimestamp}|{.status.conditions[?(@.type=="Ready")].status};{end}'`,
+        { shell: '/bin/sh', timeout: 15000 }).toString();
+      gwCountCache.at = Date.now();
+      gwCountCache.body = JSON.stringify({ at: new Date().toISOString(), ...parseGatewayCount(out) });
+    }
+    return json(res, 200, gwCountCache.body);
+  } catch (e) {
+    return json(res, 502, { error: `could not list gateways: ${e}` });
+  }
+}
 
 const gwCache = { at: 0, body: '' };
 async function gatewaysBypass(req, res) {
@@ -1229,6 +1249,20 @@ const server = http.createServer(async (req, res) => {
     // button. `code` is the contract; the message stays free to change.
     res.setHeader('WWW-Authenticate', 'Cookie realm="traderx-console"');
     return json(res, 401, { code: 'admin_auth_required', error: 'sign in as an administrator to make this change' });
+  }
+  if (p === '/gateways/count') return gatewayCount(req, res);
+  if (p === '/kdbq/presets') return json(res, 200, { configured: !!process.env.KDB_Q_URL, presets: KDB_PRESETS });
+  if (p === '/kdbq') {
+    if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+    if (!process.env.KDB_Q_URL) return json(res, 503, { error: 'no KDB-X query service configured (KDB_Q_URL)' });
+    let body = null; try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* 400 below */ }
+    const t = kdbQueryText(body, !!readToken(req));
+    if (!t.q) return json(res, t.status, { ...(t.code ? { code: t.code } : {}), error: t.error });
+    try {
+      const r = await fetch(new URL('/q', process.env.KDB_Q_URL), { method: 'POST', body: JSON.stringify({ q: t.q }),
+        signal: AbortSignal.timeout(15000) });
+      return json(res, r.status === 200 ? 200 : 502, await r.text());
+    } catch (e) { return json(res, 502, { error: `KDB-X did not answer: ${e.message}` }); }
   }
   if (p === '/gateways') return gatewaysBypass(req, res);
   if (p === '/eod/jobs') {

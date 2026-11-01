@@ -14,6 +14,7 @@ import { EodJobs } from './eod-jobs';
 import { AdminPanel } from './admin-panel';
 import { ProvenancePanel } from './provenance-panel';
 import { KdbPanel } from './kdb-panel';
+import { KdbLive } from './kdb-live';
 import { StatusPanel } from './status-panel';
 import { DemoSession } from './demo-session';
 import { AccountsPanel } from './accounts-panel';
@@ -24,6 +25,7 @@ import { LegacyPanel } from './legacy-panel';
 import { ReplayClock } from './replay-clock';
 import { ReplayTape } from './replay-tape';
 import { CollarReference } from './collar-reference';
+import { GatewayScale } from './gateway-scale';
 
 @Component({
   selector: 'trading-page',
@@ -51,9 +53,10 @@ export class TradingPage {}
 
 @Component({
   selector: 'system-page',
-  imports: [ClusterPanel, MetricsPanel, StatusPanel],
+  imports: [ClusterPanel, GatewayScale, MetricsPanel, StatusPanel],
   template: `
     <div class="stack">
+      <section class="card"><gateway-scale /></section>
       <section class="card"><cluster-panel /></section>
       <section class="card"><metrics-panel /></section>
       <section class="card"><status-panel /></section>
@@ -230,8 +233,10 @@ export class FixPage {}
 
 @Component({
   selector: 'kdb-page',
-  imports: [KdbPanel],
-  template: `<section class="card" style="max-width: 1080px"><kdb-panel /></section>`,
+  imports: [KdbLive, KdbPanel],
+  template: `<div class="stack" style="display: grid; gap: 14px; max-width: 1080px">
+    <section class="card"><kdb-live /></section>
+    <section class="card"><kdb-panel /></section></div>`,
 })
 export class KdbPage {}
 
