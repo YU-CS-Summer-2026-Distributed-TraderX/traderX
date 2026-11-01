@@ -10,7 +10,8 @@
 #         engine-pool (only while it has no nodes, since GKE recreates the nodes to apply them).
 # up      nodes, then members, then the restore gate (gateways stay at 0 until it passes; a mismatch stops here),
 #         then N gateways, the internal LB, autoscaling, and a smoke order checked at the effect end.
-# down    gateways to 0 first (they drain), a snapshot barrier and a shutdown baseline, members stopped (each must
+# down    a NATS restart or replacement during the run is reported FAILED (FR-PRG-28); then
+#         gateways to 0 first (they drain), a snapshot barrier and a shutdown baseline, members stopped (each must
 #         exit 143), then every rig pool to 0 and the client VM stopped, verified by `gcloud compute instances list`.
 # status  read-only.
 #
@@ -245,6 +246,32 @@ accounting(){ local a
 # Every partition's committed trade and order cursor at its subject's last stream message.
 accounting_caught_up(){
   accounting | jq -e '([.trades[]] + [(.orders // {})[]]) | length > 0 and all(.cursor >= .streamLast)' >/dev/null
+}
+
+# ---- FR-PRG-28: NATS must not restart under a run ---------------------------------------------------------------------
+# 2026-10-30: NATS was OOM-killed 7 times under the binary arm and came back each time. The rig looked up while the FIX
+# session store refused every Logon and ~89.7M trade sides were lost. A run is clean only if the NATS pod the rig came up
+# with is still the only one, Running, and never restarted; `up` records it (ConfigMap rig-nats), `down` checks it.
+nats_problems(){ # nats_problems <recorded pod uid, or empty>: one line per problem, nothing when intact
+  local pods
+  pods=$(kc get pods -l app=nats -o json) || { echo "the NATS pods could not be listed"; return 0; }
+  jq -r --arg uid "$1" '(.items | length) as $n
+    | (if $n != 1 then "\($n) NATS pods, want 1: \([.items[] | "\(.metadata.name) \(.status.phase)"] | join(", "))" else empty end),
+      (.items[] | select(.status.phase != "Running") | "\(.metadata.name) is \(.status.phase), not Running"),
+      (.items[] | .metadata.name as $p | .status.containerStatuses[]? | select(.name == "nats" and .restartCount > 0)
+       | "\($p) restarted \(.restartCount)x; last \(.lastState.terminated.reason // "?") (exit \(.lastState.terminated.exitCode // "?")) at \(.lastState.terminated.finishedAt // "?")"),
+      (if $uid != "" and $n == 1 and .items[0].metadata.uid != $uid
+       then "\(.items[0].metadata.name) is not the NATS pod the rig came up with: it was replaced" else empty end)' <<<"$pods"
+}
+nats_uid(){ kc get configmap rig-nats -o jsonpath='{.data.uid}' 2>/dev/null || true; }
+nats_record(){ # refuse a NATS that already restarted, then record the pod `down` will check
+  step "NATS intact (FR-PRG-28): one pod, Running, never restarted; recorded for down"
+  if [ "$DRY" = 1 ]; then note "would check and record the NATS pod"; return 0; fi
+  local np; np=$(nats_problems "$1")
+  [ -z "$np" ] || die "NATS (FR-PRG-28): $np"
+  kc create configmap rig-nats --from-literal=uid="$(kc get pods -l app=nats -o jsonpath='{.items[0].metadata.uid}')" \
+    --from-literal=at="$(date -u +%FT%TZ)" --dry-run=client -o yaml | kc apply -f - >/dev/null
+  note "ok"
 }
 member(){ # member <i>: applied engineApplied trades orderHash positionHash snapshots
   local h m
@@ -580,6 +607,7 @@ rig_up(){
   if members_gated; then
     # A re-run on a rig that is up: nothing is stopped, nothing re-gated; only the gateway count and what follows.
     note "members are up and covered by the restore gate: holding nothing, re-gating nothing"
+    nats_record "$(nats_uid)"
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
@@ -600,6 +628,7 @@ rig_up(){
         kc rollout status "$d" --timeout=600s >/dev/null || die "$d not Ready"
       done; note "ok"
     fi
+    nats_record ''
     local before=''
     if [ "$DRY" = 0 ]; then
       wait_for 300 "the read model answers" sql_ready
@@ -620,7 +649,7 @@ rig_up(){
 }
 
 member_exit_codes(){ # stop the members and require each to exit 143 (FR-GMR-04)
-  local watch=$EVIDENCE/members-watch.json log=$EVIDENCE/member-exits.txt
+  local watch=$EVIDENCE/members-watch.json log=$EVIDENCE/member-exits.txt bad=0
   if [ "$DRY" = 1 ]; then do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=0
     note "would require: each member's container terminated with exit code 143"; return 0; fi
   kc get pods -l app=order-matcher-cluster -w --output-watch-events -o json > "$watch" &   # roll 4's capture
@@ -636,14 +665,24 @@ member_exit_codes(){ # stop the members and require each to exit 143 (FR-GMR-04)
   # Not a refusal: the members are already stopped, and stopping here would leave every pool billing. The teardown
   # finishes and the run exits non-zero (FR-PRG-02).
   for i in 0 1 2; do
-    grep -q "^order-matcher-cluster-$i 143$" "$log" || { echo "FAILED: member $i did not exit 143: $log" >&2; DOWN_FAILED=1; }
+    grep -q "^order-matcher-cluster-$i 143$" "$log" || { echo "FAILED: member $i did not exit 143: $log" >&2; DOWN_FAILED=1; bad=1; }
   done
-  [ "${DOWN_FAILED:-0}" = 1 ] || note "ok: members 0, 1, 2 exited 143"
+  [ "$bad" = 1 ] || note "ok: members 0, 1, 2 exited 143"
 }
 
 rig_down(){
   preflight
   note "rig down: context=$CTX namespace=$NS evidence=$EVIDENCE"
+  # Not a refusal, like the member exits: the run is over either way, and the teardown must still reach zero.
+  step "NATS stayed up through the run (FR-PRG-28)"
+  if [ "$DRY" = 1 ]; then note "would check: the NATS pod the rig came up with, Running, never restarted"; else
+    local np; np=$(nats_problems "$(nats_uid)")
+    if [ -z "$np" ]; then note "ok"; else
+      printf '%s\n' "$np" > "$EVIDENCE/nats-restarts.txt"
+      echo "FAILED: NATS did not stay up through the run; this run is not clean (FR-PRG-28):" >&2
+      printf '   %s\n' "$np" >&2; DOWN_FAILED=1
+    fi
+  fi
   step "binary load stopped (FR-PRG-16), then gateways to 0 (each drains: FIX sessions resume elsewhere, in-flight answered)"
   do_ kubectl --context "$CTX" -n "$NS" delete job binary-load --ignore-not-found --wait=true
   autoscale_off
@@ -691,7 +730,7 @@ rig_down(){
   wait_for 900 "no rig node instance left" no_rig_instances
   wait_for 300 "$CLIENT_VMS TERMINATED" vm_status_is TERMINATED
   [ "$DRY" = 1 ] || gc compute instances list --format='table(name,status,machineType.basename())' | tee "$EVIDENCE/instances-after.txt"
-  [ "${DOWN_FAILED:-0}" = 0 ] || { echo "rig down: done, but a member did not exit 143 (see above)" >&2; exit 3; }
+  [ "${DOWN_FAILED:-0}" = 0 ] || { echo "rig down: done, but a check FAILED (see above)" >&2; exit 3; }
   step "rig down: done"
 }
 
@@ -764,6 +803,7 @@ rig_status(){
     note "$v: $(gc compute instances describe "$v" --zone "$ZONE" --format='value(status)' 2>/dev/null || echo absent)"; done
   kc get sts,deploy,hpa,svc order-matcher-gw-ilb 2>/dev/null | grep -E 'order-matcher|cluster-gateway|hpa|NAME' || true
   kc get configmap rig-gate -o jsonpath='{.data.status} {.data.at}{"\n"}' 2>/dev/null || note "no gate record"
+  local np; np=$(nats_problems "$(nats_uid)"); note "NATS: ${np:-intact (FR-PRG-28)}"
 }
 
 # FR-PRG-16: size the binary load's pool. `rig.sh pools` creates it at 0; `down` returns it to 0.

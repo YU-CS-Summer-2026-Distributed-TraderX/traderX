@@ -114,6 +114,19 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
+  does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom
+  (c3-standard-8: 32 GiB, GKE allocatable ~28.3 GiB, budget 26 GiB). `GOMEMLIMIT` SHALL hold the Go heap at or under
+  85% of the limit. `max_memory_store` SHALL be explicit (unset, NATS takes 75% of the host's memory, 23.5 GB, which
+  the pod cannot hold), and it plus the ingest queue (`max_buffered_size`) SHALL fit in half of `GOMEMLIMIT`. Sizing:
+  limit 24Gi, `GOMEMLIMIT=20GiB`, `max_memory_store: 256MB` (every stream and KV bucket is file-backed), the 1GB
+  ingest queue unchanged. A run SHALL NOT look clean after NATS restarted: `rig.sh up` refuses a NATS pod that has
+  already restarted and records the one it came up with (ConfigMap `rig-nats`), `rig.sh down` reports a restart, a
+  replacement or a missing pod as FAILED (evidence `nats-restarts.txt`, exit 3) and still tears down to zero, and
+  `rig.sh status` shows it. Production 2026-10-30, 3:03 pm: a 2Gi pod with NATS's memory store unset was OOM-killed 7
+  times under the binary arm's ~150K trades/s bridge publish. Each restart took the FIX session store down, every FIX
+  Logon was refused, and ~89.7M trade sides were lost, while the rig looked up. The 12Gi sizing measured on the bench
+  existed only in the snapshot read-model profile, which production did not run.
 - **FR-PRG-27:** The read-model fingerprint (G3's before/after, the shutdown baseline) SHALL be computed inside MariaDB
   as one aggregate per table: its row count and two exact sums of each row's md5 over every compared column, NULL kept
   apart from 'NULL'. It SHALL NOT dump a table (production 2026-10-30 12:45 pm: the sorted dumps of ~3.4M trade and
@@ -170,7 +183,7 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - trade-processor on `PROJECTION_FEED_MODE=jetstream` with P partitions (default 8), one stream per partition
     (`PROJECTION_FEED_STREAM_LAYOUT=partition`, FR-DRS-32), `TRADE_PROJECTION_MODE=snapshot`,
     `ORDER_FEED_PERSIST=false` and `ORDER_VIEW_SNAPSHOT_MS=5000`;
-  - NATS at 12Gi with `GOMEMLIMIT=10GiB` (2Gi was OOM-killed under load);
+  - NATS at the base sizing every profile carries (FR-PRG-28; 2Gi was OOM-killed under load);
   - the stream limit sized as rate (125K orders/s, the measured hold, ADR-097) x stored bytes per order x the outage
     window, with NATS's `max_file_store` and its claim above it;
   - trade-processor on `readmodel-pool` and the database on `db-pool`, each tainted and guaranteed;

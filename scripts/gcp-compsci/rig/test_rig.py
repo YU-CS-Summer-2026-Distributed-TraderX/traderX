@@ -30,6 +30,9 @@ kubectl(){
   call "kubectl $*"
   case "$*" in
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
+    *"get pods -l app=nats -o jsonpath"*) echo u1;;
+    *"get pods -l app=nats -o json"*) [ -n "${NATS_LIST_FAIL:-}" ] && return 1; echo "${NATS_PODS:-$NATS_OK}";;
+    *"get configmap rig-nats"*) echo "${NATS_UID-u1}";;
     *"get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name"*)
       [ -n "${NODES_FAIL:-}" ] && { echo "Error from server: etcdserver: request timed out" >&2; return 1; }; printf 'node/%s\n' ${GW_NODES:-n1 n2};;
     *"--field-selector spec.nodeName="*)   # GW_ON_<node>: the gateway pod on it; POD_LIST_FAIL: the node whose listing fails
@@ -70,7 +73,15 @@ kubectl(){
 gcloud(){ call "gcloud $*"; case "$*" in *networkIP*) echo 10.0.0.5;; esac; }
 '''
 
-GOOD = {'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
+def nats_pods(*pods):   # (uid, phase, restarts, last reason)
+    import json
+    return json.dumps({'items': [{'metadata': {'name': f'nats-{u}', 'uid': u}, 'status': {'phase': ph, 'containerStatuses': [
+        {'name': 'nats', 'restartCount': r, 'lastState': {'terminated': {'reason': why, 'exitCode': 137,
+                                                                         'finishedAt': '2026-10-30T19:05:00Z'}} if r else {}}]}}
+        for u, ph, r, why in pods]})
+
+
+GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
@@ -553,6 +564,47 @@ class Down(unittest.TestCase):
         self.assertEqual(rc, 3, out)
         self.assertIn('member 1 did not exit 143', out)
         self.assertIsNotNone(first(calls, r'resize .*default-pool --num-nodes 0'), 'pools left billing')
+
+
+class Nats(unittest.TestCase):
+    """FR-PRG-28: a NATS restart or replacement under a run is never a clean run (2026-10-30: OOM-killed 7x, unseen)."""
+    def test_up_records_the_nats_pod_and_down_finds_it_intact(self):
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'create configmap rig-nats --from-literal=uid=u1'), out)
+        self.assertLess(first(calls, 'create configmap rig-nats'), first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'))
+        rc, out, _ = run('rig_down')
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('NATS did not stay up', out)
+
+    def test_an_oom_killed_nats_fails_the_run_but_the_teardown_still_reaches_zero(self):
+        rc, out, calls = run('rig_down', NATS_PODS=nats_pods(('u1', 'Running', 7, 'OOMKilled')))
+        self.assertEqual(rc, 3, out)
+        self.assertIn('NATS did not stay up', out)
+        self.assertIn('restarted 7x; last OOMKilled', out)
+        self.assertIsNotNone(first(calls, r'resize .*default-pool --num-nodes 0'), 'pools left billing')
+
+    def test_a_replaced_or_missing_nats_fails_the_run(self):
+        for pods, says in ((nats_pods(('u2', 'Running', 0, '')), 'was replaced'),
+                           (nats_pods(('u1', 'Failed', 0, ''), ('u2', 'Running', 0, '')), '2 NATS pods'),
+                           (nats_pods(), '0 NATS pods')):
+            rc, out, _ = run('rig_down', NATS_PODS=pods)
+            self.assertEqual(rc, 3, out)
+            self.assertIn(says, out)
+        rc, out, _ = run('rig_down', NATS_LIST_FAIL='1')
+        self.assertEqual(rc, 3, out)
+        self.assertIn('could not be listed', out)
+
+    def test_up_refuses_a_nats_that_already_restarted_before_any_member_starts(self):
+        rc, out, calls = run('rig_up', NATS_PODS=nats_pods(('u1', 'Running', 1, 'OOMKilled')))
+        self.assertEqual(rc, 2, out)
+        self.assertIn('REFUSED', out)
+        self.assertIsNone(first(calls, r'scale statefulset/order-matcher-cluster --replicas=3'))
+        self.assertIsNone(first(calls, SCALE_UP))
+
+    def test_status_reports_it(self):
+        rc, out, _ = run('rig_status', NATS_PODS=nats_pods(('u1', 'Running', 2, 'OOMKilled')))
+        self.assertIn('NATS: nats-u1 restarted 2x', out)
 
 
 class Clients(unittest.TestCase):

@@ -56,7 +56,7 @@ equal the members' restored `openOrders`, and that every committed cursor has re
 |---|---|
 | Members | `BRIDGE_PARTITIONS=P` (the member image already has partitions and receipts: `c562bbab` contains `79b754f7` and `48655be8`) |
 | trade-processor | jetstream feed, P partitions, snapshot trades, memory-only orders with their snapshot; 12 CPU / 24Gi guaranteed, gen-ZGC 16g; `readmodel-pool` (c4d-standard-16) |
-| NATS | 12Gi with `GOMEMLIMIT=10GiB` (2Gi was OOM-killed under load); stream limit = rate × 1,344 B/order × 30 min; `max_file_store` and the PVC above it |
+| NATS | 24Gi with `GOMEMLIMIT=20GiB`, the base sizing of every profile since FR-PRG-28 (2Gi was OOM-killed under load; this profile first set 12Gi/10GiB); stream limit = rate × 1,344 B/order × 30 min; `max_file_store` and the PVC above it |
 | Database | `db-pool` (c4d-standard-8), 6 CPU / 24Gi, 16G buffer pool; claim `eod-price-db-fast` on Hyperdisk Balanced (12K IOPS, 400 MiB/s), restored from a VolumeSnapshot of the old claim |
 
 The database's disk moves by snapshot and restore, never by re-creation. `validate()` refuses a moved claim with no

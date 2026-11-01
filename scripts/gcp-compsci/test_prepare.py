@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import os
 import subprocess
+import re
 import yaml
 
 spec=importlib.util.spec_from_file_location('prepare',Path(__file__).with_name('prepare.py'))
@@ -359,6 +360,60 @@ class Rendering(unittest.TestCase):
         with self.assertRaises(AssertionError):module.pin_images(docs,{'images':{}},pub)
 
 
+class NatsMemory(unittest.TestCase):
+    """FR-PRG-28: the production (rows) render's NATS pod, Go heap and NATS limits agree, and drift is refused at render.
+    2026-10-30: a 2Gi pod against NATS's own 23.5 GB memory store was OOM-killed 7 times under the bridges' publish."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10')
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def nats(self,docs):
+        return module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='nats'))['containers'][0]
+
+    def conf(self,docs):
+        return next(d for d in docs if d['kind']=='ConfigMap' and d['metadata']['name']=='nats-server-config')['data']
+
+    def test_the_limit_holds_what_nats_is_configured_to_hold(self):
+        c=self.nats(self.docs)
+        limit=module.size_bytes(c['resources']['limits']['memory'])
+        gomem=module.size_bytes(next(e['value'] for e in c['env'] if e['name']=='GOMEMLIMIT'))
+        conf=self.conf(self.docs)['nats.conf']
+        store=module.size_bytes(re.search(r'max_memory_store: (\S+)',conf).group(1))
+        queue=module.size_bytes(re.search(r'max_buffered_size: (\S+)',conf).group(1))
+        self.assertEqual(c['resources']['requests']['memory'],c['resources']['limits']['memory'])
+        self.assertLessEqual(limit,module.NATS_NODE_BUDGET)
+        self.assertLessEqual(gomem*100,limit*85)
+        self.assertLessEqual((store+queue)*2,gomem)
+        self.assertGreater(limit,2*2**30)   # the size that was OOM-killed
+
+    def test_drift_is_refused(self):
+        def broken(change):
+            docs=copy.deepcopy(self.docs); change(docs); return docs
+        def limit(v):
+            def change(docs): r=self.nats(docs)['resources']; r['limits']['memory']=r['requests']['memory']=v
+            return change
+        def gomem(v):
+            def change(docs):
+                c=self.nats(docs); c['env']=[e for e in c['env'] if e['name']!='GOMEMLIMIT']+([{'name':'GOMEMLIMIT','value':v}] if v else [])
+            return change
+        def conf(old,new):
+            def change(docs): d=self.conf(docs); d['nats.conf']=re.sub(old,new,d['nats.conf'])
+            return change
+        def request(docs): self.nats(docs)['resources']['requests']['memory']='512Mi'
+        for change,message in ((limit('2Gi'),'GOMEMLIMIT'),                                  # 2026-10-30's pod
+                               (limit('30Gi'),'fit nats-pool'),
+                               (request,'equal the request'),
+                               (gomem(None),'GOMEMLIMIT'),(gomem('23GiB'),'85%'),
+                               (conf(r'\s*max_memory_store: \S+',''),'explicit'),          # NATS then takes 75% of the host
+                               (conf(r'max_buffered_size: \S+','max_buffered_size: 12GB'),'ingest queue')):
+            with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(change))
+
+
 class UiMetadata(unittest.TestCase):
     def render(self, folder, epoch):
         target=folder/'web-front-end/angular/main/assets'
@@ -623,8 +678,8 @@ class SnapshotReadModel(unittest.TestCase):
         self.assertEqual(int(tp['PROJECTION_FEED_STREAM_MAX_BYTES']),module.stream_retention_bytes())
         self.assertIn('-XX:+ZGenerational',tp['JAVA_TOOL_OPTIONS'].split())
         nats=module.podspec(self.doc(self.docs,'Deployment','nats'))['containers'][0]
-        self.assertEqual(nats['resources']['limits']['memory'],'12Gi')   # 2Gi was OOM-killed on the bench (ADR-097)
-        self.assertIn({'name':'GOMEMLIMIT','value':'10GiB'},nats['env'])
+        self.assertEqual(nats['resources']['limits']['memory'],'24Gi')   # the base sizing, every profile (FR-PRG-28)
+        self.assertIn({'name':'GOMEMLIMIT','value':'20GiB'},nats['env'])
         for name,pool in (('trade-processor','readmodel-pool'),('eod-price-db','db-pool')):
             self.assertEqual(module.podspec(self.doc(self.docs,'Deployment',name))['nodeSelector'],{'cloud.google.com/gke-nodepool':pool})
 

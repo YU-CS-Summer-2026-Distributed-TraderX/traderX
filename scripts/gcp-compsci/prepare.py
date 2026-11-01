@@ -218,9 +218,8 @@ STREAM_BYTES_PER_ORDER = 462 + 588 * 3 // 2   # stored: one trade side + 1.5 ord
 READ_MODEL_POOLS = {'trade-processor': ('readmodel-pool', 'traderx-readmodel'), 'eod-price-db': ('db-pool', 'traderx-db')}
 READ_MODEL_TP = {'cpu': '12', 'memory': '24Gi', 'jvm': '-XX:+UseZGC -XX:+ZGenerational -Xms16g -Xmx16g -XX:+ExitOnOutOfMemoryError'}
 READ_MODEL_DB = {'cpu': '6', 'memory': '24Gi', 'bufferPool': '16G', 'disk': '200Gi'}
-# NATS at 2Gi was OOM-killed under the bench's 100K orders/s step (its 1 GB ingest queue filled): 12Gi with the Go heap
-# held under it (GOMEMLIMIT), on nats-pool's c3-standard-8 (32 GB).
-READ_MODEL_NATS = {'cpu': '4', 'memory': '12Gi', 'gomemlimit': '10GiB'}
+# NATS memory is the base manifest's for every profile (FR-PRG-28, validate_nats_memory), not this one's alone: the rows
+# profile ran NATS at 2Gi and it was OOM-killed under the bridges' publish on 2026-10-30.
 READ_MODEL_DB_CLASS = 'eod-price-db-fast'
 READ_MODEL_DB_CLAIM = 'eod-price-db-fast'
 READ_MODEL_DB_SNAPSHOT = 'eod-price-db-pre-fast'   # taken of eod-price-db-data while the database is at 0
@@ -258,11 +257,6 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
             jvm['value'] = ' '.join([READ_MODEL_TP['jvm']] + kept)
             c['resources'] = {'requests': {'cpu': READ_MODEL_TP['cpu'], 'memory': READ_MODEL_TP['memory']},
                               'limits': {'cpu': READ_MODEL_TP['cpu'], 'memory': READ_MODEL_TP['memory']}}
-        elif kind == 'Deployment' and name == 'nats':
-            c = pod['containers'][0]
-            c['resources'] = {'requests': {'cpu': READ_MODEL_NATS['cpu'], 'memory': READ_MODEL_NATS['memory']},
-                              'limits': {'memory': READ_MODEL_NATS['memory']}}
-            set_env(c, {'GOMEMLIMIT': READ_MODEL_NATS['gomemlimit']})
         elif kind == 'ConfigMap' and name == 'nats-server-config':
             doc['data']['nats.conf'] = re.sub(r'max_file_store: \S+', f'max_file_store: {store_gb}G', doc['data']['nats.conf'])
         elif kind == 'PersistentVolumeClaim' and name == 'nats-data':
@@ -298,6 +292,43 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
                           'resources': {'requests': {'storage': READ_MODEL_DB['disk']}},
                           'dataSource': {'apiGroup': 'snapshot.storage.k8s.io', 'kind': 'VolumeSnapshot',
                                          'name': READ_MODEL_DB_SNAPSHOT}}})
+
+
+# FR-PRG-28: NATS's memory, as the pod and NATS itself each see it. NATS runs alone on nats-pool's c3-standard-8: 32 GiB,
+# GKE allocatable ~28.3 GiB (its reservation: 25% of the first 4 GiB, 20% of the next 4, 10% of the next 8, 6% above,
+# plus 100 MiB eviction), less ~2 GiB kept for the node's DaemonSets.
+NATS_NODE_BUDGET = 26 * 2**30
+
+
+def size_bytes(v):
+    """A Kubernetes quantity (24Gi), a GOMEMLIMIT (20GiB) or a NATS size (256MB, 1GB; NATS reads MB/GB as binary)."""
+    m = re.fullmatch(r'(\d+)\s*([KMGT]?)(i?B?|B)?', v.strip(), re.I)
+    if not m:
+        raise ValueError(f'unreadable size {v!r}')
+    return int(m.group(1)) * 1024 ** ' KMGT'.index((m.group(2) or ' ').upper())
+
+
+def validate_nats_memory(docs, require):
+    """FR-PRG-28: the pod's memory, the Go heap limit and NATS's own limits agree, so NATS is never OOM-killed for holding
+    what it was configured to hold. 2026-10-30: limit 2Gi, NATS's memory store unset (75% of the host, 23.5 GB), and a
+    1GB ingest queue under ~150K trades/s: OOM-killed 7 times, the FIX session store down with it, ~89.7M sides lost."""
+    nats = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'nats')
+    c = podspec(nats)['containers'][0]
+    res = c.get('resources', {})
+    limit = size_bytes(res.get('limits', {}).get('memory', '0'))
+    gomem = next((e.get('value') for e in c.get('env', []) if e['name'] == 'GOMEMLIMIT'), None)
+    conf = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')['data']['nats.conf']
+    def conf_size(key):
+        m = re.search(rf'^\s*{key}:\s*(\S+)', conf, re.M)
+        return size_bytes(m.group(1)) if m else None
+    store, queue = conf_size('max_memory_store'), conf_size('max_buffered_size')
+    require(0 < limit <= NATS_NODE_BUDGET and res.get('requests', {}).get('memory') == res['limits']['memory'],
+            'NATS memory: the limit must fit nats-pool\'s node with headroom and equal the request (FR-PRG-28)')
+    require(gomem is not None and size_bytes(gomem) * 100 <= limit * 85,
+            'NATS memory: GOMEMLIMIT must hold the Go heap at or under 85% of the pod limit (FR-PRG-28)')
+    require(store is not None and queue is not None and (store + queue) * 2 <= size_bytes(gomem or '0'),
+            'NATS memory: max_memory_store must be explicit (unset is 75% of the host), and it plus the ingest queue '
+            '(max_buffered_size) must fit in half the Go heap limit (FR-PRG-28)')
 
 
 def validate_read_model(docs, require):
@@ -548,6 +579,7 @@ def validate(docs, declared=None):
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
+    validate_nats_memory(docs, require)
     validate_read_model(docs, require)
 
 

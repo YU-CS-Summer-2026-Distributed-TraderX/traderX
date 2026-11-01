@@ -38,6 +38,9 @@ data:
   nats.conf: |
     jetstream {
       store_dir: /data
+      # FR-PRG-28: explicit, or NATS takes 75% of the HOST's memory (23.5 GB on c3-standard-8) as its memory-store
+      # limit, which the pod cannot hold. Every stream and KV bucket here is file-backed.
+      max_memory_store: 256MB
       max_file_store: 24G
       # The bridges core-publish; above the stream's ingest queue NATS DROPS silently ("excessive stream
       # ingest rate ... IPQ len limit reached"). Measured on traderx-dsq 2026-10-27: a 38K orders/s burst lost
@@ -95,12 +98,19 @@ spec:
               mountPath: /data
             - name: config
               mountPath: /etc/nats
+          # FR-PRG-28: sized to nats-pool's c3-standard-8, where NATS runs alone (32 GiB; GKE allocatable ~28.3 GiB).
+          # 2Gi was OOM-killed 7 times on 2026-10-30 under the binary arm's ~150K trades/s bridge publish: the 1GB
+          # ingest queue plus a Go heap free to double (GOGC) outgrew it. GOMEMLIMIT holds the heap under the limit;
+          # request = limit, so the kubelet never evicts it. prepare.py validates the arithmetic on every render.
+          env:
+            - name: GOMEMLIMIT
+              value: 20GiB
           resources:
             requests:
-              cpu: "1"
-              memory: 512Mi
+              cpu: "4"
+              memory: 24Gi
             limits:
-              memory: 2Gi        # holds the 1GB ingest queue above
+              memory: 24Gi
       volumes:
         - name: data
           persistentVolumeClaim:
