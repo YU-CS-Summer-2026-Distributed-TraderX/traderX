@@ -5,6 +5,8 @@
 #   scripts/gcp-compsci/rig/rig.sh loadgen N          loadgen-pool to N nodes for binary-load.sh (FR-PRG-16), 0..16
 #     GATEWAYS=N      gateways, one per gateway-pool node, 1..18 (default 2)
 #     AUTOSCALE=on    gateways also scale on CPU between GATEWAYS and 18 (default off)
+#     LOADGEN=N       up also brings loadgen-pool to N nodes and LOADGEN_PODS idle load pods (default 4 per node), so
+#                     `loadgen.sh start RATE` begins the binary load in seconds (FR-PRG-32); 0..16 (default 0)
 #
 # pools   creates nats-pool, gateway-pool, the client VM and its IAP rule if missing; puts the sysctls on
 #         engine-pool (only while it has no nodes, since GKE recreates the nodes to apply them).
@@ -31,6 +33,8 @@ NS=${NS:-traderx}
 CTX=${CTX:-gke_${PROJECT}_${ZONE}_${CLUSTER}}
 GATEWAYS=${GATEWAYS:-2}
 AUTOSCALE=${AUTOSCALE:-off}
+LOADGEN=${LOADGEN:-0}
+LOADGEN_PODS=${LOADGEN_PODS:-}   # default 4 per loadgen node, set once LOADGEN is validated
 MAX_GATEWAYS=18
 DEFAULT_NODES=${DEFAULT_NODES:-3}
 CLIENT_VM=${CLIENT_VM:-traderx-client-1}
@@ -75,6 +79,10 @@ validate_args(){
   [ "$GATEWAYS" -ge 1 ] && [ "$GATEWAYS" -le $MAX_GATEWAYS ] || die "GATEWAYS must be 1..$MAX_GATEWAYS, got $GATEWAYS"
   case $AUTOSCALE in on|off) ;; *) die "AUTOSCALE must be on or off, got '$AUTOSCALE'";; esac
   [ "$AUTOSCALE" = off ] || [ "$GATEWAYS" -lt $MAX_GATEWAYS ] || die "AUTOSCALE=on needs GATEWAYS < $MAX_GATEWAYS"
+  [[ "$LOADGEN" =~ ^([0-9]|1[0-6])$ ]] || die "LOADGEN must be 0..16, got '$LOADGEN'"
+  [ -n "$LOADGEN_PODS" ] || LOADGEN_PODS=$(( LOADGEN * 4 ))
+  [[ "$LOADGEN_PODS" =~ ^[0-9]+$ ]] && [ "$LOADGEN_PODS" -le 64 ] || die "LOADGEN_PODS must be 0..64, got '$LOADGEN_PODS'"
+  [ "$LOADGEN" = 0 ] || [ "$LOADGEN_PODS" -ge 1 ] || die "LOADGEN=$LOADGEN needs LOADGEN_PODS >= 1"
 }
 
 preflight(){
@@ -785,9 +793,37 @@ fresh_epoch_initialize(){
   note "epoch ${es#* } initialized: accounts and reference data verified on all three members"
 }
 
+# FR-PRG-31: the engine never reads a clock (FR-OT37), and a fresh epoch starts with no business date, so every DAY order
+# was REJECTED NO_TRADING_DAY. Every `up` opens today's US Eastern date; SESSION_START is idempotent (STALE when it is
+# already the engine's date), and opening a later date expires the previous date's DAY orders, as a new trading day does.
+business_day(){
+  local d out; d=${BUSINESS_DATE:-$(TZ=America/New_York date +%F)}
+  step "business day $d open, so DAY orders are admitted (FR-PRG-31)"
+  [ "$DRY" = 1 ] && { note "would POST /session/business-day $d through the console pod (APPLIED or STALE)"; return 0; }
+  if ! out=$(kc exec -i deploy/web-front-end-console -c console -- node --input-type=module - "$d" < "$HERE/business-day.mjs" 2>&1); then
+    echo "$out" > "$EVIDENCE/business-day.txt"; die "business day $d not opened: $EVIDENCE/business-day.txt"; fi
+  echo "$out" > "$EVIDENCE/business-day.txt"; note "${out##*$'\n'}"
+}
+
+# FR-PRG-32: the demo's load generators, up and idle with the rig, so a later `loadgen.sh start` waits on nothing.
+loadgen_idle(){
+  [ "$LOADGEN" = 0 ] && return 0
+  step "load generators idle: loadgen-pool $LOADGEN nodes, $LOADGEN_PODS pods (loadgen.sh start RATE begins the load)"
+  [ "$DRY" = 1 ] || pool_exists loadgen-pool || die "loadgen-pool is missing: run 'rig.sh pools' first"
+  [ "$DRY" = 1 ] || wait_for 900 "loadgen-pool: $LOADGEN nodes Ready" pool_ready loadgen-pool "$LOADGEN"
+  if [ "$DRY" = 1 ]; then note "would apply: Deployment loadgen ($LOADGEN_PODS pods, sleep, binary-load.mjs mounted)"; else
+    LOADGEN_PODS=$LOADGEN_PODS "$HERE/loadgen.sh" manifest | kc apply -f - >/dev/null
+  fi
+  wait_for 600 "$LOADGEN_PODS idle load pods Ready" ready_replicas deploy/loadgen "$LOADGEN_PODS"
+}
+loadgen_nodes(){   # started with the other pools, waited for in loadgen_idle
+  [ "$LOADGEN" = 0 ] && return 0
+  do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool --num-nodes "$LOADGEN" --zone "$ZONE" --project "$PROJECT" --quiet --async
+}
+
 rig_up(){
   validate_args; preflight; require_pools
-  note "rig up: GATEWAYS=$GATEWAYS AUTOSCALE=$AUTOSCALE context=$CTX namespace=$NS evidence=$EVIDENCE"
+  note "rig up: GATEWAYS=$GATEWAYS AUTOSCALE=$AUTOSCALE LOADGEN=$LOADGEN context=$CTX namespace=$NS evidence=$EVIDENCE"
   if members_gated; then
     # A re-run on a rig that is up: nothing is stopped, nothing re-gated; only the gateway count and what follows.
     note "members are up and covered by the restore gate: holding nothing, re-gating nothing"
@@ -795,6 +831,7 @@ rig_up(){
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
+    loadgen_nodes
     for v in $CLIENT_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
   else
@@ -804,6 +841,7 @@ rig_up(){
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
+    loadgen_nodes
     for v in $CLIENT_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
     step "support workloads Ready (everything but the members and the gateways)"
@@ -835,8 +873,10 @@ rig_up(){
   gateways_up
   ilb_up
   fresh_epoch_initialize
+  business_day
   [ "$AUTOSCALE" = on ] && autoscale_on
   smoke
+  loadgen_idle
   step "rig up: done. Evidence in $EVIDENCE"
 }
 
@@ -877,6 +917,7 @@ rig_down(){
   fi
   step "binary load stopped (FR-PRG-16), then gateways to 0 (each drains: FIX sessions resume elsewhere, in-flight answered)"
   do_ kubectl --context "$CTX" -n "$NS" delete job binary-load --ignore-not-found --wait=true
+  do_ kubectl --context "$CTX" -n "$NS" delete deploy loadgen --ignore-not-found --wait=true
   autoscale_off
   do_ kubectl --context "$CTX" -n "$NS" scale deploy/cluster-gateway --replicas=0
   wait_for 180 "no gateway pod" no_pods cluster-gateway
@@ -1023,7 +1064,7 @@ main(){
     fresh-epoch) rig_fresh_epoch "${1:-}";;
     member-disk) rig_member_disk "${1:-}";;
     loadgen) rig_loadgen "${1:-}";;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B|snapshot-base|archive-members LABEL|fresh-epoch LABEL|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off LOADGEN=N $0 pools|up|down|status|unprojected A-B|snapshot-base|archive-members LABEL|fresh-epoch LABEL|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

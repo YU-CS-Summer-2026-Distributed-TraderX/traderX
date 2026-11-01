@@ -74,6 +74,12 @@ kubectl(){
     *"create configmap"*) echo 'kind: ConfigMap';;
     *"apply -f -"*) cat >/dev/null;;
     *"get pods -l app=cluster-gateway -o jsonpath"*) for i in $(seq 1 "$GATEWAYS"); do echo "node-$i"; done;;
+    *"--input-type=module - "*) [ -n "${BDAY_FAIL:-}" ] && { echo 'BUSINESS-DAY 401 {"error":"operator credentials required"}'; return 1; }
+      echo 'BUSINESS-DAY 200 {"outcome":"APPLIED"}';;
+    *"get pods -l app=loadgen"*) printf 'pod/%s\n' ${LG_PODS:-lg-a lg-b};;
+    *"localhost:8080/bbo"*) echo '{"books":[{"ticker":"MSFT","mark":412.5,"ref":400}]}';;
+    *"cat /proc/"*|*"/proc/[0-9]*"*) [ -f "$EVIDENCE/.lg-$(n="$*"; n=${n#*exec }; echo "${n%% *}")" ] && echo 4242 || true;;
+    *"nohup node /load/binary-load.mjs"*) n="$*"; n=${n#*exec }; [ -n "${LG_DEAD:-}" ] || touch "$EVIDENCE/.lg-${n%% *}";;
     *"web-front-end-console"*) [ -n "${SMOKE_FAIL:-}" ] && { echo "FAIL refused: 58=Invalid Logon message"; return 1; }; printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
     *"get sts order-matcher-cluster -o jsonpath={.status.replicas}"*) echo "${STS_REPLICAS:-0}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec.replicas}"*) echo "${STS_SPEC:-0}";;
@@ -832,6 +838,73 @@ class Loadgen(unittest.TestCase):
         for n in ('17', '-1', 'x', ''):
             rc, out, calls = run(f'rig_loadgen "{n}"')
             self.assertEqual(rc, 2, out); self.assertIsNone(first(calls, r'resize'), n)
+
+
+class BusinessDay(unittest.TestCase):
+    """FR-PRG-31: a fresh epoch has no business date, so every DAY order was REJECTED NO_TRADING_DAY. Every `up` opens
+    today's US Eastern date after the initialization and before the smoke. Fails against the pre-FR-PRG-31 rig.sh."""
+
+    def test_every_up_opens_the_business_day_before_the_smoke(self):
+        for env in ({}, FreshEpoch.EMPTY):
+            rc, out, calls = run('rig_up', **env)
+            self.assertEqual(rc, 0, out)
+            steps = [first(calls, p) for p in (SCALE_UP, '--input-type=module - 20[0-9][0-9]-[01][0-9]-[0-3][0-9]',
+                                               '-- node -$')]
+            self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        self.assertLess(first(calls, 'initialize reference-data'), first(calls, '--input-type=module'))
+
+    def test_a_given_date_is_used_and_a_refusal_stops_before_the_smoke(self):
+        rc, out, calls = run('rig_up', BUSINESS_DATE='2026-11-05')
+        self.assertEqual(rc, 0, out); self.assertIsNotNone(first(calls, '--input-type=module - 2026-11-05$'))
+        rc, out, calls = run('rig_up', BDAY_FAIL='1')
+        self.assertEqual(rc, 2, out); self.assertIn('business day', out); self.assertIsNone(first(calls, '-- node -$'))
+
+
+class LoadgenIdle(unittest.TestCase):
+    """FR-PRG-32: LOADGEN=N brings the load pods up idle with the rig, and loadgen.sh starts the load on them."""
+    LG = Path(__file__).with_name('loadgen.sh')
+
+    def test_up_with_loadgen_starts_the_pool_with_the_others_and_the_pods_after_the_smoke(self):
+        rc, out, calls = run('rig_up', LOADGEN='2')
+        self.assertEqual(rc, 0, out)
+        pool, smoke = first(calls, 'resize .*--node-pool loadgen-pool --num-nodes 2'), first(calls, '-- node -$')
+        self.assertIsNotNone(pool, out); self.assertLess(pool, first(calls, SCALE_UP))
+        self.assertIn('8 idle load pods Ready', out)
+        self.assertLess(smoke, max(i for i, c in enumerate(calls) if 'apply -f -' in c))
+
+    def test_without_loadgen_up_touches_no_loadgen(self):
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'loadgen'))
+
+    def test_bad_loadgen_values_are_refused(self):
+        for env in ({'LOADGEN': '17'}, {'LOADGEN': 'x'}, {'LOADGEN': '2', 'LOADGEN_PODS': '0'}):
+            rc, out, _ = run('validate_args', **env)
+            self.assertEqual(rc, 2, (env, out)); self.assertIn('LOADGEN', out)
+
+    def test_down_removes_the_load_pods(self):
+        rc, out, calls = run('rig_down')
+        self.assertIsNotNone(first(calls, 'delete deploy loadgen'), out)
+
+    def start(self, *args, **env):
+        return run(f'LOADGEN_LIB=1 . "{self.LG}" start; members_gated(){{ true; }}; ARGS=({" ".join(args)}); start', **env)
+
+    def test_start_splits_the_rate_over_the_idle_pods_at_the_mark(self):
+        rc, out, calls = self.start('120000', '600')
+        self.assertEqual(rc, 0, out)
+        runs = [c for c in calls if 'nohup node /load/binary-load.mjs' in c]
+        self.assertEqual(len(runs), 2, out)   # 120000 / (2 pods x 16 sessions) = 3750 per session
+        for c in runs:
+            self.assertIn('--ticker MSFT --px 412.50 --sessions 16 --rate 3750 --secs 600', c)
+
+    def test_start_refuses_without_idle_pods_without_the_gate_and_when_a_pod_does_not_start(self):
+        rc, out, calls = self.start('120000', LG_PODS=' ')
+        self.assertEqual(rc, 2, out); self.assertIn('no idle load pod', out)
+        rc, out, calls = run(f'LOADGEN_LIB=1 . "{self.LG}" start; members_gated(){{ false; }}; ARGS=(120000); start')
+        self.assertEqual(rc, 2, out); self.assertIsNone(first(calls, 'nohup'))
+        rc, out, calls = self.start('120000', LG_DEAD='1')
+        self.assertEqual(rc, 2, out); self.assertIn('did not start', out)
+        rc, out, calls = self.start('fast')
+        self.assertEqual(rc, 2, out); self.assertIn('usage', out)
 
 
 class InstanceCheck(unittest.TestCase):

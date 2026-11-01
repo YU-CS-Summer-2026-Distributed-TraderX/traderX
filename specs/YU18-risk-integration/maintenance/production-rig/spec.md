@@ -114,7 +114,18 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
-- **FR-PRG-30:** On a fresh epoch whose gate has passed (`rig-epoch` consumed), `rig.sh up` SHALL load the account
+- **FR-PRG-32:** `LOADGEN=N rig.sh up` (N 0..16, default 0) SHALL resize loadgen-pool to N nodes with the other pools and,
+  after the smoke, run `LOADGEN_PODS` (default 4 per node) idle load pods (Deployment `loadgen`: the console image,
+  `sleep`, `binary-load.mjs` mounted), Ready before `up` returns. `loadgen.sh start RATE [SECS] [TICKER]` SHALL refuse
+  unless the restore gate covers the running members, an idle pod exists and none is already loading; it SHALL split
+  RATE over every pod x 16 sessions at the members' mark of TICKER (default MSFT) and confirm each pod's process runs.
+  `loadgen.sh stop` kills the load, the pods stay idle; `rig.sh down` deletes the Deployment. The demo's gateway
+  scale-out never waits on a node or an image pull (2026-11-05 demo).
+- **FR-PRG-31:** Every `rig.sh up` SHALL open today's US Eastern business date (`BUSINESS_DATE` overrides) with
+  SESSION_START (`POST /session/business-day`, FR-OT37) after the fresh-epoch initialization and before the smoke,
+  accept APPLIED or STALE, and refuse on anything else. The engine never reads a clock and a fresh epoch has no date,
+  so before this every DAY order on epoch e1101 was REJECTED NO_TRADING_DAY.
+ On a fresh epoch whose gate has passed (`rig-epoch` consumed), `rig.sh up` SHALL load the account
   directory and the instrument catalog into the empty engine (`initialize-accounts.py --apply`, then
   `initialize-reference-data.py --apply`) after the gateways start and before the smoke, refuse on either one's
   failure, and only then mark the epoch initialized; a rerun retries until it is (production 2026-10-31: the first
