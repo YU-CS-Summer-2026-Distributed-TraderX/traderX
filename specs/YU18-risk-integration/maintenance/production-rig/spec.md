@@ -114,6 +114,13 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-29:** A fresh epoch SHALL archive the old one before it wipes anything (ADR-101). `rig.sh archive-members
+  LABEL` SHALL snapshot each member disk with the members stopped; `rig.sh fresh-epoch LABEL` SHALL refuse unless all
+  three snapshots are READY and of exactly the current disks, record the old gate ConfigMaps in
+  `rig-epoch-LABEL-history`, and wait until every member claim and disk is gone. The next `up` SHALL move the epoch
+  tables into `arc_LABEL_*` in one RENAME, with trade-processor stopped, and recreate them empty with identical
+  definitions, foreign keys included. The gate SHALL accept empty members and no shutdown baseline only while
+  `rig-epoch` is provisioned, and mark it consumed on PASS; a missing baseline otherwise SHALL refuse.
 - **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
   does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom
   (c3-standard-8: 32 GiB, GKE allocatable ~28.3 GiB, budget 26 GiB). `GOMEMLIMIT` SHALL hold the Go heap at or under

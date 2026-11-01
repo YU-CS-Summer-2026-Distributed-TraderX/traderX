@@ -46,11 +46,26 @@ kubectl(){
     *"health?digest=1"*) echo "$DIGEST";;
     *"from orderbook where status"*) echo "$OPEN_ROWS";;
     *"from trades where right(id,2)"*) printf '%s\n' "$TRADE_ROWS";;
-    *"get configmap rig-shutdown-baseline"*)   # BASELINE unset = NotFound; BASELINE_FAIL = any other error
+    *"get configmap rig-shutdown-baseline"*)   # BASELINE_ABSENT = NotFound; BASELINE_FAIL = any other error
       [ -n "${BASELINE_FAIL:-}" ] && { echo "Error from server (ServiceUnavailable): the server is currently unable to handle the request" >&2; return 1; }
-      [ -n "${BASELINE+x}" ] || { echo 'Error from server (NotFound): configmaps "rig-shutdown-baseline" not found' >&2; return 1; }
+      [ -z "${BASELINE_ABSENT:-}" ] || { echo 'Error from server (NotFound): configmaps "rig-shutdown-baseline" not found' >&2; return 1; }
       jq -cn --arg m "$BASELINE" '{data: ({members: $m} | if $m == "" then {} else . end)}';;
     *"get configmap rig-unprojected"*) echo "${UNPROJECTED:-}";;
+    *"get configmap rig-epoch -o json"*)   # EPOCH="<state> <label>"; unset = NotFound; EPOCH_FAIL = any other error
+      [ -n "${EPOCH_FAIL:-}" ] && { echo "Error from server (ServiceUnavailable): unavailable" >&2; return 1; }
+      e=${EPOCH:-}; [ -f "$EVIDENCE/.epoch" ] && e=$(cat "$EVIDENCE/.epoch")   # what set_epoch last wrote
+      [ -n "$e" ] || { echo 'Error from server (NotFound): configmaps "rig-epoch" not found' >&2; return 1; }
+      jq -cn --arg s "${e% *}" --arg l "${e#* }" '{data: {state: $s, label: $l}}';;
+    *"create configmap rig-epoch --from-literal=label="*)
+      n="$*"; l=${n#*label=}; l=${l%% *}; st=${n#*state=}; echo "${st%% *} $l" > "$EVIDENCE/.epoch"; echo 'kind: ConfigMap';;
+    *"get pvc -o name"*) printf '%s\n' ${CLAIMS:-};;
+    *"get pvc data-order-matcher-cluster-"*volumeName*) n="$*"; n=${n#*cluster-}; echo "pv-${n%% *}";;
+    *"get pv pv-"*volumeHandle*) n="$*"; n=${n#*pv-}; echo "projects/p/zones/us-east1-b/disks/disk-${n%% *}";;
+    *"get deploy trade-processor -o jsonpath={.spec.replicas}"*) echo 1;;
+    *information_schema.tables*) echo "${ARC_EXISTS:-0}";;
+    *"select count(*) from arc_"*) echo 42;;
+    *"select count(*) from "*) echo "${LIVE_ROWS:-0}";;
+    *"get configmap rig-epoch-"*"-history"*disks*) echo "disk-0 disk-1 disk-2";;
     *"get sts order-matcher-cluster -o jsonpath={.spec.template.spec.containers[0].env[*].name}"*) echo "${MEMBER_ENV:-JAVA_TOOL_OPTIONS TRADE_BRIDGE_NATS_URL}";;
     *"get pvc data-order-matcher-cluster-"*"requests.storage"*) echo "${PVC_SIZE:-32Gi}";;
     *"get storageclass order-matcher-archive"*) echo "${SC_EXPAND:-}";;
@@ -59,6 +74,7 @@ kubectl(){
     *"get pods -l app=cluster-gateway -o jsonpath"*) for i in $(seq 1 "$GATEWAYS"); do echo "node-$i"; done;;
     *"web-front-end-console"*) [ -n "${SMOKE_FAIL:-}" ] && { echo "FAIL refused: 58=Invalid Logon message"; return 1; }; printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
     *"get sts order-matcher-cluster -o jsonpath={.status.replicas}"*) echo "${STS_REPLICAS:-0}";;
+    *"get sts order-matcher-cluster -o jsonpath={.spec.replicas}"*) echo "${STS_SPEC:-0}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec"*) echo member-image;;
     *"get sts order-matcher-cluster -o jsonpath"*) echo 3;;
     *"get pod rig-errlog-"*phase*) echo "$ERRLOG_PHASE";;
@@ -70,7 +86,17 @@ kubectl(){
         i=$((i+1)); done;;
   esac
 }
-gcloud(){ call "gcloud $*"; case "$*" in *networkIP*) echo 10.0.0.5;; esac; }
+gcloud(){ call "gcloud $*"; case "$*" in *networkIP*) echo 10.0.0.5;;
+  *"snapshots describe"*)   # SNAPS: ready | absent | wrong (of another disk) | broken (read error)
+    n="$*"; n=${n#*-m}; n=${n%% *}
+    case ${SNAPS:-ready} in
+      ready) printf 'READY\thttps://compute/projects/p/zones/us-east1-b/disks/disk-%s\n' "$n";;
+      wrong) printf 'READY\thttps://compute/projects/p/zones/us-east1-b/disks/other-%s\n' "$n";;
+      absent) echo "ERROR: (gcloud.compute.snapshots.describe) The resource 'traderx' was not found" >&2; return 1;;
+      broken) echo "ERROR: (gcloud) Reauthentication required" >&2; return 1;;
+    esac;;
+  *"disks describe"*) return 1;;
+  esac; }
 '''
 
 def nats_pods(*pods):   # (uid, phase, restarts, last reason)
@@ -85,7 +111,7 @@ GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'GATEWAYS': '3', 'AUTOSC
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
-        'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded',
+        'LEADER': '1', 'EXITS': '143 143 143', 'ERRLOG_PHASE': 'Succeeded', 'BASELINE': '100 100 5 11 22 7',
         'ERRLOG': 'mark files in /data/cluster: consensus=1 service=1\nerrlog complete'}
 
 # The snapshot read model's committed accounting for trades = 5: sides 1,3,5 on partition 0 and 2,4 on partition 1 (sums of
@@ -122,7 +148,7 @@ class Up(unittest.TestCase):
                                            SCALE_UP, r'networkInterfaces\[0\]\.networkIP', r'web-front-end-console')]
         self.assertNotIn(None, order, out)
         self.assertEqual(order, sorted(order), out)
-        self.assertIn('G4: no shutdown baseline', out)
+        self.assertIn('G4 ok: equals the shutdown baseline', out)
 
     def refused(self, gate, **env):
         rc, out, calls = run('rig_up', **env)
@@ -339,9 +365,9 @@ class Up(unittest.TestCase):
         out = self.refused('G4', BASELINE_FAIL='1')
         self.assertIn('rig-shutdown-baseline could not be read', out)
         self.assertNotIn('first bring-up', out)
-        rc, out, _ = run('rig_up')   # control: a NotFound is a first bring-up
+        rc, out, _ = run('rig_up')   # control: a baseline that reads passes
         self.assertEqual(rc, 0, out)
-        self.assertIn('G4: no shutdown baseline recorded', out)
+        self.assertIn('G4 ok: equals the shutdown baseline', out)
 
     def test_a_baseline_that_exists_but_is_empty_or_malformed_is_refused(self):
         for bad in ('', '100 100 5', 'x 100 5 11 22 7'):
@@ -477,6 +503,84 @@ class Up(unittest.TestCase):
         rc, out, _ = run(body)
         self.assertEqual(rc, 2, out)
         self.assertIn('one per node does not hold', out)
+
+
+class FreshEpoch(unittest.TestCase):
+    """FR-PRG-29 / ADR-101: a fresh epoch wipes the member disks only after READY snapshots of exactly those disks, and
+    the gate accepts an empty epoch and a missing baseline only while `rig-epoch` says provisioned. Each refusal test
+    fails against the pre-FR-PRG-29 rig.sh, whose G4 took a missing baseline as a first bring-up."""
+    EMPTY = {'EPOCH': 'provisioned e2', 'BASELINE_ABSENT': '1', 'M': '0 -1 0 0 0 0', 'TRADE_ROWS': '0\t0\t0\t0', 'OPEN_ROWS': '0'}
+
+    def refused(self, gate, body='rig_up', **env):
+        rc, out, calls = run(body, **env)
+        self.assertEqual(rc, 2, out); self.assertIn('REFUSED', out); self.assertIn(gate, out)
+        self.assertIsNone(first(calls, SCALE_UP), 'a gateway started after a refusal')
+        return out, calls
+
+    def test_a_missing_baseline_is_refused_without_a_fresh_epoch(self):
+        out, _ = self.refused('G4', BASELINE_ABSENT='1')
+        self.assertIn('a missing baseline is not a first bring-up', out)
+
+    def test_an_unreadable_epoch_record_is_refused(self):
+        self.refused('rig-epoch cannot be read', EPOCH_FAIL='1')
+
+    def test_a_provisioned_empty_epoch_passes_and_is_consumed(self):
+        rc, out, calls = run('rig_up', **self.EMPTY)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G0 ok: fresh epoch e2', out); self.assertIn('G4 ok: fresh epoch e2', out)
+        self.assertNotIn('G2 ok', out)
+        self.assertIsNone(first(calls, 'rig-errlog'), 'G-pre read a log on wiped claims')
+        gate, consumed = first(calls, 'create configmap rig-gate'), first(calls, 'rig-epoch .*state=consumed')
+        self.assertIsNotNone(consumed, out); self.assertLess(gate, consumed)
+
+    def test_a_provisioned_epoch_whose_members_are_not_empty_is_refused(self):
+        self.refused('is provisioned (empty) but the members hold', **{**self.EMPTY, 'M': '100 100 5 11 22 7'})
+
+    def test_a_provisioned_epoch_with_a_baseline_is_refused(self):
+        env = {k: v for k, v in self.EMPTY.items() if k != 'BASELINE_ABSENT'}
+        self.refused('is provisioned (empty) but a shutdown baseline exists', **{**env, 'BASELINE': '0 -1 0 0 0 0'})
+
+    def test_a_provisioned_epoch_with_a_claim_left_is_refused(self):
+        self.refused('the wipe is incomplete', **{**self.EMPTY, 'CLAIMS': 'persistentvolumeclaim/data-order-matcher-cluster-1'})
+
+    def test_a_provisioned_epoch_with_open_rows_is_refused(self):
+        self.refused("the read model holds '2' open orders", **{**self.EMPTY, 'OPEN_ROWS': '2'})
+
+    def test_a_wiped_epoch_archives_the_read_model_with_trade_processor_stopped(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2'})
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'scale deploy/trade-processor --replicas=0', r'RENAME TABLE trades TO arc_e2_trades, positions TO arc_e2_positions',
+                                           r'CREATE TABLE IF NOT EXISTS trades LIKE arc_e2_trades', r'key_column_usage',
+                                           r'scale deploy/trade-processor --replicas=1', r'rig-epoch .*state=provisioned',
+                                           r'scale statefulset/order-matcher-cluster --replicas=3')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'ARC_EXISTS': '1'})   # a re-run renames nothing
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'RENAME TABLE'))
+
+    def test_a_table_left_with_rows_after_the_archive_is_refused(self):
+        out, calls = self.refused('not empty after the archive', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'LIVE_ROWS': '3'})
+        self.assertIsNone(first(calls, 'state=provisioned'))
+
+    def test_fresh_epoch_wipes_only_after_ready_snapshots_of_those_disks(self):
+        for snaps, why in (('absent', 'no READY snapshot'), ('wrong', 'no READY snapshot'), ('broken', 'cannot be read')):
+            out, calls = self.refused(why, 'rig_fresh_epoch e2', SNAPS=snaps)
+            self.assertIsNone(first(calls, 'delete pvc'), snaps); self.assertIsNone(first(calls, 'state=wiped'), snaps)
+        self.refused('must be stopped', 'rig_fresh_epoch e2', STS_SPEC='3')
+        self.refused('must pass a restore gate', 'rig_fresh_epoch e2', EPOCH='provisioned e1')
+        rc, out, calls = run('rig_fresh_epoch e2')   # control
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in ('create configmap rig-epoch-e2-history', r'rig-epoch .*state=wiped',
+                                           'delete configmap rig-shutdown-baseline', 'delete pvc data-order-matcher-cluster-0')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+
+    def test_archive_members_snapshots_each_members_own_disk(self):
+        rc, out, calls = run('wait_for(){ die "not READY: $2"; }; rig_archive_members e2', SNAPS='absent')
+        self.assertEqual(rc, 2, out)   # the stub never turns READY, so the wait refuses after the first create
+        self.assertIsNotNone(first(calls, 'snapshots create traderx-e2-m0 --source-disk disk-0 --source-disk-zone us-east1-b'), out)
+        self.refused('not of member 0', 'rig_archive_members e2', SNAPS='wrong')
+        self.refused('must be stopped', 'rig_archive_members e2', STS_SPEC='3')
+        rc, out, calls = run('rig_archive_members e2')   # control: READY snapshots of these disks exist
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'snapshots create'))
 
 
 class GatewayShrink(unittest.TestCase):

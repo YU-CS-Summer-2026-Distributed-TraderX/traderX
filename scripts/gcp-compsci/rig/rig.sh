@@ -14,6 +14,10 @@
 #         gateways to 0 first (they drain), a snapshot barrier and a shutdown baseline, members stopped (each must
 #         exit 143), then every rig pool to 0 and the client VM stopped, verified by `gcloud compute instances list`.
 # status  read-only.
+# archive-members LABEL  members stopped: GCE snapshots traderx-LABEL-m{0,1,2} of the three member disks (FR-PRG-29).
+# fresh-epoch LABEL      members stopped and those snapshots READY: the old gate records into rig-epoch-LABEL-history,
+#         the member claims (and their disks) deleted. The next `up` archives the read model into arc_LABEL_* and starts
+#         the members empty; its gate accepts an empty epoch and no baseline only then (ADR-101).
 #
 # Idempotent: every step checks the live state first. Fail-closed: any check that does not hold stops the run with
 # REFUSED and a non-zero exit, and nothing after it runs. --dry-run prints the plan and contacts nothing.
@@ -346,6 +350,11 @@ past_restore_errors(){
     note "would run per claim data-order-matcher-cluster-{0,1,2}: a read-only pod reading both mark files' error logs"
     note "would refuse on: $PAST_RESTORE_ERRORS, or a pod that cannot read the log"; return 0; fi
   [ "$(kc get sts order-matcher-cluster -o jsonpath='{.status.replicas}')" = 0 ] || die "G-pre: members are running"
+  local es; es=$(epoch_state) || die "G-pre: ConfigMap rig-epoch cannot be read"
+  if [ "${es%% *}" = provisioned ]; then
+    claims_gone || die "G-pre: epoch ${es#* } is provisioned but a member claim exists: the wipe is incomplete"
+    note "G-pre: fresh epoch ${es#* }: no member claim, so no past error log to read"; return 0
+  fi
   local image i phase
   image=$(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}')
   for i in 0 1 2; do
@@ -451,6 +460,14 @@ restore_gate(){
   [ "$(cut -d' ' -f1-5 <<<"$m0")" = "$(cut -d' ' -f1-5 <<<"$m1")" ] && [ "$(cut -d' ' -f1-5 <<<"$m0")" = "$(cut -d' ' -f1-5 <<<"$m2")" ] \
     || die "G0: the members disagree (gateways stay at 0): $EVIDENCE/gate-members.txt"
   read -r a e t oh ph _ <<<"$m0"
+  local es fresh=0; es=$(epoch_state) || die "G0: ConfigMap rig-epoch cannot be read"
+  if [ "${es%% *}" = provisioned ]; then
+    # FR-PRG-29: a fresh epoch's members start empty; anything else under a provisioned record is refused.
+    [ "$a" -le 0 ] && [ "$t" = 0 ] || die "G0: epoch ${es#* } is provisioned (empty) but the members hold applied $a, trades $t"
+    fresh=1; note "G0 ok: fresh epoch ${es#* }: all three empty (applied $a, trades 0); G1 and G2 have nothing to replay"
+  fi
+  local digest='' open_rows shadow='' cap g1_deferred=0
+  if [ "$fresh" = 0 ]; then
   # engineApplied is the engine's blpSeq: equal to applied once an engine event has applied, and -1 on a member
   # restored from its snapshot into an idle cluster, which has applied no engine event since (ClusterNodeMain /health).
   [ "$a" -gt 0 ] && { [ "$e" = "$a" ] || [ "$e" = -1 ]; } || die "G0: applied $a, engineApplied $e"
@@ -460,7 +477,6 @@ restore_gate(){
   # as "no endpoint".
   # FR-PRG-18: the full-history index refuses past RECON_FULL_HISTORY_MAX trades (members' default 200000), so above it
   # G1 cannot answer; it defers to G2, whose whole-log replay into a shadow proves the same property by hashes, uncapped.
-  local cap g1_deferred=0
   cap=$(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[?(@.name=="cluster-node")].env[?(@.name=="RECON_FULL_HISTORY_MAX")].value}')
   [[ "${cap:=200000}" =~ ^[0-9]+$ ]] || die "G1: RECON_FULL_HISTORY_MAX is not a number: $cap"
   if [ "$t" -gt "$cap" ]; then
@@ -480,7 +496,6 @@ restore_gate(){
   fi
   # G2, check A (FR-ERH-F13): a strict replay of the whole log into a fresh shadow must hold exactly the restored state,
   # in the terms of /health?digest=1. Hashes are decimal strings (a 64-bit hash read as a JSON number loses digits).
-  local digest='' open_rows
   for i in 0 1 2; do
     token=$(admin_token); [ -n "$token" ] || die "G2: could not mint an admin token in trade-processor"
     shadow=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c "read -r t; wget -qO- \
@@ -499,6 +514,7 @@ restore_gate(){
       || die "G2: member $i's restored state differs from its replay from 0: $EVIDENCE/gate-shadow.txt"
   done
   [ -z "$shadow" ] || note "G2 ok: each member's replay from 0 holds its restored book, positions and trades"
+  fi
   local mode; mode=$(tp_mode) || die "G3: trade-processor's projection mode is unreadable or unknown; neither G3 is assumed (FR-PRG-22)"
   if [ "$mode" = snapshot ]; then
     [ -n "$digest" ] || digest=$(kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- 'localhost:8080/health?digest=1')
@@ -512,6 +528,9 @@ restore_gate(){
       open_rows=$(sql "select count(*) from orderbook where status in ('NEW','PARTIALLY_FILLED')")
       [ "$(jq -r .openOrders <<<"$digest")" = "$open_rows" ] \
         || die "G3: members restored $(jq -r .openOrders <<<"$digest") open orders, the read model holds $open_rows"
+    elif [ "$fresh" = 1 ]; then
+      open_rows=$(sql "select count(*) from orderbook where status in ('NEW','PARTIALLY_FILLED')")
+      [ "$open_rows" = 0 ] || die "G3: fresh epoch ${es#* }: the members are empty, the read model holds '$open_rows' open orders"
     fi
     g3_rows_sides "$t" "${digest:-null}"
   fi
@@ -519,10 +538,12 @@ restore_gate(){
   echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
   note "G3 ok: read model unchanged"
-  # FR-PRG-23: only a NotFound is a first bring-up. Any other failed read, or a baseline that exists without a
-  # well-formed members line, refuses: a read error must never stand in for "no baseline".
+  # FR-PRG-23: any failed read, or a baseline that exists without a well-formed members line, refuses: a read error
+  # must never stand in for "no baseline". FR-PRG-29: nor may a missing one. Only a provisioned fresh epoch (whose
+  # baseline `rig.sh fresh-epoch` moved into its history) starts without one.
   local cm base
   if cm=$(kc get configmap rig-shutdown-baseline -o json 2> "$EVIDENCE/g4-baseline.err"); then
+    [ "$fresh" = 0 ] || die "G4: epoch ${es#* } is provisioned (empty) but a shutdown baseline exists"
     base=$(jq -r '.data.members // ""' <<<"$cm") || die "G4: rig-shutdown-baseline is not readable JSON"
     rig_shutdown_baseline_ok "$base" \
       || die "G4: rig-shutdown-baseline exists but its members line is empty or malformed: '$base'"
@@ -530,7 +551,8 @@ restore_gate(){
       || die "G4: shutdown baseline '$base' != restored '$m0'"
     note "G4 ok: equals the shutdown baseline"
   elif grep -q '(NotFound)' "$EVIDENCE/g4-baseline.err"; then
-    note "G4: no shutdown baseline recorded (first bring-up under this script)"
+    [ "$fresh" = 1 ] || die "G4: no shutdown baseline, and no provisioned fresh epoch (rig.sh fresh-epoch): a missing baseline is not a first bring-up"
+    note "G4 ok: fresh epoch ${es#* }: no baseline (the old one is in rig-epoch-${es#* }-history)"
   else
     die "G4: rig-shutdown-baseline could not be read: $(head -c 300 "$EVIDENCE/g4-baseline.err")"
   fi
@@ -538,10 +560,145 @@ restore_gate(){
     --from-literal=members="$(kc get pods -l app=order-matcher-cluster -o jsonpath='{range .items[*]}{.metadata.uid} {end}')" \
     --dry-run=client -o yaml | kc apply -f - >/dev/null
   note "gate PASS recorded in ConfigMap rig-gate"
+  if [ "$fresh" = 1 ]; then set_epoch "${es#* }" consumed; note "epoch ${es#* } consumed: from now on G4 needs its baseline"; fi
 }
 
 # A members line as `rig.sh down` records it: applied engineApplied trades orderHash positionHash snapshots.
 rig_shutdown_baseline_ok(){ [[ $1 =~ ^[0-9]+\ -?[0-9]+\ [0-9]+\ [^\ ]+\ [^\ ]+\ [0-9]+$ ]]; }
+
+# ---- a fresh epoch (FR-PRG-29, ADR-101): archive the member disks, wipe them, archive the read model ---------------
+# ConfigMap rig-epoch {label, state}: wiped (claims deleted; the read model not yet archived) -> provisioned (the read
+# model archived into arc_<label>_*; the members start empty) -> consumed (a restore gate passed on the empty epoch).
+# The gates accept an empty epoch, and a missing shutdown baseline, only while it is provisioned.
+EPOCH_TABLES="trades positions orderbook order_view_snapshot projection_accounting projection_cursor projection_trade_days projection_recon"
+epoch_label_ok(){ [[ $1 =~ ^[a-z][a-z0-9]{0,15}$ ]]; }
+epoch_state(){ # "<state> <label>", "none" when no record; fails when the record cannot be read (never "none")
+  local cm err; err=$(mktemp) || return 1
+  if cm=$(kc get configmap rig-epoch -o json 2>"$err"); then rm -f "$err"
+    jq -r '"\(.data.state // "") \(.data.label // "")"' <<<"$cm"
+  elif grep -q '(NotFound)' "$err"; then rm -f "$err"; echo none
+  else rm -f "$err"; return 1; fi; }
+set_epoch(){ kc create configmap rig-epoch --from-literal=label="$1" --from-literal=state="$2" \
+  --from-literal=at="$(date -u +%FT%TZ)" --dry-run=client -o yaml | kc apply -f - >/dev/null; }
+members_stopped(){ [ "$(kc get sts order-matcher-cluster -o jsonpath='{.spec.replicas}')" = 0 ] \
+  && no_pods order-matcher-cluster && no_pods cluster-gateway; }
+member_disk(){ # member_disk <i>: "<zone> <disk>" of the claim's persistent disk
+  local pv h; pv=$(kc get pvc "data-order-matcher-cluster-$1" -o jsonpath='{.spec.volumeName}') && [ -n "$pv" ] || return 1
+  h=$(kubectl --context "$CTX" get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}') || return 1
+  [[ $h =~ ^projects/[^/]+/zones/([^/]+)/disks/([^/]+)$ ]] || return 1
+  echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"; }
+snapshot_of(){ # snapshot_of <name>: "<status> <source disk url>", empty when absent; fails on any other error
+  local out err; err=$(mktemp) || return 1
+  if out=$(gc compute snapshots describe "$1" --format='value(status,sourceDisk)' 2>"$err"); then rm -f "$err"; echo "$out"
+  elif grep -qi 'was not found' "$err"; then rm -f "$err"
+  else rm -f "$err"; return 1; fi; }
+snapshot_ready(){ [ "$(snapshot_of "$1" | cut -f1)" = READY ]; }
+claims_gone(){ [ -z "$(kc get pvc -o name | grep '/data-order-matcher-cluster-')" ]; }
+disks_gone(){ local d; for d in "$@"; do gc compute disks describe "$d" --zone "$ZONE" >/dev/null 2>&1 && return 1; done; return 0; }
+
+rig_archive_members(){
+  local label=${1:-} i zone disk name have
+  epoch_label_ok "$label" || die "archive-members: want a label [a-z][a-z0-9]{0,15}, got '$label'"
+  preflight
+  step "member disks to GCE snapshots traderx-$label-m{0,1,2} (the old epoch stays replayable)"
+  members_stopped || die "archive-members: members and gateways must be stopped first (rig.sh down)"
+  for i in 0 1 2; do
+    read -r zone disk <<<"$(member_disk "$i")"; [ -n "${disk:-}" ] || die "archive-members: member $i's claim or disk cannot be resolved"
+    name=traderx-$label-m$i
+    have=$(snapshot_of "$name") || die "archive-members: snapshot $name cannot be read"
+    if [ -n "$have" ]; then
+      [[ $(cut -f2 <<<"$have") == */zones/$zone/disks/$disk ]] || die "archive-members: $name exists but is not of member $i's disk $disk"
+      note "$name exists, of $disk"
+    else
+      do_ gcloud compute snapshots create "$name" --source-disk "$disk" --source-disk-zone "$zone" \
+        --labels "traderx-epoch=$label,traderx-member=$i" --project "$PROJECT" --quiet
+    fi
+    wait_for 3600 "$name READY" snapshot_ready "$name"
+  done
+}
+
+rig_fresh_epoch(){
+  local label=${1:-} es st lbl i zone disk have disks='' c data args=()
+  epoch_label_ok "$label" || die "fresh-epoch: want a label [a-z][a-z0-9]{0,15}, got '$label'"
+  preflight
+  step "fresh epoch $label: wipe the member claims; the next rig.sh up archives the read model"
+  members_stopped || die "fresh-epoch: members and gateways must be stopped first (rig.sh down)"
+  es=$(epoch_state) || die "fresh-epoch: ConfigMap rig-epoch cannot be read"
+  read -r st lbl <<<"$es"
+  case $st in
+    none|consumed) ;;
+    wiped) [ "$lbl" = "$label" ] || die "fresh-epoch: epoch $lbl is wiped and not yet provisioned; finish it first"
+      note "resuming epoch $label (claims already being wiped)";;
+    *) die "fresh-epoch: epoch $lbl is $st; it must pass a restore gate (consumed) first";;
+  esac
+  if [ "$st" != wiped ]; then
+    # Preconditions, all before anything is changed: every member disk is in a READY snapshot of exactly that disk.
+    for i in 0 1 2; do
+      read -r zone disk <<<"$(member_disk "$i")"; [ -n "${disk:-}" ] || die "fresh-epoch: member $i's claim or disk cannot be resolved"
+      have=$(snapshot_of "traderx-$label-m$i") || die "fresh-epoch: snapshot traderx-$label-m$i cannot be read"
+      [ "$(cut -f1 <<<"$have")" = READY ] && [[ $(cut -f2 <<<"$have") == */zones/$zone/disks/$disk ]] \
+        || die "fresh-epoch: no READY snapshot traderx-$label-m$i of member $i's disk $disk (rig.sh archive-members $label)"
+      disks="$disks $disk"
+    done
+    # The old epoch's gate records move into one history ConfigMap; written with create, so never overwritten.
+    for c in rig-shutdown-baseline rig-unprojected rig-snapshot-base rig-gate; do
+      if data=$(kc get configmap "$c" -o json 2>/dev/null); then args+=(--from-literal="$c=$(jq -c '.data // {}' <<<"$data")"); fi
+    done
+    [ "$DRY" = 1 ] || kc create configmap "rig-epoch-$label-history" "${args[@]}" --from-literal=disks="${disks# }" >/dev/null \
+      || die "fresh-epoch: rig-epoch-$label-history cannot be created (does it exist already?)"
+    [ "$DRY" = 1 ] || set_epoch "$label" wiped
+    for c in rig-shutdown-baseline rig-unprojected rig-snapshot-base rig-gate; do do_ kubectl --context "$CTX" -n "$NS" delete configmap "$c" --ignore-not-found; done
+  else
+    disks=$(kc get configmap "rig-epoch-$label-history" -o jsonpath='{.data.disks}') || die "fresh-epoch: rig-epoch-$label-history cannot be read"
+  fi
+  do_ kubectl --context "$CTX" -n "$NS" delete pvc data-order-matcher-cluster-0 data-order-matcher-cluster-1 data-order-matcher-cluster-2 --ignore-not-found --wait=false
+  # The StatefulSet is at 0, so nothing re-binds a claim; still, wait until none exists and every disk is gone.
+  wait_for 600 "member claims deleted" claims_gone
+  wait_for 900 "member disks deleted (reclaim Delete):$disks" disks_gone $disks
+  note "epoch $label: claims wiped; rig.sh up archives the read model, then starts the members empty"
+}
+
+archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*, the live tables recreated empty
+  local label=$1 t renames='' have reps
+  step "read model: the old epoch's tables into arc_${label}_*, recreated empty (trade-processor stopped meanwhile)"
+  [ "$DRY" = 1 ] && { note "would rename: $EPOCH_TABLES"; return 0; }
+  reps=$(kc get deploy trade-processor -o jsonpath='{.spec.replicas}') || die "read-model archive: trade-processor cannot be read"
+  kc scale deploy/trade-processor --replicas=0 >/dev/null || die "read-model archive: trade-processor cannot be stopped"
+  wait_for 300 "trade-processor stopped" no_pods trade-processor
+  have=$(sql "select count(*) from information_schema.tables where table_schema=database() and table_name='arc_${label}_trades'") \
+    && [[ $have =~ ^[01]$ ]] || die "read-model archive: the archive cannot be looked up"
+  if [ "$have" = 0 ]; then
+    for t in $EPOCH_TABLES; do renames="$renames, $t TO arc_${label}_$t"; done
+    sql "RENAME TABLE ${renames#, }" >/dev/null || die "read-model archive: RENAME TABLE failed (nothing moved: it is atomic)"
+  fi
+  for t in $EPOCH_TABLES; do
+    sql "CREATE TABLE IF NOT EXISTS $t LIKE arc_${label}_$t" >/dev/null || die "read-model archive: $t cannot be recreated"
+  done
+  # LIKE copies columns, keys (each foreign key's index included) and CHECKs, but not the foreign keys themselves. Each
+  # one on the archived table is re-added with its rules, unless the live table already has it (a rerun). An auto-named
+  # key (<table>_ibfk_N, which InnoDB renamed with its table) is re-added unnamed, so it gets its old name back and reuses
+  # the copied index; naming it explicitly would make MariaDB build a second index under the key's name instead.
+  local fkq fks live name cols rt rcols ur dr
+  fkq="select k.constraint_name, group_concat(k.column_name order by k.ordinal_position), k.referenced_table_name, group_concat(k.referenced_column_name order by k.ordinal_position), r.update_rule, r.delete_rule from information_schema.key_column_usage k join information_schema.referential_constraints r on r.constraint_schema=k.constraint_schema and r.constraint_name=k.constraint_name and r.table_name=k.table_name where k.table_schema=database() and k.table_name='TABLE' group by k.constraint_name, k.referenced_table_name, r.update_rule, r.delete_rule"
+  for t in $EPOCH_TABLES; do
+    fks=$(sql "${fkq/TABLE/arc_${label}_$t}") || die "read-model archive: $t's archived foreign keys cannot be read"
+    live=$(sql "${fkq/TABLE/$t}" | cut -f2-4) || die "read-model archive: $t's foreign keys cannot be read"
+    while IFS=$'\t' read -r name cols rt rcols ur dr; do
+      [ -n "$name" ] || continue
+      grep -qxF "$cols"$'\t'"$rt"$'\t'"$rcols" <<<"$live" && continue
+      name=${name#arc_${label}_}
+      [[ $name =~ ^${t}_ibfk_[0-9]+$ ]] && name='' || name="CONSTRAINT $name"
+      sql "ALTER TABLE $t ADD $name FOREIGN KEY ($cols) REFERENCES $rt($rcols) ON UPDATE $ur ON DELETE $dr" >/dev/null \
+        || die "read-model archive: a foreign key of $t ($cols -> $rt) cannot be restored"
+    done <<<"$fks"
+  done
+  for t in $EPOCH_TABLES; do
+    [ "$(sql "select count(*) from $t")" = 0 ] || die "read-model archive: $t is not empty after the archive"
+  done
+  note "archived: arc_${label}_trades holds $(sql "select count(*) from arc_${label}_trades") rows; live tables empty"
+  kc scale deploy/trade-processor --replicas="${reps:-1}" >/dev/null || die "read-model archive: trade-processor cannot be restarted"
+  kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
+}
 
 # ---- gateways, LB, autoscale -------------------------------------------------------------------------------------
 gateways_up(){
@@ -629,7 +786,14 @@ rig_up(){
       done; note "ok"
     fi
     nats_record ''
-    local before=''
+    local before='' es st lbl
+    if [ "$DRY" = 1 ]; then es=none; else es=$(epoch_state) || die "ConfigMap rig-epoch cannot be read"; fi
+    read -r st lbl <<<"$es"
+    if [ "$st" = wiped ]; then
+      [ "$DRY" = 1 ] || wait_for 300 "the read model answers" sql_ready
+      archive_read_model "$lbl"
+      [ "$DRY" = 1 ] || set_epoch "$lbl" provisioned
+    fi
     if [ "$DRY" = 0 ]; then
       wait_for 300 "the read model answers" sql_ready
       before=$(read_model) || die "G3: the read model could not be read before the members started"
@@ -827,9 +991,11 @@ main(){
     status) rig_status;;
     unprojected) rig_unprojected "${1:-}";;
     snapshot-base) rig_snapshot_base;;
+    archive-members) rig_archive_members "${1:-}";;
+    fresh-epoch) rig_fresh_epoch "${1:-}";;
     member-disk) rig_member_disk "${1:-}";;
     loadgen) rig_loadgen "${1:-}";;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B|snapshot-base|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off $0 pools|up|down|status|unprojected A-B|snapshot-base|archive-members LABEL|fresh-epoch LABEL|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

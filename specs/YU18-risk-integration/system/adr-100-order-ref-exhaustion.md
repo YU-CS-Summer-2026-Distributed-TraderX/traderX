@@ -59,6 +59,7 @@ at 430K/s the ceiling is ~1.4 h to 2^31 and ~2.8 h to 2^32 inside one epoch. cod
 
 - A deterministic-core change: every member must apply the same branch, so it rolls as a fresh epoch with the
   same image on all three members (ADR-087 OnDelete migration order), never a mixed roll. No snapshot format change.
+  On production (2026-10-31) the fresh epoch archives the old one and resets, per ADR-101 (FR-PRG-29).
 - The appended ordinal `ORDER_REF_EXHAUSTED` is new on the ack byte 22 and in snapshot order rows written after the
   roll; a gateway or client decoding reasons by table must carry the new value (it maps to a rejection like any).
 - Pre-ADR `/trades` ticket rows in SQL keep `<epoch>-0`; new ones have a null `sourceorderid`. Managed (epoch-v1)
