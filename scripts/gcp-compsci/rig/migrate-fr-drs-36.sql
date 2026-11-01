@@ -7,9 +7,15 @@
 -- Rollback: none needed. The pre-FR-DRS-36 trade-processor names its projection_cursor columns, so a NULLable extra
 -- column is invisible to it. A cursor it advances keeps the old binding; if the stream was recreated meanwhile, the
 -- FR-DRS-36 build then refuses it (STREAM_RESET), which is the rule working. Dropping the column is never required.
--- The last statement lists every cursor past 0 with no binding. The FR-DRS-36 build refuses each (STREAM_UNBOUND) until
--- the read model is reconciled (rig G3, FR-DRS-33 recon) and the row attested, before the build starts:
---   UPDATE projection_cursor SET stream_created_ns=0 WHERE stream_seq > 0 AND stream_created_ns IS NULL;
+-- The last statement lists every cursor past 0 with no binding. The FR-DRS-36 build refuses each (STREAM_UNBOUND), and
+-- its refusal prints, per row, the statement that attests it with the stream it found (codeX review §16). Runbook:
+--   1. Start the build; it refuses. Collect the statements, all in one refusal per view:
+--        kubectl -n traderx logs deploy/trade-processor | grep -o 'UPDATE projection_cursor SET stream_created_ns=[^;]*;'
+--   2. With trading quiesced, reconcile the read model: rig G3 and fr-drs-33-order-fill-recon.sql, both clean.
+--   3. Run the collected statements here, unedited. Each changes one row, and only while that row still holds the
+--      printed cursor unbound; a replay changes nothing. Never write a binding by hand.
+--   4. Restart. Rows bound to the stream that was reconciled resume. If the stream was recreated since step 1, the
+--      start refuses (STREAM_RESET): rebuild that row (stream_seq=0, stream_created_ns=NULL), don't re-attest it blind.
 CREATE TABLE IF NOT EXISTS projection_cursor (
  projection_scope VARCHAR(64) NOT NULL, partition_id INTEGER NOT NULL,
  stream_seq BIGINT NOT NULL DEFAULT 0, consensus_seq BIGINT NOT NULL DEFAULT 0,

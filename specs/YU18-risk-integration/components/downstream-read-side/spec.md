@@ -262,13 +262,20 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   explicit: reconcile, then set the row's `stream_seq` to 0 and `stream_created_ns` to NULL. A first binding SHALL
   rest on evidence, not assumption: a cursor past 0 with a NULL binding (a row written before this rule) may already
   sit on a recreated stream, so it is refused (`STREAM_UNBOUND`) until the read model is reconciled (rig G3, the
-  FR-DRS-33 recon) and an operator attests the row by setting `stream_created_ns` to 0, which binds it to the stream
-  it then resumes on. A cursor at 0 skips nothing and binds or rebinds without either. A running feed
+  FR-DRS-33 recon) and an operator attests the row. The attestation SHALL name the stream that was reconciled: it is
+  the binding itself, that stream's creation time, written by the statement the refusal prints for each row
+  (`UPDATE projection_cursor SET stream_created_ns=<ns> WHERE projection_scope=… AND partition_id=… AND stream_seq=<cursor>
+  AND stream_created_ns IS NULL`). It changes a row only while the row holds that cursor unbound, so replaying it grants
+  nothing, and a stream recreated after it is refused at the start (`STREAM_RESET`) like any other. One start SHALL
+  list every unbound partition of a view. A bare `0`, the first build's attestation, names no stream and is refused
+  (codeX review §16: A reconciled with `0`, recreated as B, and B's new6..new8 alone delivered). A cursor at 0 skips
+  nothing and binds or rebinds without either. A running feed
   SHALL NOT resubscribe across streams: a cursor-acknowledged view stops its partition (ALERT), and a durable (the
   idempotent row projections) reads the new stream from its first message, as a restart would. An update of the
   stream's limits keeps its creation time. Found by the codeX review of 2026-10-30 (§6): cursor 5, a recreated
   stream of 8, and only 6..8 delivered; its re-review found the first build accepted an unbound cursor 5 on that
-  recreated stream. `StreamIdentityIT` and `StreamRecreateIT` run on NATS 2.10 and 2.14.
+  recreated stream. `StreamIdentityIT` and `StreamRecreateIT` run on NATS 2.10 and 2.14; `AttestationIT` runs the printed attestation on
+  MariaDB and NATS 2.14.
   A persistent eod-price-db volume never runs `ri06.sql` again, so `stream_created_ns` reaches it only through
   `scripts/gcp-compsci/rig/migrate-fr-drs-36.sql` (the same two idempotent statements), applied before the build runs
   snapshot mode or order-view snapshots; rows mode never reads the column. Its last statement lists every unbound

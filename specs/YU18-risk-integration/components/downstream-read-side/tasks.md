@@ -49,3 +49,5 @@
 - [x] FR-DRS-36 migration for a persistent eod-price-db volume (`migrate-fr-drs-36.sql`), idempotent, with its rollback note.
 - [x] FR-DRS-36 first binding: an unbound cursor past 0 is refused (STREAM_UNBOUND) until reconciled and attested
   (`stream_created_ns=0`); the migration lists those rows (codeX re-review, 2026-10-30).
+- [x] FR-DRS-36 attestation names the reconciled stream: the refusal prints each row's conditional statement with that
+  stream's creation time; a stream recreated after it is refused and a replay changes nothing (codeX §16, AttestationIT).

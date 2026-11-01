@@ -178,6 +178,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     snapshotScope = scope;
     List<Position> allPositions = snapshotStore.loadPositions(scope);
     List<Trade> allTrades = snapshotStore.loadBlotters(scope);
+    List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       final int partition = p;
       TradeView view = new TradeView(blotterDepth);
@@ -189,7 +190,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       view.load(mine, myTrades, cursor == null ? 0 : cursor.streamSeq(), cursor == null ? 0 : cursor.consensusSeq());
       view.loadDays(snapshotStore.loadDays(scope, p));
       view.loadAccounting(snapshotStore.loadAccounting(scope, p));
-      requireRetained(p, view.streamSeq());
+      try { requireRetained(p, view.streamSeq()); } catch (JetStreamFeed.Unbound u) { unbound.add(u.getMessage()); continue; }
       views.put(p, view);
       String subject = JetStreamFeed.subject("/trades", p, partitionCount);
       feedThreads.add(JetStreamFeed.startPipelined("trade-feed-p" + p, connection(), streamName(p), subject,
@@ -202,6 +203,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       log.info("trade store: partition {} loaded {} positions, {} blotter rows, cursor stream_seq={}",
           p, mine.size(), myTrades.size(), view.streamSeq());
     }
+    if (!unbound.isEmpty()) { throw new IllegalStateException(String.join("\n", unbound)); }
   }
 
   /**
@@ -214,7 +216,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
    */
   private void requireRetained(int partition, long cursor) throws Exception {
     snapshotStore.bindStream(snapshotScope, partition, JetStreamFeed.requireRetained(connection(), streamName(partition),
-        "trade store", partition, cursor, snapshotStore.boundStream(snapshotScope, partition)));
+        "trade store", snapshotScope, partition, cursor, snapshotStore.boundStream(snapshotScope, partition)));
   }
 
   public String snapshotScope() { return snapshotScope; }

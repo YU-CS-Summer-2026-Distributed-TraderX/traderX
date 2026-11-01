@@ -169,6 +169,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
    */
   private void startSnapshottedView() throws Exception {
     viewScope = runRegistry == null ? finos.traderx.tradeprocessor.service.RunRegistry.UNKNOWN : runRegistry.activeScope();
+    List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       final int partition = p;
       long cursor = Math.max(0, snapshotStore.loadCursor(viewScope, p));
@@ -176,8 +177,11 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
       ViewPartition vp = new ViewPartition(cursor);
       for (OrderUpdate u : open) { view.apply(u); vp.inSql.add(u.getId()); }
       // FR-DRS-36: the cursor is bound to the stream it was taken on; a recreated stream is refused, not resumed.
-      snapshotStore.bindStream(viewScope, p, JetStreamFeed.requireRetained(connection(), streamName(p), "order view", p,
-          cursor, snapshotStore.boundStream(viewScope, p)));
+      try {
+        String cursorScope = finos.traderx.tradeprocessor.service.OrderViewSnapshotStore.CURSOR_PREFIX + viewScope;
+        snapshotStore.bindStream(viewScope, p, JetStreamFeed.requireRetained(connection(), streamName(p), "order view",
+            cursorScope, p, cursor, snapshotStore.boundStream(viewScope, p)));
+      } catch (JetStreamFeed.Unbound u) { unbound.add(u.getMessage()); continue; }
       viewParts.put(p, vp);
       String subject = JetStreamFeed.subject("/orders", p, partitionCount);
       feedThreads.add(JetStreamFeed.startPipelined("order-feed-p" + p, connection(), streamName(p), subject,
@@ -185,6 +189,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
           msgs -> onViewBatch(partition, msgs), head -> onViewIdle(partition, head)));
       log.info("order view: partition {} loaded {} open orders, cursor stream_seq={}", p, open.size(), cursor);
     }
+    if (!unbound.isEmpty()) { throw new IllegalStateException(String.join("\n", unbound)); }
   }
 
   void onViewBatch(int partition, List<Message> msgs) {

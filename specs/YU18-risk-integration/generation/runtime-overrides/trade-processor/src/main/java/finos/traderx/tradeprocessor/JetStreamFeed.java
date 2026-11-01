@@ -127,21 +127,23 @@ public final class JetStreamFeed {
    * creation time, for the caller to bind to its cursor.
    *
    * <p>A first binding needs evidence, not assumption: an unbound cursor past 0 may already be on a recreated stream,
-   * so it is refused ({@code STREAM_UNBOUND}) until an operator reconciles the read model and attests the row
-   * ({@link #ATTESTED}). A cursor at 0 skips nothing and binds without either.
+   * so it is refused ({@link Unbound}) until an operator reconciles the read model and attests the row. The attestation
+   * is the binding itself, the creation time of the stream that was reconciled, written only to that scope, partition
+   * and cursor while the row is still unbound: a stream recreated after it is then refused like any other
+   * ({@code STREAM_RESET}), and replaying the statement matches no row. A cursor at 0 skips nothing and binds.
    */
-  public static long requireRetained(Connection nc, String stream, String what, int partition, long cursor, Long bound)
-      throws Exception {
+  public static long requireRetained(Connection nc, String stream, String what, String cursorScope, int partition,
+      long cursor, Long bound) throws Exception {
     var info = nc.jetStreamManagement().getStreamInfo(stream);
     long created = createdNs(info);
     if (cursor > 0 && bound == null) {
-      throw new IllegalStateException("STREAM_UNBOUND " + what + " partition " + partition + ": the snapshot cursor (stream"
-          + " sequence " + cursor + ") was saved before cursors were bound to their stream, so nothing shows it was taken"
-          + " on " + stream + " as created at " + instant(created) + "; if that stream was recreated, resuming would skip"
-          + " its first messages. Reconcile the read model (rig G3, FR-DRS-33 recon), then attest: UPDATE projection_cursor"
-          + " SET stream_created_ns=0 for this scope and partition; or rebuild: SET stream_seq=0");
+      throw new Unbound("STREAM_UNBOUND " + what + " partition " + partition + ": the snapshot cursor (stream sequence "
+          + cursor + ") was saved before cursors were bound to their stream, so nothing shows it was taken on " + stream
+          + " as created at " + instant(created) + "; if that stream was recreated, resuming would skip its first messages."
+          + " Reconcile the read model (rig G3, FR-DRS-33 recon), then attest this stream: " + attestation(cursorScope,
+          partition, cursor, created) + " Or rebuild: UPDATE projection_cursor SET stream_seq=0 for this scope and partition.");
     }
-    if (cursor > 0 && bound != null && bound != ATTESTED && bound != created) {
+    if (cursor > 0 && bound != null && bound != created) {
       throw new IllegalStateException("STREAM_RESET " + what + " partition " + partition + ": the snapshot cursor (stream"
           + " sequence " + cursor + ") was taken on the stream " + stream + " created at " + instant(bound) + ", but " + stream
           + " was created at " + instant(created) + "; resuming would skip its first " + cursor + " messages. Reconcile, then"
@@ -164,8 +166,20 @@ public final class JetStreamFeed {
     return created;
   }
 
-  /** {@code stream_created_ns} an operator writes after reconciling an unbound cursor: bind it to the current stream. */
-  public static final long ATTESTED = 0;
+  /** An unbound cursor past 0 (FR-DRS-36); a view collects every partition's before refusing, so one start lists all. */
+  public static final class Unbound extends IllegalStateException {
+    Unbound(String message) { super(message); }
+  }
+
+  /**
+   * The operator's attestation of one reconciled row: binds it to the stream {@code created} names, and only if the row
+   * still holds that cursor unbound, so a replay, or a run against a row that moved since, changes nothing.
+   */
+  static String attestation(String cursorScope, int partition, long cursor, long created) {
+    return "UPDATE projection_cursor SET stream_created_ns=" + created + " WHERE projection_scope='"
+        + cursorScope.replace("'", "''") + "' AND partition_id=" + partition + " AND stream_seq=" + cursor
+        + " AND stream_created_ns IS NULL;";
+  }
 
   /** A stream's identity: its creation time in epoch ns. An update (limits) keeps it; a recreate does not. */
   static long createdNs(io.nats.client.api.StreamInfo info) {
