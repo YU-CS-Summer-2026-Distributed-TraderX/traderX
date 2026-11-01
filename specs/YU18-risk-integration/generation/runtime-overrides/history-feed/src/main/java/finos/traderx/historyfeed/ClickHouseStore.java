@@ -41,13 +41,10 @@ final class ClickHouseStore {
         + " SETTINGS fsync_after_insert=1, fsync_part_directory=1");
   }
 
-  /**
-   * The incarnation this lane's rows are bound to, or null when none was ever bound. The latest binding wins; a bind
-   * in the same millisecond as the attestation it uses up wins the tie.
-   */
+  /** The incarnation this lane's rows are bound to, or null when none was ever bound. The latest binding wins. */
   String incarnation(String stream, String table, int part) throws Exception {
     String v = query("SELECT incarnation FROM history_cursor WHERE stream = {s:String} AND tbl = {t:String}"
-        + " AND part = {p:UInt16} ORDER BY bound DESC, startsWith(incarnation, '" + FeedLane.ATTESTED + "') LIMIT 1", Map.of("s", stream, "t", table, "p", "" + part)).trim();
+        + " AND part = {p:UInt16} ORDER BY bound DESC LIMIT 1", Map.of("s", stream, "t", table, "p", "" + part)).trim();
     return v.isEmpty() ? null : v;
   }
 

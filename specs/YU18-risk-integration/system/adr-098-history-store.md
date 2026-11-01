@@ -30,9 +30,10 @@ below the rate.
    events in the bake-off. A batch never crosses a UTC day, because one INSERT is atomic only within one date partition.
    The cursor is bound to the stream's incarnation, its creation time (FR-HST-07). A lane refuses to resume on a
    stream recreated under the same name, because the number alone would skip that stream's first messages. Rows with no recorded stream are refused
-   too (`STREAM_UNBOUND`) until an operator reconciles and attests them. The attestation names the stream's creation
-   time and the store cursor reconciled (`attested:<createTime>@<cursor>`), counts only while both still hold, and the
-   next bind uses it up (codeX pass 3 §16; trade-processor attests the same identity, scope, partition and cursor).
+   too (`STREAM_UNBOUND`) until an operator reconciles them and attests. The attestation is the binding itself, the
+   reconciled stream's creation time, written only while the lane is unbound at the reconciled cursor, so a replay
+   grants nothing and a stream recreated after it is refused as a reset (codeX pass 3 §16). There is no sentinel; the
+   rule is trade-processor's (FR-DRS-36).
 4. **Exactly one writer.** The lanes are not fenced, so the Deployment has one replica and `Recreate`. Scaling past
    one process means one process per partition set, by configuration, not replicas.
 5. **The queries go through the service**, never straight to ClickHouse: the four paths the bake-off measured, plus

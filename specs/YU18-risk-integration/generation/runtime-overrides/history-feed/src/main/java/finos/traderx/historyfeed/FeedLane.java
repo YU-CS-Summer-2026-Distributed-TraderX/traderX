@@ -142,33 +142,35 @@ final class FeedLane implements Runnable {
     String current = incarnationOf(nc.jetStreamManagement(jso).getStreamInfo(stream));
     String bound = store.incarnation(stream, table, part);
     if (current.equals(bound)) return;
-    // An empty lane skips nothing. An attested one was reconciled by an operator against exactly this stream at exactly
-    // this cursor (codeX §16: an attestation that names nothing approves whatever stream exists when it is read).
-    // Either binds, and the newer binding row uses the attestation up (the same rule as trade-processor's FR-DRS-36).
-    String attested = attestation(current, c);
-    if (c == 0 || attested.equals(bound)) {
+    if (c == 0) {                                     // an empty lane skips nothing
       store.bind(stream, table, part, current);
-      System.out.printf("%s: bound to %s incarnation %s%s%n", durable, stream, current, c > 0 ? " (operator attested)" : "");
+      System.out.printf("%s: bound to %s incarnation %s%n", durable, stream, current);
       return;
     }
-    String remedy = " Reconcile this lane's rows against " + stream + " as it is now, then attest with INSERT INTO history_cursor"
-        + " (stream, tbl, part, incarnation) VALUES ('" + stream + "', '" + table + "', " + part + ", '" + attested
-        + "'), or move the rows aside to rebuild; then restart.";
-    if (bound != null && bound.startsWith(ATTESTED)) throw new IncarnationRefused("history-feed STREAM_ATTEST_MISMATCH "
-        + durable + ": the attestation " + bound + " does not name " + stream + " as it is now (" + attested
-        + "): it was recreated or the store's cursor moved since it was reconciled." + remedy);
-    if (bound == null || bound.equals("0")) throw new IncarnationRefused("history-feed STREAM_UNBOUND " + durable
-        + ": the store holds " + table + " part " + part + " up to seq " + c + " with no record of which " + stream
-        + " they came from, so resuming at seq " + (c + 1) + " may skip the current stream's first messages." + remedy);
+    // Rows with no recorded stream are never bound to whatever stream exists now: an operator reconciles them and
+    // writes the binding itself, with the statement below (FR-HST-07; codeX pass 3 §16; trade-processor's FR-DRS-36).
+    if (bound == null) throw new IncarnationRefused("history-feed STREAM_UNBOUND " + durable + ": the store holds " + table
+        + " part " + part + " up to seq " + c + " with no record of which " + stream + " they came from, so resuming at seq "
+        + (c + 1) + " may skip the current stream's first messages. Reconcile this lane's rows against " + stream
+        + " created " + current + ", then attest with: " + attestation(stream, table, part, current, c)
+        + " ; or move the rows aside to rebuild. Then restart.");
     throw new IncarnationRefused("history-feed STREAM_RESET " + durable + ": the store holds " + table + " part " + part
-        + " up to seq " + c + " from " + stream + " created " + bound + ", but " + stream + " was recreated at " + current
-        + "; resuming at seq " + (c + 1) + " would skip its first " + c + " messages." + remedy);
+        + " up to seq " + c + " from " + stream + " created " + bound + ", but " + stream + " is now created " + current
+        + "; resuming at seq " + (c + 1) + " would skip its first " + c + " messages. Reconcile the store (move this lane's"
+        + " rows aside), then restart.");
   }
 
-  /** The binding an operator writes after reconciling a lane: the stream's incarnation and the store's cursor then. */
-  static String attestation(String incarnation, long cursor) { return ATTESTED + incarnation + "@" + cursor; }
-
-  static final String ATTESTED = "attested:";
+  /**
+   * The operator's attestation: the binding itself, the reconciled stream's creation time, written only while the lane
+   * is still unbound and still holds exactly the cursor reconciled. A replay, a bound lane or a moved cursor writes
+   * nothing; a stream recreated after it is an ordinary mismatch (STREAM_RESET).
+   */
+  static String attestation(String stream, String table, int part, String incarnation, long cursor) {
+    return "INSERT INTO history_cursor (stream, tbl, part, incarnation) SELECT '" + stream + "', '" + table + "', " + part
+        + ", '" + incarnation + "' WHERE (SELECT count() FROM history_cursor WHERE stream = '" + stream + "' AND tbl = '"
+        + table + "' AND part = " + part + ") = 0 AND (SELECT max(seq) FROM " + table + " WHERE part = " + part + ") = "
+        + cursor;
+  }
 
   /** A stream's incarnation: its creation time, unchanged for its whole life, new whenever it is recreated. */
   static String incarnationOf(io.nats.client.api.StreamInfo si) {

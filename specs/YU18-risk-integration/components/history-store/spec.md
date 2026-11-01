@@ -49,25 +49,24 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   `scripts/history-feed/kind-smoke.sh`, and in no base kustomization, CompSci render or GKE manifest.
 - FR-HST-07: A lane's cursor SHALL be bound to its stream's incarnation, the stream's creation time
   (`StreamInfo.createTime`, ISO-8601 at full precision), recorded in `history_cursor` (stream, table, part,
-  incarnation) before the lane's first row from that incarnation. This is trade-processor's scheme (FR-DRS-36). A
-  lane SHALL open only on the incarnation its rows came from. A lane binds to the current incarnation when it has no
-  rows (a cursor at 0 skips nothing) or when its binding is an attestation that names the stream as it is now and the
-  store's cursor now, `attested:<createTime>@<cursor>`: written only by an operator who has reconciled the lane's rows
-  against that stream at that cursor, and used up by that bind (the latest binding wins; the bind wins a
-  same-millisecond tie). An attestation naming anything else (the stream recreated, or the cursor moved, since it was
-  reconciled) SHALL refuse with `STREAM_ATTEST_MISMATCH <durable>`: a reconciliation of one stream is no permission
-  for its replacement, and a replayed attestation approves nothing that changed (codeX review pass 3 §16). A bare `0`
-  names nothing and counts as no binding. A lane with rows and no binding SHALL refuse with `STREAM_UNBOUND <durable>`: the rows'
-  stream is unknown, and binding them to whatever stream exists now would skip that stream's first messages on the
-  first upgrade (codeX re-review, FR-DRS-36's first-binding rule). Its message gives the remedy: reconcile, then attest
-  with the `INSERT INTO history_cursor ... 'attested:...'` it prints, filled in with the current creation time and cursor, or move the rows aside to rebuild. A
-  lane with rows and a different incarnation SHALL refuse: no consumer is opened and no row is written, `/health`
-  reports it not ready (503) with `STREAM_RESET <durable>`, an `ALERT history-feed STREAM_RESET` line names the cursor
-  and both creation times, and it re-checks every 30 s. A sequence number alone cannot tell a recreated stream from
-  the original. A stream deleted and recreated under the same name restarts at 1, and once it passed the cursor,
-  opening at cursor + 1 would skip its first messages for good (codeX review 2026-10-30 §6). A limits update keeps
-  the creation time; a delete and recreate changes it. Recovery is an operator decision: move the lane's rows aside,
-  or reconcile them and attest, then restart.
+  incarnation) before the lane's first row from that incarnation. This is trade-processor's scheme and rule
+  (FR-DRS-36). A lane SHALL open only on the incarnation its binding names. A lane with no rows binds to the current
+  incarnation (a cursor at 0 skips nothing). There is no sentinel: any other binding that is not the current creation
+  time, including a leftover `0`, is a mismatch. A lane with rows and a different binding SHALL refuse: no consumer
+  is opened and no row is written, `/health` reports it not ready (503) with `STREAM_RESET <durable>`, an `ALERT
+  history-feed STREAM_RESET` line names the cursor and both creation times, and it re-checks every 30 s. A lane with
+  rows and no binding SHALL refuse the same way with `STREAM_UNBOUND <durable>`: the rows' stream is unknown, and
+  binding them to whatever stream exists now would skip that stream's first messages on the first upgrade (codeX
+  re-review). Its message prints the attestation for that lane, filled in with the current creation time and the
+  lane's cursor; every refused lane's statement is on `/health` at once. The attestation is the binding itself, the
+  reconciled stream's creation time, written by `INSERT ... SELECT ... WHERE` only while the lane has no binding and
+  still holds exactly that cursor. So a replay, a bound lane or a moved cursor writes nothing, and a stream recreated
+  between the attestation and the start is an ordinary `STREAM_RESET` (codeX review pass 3 §16: an attestation that
+  names no stream approves whichever exists when it is read). A sequence number alone cannot tell a recreated stream
+  from the original: a stream deleted and recreated under the same name restarts at 1, and once it passed the
+  cursor, opening at cursor + 1 would skip its first messages for good (codeX review 2026-10-30 §6). A limits update
+  keeps the creation time; a delete and recreate changes it. Recovery is an operator decision: move the lane's rows
+  aside (rebuild), or reconcile them and attest, then restart.
 - NFR-HST-01: No engine, bridge wire, stream, trade-processor, production or GKE change. The feed is a reader of
   the existing streams with its own durables; the render gains one module (`history-feed`).
 - NFR-HST-02: On one c4d-standard-16 store host the store SHALL sustain the full-rate volume, 1,000,000 rows/s
@@ -99,10 +98,10 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
 - SC-HST-05: `HistoryFeedIncarnationIT` (NATS 2.14 + ClickHouse 25.8 containers, P = 2): a restart on unchanged
   streams resumes and takes new load (control). After `TRADERX_FEED_P0` is deleted, recreated and refilled past the
   cursor, the restarted feed writes no row from it, `/health` is 503 with `STREAM_RESET` on both P0 lanes and not
-  on P1, and P1 keeps flowing. With P1's binding removed (and a bare `0` written for P1 trades) and P0 attested
-  against its new stream, the next start writes no P1 row, reports `STREAM_UNBOUND` on both P1 lanes, resumes P0 on the new stream and replaces the attestation with its
-  creation time; P1 attested and then recreated and refilled past the
-  cursor writes no P1 row and reports `STREAM_ATTEST_MISMATCH` on both P1 lanes; attested against P1 as it is now,
-  every lane is ready (200). With the check removed the test fails at the reset;
-  with unbound rows accepted it fails at the unbound lane (expected 10000 rows, was 10500);
-  with an attestation accepted whatever it names it fails at the recreated P1 (expected 10000, was 12000).
+  on P1, and P1 keeps flowing. With every binding removed and P0 attested with the printed statement (run twice: the
+  replay writes nothing), the next start resumes P0 on its new stream, writes no P1 row and reports `STREAM_UNBOUND`
+  on both P1 lanes; attesting the bound P0 again, or P1 at a cursor it does not hold, writes nothing. P1 attested and
+  then recreated and refilled past the cursor writes no P1 row and reports `STREAM_RESET` on both P1 lanes; with
+  that binding removed and P1 attested as it is now, every lane is ready (200). With a mismatched binding accepted
+  the test fails at the reset (expected 3000 rows, was 7000); with the attestation written unconditionally it fails
+  at the replay (expected 2 bindings, was 4).
