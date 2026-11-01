@@ -62,7 +62,8 @@ kubectl(){
     *"get pvc data-order-matcher-cluster-"*volumeName*) n="$*"; n=${n#*cluster-}; echo "pv-${n%% *}";;
     *"get pv pv-"*volumeHandle*) n="$*"; n=${n#*pv-}; echo "projects/p/zones/us-east1-b/disks/disk-${n%% *}";;
     *"get deploy trade-processor -o jsonpath={.spec.replicas}"*) echo 1;;
-    *information_schema.tables*) echo "${ARC_EXISTS:-0}";;
+    *"count(*) from information_schema.tables"*) echo "${ARC_EXISTS:-0}";;
+    *"from information_schema.tables"*) printf '%s\n' ${PRESENT:-trades positions orderbook order_view_snapshot projection_accounting projection_cursor projection_trade_days projection_recon};;
     *"select count(*) from arc_"*) echo 42;;
     *"select count(*) from "*) echo "${LIVE_ROWS:-0}";;
     *"get configmap rig-epoch-"*"-history"*disks*) echo "disk-0 disk-1 disk-2";;
@@ -556,6 +557,11 @@ class FreshEpoch(unittest.TestCase):
         self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
         rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'ARC_EXISTS': '1'})   # a re-run renames nothing
         self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'RENAME TABLE'))
+        # FR-PRG-29: a volume older than a table's first-boot SQL never got it; only the tables present move
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'PRESENT': 'trades positions orderbook projection_cursor'})
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'RENAME TABLE trades TO arc_e2_trades, positions TO arc_e2_positions, orderbook TO arc_e2_orderbook, projection_cursor TO arc_e2_projection_cursor"'), out)
+        self.assertIsNone(first(calls, 'LIKE arc_e2_projection_accounting'))
 
     def test_a_table_left_with_rows_after_the_archive_is_refused(self):
         out, calls = self.refused('not empty after the archive', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'LIVE_ROWS': '3'})

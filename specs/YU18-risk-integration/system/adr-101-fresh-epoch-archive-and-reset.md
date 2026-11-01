@@ -34,7 +34,9 @@ The new epoch keeps the legacy id scheme (no run descriptor), and the old one is
 2. **Read model:** the next `rig.sh up`, with trade-processor stopped, moves the epoch tables (`trades`,
    `positions`, `orderbook`, `order_view_snapshot`, `projection_accounting`, `projection_cursor`,
    `projection_trade_days`, `projection_recon`) into `arc_LABEL_*` in one atomic `RENAME TABLE`, and recreates each
-   empty with the same definition: `LIKE`, then every foreign key `LIKE` leaves out. The archive holds every row,
+   empty with the same definition: `LIKE`, then every foreign key `LIKE` leaves out. Only the tables the database
+   has move: production's volume predates some of them (init SQL runs on an empty data directory only), and the
+   archive leaves the set of tables as it found it. The archive holds every row,
    the schema's seed rows included: the new epoch's engine starts empty, so its read model does too. Accounts,
    reference data and EOD history stay. New trade and order ids restart at 1 without meeting an old row.
 3. **Gate:** while `rig-epoch` says provisioned, G-pre requires every member claim gone, G0 accepts only empty

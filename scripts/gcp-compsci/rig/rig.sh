@@ -659,7 +659,7 @@ rig_fresh_epoch(){
 }
 
 archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*, the live tables recreated empty
-  local label=$1 t renames='' have reps
+  local label=$1 t renames='' have reps present
   step "read model: the old epoch's tables into arc_${label}_*, recreated empty (trade-processor stopped meanwhile)"
   [ "$DRY" = 1 ] && { note "would rename: $EPOCH_TABLES"; return 0; }
   reps=$(kc get deploy trade-processor -o jsonpath='{.spec.replicas}') || die "read-model archive: trade-processor cannot be read"
@@ -667,10 +667,20 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
   wait_for 300 "trade-processor stopped" no_pods trade-processor
   have=$(sql "select count(*) from information_schema.tables where table_schema=database() and table_name='arc_${label}_trades'") \
     && [[ $have =~ ^[01]$ ]] || die "read-model archive: the archive cannot be looked up"
+  # Only the epoch tables this database has: a volume older than a table's first-boot SQL never got it (init scripts
+  # run on an empty data directory only), and the archive leaves the set of tables as it found it.
   if [ "$have" = 0 ]; then
-    for t in $EPOCH_TABLES; do renames="$renames, $t TO arc_${label}_$t"; done
+    present=$(printf "'%s'," $EPOCH_TABLES)
+    present=$(sql "select table_name from information_schema.tables where table_schema=database() and table_name in (${present%,})") \
+      || die "read-model archive: the epoch tables cannot be listed"
+    grep -qx trades <<<"$present" || die "read-model archive: no trades table to archive"
+    for t in $EPOCH_TABLES; do if grep -qx "$t" <<<"$present"; then renames="$renames, $t TO arc_${label}_$t"; fi; done
+    note "archiving: $(tr '\n' ' ' <<<"$present")"
     sql "RENAME TABLE ${renames#, }" >/dev/null || die "read-model archive: RENAME TABLE failed (nothing moved: it is atomic)"
   fi
+  present=$(sql "select substring(table_name, length('arc_${label}_')+1) from information_schema.tables where table_schema=database() and table_name like 'arc\\_${label}\\_%'") \
+    || die "read-model archive: the archived tables cannot be listed"
+  EPOCH_TABLES=$(for t in $EPOCH_TABLES; do if grep -qx "$t" <<<"$present"; then echo "$t"; fi; done | tr '\n' ' ')
   for t in $EPOCH_TABLES; do
     sql "CREATE TABLE IF NOT EXISTS $t LIKE arc_${label}_$t" >/dev/null || die "read-model archive: $t cannot be recreated"
   done

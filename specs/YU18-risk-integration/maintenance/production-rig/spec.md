@@ -119,7 +119,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   three snapshots are READY and of exactly the current disks, record the old gate ConfigMaps in
   `rig-epoch-LABEL-history`, and wait until every member claim and disk is gone. The next `up` SHALL move the epoch
   tables into `arc_LABEL_*` in one RENAME, with trade-processor stopped, and recreate them empty with identical
-  definitions, foreign keys included. The gate SHALL accept empty members and no shutdown baseline only while
+  definitions, foreign keys included; only the epoch tables the database has, since a persistent volume never runs a
+  table's later first-boot SQL. The gate SHALL accept empty members and no shutdown baseline only while
   `rig-epoch` is provisioned, and mark it consumed on PASS; a missing baseline otherwise SHALL refuse.
 - **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
   does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom

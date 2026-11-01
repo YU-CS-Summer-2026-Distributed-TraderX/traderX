@@ -28,9 +28,12 @@ class ArchiveReadModel(unittest.TestCase):
             if cls.q('select 1').stdout.strip() == '1':
                 break
             time.sleep(1)
+
+    def setUp(self):   # each test on a freshly initialised database
+        self.q('DROP DATABASE traderx; CREATE DATABASE traderx;')
         data = yaml.safe_load(INIT.read_text())['data']
         for key in sorted(data):
-            p = cls.q(data[key]); assert p.returncode == 0, (key, p.stderr[-500:])
+            p = self.q(data[key]); assert p.returncode == 0, (key, p.stderr[-500:])
 
     @classmethod
     def tearDownClass(cls):
@@ -74,6 +77,14 @@ class ArchiveReadModel(unittest.TestCase):
         self.assertEqual(self.q('SELECT count(*) FROM arc_e2_trades').stdout.strip(), arc)
         for t in TABLES:
             self.assertEqual(self.definition(t, t), before[t], t)   # no second copy of a foreign key
+
+    def test_tables_a_volume_never_got_are_left_absent(self):
+        # an older volume: first-boot SQL that created these never ran on it
+        self.q('DROP TABLE IF EXISTS projection_accounting; DROP TABLE IF EXISTS order_view_snapshot;')
+        p = self.archive('e3'); self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        names = set(self.q("SELECT table_name FROM information_schema.tables WHERE table_schema='traderx'").stdout.split())
+        self.assertNotIn('projection_accounting', names); self.assertNotIn('arc_e3_projection_accounting', names)
+        self.assertIn('arc_e3_trades', names); self.assertIn('trades', names)
 
     def test_control_like_alone_drops_the_foreign_key(self):
         self.q('CREATE TABLE ctl_positions LIKE positions')
