@@ -66,8 +66,21 @@
 
 ## Success Criteria
 
+- FR-ERH-F14: The gateway's catalog feed (reference-data's control outbox, `applyControlDelta`) SHALL register a
+  security and enable it only when that registration created it; a security the engine already knows keeps its
+  control. Every gateway replays the whole feed at start and the engine applies controls last-write-wins, so
+  enabling a known security re-enabled whatever an operator had disabled on every gateway restart (production epoch
+  e1101, 2026-10-31: the matured `UST-BILL-20260910` read enabled after the initializer disabled it). The engine's
+  symbol-register ack carries the fact in byte 21 (1 = created), an ack-only value identical on every member; the
+  gateway and the members ship as one image. `GatewayCatalogFeedTest` (three members: register, operator disable,
+  replay by the same and by a restarted gateway, still disabled everywhere) fails against the previous gateway.
+- FR-ERH-F15: Each member SHALL serve `GET /risk/control/securities` (admin JWT; 401/404/405/503 as
+  `/risk/control/accounts`): every registered ticker with its security control as applied. The reference-data
+  initializer SHALL verify the catalog's enabled states there on all three members, not on a gateway's control
+  replica, which holds only what passed through that gateway. `MemberSecurityReadoutTest`.
 - SC-ERH-01: `GatewayAccessTest`, `BoundedBodyTest`, `ClusterIngressAuthTest`, `AccountTableOverflowTest`,
-  `OutOfRangeSecurityEventsTest`, `BookCapacityTest`, `OrderRefExhaustionTest` and `ClOrdIdLedgerTest` pass in an empty-root render,
+  `OutOfRangeSecurityEventsTest`, `BookCapacityTest`, `OrderRefExhaustionTest`, `ClOrdIdLedgerTest`, `GatewayCatalogFeedTest` and
+  `MemberSecurityReadoutTest` pass in an empty-root render,
   inside the full order-matcher suite.
 - SC-ERH-02: The trade-service suite, including the four `GatewayBearer` and propagation tests, and the
   console's `risk-control-proxy.test.mjs`, pass.

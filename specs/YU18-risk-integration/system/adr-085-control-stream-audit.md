@@ -33,5 +33,6 @@ watermark while holding one message, which is exactly the production case; a las
 A replaced NATS store is refilled by `reference-data` within one audit interval. The consumer side is not covered
 here: on 2026-10-27 the gateway's push subscription did not come back after its stream was deleted under a live
 connection (0 consumers until the gateway restarted), so a running gateway re-subscribing after a store replacement
-is unverified. Each republish sends two sequenced events per security through consensus (a registration and an
-enable).
+is unverified. Each republish sends a registration per security through consensus, and an enable only for a
+security that registration created (FR-ERH-F14, 2026-10-31): before that, a republish or any gateway restart
+re-enabled every security an operator had disabled.

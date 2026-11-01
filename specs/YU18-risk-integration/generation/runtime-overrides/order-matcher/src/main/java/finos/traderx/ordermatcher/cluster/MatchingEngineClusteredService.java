@@ -1164,6 +1164,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         appliedSeq++;
         final String ticker = codec.symbolTicker();
         int id = symbolIdFor(ticker);
+        final boolean created = id < 0;
         if (id < 0) {
             if (nextSymbolId >= MAX_SECURITIES) {
                 id = -1; // capacity refused; deterministic everywhere
@@ -1184,7 +1185,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putInt(8, id);
         ackBuffer.putByte(12, KIND_SYMBOL_REGISTERED);
         ackBuffer.putLong(13, codec.symbolRequestId());
-        ackBuffer.putByte(21, (byte) 0);
+        // FR-ERH-F14: 1 when this registration created the symbol, 0 when it already existed. An
+        // ack-only fact (no state), the same on every member, so a gateway can tell "new to the
+        // engine" from "known" without asking a member over HTTP.
+        ackBuffer.putByte(21, (byte) (created && id >= 0 ? 1 : 0));
         ackBuffer.putByte(22, (byte) 0);
         ackBuffer.putByte(23, (byte) 0);
         ackBuffer.putLong(24, 0L); // symbol acks correlate by their own requestId at 13

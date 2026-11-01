@@ -595,6 +595,9 @@ public final class ClusterNodeMain {
         memberAccountRoute(server, memberId, service,
             new finos.traderx.ordermatcher.auth.JwtAuthenticator(
                 env("AUTH_JWT_SECRET", "dev-jwt-shared-secret")));
+        memberSecurityRoute(server, memberId, service,
+            new finos.traderx.ordermatcher.auth.JwtAuthenticator(
+                env("AUTH_JWT_SECRET", "dev-jwt-shared-secret")));
         reconRoutes(server, service, recon);
         server.start();
         return server;
@@ -710,6 +713,60 @@ public final class ClusterNodeMain {
             } catch (final Exception ex) {
                 // Refuse an observation failure rather than converting it into an empty table.
                 respond(exchange, 500, "{\"error\":\"member account observation failed\"}");
+            }
+        });
+    }
+
+    /**
+     * FR-ERH-F15: the members' security controls as applied, for operators who must verify an enabled
+     * state on the engine rather than on a gateway's replica (each gateway's replica holds only what
+     * passed through that process; behind a Service, a check read whichever one answered). Same
+     * guard and refusals as {@link #memberAccountRoute}.
+     */
+    static void memberSecurityRoute(final HttpServer server, final int memberId,
+                                    final MatchingEngineClusteredService service,
+                                    final finos.traderx.ordermatcher.auth.JwtAuthenticator jwt) {
+        final com.fasterxml.jackson.databind.ObjectMapper json =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+        server.createContext("/risk/control/securities", exchange -> {
+            try {
+                final var principal = jwt.validate(exchange.getRequestHeaders().getFirst("Authorization"));
+                if (principal.isEmpty() || !principal.get().admin()) {
+                    respond(exchange, 401, "{\"error\":\"admin JWT required\"}");
+                    return;
+                }
+                if (!"/risk/control/securities".equals(exchange.getRequestURI().getPath())) {
+                    respond(exchange, 404, "{\"error\":\"unknown security readout path\"}");
+                    return;
+                }
+                if (!"GET".equals(exchange.getRequestMethod())) {
+                    exchange.getResponseHeaders().set("Allow", "GET");
+                    respond(exchange, 405, "{\"error\":\"GET required\"}");
+                    return;
+                }
+                final long before = service.appliedSeq();
+                final var engine = service.engine();
+                final var risk = engine == null ? null : engine.riskState();
+                if (risk == null) {
+                    respond(exchange, 503, "{\"error\":\"member risk state unavailable\",\"memberId\":"
+                        + memberId + ",\"available\":false}");
+                    return;
+                }
+                final java.util.List<java.util.Map<String, Object>> securities = new java.util.ArrayList<>();
+                for (int id = 0; ; id++) {
+                    final String ticker = service.tickerFor(id);
+                    if (ticker == null) {
+                        break;
+                    }
+                    securities.add(java.util.Map.of("ticker", ticker, "securityId", id, "enabled", risk.securityEnabled(id)));
+                }
+                final long after = service.appliedSeq();
+                respond(exchange, 200, json.writeValueAsString(java.util.Map.of(
+                    "memberId", memberId, "source", "member-engine-risk-table", "available", true,
+                    "sampling", "sequential-non-atomic", "appliedSeqBefore", before, "appliedSeqAfter", after,
+                    "count", securities.size(), "securities", securities)));
+            } catch (final Exception ex) {
+                respond(exchange, 500, "{\"error\":\"member security observation failed\"}");
             }
         });
     }

@@ -176,6 +176,11 @@ public final class BlpRiskState {
         }
     }
 
+    /** FR-ERH-F15: the security control as applied (an unregistered or out-of-range id is false). */
+    public boolean securityEnabled(int securityId) {
+        return securityId >= 0 && securityId < securityEnabled.length && securityEnabled[securityId] != 0;
+    }
+
     public void putRestriction(int securityId, boolean restricted) {
         if (securityId >= 0 && securityId < securityRestricted.length) {
             securityRestricted[securityId] = (byte) (restricted ? 1 : 0);

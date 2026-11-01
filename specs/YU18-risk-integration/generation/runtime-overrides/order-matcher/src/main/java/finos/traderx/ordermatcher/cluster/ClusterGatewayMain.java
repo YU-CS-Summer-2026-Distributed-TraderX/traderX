@@ -853,7 +853,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final byte kind = buffer.getByte(offset + 12);
         if (kind == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
             lastSymbolAck = new long[] {
-                buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
+                buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13),
+                buffer.getByte(offset + 21) };   // [3]: 1 = this registration created the symbol
         } else if (kind == MatchingEngineClusteredService.KIND_SWAP_BOOKED) {
             // YU17. Correlated by the clientOrderKey the ack echoes at 13, exactly as the symbol
             // and extract acks correlate by requestId — NOT by "first one after my offer", because
@@ -2869,7 +2870,16 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             return; // nothing to register; ack it rather than redelivering forever
         }
         final long version = body.path("version").asLong(System.currentTimeMillis());
+        final boolean[] enabled = new boolean[1];
         final Boolean ok = onOwner(() -> {
+            // FR-ERH-F14: the catalog feed registers; it enables only a symbol its registration
+            // CREATED. Every gateway replays the whole feed at start, and the engine applies
+            // controls last-write-wins, so enabling a known symbol re-enabled whatever an operator
+            // had disabled (a matured bill) on every gateway restart. A symbol this process already
+            // resolved is known; otherwise the register ack says whether it was new.
+            if (idByTicker.containsKey(ticker)) {
+                return true;
+            }
             // register=true: the control feed is reference-data's catalog outbox — the operator's
             // instrument universe, trusted infrastructure in the same namespace — not a client order
             // path. S4 (5ca69f3f) turned the one-arg form into a lookup, so every catalog ticker that
@@ -2882,6 +2892,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             if (id < 0) {
                 return false;
             }
+            if (lastSymbolAck == null || lastSymbolAck[3] != 1) {
+                return true;   // known to the engine already: its enabled state is not the feed's to set
+            }
             event.qty = 0;
             event.limitPx = 0L;
             event.type = InputEvent.TYPE_SECURITY_CONTROL;
@@ -2890,16 +2903,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             event.setControlEnabled(true);
             event.setControlVersion(version);
             offerBlocking();
+            enabled[0] = true;
             return true;
         });
         if (!Boolean.TRUE.equals(ok)) {
             throw new IllegalStateException("could not register " + ticker + " from the control feed");
         }
-        controlReplica.compute(ticker, (k, prev) -> new long[] {
-            1, prev == null ? 0 : prev[1], version,
-        });
+        if (enabled[0]) {
+            controlReplica.compute(ticker, (k, prev) -> new long[] {
+                1, prev == null ? 0 : prev[1], version,
+            });
+        }
         controlWatermark = Math.max(controlWatermark, version);
-        System.out.println("CONTROL-FEED applied ticker=" + ticker + " version=" + version);
+        System.out.println("CONTROL-FEED applied ticker=" + ticker + " version=" + version + (enabled[0] ? " (new: enabled)" : " (known: unchanged)"));
     }
 
     private void handleRiskControl(final HttpExchange exchange) {

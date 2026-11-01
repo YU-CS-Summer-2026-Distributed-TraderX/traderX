@@ -64,8 +64,20 @@ if(apply) {
   assert.ok(after.every(m=>m.started&&m.applied>=fence.sequence),'member has not applied the final initialization fence');
   console.log(JSON.stringify({phase:'committed-fence',fence,members:after}));
 }
-const controls=await get('http://order-matcher:18110/risk/control/snapshot');
-for(const security of securities.values())assert.equal(controls.securities.find(x=>x.ticker===security.ticker)?.enabled,security.enabled,security.ticker);
+// FR-ERH-F15: verified on every member's engine, not on a gateway's control replica: each gateway's replica holds only
+// what passed through that process, and behind the Service this read whichever one answered.
+const token=(await (await fetch('http://edge-proxy:8080/trade-processor/auth/dev-token',{method:'POST',
+  headers:{'Content-Type':'application/json','x-auth-master-secret':process.env.AUTH_MASTER_SECRET},
+  body:JSON.stringify({subject:'compsci-reference-initialization',accounts:[],admin:true,ttlSeconds:300}),
+  signal:AbortSignal.timeout(20000)})).text()).trim();
+for(const i of [0,1,2]) {
+  const r=await fetch(`http://order-matcher-cluster-${i}.order-matcher-cluster:8080/risk/control/securities`,
+    {headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(20000)});
+  assert.equal(r.status,200,`member ${i} /risk/control/securities: HTTP ${r.status}`);
+  const m=await r.json();assert.equal(m.memberId,i);assert.equal(m.available,true);
+  for(const security of securities.values())
+    assert.equal(m.securities.find(x=>x.ticker===security.ticker)?.enabled,security.enabled,`member ${i}: ${security.ticker}`);
+}
 const books=await members('/bbo');assert.ok(books.every(m=>m.books.some(b=>b.ticker==='AMZN'&&(b.mark>0||b.ref>0))),'Amazon mark missing on a member');
 console.log(JSON.stringify({phase:'verified',catalogCount:catalog.length,securityCount:securities.size,
   controls,amazon:books.map(m=>({member:m.member,applied:m.applied,book:m.books.find(b=>b.ticker==='AMZN')})),
