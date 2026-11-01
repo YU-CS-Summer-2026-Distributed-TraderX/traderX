@@ -14,7 +14,7 @@ Times are US Eastern.
 
 | What | How | Time |
 |---|---|---|
-| **Fresh epoch** — required: the 2026-11-01 production test load overflowed the read model's feed, so the next `up` on e1101 refuses at G3 | `rig.sh archive-members e1101b`, `rig.sh fresh-epoch e1101b` (members stopped; the 10-31 procedure) | ~40 min |
+| ~~Fresh epoch~~ **DONE 2026-11-01 4:17–4:37 pm ET**: e1101 archived (snapshots `traderx-e1101b-m{0,1,2}`, read model in `arc_e1101b_*`), now on clean epoch e1101b. **Run no load on it before the demo** — any scale-out load leaves a read-model backlog that the next `up`'s G3 refuses | — | — |
 | **Allowlist your network** — the HTTPS front door (demo/desk) and the FIX entry admit listed /32s only; 2026-11-01 your IP had changed and both answered 403 / unreachable | `curl -4 ifconfig.me`, then your access renders (`render-frontend-access.py`, `render-fix-tls-access.py --address 35.196.31.22 --source <ip>`) | 5 min |
 | Re-project cost | ≈ $5–7/h at 3 gateways + 2 loadgen nodes; each extra gateway node ≈ +$0.40/h. A 1 h rehearsal + 1 h demo ≈ $15 | — |
 | Admit the new images (console + desk carry every UI fix; the others are rebuilt at the same commit) | push the `tip-eb2e8a1c-j21` candidate (12 images + `web-front-end-desk`; build record `build-eb2e8a1c-20261101-r6/` in the coordinator's notes folder), `measure-admission.py`, `admit.py`, roll the console and desk | ~45 min |
@@ -132,6 +132,15 @@ After the demo: the load's trades are not all in the read model, so the next `up
   IOC buy crossed it (book empty after).
 - Not walked in production: desk/console clicks (the front door's allowlist and the operator password are yours),
   Kdb (no KDB-X host yet), positions after trades (the read model was behind the load).
+
+## Rehearsal on the fresh epoch (2026-11-01, 4:25–4:44 pm ET)
+
+- `up` on the empty epoch: read model archived, G0/G3/G4 fresh-epoch rules, initialized, business day APPLIED, HPA at
+  30%, smoke, 8 idle load pods; ~12 min (NATS took 8 min to come Ready).
+- Mac FIX CLI (EXTQFJ over TLS, via a port-forward): MSFT 42422 Limit DAY sell 10 @ 392.13 ← 22214 Market IOC buy,
+  Filled; AAPL 22214 Limit DAY sell 20 @ 245.24 ← 42422 Market buy 15, Filled; a resting AAPL bid. Positions in the
+  read model: 22214 MSFT +10 / AAPL −15, 42422 the reverse. No load run (see above).
+- `down`: barrier, baseline 2914 applied / 4 trade sides, members exit 143, 0 instances.
 
 ## Verified locally (kind, 2026-11-01)
 
