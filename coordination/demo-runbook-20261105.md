@@ -1,0 +1,104 @@
+# TraderX live demo — runbook (Thursday 2026-11-05, 15 minutes)
+
+Checkout `~/dev/lmax/traderX-risk-integration` at `eb2e8a1c` or later. Every command below runs from there with:
+
+```bash
+cd ~/dev/lmax/traderX-risk-integration
+export CLOUDSDK_ACTIVE_CONFIG_NAME=hxb-bench     # the default gcloud config's auth has expired
+```
+
+Sites: Demo console https://demo.yaakovseif.dev/ · Desk https://desk.yaakovseif.dev/ (both take the operator password).
+Times are US Eastern.
+
+## 0. Before Thursday (once, needs your go-ahead)
+
+| What | How | Time |
+|---|---|---|
+| Re-project cost | ≈ $5–7/h at 3 gateways + 2 loadgen nodes; each extra gateway node ≈ +$0.40/h. A 1 h rehearsal + 1 h demo ≈ $15 | — |
+| Admit the new images (console + desk carry every UI fix; the others are rebuilt at the same commit) | push the `tip-eb2e8a1c-j21` candidate (12 images + `web-front-end-desk`; build record `build-eb2e8a1c-20261101-r6/` in the coordinator's notes folder), `measure-admission.py`, `admit.py`, roll the console and desk | ~45 min |
+| KDB-X for step 4 | on the KDB-X host: `q scripts/demo-kdb/demo-hdb.q -p 5050 -db ~/traderx-demo-hdb` (first run builds 5,000,000 trades in ~10 s, later runs load in ~1 s); console env `KDB_Q_URL=http://<host>:5050` | 5 min |
+| Rehearse once end to end | this runbook | 1 h |
+
+## 1. Bring up the rig — start at T−45 min (~25–30 min)
+
+```bash
+GATEWAYS=3 AUTOSCALE=on LOADGEN=2 scripts/gcp-compsci/rig/rig.sh up
+```
+
+In order: nodes (default 3, engine 3, nats 1, gateway 3; loadgen 2 starts with them) → support workloads → members
+and the restore gate → 3 gateways → internal LB → (fresh epoch only) accounts and reference data → **business day =
+today's ET date** (`BUSINESS-DAY 200 … APPLIED`, or `STALE` on a rerun; DAY orders are admitted from here) → HPA
+3..18 on CPU and the gateway-pool autoscaler 3..18 → FIX smoke → **8 idle load pods Ready**.
+
+Done when it prints `rig up: done`. Check with `scripts/gcp-compsci/rig/rig.sh status`: HPA `cluster-gateway 3/18`.
+
+## 2. Two desks trade and match (~4 min)
+
+1. Window A, Desk: sign in **alice** with the operator password, `+ Add account` → "Alice equities" (created and admitted).
+   Window B, a private window: **bob**, `+ Add account` → "Bob equities". Both show `Run: Active legacy-unknown`.
+2. A › Orders: **MSFT, Sell 100, Limit, DAY**, Price at market → `Order accepted · N`, working.
+   B › Orders: **MSFT, Buy 100, Market, IOC** → filled against A. Both blotters show the trade at once.
+3. More types and instruments (both tickets offer all seven: Market, Limit, Stop, Stop limit, Iceberg, Pegged, Trailing stop):
+   - **AAPL**: A rests an **Iceberg** sell (qty 100, display 10, GTC); B lifts it with a **Limit IOC** buy for 30.
+   - **Stop**: B sends a Stop buy above the last AAPL trade → `PENDING_TRIGGER`; a print through it fires it.
+   - **FOK** too large → `Refused: the book could not fill the whole quantity now; nothing traded (FOK_UNFILLABLE)`.
+   - **Pegged** needs a bid and an offer on the book; **Trailing stop** needs a last trade (both say so if not).
+4. Demo console › Trading: the same orders appear; send one more from its ticket (e.g. the "Equity — buy 100 IBM @ 200" story).
+5. **OTC**: Demo console › Trading › Demo preset "Swap — USD SOFR, pay fixed 4.2%, 10mm 5Y" › Submit →
+   `SW-n booked at consensus seq n`; it appears under Blotter › OTC contracts (also "Swaption — European into 5Y USD payer").
+
+## 3. Positions after the trades (~1 min)
+
+Desk › Positions in each window: alice −100 MSFT, bob +100 MSFT at the fill price, with their fills.
+Demo console › Trading › Blotter & positions (pick the account) shows the same.
+
+## 4. Millions of trades, queried live in q (~3 min)
+
+Demo console › **Kdb** › "KDB-X history · live q". Click in order: How many trades (5,000,000 over 261 days) →
+Volume and VWAP by symbol, whole year (~0.1 s on 5M rows) → 5-minute AAPL bars → Ten largest trades.
+Then type your own (signed in; ⌘↵ runs it):
+
+```q
+select vwap:qty wavg px, volume:sum qty by date from trades where sym=`MSFT, date>=last[date]-20
+```
+
+A write or a system command is refused by the q process itself (`noupdate`, `sys`).
+
+## 5. Scale the gateways live (~4 min)
+
+1. Demo console › **System**: the "Gateways" card shows `3 ready · steady`.
+2. Terminal:
+
+   ```bash
+   scripts/gcp-compsci/rig/loadgen.sh start 150000 600
+   ```
+
+   Returns in ~15 s with `every pod is sending` (8 pods × 16 sessions, MSFT at the members' mark, 10 min).
+3. `kubectl --context gke_project-compsci-484414_us-east1-b_traderx-demo -n traderx get hpa cluster-gateway -w`:
+   once TARGETS passes 60% the HPA adds up to 4 gateways a minute. Each new gateway needs a node (~1–2 min),
+   so the card shows `+N starting`, then the Ready count climbs and logs `3 → 4 scaled out`, `4 → 6 …`.
+   If TARGETS stays under 60% after a minute: `loadgen.sh stop`, then `loadgen.sh start 250000 600`.
+4. `scripts/gcp-compsci/rig/loadgen.sh results` when it ends (`accepted`, `rejected 0`, `imbalance 0` per pod);
+   `loadgen.sh stop` cuts it short. Scale-in is slow on purpose (30 min of low CPU, then one gateway per 10 min).
+
+## 6. After the session (mandatory)
+
+```bash
+scripts/gcp-compsci/rig/rig.sh down
+gcloud compute instances list --project project-compsci-484414
+```
+
+`down` removes the load pods, drains the gateways, takes a snapshot, stops the members (each exits 143), sets every
+pool to 0 and stops the client VM. The listing must show no rig instance running.
+
+## Verified locally (kind, 2026-11-01)
+
+- Business day: DAY order `NO_TRADING_DAY` before, accepted after; `business-day.mjs` APPLIED then STALE.
+- All seven order types through the console path: `order-types-live.py` 31/31, exit 0.
+- Two desks (alice 65000, bob 65001): DAY sell + Market IOC buy matched; positions −100 / +100.
+- OTC swap booked (`SW-6830`); console positions live.
+- Kdb: 5,000,000 rows, presets 0.05–90 ms in q; free-form q needs sign-in.
+- System card: `1 → 2 scaled out`, `2 → 1 scaled in` as the Deployment changed.
+- `loadgen.sh`: idle pods, `start` in 13 s, 63,088 accepted / 0 rejected / imbalance 0; with no binary ingress it
+  refuses at 25 s and stops the load.
+- Not verified locally: the HPA crossing 60% CPU (kind has no gateway-pool or GKE metrics), so read TARGETS in step 5.
