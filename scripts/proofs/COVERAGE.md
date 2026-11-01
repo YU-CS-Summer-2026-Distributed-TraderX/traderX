@@ -1284,7 +1284,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DA02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA04` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
-| YU18 | `FR-DA05` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
+| YU18 | `FR-DA05` | LIVE |  | ri07/order-types-live.py | kind 2026-11-01 (demo-6bc88cde, signed-in console path: CONSOLE_COOKIE + RISK_CONTROL_TOKEN): 31/31, exit 0. The MARKET FOK case now waits for both sides of the preceding IOC before counting prints (a late side read as a FOK print, 30/31) |
 | YU18 | `FR-DA06` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA07` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA08` | MANUAL |  |  | browser pane 2026-11-01: Sign in on row 1 at the right end at 375, 1000 and 1500 px; nav wraps inside its column |

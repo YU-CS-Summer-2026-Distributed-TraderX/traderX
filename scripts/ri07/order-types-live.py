@@ -13,7 +13,7 @@ filled positions in those minted instruments; run it on a disposable rig (see th
 The expectations restate the order-types spec (FR-OT06/07/10/13/18/19/20/23/24/28/29/37); they do
 not define semantics. A mismatch is reported, never retried into a pass.
 
-Usage: CONSOLE_URL=http://localhost:28090 CTX=kind-traderx-ri07-demo python3 scripts/ri07/order-types-live.py [evidence.json]
+Usage: CONSOLE_URL=http://localhost:28090 CTX=kind-traderx-ri07-demo [CONSOLE_COOKIE=tx_admin=...] [RISK_CONTROL_TOKEN=...] python3 scripts/ri07/order-types-live.py [evidence.json]
 Exit codes (only 0 is acceptance):
   0  every case matched, known-gap cases included
   1  a case mismatched, or a query/kubectl/bbo read failed or was malformed (the run is aborted:
@@ -53,8 +53,12 @@ def configure(env):
 
 
 def http(path, body):
-    req = urllib.request.Request(CONSOLE + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json"})
+    # The console's order routes are behind operator sign-in (ENGINE-REVIEW S1): CONSOLE_COOKIE is its tx_admin cookie.
+    # /seed and the business-day controls take the operator credential (RISK_CONTROL_TOKEN), which the console forwards.
+    headers = {"Content-Type": "application/json", **({"Cookie": os.environ["CONSOLE_COOKIE"]} if os.environ.get("CONSOLE_COOKIE") else {}),
+               **({"X-Risk-Control-Token": os.environ["RISK_CONTROL_TOKEN"], "X-Risk-Operator": "order-types-live"}
+                  if os.environ.get("RISK_CONTROL_TOKEN") else {})}
+    req = urllib.request.Request(CONSOLE + path, data=json.dumps(body).encode(), method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=40) as r:
             return r.status, json.loads(r.read() or b"{}")
@@ -156,6 +160,11 @@ def scenario():
     r = order(BUYER, "Buy", 3, orderType="MARKET", timeInForce="IOC")
     o = row(ref_of(r), {"FILLED"})
     case("MARKET IOC fills against the book", "FR-OT07", r[0] == 200 and o and o["status"] == "FILLED", {"http": r, "row": o, "trades": trades(T)})
+    # The IOC's row reads FILLED before both of its trade sides are projected (2026-11-01 kind: before=1, after=2,
+    # no FOK print): count the sides only once the cross is whole, or a late side reads as a FOK print.
+    deadline = time.time() + 20
+    while len(trades(T)) < 2 and time.time() < deadline:
+        time.sleep(0.5)
     before = len(trades(T))
     r = order(BUYER, "Buy", 1000, orderType="MARKET", timeInForce="FOK")
     o = row(ref_of(r), {"CANCELED", "REJECTED"})
