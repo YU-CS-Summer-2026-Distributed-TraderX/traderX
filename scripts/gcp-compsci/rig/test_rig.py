@@ -78,6 +78,8 @@ kubectl(){
       echo 'BUSINESS-DAY 200 {"outcome":"APPLIED"}';;
     *"get pods -l app=loadgen"*) printf 'pod/%s\n' ${LG_PODS:-lg-a lg-b};;
     *"localhost:8080/bbo"*) echo '{"books":[{"ticker":"MSFT","mark":412.5,"ref":400}]}';;
+    *'grep -q "sent=[1-9]"'*) [ -z "${LG_SILENT:-}" ];;
+    *"/proc/[0-9]*"*kill*) call "LG-KILL";;
     *"cat /proc/"*|*"/proc/[0-9]*"*) [ -f "$EVIDENCE/.lg-$(n="$*"; n=${n#*exec }; echo "${n%% *}")" ] && echo 4242 || true;;
     *"nohup node /load/binary-load.mjs"*) n="$*"; n=${n#*exec }; [ -n "${LG_DEAD:-}" ] || touch "$EVIDENCE/.lg-${n%% *}";;
     *"web-front-end-console"*) [ -n "${SMOKE_FAIL:-}" ] && { echo "FAIL refused: 58=Invalid Logon message"; return 1; }; printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
@@ -903,6 +905,8 @@ class LoadgenIdle(unittest.TestCase):
         self.assertEqual(rc, 2, out); self.assertIsNone(first(calls, 'nohup'))
         rc, out, calls = self.start('120000', LG_DEAD='1')
         self.assertEqual(rc, 2, out); self.assertIn('did not start', out)
+        rc, out, calls = self.start('120000', LG_SILENT='1', LOADGEN_SEND_WAIT='1')   # a process that sends nothing
+        self.assertEqual(rc, 2, out); self.assertIn('sent no orders', out); self.assertIsNotNone(first(calls, 'LG-KILL'), out)
         rc, out, calls = self.start('fast')
         self.assertEqual(rc, 2, out); self.assertIn('usage', out)
 

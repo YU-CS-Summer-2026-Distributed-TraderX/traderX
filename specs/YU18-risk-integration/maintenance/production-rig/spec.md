@@ -118,7 +118,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   after the smoke, run `LOADGEN_PODS` (default 4 per node) idle load pods (Deployment `loadgen`: the console image,
   `sleep`, `binary-load.mjs` mounted), Ready before `up` returns. `loadgen.sh start RATE [SECS] [TICKER]` SHALL refuse
   unless the restore gate covers the running members, an idle pod exists and none is already loading; it SHALL split
-  RATE over every pod x 16 sessions at the members' mark of TICKER (default MSFT) and confirm each pod's process runs.
+  RATE over every pod x 16 sessions at the members' mark of TICKER (default MSFT), confirm each pod's process runs and
+  that every pod reports orders sent within 25 s, else stop the load and refuse (a load with no binary ingress reports
+  sent=0 forever and exits 0).
   `loadgen.sh stop` kills the load, the pods stay idle; `rig.sh down` deletes the Deployment. The demo's gateway
   scale-out never waits on a node or an image pull (2026-11-05 demo).
 - **FR-PRG-31:** Every `rig.sh up` SHALL open today's US Eastern business date (`BUSINESS_DATE` overrides) with

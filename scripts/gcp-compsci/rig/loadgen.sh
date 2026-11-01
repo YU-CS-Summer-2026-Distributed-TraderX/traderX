@@ -50,7 +50,12 @@ pods(){ kc get pods -l app=loadgen --field-selector=status.phase=Running -o name
 # The members' mark (else reference) for TICKER, to 2 dp: inside the collar by construction.
 mark_of(){ kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- localhost:8080/bbo \
   | jq -r --arg t "$1" '.books[] | select(.ticker == $t) | (if .mark > 0 then .mark else .ref end) | select(. > 0)' | head -1; }
-running(){ kc exec "$1" -- sh -c 'for p in /proc/[0-9]*; do grep -qa binary-load.mjs "$p/cmdline" 2>/dev/null && echo "${p#/proc/}"; done' 2>/dev/null || true; }
+# PIDs whose command line STARTS with the load: a plain grep for "binary-load.mjs" also matched this probe's own `sh -c`.
+PIDS='for p in /proc/[0-9]*; do case "$(tr "\\0" " " < "$p/cmdline" 2>/dev/null)" in "node /load/binary-load.mjs"*) echo "${p#/proc/}";; esac; done'
+running(){ kc exec "$1" -- sh -c "$PIDS" 2>/dev/null || true; }
+
+sending(){ kc exec "$1" -- sh -c 'grep -q "sent=[1-9]" /tmp/load.log' 2>/dev/null; }
+all_sending(){ local p; for p in "$@"; do sending "$p" || return 1; done; }
 
 start(){
   local rate=${ARGS[0]:-} secs=${ARGS[1]:-1800} ticker=${ARGS[2]:-MSFT} list n per px p
@@ -72,6 +77,15 @@ start(){
   for p in $list; do kc exec "$p" -- sh -c "nohup $cmd > /tmp/load.log 2>&1 &" & done
   wait
   for p in $list; do [ -n "$(running "$p")" ] || die "$p did not start: $(kc exec "$p" -- tail -3 /tmp/load.log 2>&1)"; done
+  # A process is not a load: binary-load.mjs reports sent=0 forever when it reaches no binary ingress (kind has no
+  # :18140), so each pod must report orders sent (its first phase starts on a 10 s wall-clock boundary).
+  local end=$((SECONDS + ${LOADGEN_SEND_WAIT:-25})) first=${list%%$'\n'*}
+  until all_sending $list; do
+    [ $SECONDS -lt $end ] || { stop >/dev/null
+      die "the load sent no orders within 25 s (no binary ingress at order-matcher-gw-binary:18140?); stopped it. $first: $(kc exec "$first" -- tail -1 /tmp/load.log 2>&1)"; }
+    sleep 2
+  done
+  note "every pod is sending"
   note "started on $n pods at $(et); watch the System tab (gateways) or: kubectl -n $NS get hpa cluster-gateway -w"
 }
 
@@ -79,7 +93,7 @@ stop(){
   local p
   [ "$DRY" = 1 ] && { note "would kill binary-load.mjs in every loadgen pod"; return 0; }
   for p in $(pods); do
-    kc exec "$p" -- sh -c 'for p in /proc/[0-9]*; do grep -qa binary-load.mjs "$p/cmdline" 2>/dev/null && kill "${p#/proc/}"; done; true'
+    kc exec "$p" -- sh -c "for pid in \$($PIDS); do kill \$pid; done; true"
   done
   note "load stopped at $(et); the pods stay idle"
 }
