@@ -1,12 +1,6 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76. The members (order-matcher-cluster) run cluster-node-member built from c562bbab, the 00b31d33 build plus the FR-ERH-F13 shadow-state backport; every other private image, the gateway's cluster-node included, is built from the tip 86487ff8 (ADR-099 group-commit FIX store, ADR-098 history feed opt-in, FR-DRS-35/36, FR-PRG-23..27). codec-compat.sh: the tip gateway's ingress decodes on c562bbab (42 encodings, 19 command types, 0 failures).",
-  "imageSourceCommit": "86487ff85ec892164c23583970cc6aa42a5a450c",
-  "workloads": {
-    "order-matcher-cluster": {
-      "image": "cluster-node-member",
-      "component": "order-matcher",
-      "sourceCommit": "c562bbab65f703a0edbbffd5cea98f54bf40b844"
-    }
-  }
+  "note": "ADR-096 \u00a76, for the ADR-101 fresh epoch: the member disks are wiped, so no member keeps an older log and every private image, the members' cluster-node included, is built from one tip d5a03a0c (ADR-099/FR-GFS-16 FIX store, ADR-100 + \u00a71a order-ref exhaustion, FR-PRG-28 NATS sizing, FR-DRS-36 + \u00a716 attestation, FR-PRG-29). No workload exception.",
+  "imageSourceCommit": "d5a03a0c21d05fdc47955db52ff9054103327eae",
+  "workloads": {}
 }
