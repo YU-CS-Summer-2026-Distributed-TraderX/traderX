@@ -859,6 +859,16 @@ public final class BlpRiskState {
 
     public void endSequenced() { sequencedKey = 0L; }
 
+    /** ADR-100: true while the sequenced NEW in flight is a resend whose ring holds its ACCEPTED answer. */
+    public boolean sequencedDuplicate() { return sequencedKey != 0L && sequencedDuplicate; }
+
+    /** ADR-100: a sequenced NEW refused before the engine ran (no ref) still records its answer in the ring,
+     *  so a resend of that sequence recovers the same refusal instead of a bare DUPLICATE; then ends it. */
+    public void refuseSequenced(RiskReason reason) {
+        if (sequencedKey != 0L && !sequencedDuplicate) streams.record(0, (byte) reason.ordinal());
+        sequencedKey = 0L;
+    }
+
     /** True when the key table holds {@code key} (a sequenced duplicate the ring has no answer for). */
     public boolean knowsKey(long key) { return key != 0L && idempotencySlot(key, false) >= 0; }
 

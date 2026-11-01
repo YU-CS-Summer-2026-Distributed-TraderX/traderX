@@ -104,6 +104,69 @@ class OrderRefExhaustionTest {
         assertEquals(OutputEvent.KIND_ORDER_CANCELED, session.acks.get(0)[0]);
     }
 
+    /** codeX pass 3 §15: the ack of the LAST order is lost and the client retries its key. Before the fix the
+     *  ceiling check ran ahead of deduplication and answered ORDER_REF_EXHAUSTED, ref 0, while the order existed. */
+    @Test void retryOfACommittedKeyRecoversItsAnswerWithoutARef() throws Exception {
+        final MatchingEngineClusteredService s = open();
+        bootstrap(s);
+        setNextOrderRef(s, Integer.MAX_VALUE);
+        apply(s, order(42L));                             // accepted with the last ref
+        assertEquals(Integer.MAX_VALUE, session.last()[1]);
+        session.acks.clear();
+        apply(s, order(42L));                             // retry of the same client key
+        assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, session.last()[0], "the original answer, not a fresh rejection");
+        assertEquals(Integer.MAX_VALUE, session.last()[1], "names the original order");
+        assertEquals((long) Integer.MAX_VALUE + 1, s.nextOrderRef(), "no ref consumed by the retry");
+
+        apply(s, order(43L));                             // a genuinely new key is still refused
+        assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
+        apply(s, order(43L));                             // and its retry gets the same refusal
+        assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
+
+        // A key waiting in the PRE_OPEN queue is committed too: its retry is re-acked from the queue.
+        setNextOrderRef(s, Integer.MAX_VALUE - 1);
+        InputEvent halt = new InputEvent();
+        halt.type = InputEvent.TYPE_SESSION_CONTROL; halt.side = MatchingEngineClusteredService.PHASE_PRE_OPEN;
+        apply(s, halt);
+        apply(s, order(44L));                             // queued, holding the last ref
+        assertEquals(1, s.queueDepth());
+        session.acks.clear();
+        apply(s, order(44L));
+        assertEquals(1, s.queueDepth(), "not queued twice");
+        assertTrue(session.acks.get(0)[2] != RiskReason.ORDER_REF_EXHAUSTED.ordinal(), "answered from the queue");
+    }
+
+    /** The sequenced path (ADR-090): a resend of the last accepted sequence is answered from the ring with no ref;
+     *  the next sequence is refused, and a resend of THAT recovers the same refusal from the ring. */
+    @Test void sequencedResendRecoversItsAnswerAtExhaustion() throws Exception {
+        final MatchingEngineClusteredService s = open();
+        bootstrap(s);
+        setNextOrderRef(s, Integer.MAX_VALUE);
+        applySeq(s, 1L);
+        assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, session.last()[0]);
+        assertEquals(Integer.MAX_VALUE, session.last()[1]);
+        session.acks.clear();
+        applySeq(s, 1L);                                  // go-back-N resend of the accepted sequence
+        assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, session.last()[0], "the ring's answer, not a fresh rejection");
+        assertEquals(Integer.MAX_VALUE, session.last()[1]);
+        applySeq(s, 2L);                                  // genuinely new
+        assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
+        applySeq(s, 2L);                                  // its resend: the same refusal, recorded in the ring
+        assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
+        applySeq(s, 3L);                                  // the stream advanced past the refusal: still refused
+        assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
+        assertEquals((long) Integer.MAX_VALUE + 1, s.nextOrderRef());
+    }
+
+    static final long STREAM = 0x5EEDL;
+
+    void applySeq(MatchingEngineClusteredService s, long seq) {
+        final InputEvent e = order((STREAM << 32) | seq);
+        codec.encodeInput(in, 0, e, 0, 0, AeronReplicationCodec.INPUT_FLAG_SEQUENCED);
+        final int len = AeronReplicationCodec.appendSequencedTail(in, 0, AeronReplicationCodec.INPUT_BYTES, STREAM, seq);
+        s.onSessionMessage(session, ++ts, in, 0, len, null);
+    }
+
     @Test void exhaustionSurvivesASnapshotAndAWrappedHeaderIsRefused() throws Exception {
         final MatchingEngineClusteredService s = open();
         bootstrap(s);

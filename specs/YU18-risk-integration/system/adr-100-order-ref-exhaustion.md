@@ -1,6 +1,8 @@
 # ADR-100: The order-reference generator fails closed at 2^31-1
 
-Status: implemented on `traderX-risk-integration` 2026-10-30 (codeX review §13); not deployed. Requirements:
+Status: implemented on `traderX-risk-integration` 2026-10-30 (codeX review §13); not deployed. Amended 2026-10-31
+(codeX pass 3 §15): the ceiling is checked AFTER deduplication, so a committed request recovers its answer with no
+ref and only a genuinely new request is refused (§1a). Requirements:
 [engine-review hardening pack](../maintenance/engine-review-hardening/spec.md), FR-ERH-F13. Base: ADR-046 (the
 generator is replicated state advanced by the committed message), ADR-072 (operator vs replayed-tape refs), the
 FR-DRS-33 recon note on ticket bookings.
@@ -27,6 +29,17 @@ at 430K/s the ceiling is ~1.4 h to 2^31 and ~2.8 h to 2^32 inside one epoch. cod
    refused before the stream gate and before the generator, with `RiskReason.ORDER_REF_EXHAUSTED` (appended) on
    the egress ack and ref 0: no ref, no `appliedSeq`, no engine, the same no-state-change posture as an ADR-090
    stream gap. Cancels and replaces of live orders still apply; the epoch is closed to new orders only.
+   1a. **Deduplication first.** The first cut checked the ceiling ahead of both deduplication paths, so a retry
+   of the LAST accepted order (its ack lost in an election) was answered ORDER_REF_EXHAUSTED with ref 0 while
+   the order existed; a client reading that as "not booked" could place a duplicate (codeX pass 3 §15, reproduced
+   in-process). Now the stream gate runs first, and at the ceiling a NEW whose key is committed — decided in the
+   idempotency table (`knowsKey`, accepted or rejected), waiting in the PRE_OPEN queue, or a sequenced resend
+   whose ring holds its answer (`sequencedDuplicate`) — continues into the engine or the queue WITHOUT a ref:
+   both answer a duplicate from the key, never from `event.orderRef`, so the original ack (or the original
+   rejection) is re-emitted. Only a key none of them knows is refused. A sequenced NEW refused this way records
+   ORDER_REF_EXHAUSTED in its stream ring (`BlpRiskState.refuseSequenced`), so its go-back-N resend recovers the
+   same refusal rather than a bare DUPLICATE. Every input to the decision is replicated state, so members and
+   replay agree.
 2. **The restore side refuses a wrapped header.** `finishLoad` throws when `nextOrderRef` is outside
    `[1, MAX_ORDER_REF + 1]` or `highestIssuedRef > MAX_ORDER_REF`: a snapshot written by a wrapping build already
    holds duplicate references and is not inherited. `MAX_ORDER_REF + 1` itself is a legitimately exhausted epoch and
@@ -58,3 +71,8 @@ ORDER_REF_EXHAUSTED and ref 0, `appliedSeq` does not move for them, a cancel of 
 exhausted state survives a snapshot round trip and a header with `nextOrderRef = 2^32` is refused at load; a
 ticket payload carries `bookingSource: TICKET` and no `sourceOrderId`, a match carries both. Negative control
 (same test against the previous service): the three NEWs were issued -2147483648, -2147483647, -2147483646.
+§1a: `retryOfACommittedKeyRecoversItsAnswerWithoutARef` (retry of the last accepted key is re-acked ACCEPTED
+with its ref and consumes nothing; a new key is refused, and so is its retry; a PRE_OPEN-queued key's retry is
+answered from the queue) and `sequencedResendRecoversItsAnswerAtExhaustion` (resend of the accepted sequence is
+answered from the ring; the next sequence is refused, its resend recovers the refusal, the one after is refused).
+Negative control against the first cut: both answered the retry with a fresh rejection (kind 2 for 1).

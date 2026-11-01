@@ -18,6 +18,8 @@
       0 and 1 again; wrapped snapshot headers refused; `traderx_cluster_order_ref_headroom`; `/trades` tickets carry
       `bookingSource: TICKET` and no `sourceOrderId`. `OrderRefExhaustionTest` fails on the previous service (refs
       -2147483648, -2147483647, -2147483646 issued). Deterministic core: fresh epoch, same image on all members.
+      Amended (codeX pass 3 §15): the ceiling is checked after deduplication; a retry of the last accepted order
+      and a sequenced resend recover their answer with no ref (two more cases, both fail on the first cut).
 
 ## Still open
 

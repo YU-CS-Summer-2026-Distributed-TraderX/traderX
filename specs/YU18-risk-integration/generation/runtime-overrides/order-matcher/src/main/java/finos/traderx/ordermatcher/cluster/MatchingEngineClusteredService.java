@@ -1015,13 +1015,6 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             onSwapBook(session, timestamp);
             return;
         }
-        // ADR-100: the generator's ceiling, BEFORE the stream gate and the generator. Refused with no
-        // state change, exactly as a stream gap is: no ref, no appliedSeq, no engine. Checked on every
-        // NEW including duplicate retries, which also consume a ref on the admitted path.
-        if (event.type == InputEvent.TYPE_ORDER_NEW && nextOrderRef > MAX_ORDER_REF) {
-            refuseSequenced(session, RiskReason.ORDER_REF_EXHAUSTED, 0);
-            return;
-        }
         // ADR-090: the stream gate, BEFORE the generator assigns a ref. A gap, a full stream table and a
         // duplicate with no answer to give are refused here with no state change at all; an admitted
         // NEW, and a duplicate whose original was accepted, continue — BlpRiskState then answers this
@@ -1053,7 +1046,21 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // apply, and the drain has already published by then. So a rejected-but-unsampled order
         // has spans and no id on its row. With OTEL_SAMPLE_MASK=0 (this rig) nothing is unsampled.
         applyTraceKey = event.type == InputEvent.TYPE_ORDER_NEW && traceSampled ? traceKey : 0L;
-        if (event.type == InputEvent.TYPE_ORDER_NEW) {
+        if (event.type == InputEvent.TYPE_ORDER_NEW && nextOrderRef > MAX_ORDER_REF) {
+            // ADR-100: the generator's ceiling, AFTER the stream gate and after the key is known to be
+            // committed or not (codeX pass 3 §15). A committed request — its key decided in the idempotency
+            // table, waiting in the PRE_OPEN queue, or a sequenced resend whose ring holds the answer —
+            // recovers its original answer below WITHOUT a ref: the engine and the queue answer a duplicate
+            // from the key, never from event.orderRef. Only a genuinely new request is refused: no ref, no
+            // appliedSeq, no engine, the posture of a stream gap; a sequenced one records the refusal in its
+            // ring so its resend gets the same answer. Deterministic: every input is replicated state.
+            final long key = event.clientOrderKey();
+            if (!(risk.knowsKey(key) || risk.sequencedDuplicate() || queuedByClientKey.containsKey(key))) {
+                risk.refuseSequenced(RiskReason.ORDER_REF_EXHAUSTED);
+                refuseSequenced(session, RiskReason.ORDER_REF_EXHAUSTED, 0);
+                return;
+            }
+        } else if (event.type == InputEvent.TYPE_ORDER_NEW) {
             // The generator is replicated state advanced by the committed message itself
             // (ADR-046). A duplicate retry also consumes a value — deterministic on every
             // member and replay, and never reused; the engine then answers from idempotency.

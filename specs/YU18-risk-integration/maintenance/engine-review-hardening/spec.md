@@ -41,7 +41,10 @@
   answered UNKNOWN_SECURITY.
 - FR-ERH-F13 (ADR-100): The order-reference generator SHALL issue references in `[1, 2^31-1]` only. An ORDER_NEW
   arriving once the epoch has issued 2^31-1 SHALL be refused with `ORDER_REF_EXHAUSTED` before it consumes a
-  reference or an applied sequence; cancels and replaces SHALL still apply. A snapshot header whose `nextOrderRef`
+  reference or an applied sequence, unless its key is already committed (decided in the idempotency table,
+  waiting in the PRE_OPEN queue, or a sequenced resend the ring answers): a committed request SHALL recover
+  its original answer with no reference consumed, and a refused sequenced request SHALL recover the same
+  refusal on resend; cancels and replaces SHALL still apply. A snapshot header whose `nextOrderRef`
   is outside `[1, 2^31]` or whose `highestIssuedRef` exceeds 2^31-1 SHALL be refused at load. The member SHALL
   expose `traderx_cluster_order_ref_headroom`. A `/trades` ticket booking SHALL publish `bookingSource: TICKET`
   and no `sourceOrderId`; a matched fill SHALL publish `bookingSource: MATCH` and `<epoch>-<ref>`.
