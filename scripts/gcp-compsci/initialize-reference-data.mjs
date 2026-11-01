@@ -80,5 +80,5 @@ for(const i of [0,1,2]) {
 }
 const books=await members('/bbo');assert.ok(books.every(m=>m.books.some(b=>b.ticker==='AMZN'&&(b.mark>0||b.ref>0))),'Amazon mark missing on a member');
 console.log(JSON.stringify({phase:'verified',catalogCount:catalog.length,securityCount:securities.size,
-  controls,amazon:books.map(m=>({member:m.member,applied:m.applied,book:m.books.find(b=>b.ticker==='AMZN')})),
-  qualification:'Gateway control inventory plus all-member committed fence; not a direct member security-table readout.'}));
+  amazon:books.map(m=>({member:m.member,applied:m.applied,book:m.books.find(b=>b.ticker==='AMZN')})),
+  qualification:'Every security\'s enabled state read back from all three members\' engines, after the committed fence.'}));

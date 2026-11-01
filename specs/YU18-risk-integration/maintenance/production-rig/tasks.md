@@ -71,6 +71,7 @@
 - [x] The read-model fingerprint is an in-DB aggregate, never a dump (FR-PRG-27).
 - [x] A fresh epoch archives the member disks and the read model, then resets; the gate accepts it only while provisioned (FR-PRG-29, ADR-101).
 - [x] A fresh epoch loads accounts and reference data before its first order (FR-PRG-30).
+- [x] initialize-reference-data.mjs completes on a live rig: its last line named a variable 790c245d removed (FR-PRG-30).
 - [x] Every `up` opens the US Eastern business day, so DAY orders are admitted (FR-PRG-31).
 - [x] `LOADGEN=N` brings idle load pods up with the rig; `loadgen.sh start RATE` loads them in seconds (FR-PRG-32).
 - [x] NATS's pod limit, `GOMEMLIMIT` and its own memory limits agree in every profile, checked at render; a NATS restart
