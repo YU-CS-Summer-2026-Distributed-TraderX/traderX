@@ -114,6 +114,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-33:** The gateway HPA's CPU target SHALL be `HPA_CPU_TARGET` (10..99, default 60) of the gateway's request.
+  Production 2026-11-01: on the binary path three gateways sat at 44% at the engine's ~230K orders/s, so a 60% target
+  never scaled; at 30% the HPA went 3 -> 5 gateways in ~65 s with the load running. The demo runs 30.
 - **FR-PRG-32:** `LOADGEN=N rig.sh up` (N 0..16, default 0) SHALL resize loadgen-pool to N nodes with the other pools and,
   after the smoke, run `LOADGEN_PODS` (default 4 per node) idle load pods (Deployment `loadgen`: the console image,
   `sleep`, `binary-load.mjs` mounted), Ready before `up` returns. `loadgen.sh start RATE [SECS] [TICKER]` SHALL refuse

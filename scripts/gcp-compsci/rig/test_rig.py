@@ -911,6 +911,26 @@ class LoadgenIdle(unittest.TestCase):
         self.assertEqual(rc, 2, out); self.assertIn('usage', out)
 
 
+class HpaTarget(unittest.TestCase):
+    """FR-PRG-33: the HPA's CPU target is HPA_CPU_TARGET (default 60); 2026-11-01 three gateways at ~230K/s binary sat at
+    44%, so a 60% target never scaled them."""
+
+    def hpa(self, **env):
+        rc, out, _ = run('kc(){ cat > "$EVIDENCE/hpa.yaml"; }; validate_args && autoscale_on && cat "$EVIDENCE/hpa.yaml"', **env)
+        return rc, out
+
+    def test_the_target_is_rendered(self):
+        rc, out = self.hpa(HPA_CPU_TARGET='30')
+        self.assertEqual(rc, 0, out); self.assertIn('averageUtilization: 30', out); self.assertIn('minReplicas: 3', out)
+        rc, out = self.hpa()
+        self.assertEqual(rc, 0, out); self.assertIn('averageUtilization: 60', out)
+
+    def test_a_bad_target_is_refused(self):
+        for v in ('5', '100', 'x'):
+            rc, out = self.hpa(HPA_CPU_TARGET=v)
+            self.assertEqual(rc, 2, out); self.assertIn('HPA_CPU_TARGET', out)
+
+
 class InstanceCheck(unittest.TestCase):
     """FR-PRG-02: the real no_rig_instances (the suites stub it), with gcloud stubbed."""
     def check(self, gc_body):

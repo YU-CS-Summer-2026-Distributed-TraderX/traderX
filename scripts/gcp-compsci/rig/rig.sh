@@ -4,7 +4,7 @@
 #   scripts/gcp-compsci/rig/rig.sh pools|up|down|status [--dry-run]
 #   scripts/gcp-compsci/rig/rig.sh loadgen N          loadgen-pool to N nodes for binary-load.sh (FR-PRG-16), 0..16
 #     GATEWAYS=N      gateways, one per gateway-pool node, 1..18 (default 2)
-#     AUTOSCALE=on    gateways also scale on CPU between GATEWAYS and 18 (default off)
+#     AUTOSCALE=on    gateways also scale on CPU between GATEWAYS and 18 (default off); HPA_CPU_TARGET=N% (default 60)
 #     LOADGEN=N       up also brings loadgen-pool to N nodes and LOADGEN_PODS idle load pods (default 4 per node), so
 #                     `loadgen.sh start RATE` begins the binary load in seconds (FR-PRG-32); 0..16 (default 0)
 #
@@ -34,6 +34,9 @@ CTX=${CTX:-gke_${PROJECT}_${ZONE}_${CLUSTER}}
 GATEWAYS=${GATEWAYS:-2}
 AUTOSCALE=${AUTOSCALE:-off}
 LOADGEN=${LOADGEN:-0}
+# FR-PRG-33: the HPA's CPU target (% of the gateway's 4-CPU request). The binary path costs a gateway ~0.6 core per 100K
+# orders/s, so at the engine's ~230K/s three gateways sit near 44%: below 60 they never scale. The demo runs 30.
+HPA_CPU_TARGET=${HPA_CPU_TARGET:-60}
 LOADGEN_PODS=${LOADGEN_PODS:-}   # default 4 per loadgen node, set once LOADGEN is validated
 MAX_GATEWAYS=18
 DEFAULT_NODES=${DEFAULT_NODES:-3}
@@ -80,6 +83,7 @@ validate_args(){
   case $AUTOSCALE in on|off) ;; *) die "AUTOSCALE must be on or off, got '$AUTOSCALE'";; esac
   [ "$AUTOSCALE" = off ] || [ "$GATEWAYS" -lt $MAX_GATEWAYS ] || die "AUTOSCALE=on needs GATEWAYS < $MAX_GATEWAYS"
   [[ "$LOADGEN" =~ ^([0-9]|1[0-6])$ ]] || die "LOADGEN must be 0..16, got '$LOADGEN'"
+  [[ "$HPA_CPU_TARGET" =~ ^[1-9][0-9]$ ]] || die "HPA_CPU_TARGET must be 10..99, got '$HPA_CPU_TARGET'"
   [ -n "$LOADGEN_PODS" ] || LOADGEN_PODS=$(( LOADGEN * 4 ))
   [[ "$LOADGEN_PODS" =~ ^[0-9]+$ ]] && [ "$LOADGEN_PODS" -le 64 ] || die "LOADGEN_PODS must be 0..64, got '$LOADGEN_PODS'"
   [ "$LOADGEN" = 0 ] || [ "$LOADGEN_PODS" -ge 1 ] || die "LOADGEN=$LOADGEN needs LOADGEN_PODS >= 1"
@@ -747,11 +751,11 @@ ilb_up(){
 }
 
 autoscale_on(){
-  step "autoscale: HPA $GATEWAYS..$MAX_GATEWAYS on CPU, gateway-pool $GATEWAYS..$MAX_GATEWAYS nodes"
+  step "autoscale: HPA $GATEWAYS..$MAX_GATEWAYS on CPU (target $HPA_CPU_TARGET%), gateway-pool $GATEWAYS..$MAX_GATEWAYS nodes"
   do_ gcloud container node-pools update gateway-pool --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
     --enable-autoscaling --min-nodes "$GATEWAYS" --max-nodes "$MAX_GATEWAYS"
   if [ "$DRY" = 1 ]; then note "would apply: $HERE/gateway-hpa.yaml with minReplicas $GATEWAYS"; else
-    sed "s#MIN_GATEWAYS#$GATEWAYS#; s#namespace: traderx#namespace: $NS#" "$HERE/gateway-hpa.yaml" | kc apply -f -
+    sed "s#MIN_GATEWAYS#$GATEWAYS#; s#CPU_TARGET#$HPA_CPU_TARGET#; s#namespace: traderx#namespace: $NS#" "$HERE/gateway-hpa.yaml" | kc apply -f -
   fi
 }
 

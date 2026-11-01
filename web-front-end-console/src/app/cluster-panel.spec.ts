@@ -1,4 +1,4 @@
-import { BookRead, bookVerdict } from './cluster-panel';
+import { BookRead, bookVerdict, memberBanner } from './cluster-panel';
 
 /**
  * The four things three member reads can be saying.
@@ -13,6 +13,16 @@ import { BookRead, bookVerdict } from './cluster-panel';
  * nothing is at stake. What is under test is the state selection and the wording — the parts that
  * could actually be wrong — not the cluster.
  */
+describe('memberBanner (FR-DA11)', () => {
+  it('reads skew under load as applying, not divergence; only a missing member alarms', () => {
+    const m = (applied: number, trades = 1) => ({ applied, trades });
+    expect(memberBanner([m(5), m(5), m(5)]).tone).toBe('banner good');
+    const skew = memberBanner([m(194485861), m(194486219), m(194486468)]);
+    expect(skew.tone).toBe('banner'); expect(skew.text).toContain('607 apart');
+    expect(memberBanner([m(5), null, m(5)]).tone).toBe('banner bad');
+  });
+});
+
 describe('bookVerdict', () => {
   const read = (applied: number, digest: string, books = 69): BookRead => ({ applied, digest, books });
 

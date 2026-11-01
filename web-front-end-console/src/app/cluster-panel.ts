@@ -39,6 +39,15 @@ export interface BookRead { applied: number; digest: string; books: number; }
  * behaviour is only assumed is the one that fails when it finally matters. This is the seam where
  * it can be handed a divergent payload and watched, at no risk to anything.
  */
+/** FR-DA11: the members' headline. Different sequences while orders flow are skew, not an alarm. */
+export function memberBanner(ms: ({ applied: number; trades: number } | null)[]): { text: string; tone: string } {
+  if (!ms.length || ms.some(m => m === null)) return { text: '⚠ a member is unreachable', tone: 'banner bad' };
+  const a = ms.map(m => m!.applied);
+  if (new Set(a).size === 1 && new Set(ms.map(m => m!.trades)).size === 1)
+    return { text: `✓ members agree — applied ${a[0]}`, tone: 'banner good' };
+  return { text: `↻ all ${ms.length} members applying — sequences ${Math.max(...a) - Math.min(...a)} apart while orders flow`, tone: 'banner' };
+}
+
 export function bookVerdict(
   reads: (BookRead | null)[], advancing: boolean, quietMs: number,
 ): { text: string; tone: string } {
@@ -66,10 +75,9 @@ export function bookVerdict(
       <h2>Aeron cluster</h2>
       <help-tip text="The matching engine runs as three replicated members under Raft consensus. Every order is sequenced through the cluster, and each member applies the same events in the same order — so their counters should always be identical. This table reads each member's own health endpoint directly. If a member is killed, the other two keep serving and the counters stay in lockstep." />
     </div>
-    <div class="banner" [class.good]="agreed()" [class.bad]="!agreed()">
-      @if (agreed()) { ✓ members agree — applied {{ members()[0]?.applied }} }
-      @else { ⚠ members diverge or unreachable }
-    </div>
+    <!-- FR-DA11: three members at different sequences is skew while orders flow, not divergence; only an
+         unreachable member is an alarm. Divergence is the book verdict's job, at a matching sequence. -->
+    <div class="banner" [class]="memberBanner().tone">{{ memberBanner().text }}</div>
     <div class="banner" [class]="book().tone">
       {{ book().text }}
       <help-tip text="Each member serves its own view of the book. Three matching reads are only a consensus claim if they are at the SAME applied sequence AND that sequence is advancing — three identical reads of a stopped cluster agree by coincidence. Books are compared only when the members are at the same sequence, because at different sequences a difference is skew, not disagreement. Quiet is normal: the feed batches every 15s and an idle rig sequences nothing at all, so a quiet reading means agreement has not been re-tested lately — not that anything is wrong." />
@@ -106,6 +114,7 @@ export class ClusterPanel implements OnInit, OnDestroy {
    *  producer's flush interval, and tying it to this panel's poll rate couples two unrelated things. */
   private lastAdvanceAt: number | null = null;
   readonly quietMs = signal(0);
+  readonly memberBanner = computed(() => memberBanner(this.members()));
   readonly agreed = computed(() => {
     const ms = this.members();
     return ms.every(m => m !== null)

@@ -69,6 +69,10 @@ named evidence and remove only their own resources. The component reuses the ord
   server's one `kubectl get pods -l app=cluster-gateway`, cached 2 s) and shows the Ready count, gateways
   still starting and those draining, a 10-minute strip of the Ready count, and a time-stamped log of every
   change of the Ready count (`3 → 4 scaled out`), so an HPA scale-out is visible as it happens.
+- FR-DA11 **Skew is not divergence.** The System tab's member headline SHALL be green when all members report the
+  same applied sequence and trades, neutral ("all N members applying — sequences K apart while orders flow") when all
+  answer at different sequences, and red only when a member does not answer. Production 2026-11-01 at ~230K orders/s
+  showed "members diverge or unreachable" in red for healthy members a few hundred sequences apart.
 - FR-DA10 **Live q against a demo account's history.** `scripts/demo-kdb/demo-hdb.q` builds once
   (deterministic seed) and then loads a date-partitioned KDB-X HDB of N trades (default 5,000,000) for account
   99000001 over a year of weekdays, and answers `POST /q` with `{columns, rows (≤2000), count, ms}` or

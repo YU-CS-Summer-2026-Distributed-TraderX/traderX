@@ -15,7 +15,7 @@ const WINDOW = 200;   // samples at 3 s: the last 10 minutes
   selector: 'gateway-scale',
   template: `
     <div class="card-head"><h2>Gateways</h2><span class="spacer"></span>
-      <span class="faint">every 3 s · the HPA adds a gateway when their CPU passes 60%</span></div>
+      <span class="faint">every 3 s · the HPA adds gateways when their average CPU passes its target</span></div>
     @if (error()) { <div class="banner bad">{{ error() }}</div> }
     <div class="scale">
       <div class="big" data-testid="gateway-ready">{{ now()?.ready ?? '—' }}<span class="unit">ready</span></div>
