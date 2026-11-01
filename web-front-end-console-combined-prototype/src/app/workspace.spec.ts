@@ -250,6 +250,7 @@ describe('order action outcome (FR-CUI-19)',()=>{
   for(const [status,body] of [[504,{error:'Outcome unknown. Check orders before sending another request.'}],[502,{}],[0,null]] as [number,any][])
    expect(actionOutcome(status,body,'orderRef').text).toMatch(/^Outcome unknown/);
   expect(actionOutcome(200,{orderRef:9},'orderRef')).toEqual({ok:true,text:'Order accepted · 9.'});
+  expect(actionOutcome(200,{orderRef:9,kind:2,reason:'NO_TRADING_DAY'},'orderRef')).toEqual({ok:false,text:'Refused: no business day is open; DAY orders are refused (NO_TRADING_DAY)'});
   expect(actionOutcome(409,{error:'Active run changed. Nothing sent.',sent:false},'canceled').text).toBe('Refused: Active run changed. Nothing sent.');
  });
 });

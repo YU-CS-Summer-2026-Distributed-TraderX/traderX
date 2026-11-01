@@ -93,7 +93,13 @@ export class Desk {
   readonly typedOrdersEnabled = signal(false);
   /** FR-CUI-23: an unmanaged run (the CompSci rig's legacy projection) read and confirmed, and an operator session (every
    *  hosted sign-in holds the operator password): orders go through the console's operator order path, as the Demo console's do. */
-  readonly operatorUnmanaged = computed(()=>this.connected && this.activeScope()===null && this.runLabel()==='legacy run' && !!this.session.user()?.roles?.includes('admin'));
+  readonly operatorUnmanaged = computed(()=>{
+    if(!this.connected || !this.session.user()?.roles?.includes('admin')) return false;
+    const scope=this.activeScope();
+    if(scope===null) return this.runLabel()==='legacy run';   // no registry, or an empty one
+    const run=this.runRows().find(r=>r.projection_scope===scope);   // the registry's own LEGACY row, no descriptor
+    return !!run && run.phase==='LEGACY' && !run.descriptor_hash;
+  });
   readonly canChangeExisting = computed(()=>!this.connected || (this.runView().kind==='active' && this.readState()==='ready' && (this.operatorUnmanaged() || (this.activeScope()!==null && this.runRows().some(r=>r.projection_scope===this.activeScope() && r.phase==='ACTIVE' && !!r.descriptor_hash)))));
   private readController?: AbortController;
   private confirmed = false;
@@ -346,7 +352,7 @@ export class Desk {
     }
     if(generation!==this.session.generation() || !this.ctx.isCurrent(token) || this.runView().kind!=='active') return {ok:false,text:'Context changed. Nothing sent.'};
     const orderAction=['/order-matcher/orders','/order-matcher/cancel','/order-matcher/replace'].includes(url);
-    const operator=orderAction && scope===null && this.operatorUnmanaged();
+    const operator=orderAction && this.operatorUnmanaged();
     if(orderAction && scope===null && !operator) return {ok:false,text:'This rig has no managed run (legacy projection, no run descriptor). Without the operator password the Desk trades only inside a managed run. Nothing sent.'};
     const target=operator?url:orderAction?'/desk-api/orders/'+url.split('/').pop():url;
     const payload=operator?{...(body as object),accountId:account}:orderAction?{...(body as object),accountId:account,projectionScope:scope}:body;
@@ -430,7 +436,7 @@ export function actionOutcome(status:number,body:any,expected:'orderRef'|'cancel
   const ok=status>=200 && status<300 && !!body?.[expected] && !body?.reason;
   const text=ok ? `${expected==='orderRef'?'Order accepted':expected==='parentOrderId'?'Algo parent accepted':expected==='canceled'?'Order cancelled':'Order changed'}${body?.orderRef?' · '+body.orderRef:''}.`
     : body?.sent===false ? `Refused: ${body.error ?? `HTTP ${status}`}`
-    : status===0 || status>=500 ? 'Outcome unknown. Check orders before submitting again; this request will not be retried.' : body?.reason || body?.error || `Request refused (HTTP ${status}).`;
+    : status===0 || status>=500 ? 'Outcome unknown. Check orders before submitting again; this request will not be retried.' : body?.reason ? `Refused: ${reasonText(body.reason)}` : body?.error || `Request refused (HTTP ${status}).`;
   return {ok,text};
 }
 export function reasonText(reason: string | undefined): string {

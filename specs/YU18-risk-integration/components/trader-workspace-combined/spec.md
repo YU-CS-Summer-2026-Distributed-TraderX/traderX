@@ -78,7 +78,8 @@ is still a demo identity and does not establish production authentication or ben
 - FR-CUI-22: A background poll SHALL keep the last confirmed view on screen: only a reset (sign-in, account or
   run change, a failed read) draws the loading state, and a successful order action refreshes in place. Before,
   every 4 s poll set the read state to loading and every account card flashed "Loading…" (2026-11-01).
-- FR-CUI-23: On an unmanaged run (empty registry, or no `/v2` registry) an **operator** session (the `admin`
+- FR-CUI-23: On an unmanaged run (no `/v2` registry, an empty one, or an active pointer naming the registry's own
+  `LEGACY` row with no descriptor, as on the CompSci rig) an **operator** session (the `admin`
   role: every hosted sign-in, or a local sign-in with the operator password) SHALL read the legacy projection and
   send submit, cancel and replace through the console's operator order path (`/order-matcher/<action>`, the
   Demo console's own), after the same account, context and live-order checks. A session without the operator

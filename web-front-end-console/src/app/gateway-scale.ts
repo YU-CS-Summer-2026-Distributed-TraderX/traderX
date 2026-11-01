@@ -25,12 +25,12 @@ const WINDOW = 200;   // samples at 3 s: the last 10 minutes
         @if (now() && !now()!.starting && !now()!.draining) { <span class="pill good">steady</span> }
       </div>
       <svg class="strip" [attr.viewBox]="'0 0 ' + WINDOW + ' 40'" preserveAspectRatio="none" aria-label="ready gateways, last 10 minutes">
-        @for (b of bars(); track $index) { <rect [attr.x]="$index" [attr.y]="40 - b" width="1" [attr.height]="b" /> }
+        @for (b of bars(); track $index) { <rect [attr.x]="WINDOW - bars().length + $index" [attr.y]="40 - b" width="1" [attr.height]="b" /> }
       </svg>
     </div>
     <ol class="changes" data-testid="gateway-changes">
       @for (c of changes(); track c.at) {
-        <li><span class="faint">{{ time(c.at) }}</span> <b>{{ c.from }} → {{ c.to }}</b> {{ c.to > c.from ? 'scaled out' : 'scaled in' }}</li>
+        <li><span class="faint when">{{ time(c.at) }}</span><b>{{ c.from }} → {{ c.to }}</b>&nbsp;{{ c.to > c.from ? 'scaled out' : 'scaled in' }}</li>
       } @empty { <li class="faint">No change since this page opened.</li> }
     </ol>
   `,
@@ -42,6 +42,8 @@ const WINDOW = 200;   // samples at 3 s: the last 10 minutes
     .strip { flex: 1 1 240px; height: 40px; min-width: 160px; }
     .strip rect { fill: var(--accent); }
     .changes { margin: 10px 0 0; padding-left: 18px; font-size: 13px; }
+    .changes .when { margin-right: 8px; }
+    .strip { background: var(--bg, #f4f5f7); border-radius: 4px; }
   `,
 })
 export class GatewayScale implements OnInit, OnDestroy {

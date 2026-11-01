@@ -288,8 +288,8 @@ export class MarketsPage {
         </div>
       </div>
       @if(desk.readState()!=='ready') { <p class="banner warn">{{ desk.readState()==='loading' ? 'Loading orders…' : desk.error() || 'Orders are unavailable.' }}</p> } @else {
-      @if(desk.connected && desk.runView().kind==='active' && !desk.canChangeExisting()) { <p class="state">An active managed run is required to change existing orders.</p> }
-      <table data-testid="orders">
+      @if(desk.connected && desk.runView().kind==='active' && !desk.canChangeExisting()) { <p class="state">Changing existing orders needs an active managed run, or an operator sign-in on this unmanaged run.</p> }
+      <div class="x-scroll" style="overflow-x:auto"><table data-testid="orders">
         <thead><tr><th scope="col">Ref</th><th scope="col">Time</th><th scope="col">Instrument</th><th scope="col">Side</th>
           <th scope="col" class="num">Filled / qty</th><th scope="col">Type</th><th scope="col" class="num">Price</th><th scope="col">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
         <tbody>
@@ -319,7 +319,7 @@ export class MarketsPage {
             }
           } @empty { <tr><td colspan="9" class="faint">{{ filterAll() ? 'No orders on this account.' : 'No working orders on this account.' }}</td></tr> }
         </tbody>
-      </table> }
+      </table></div> }
     </section>
     <section class="card" aria-labelledby="ac-h">
       <div class="card-head"><h2 id="ac-h">This session</h2></div>

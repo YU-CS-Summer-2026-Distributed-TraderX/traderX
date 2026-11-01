@@ -55,6 +55,16 @@ describe('connected order management context',()=>{
   expect(writes.length).toBe(1);expect(writes[0]).toEqual({url:'/desk-api/orders/cancel',body:{orderRef:7,accountId:11,projectionScope:'run-a'}});
   d.runView.set({kind:'history',scope:'run-a'});d.cancel(7);tick();expect(writes.length).toBe(1);discardPeriodicTasks();
  }));
+ it('FR-CUI-23: when the active run is the registry\'s LEGACY row (the CompSci rig), an operator trades through the operator path',fakeAsync(()=>{
+  const original=api.load;
+  api.load=async(url:string,options:any={})=>url===REGISTRY_URL?{status:200,body:[{projection_scope:'legacy-unknown',phase:'LEGACY',descriptor_hash:null}]}:
+    url===ACTIVE_URL?{status:200,body:{projectionScope:'legacy-unknown'}}:
+    url.endsWith('orders?status=all')?{status:200,body:[{id:'1-7',accountId:session.account(),projectionScope:'legacy-unknown',status:'NEW',orderType:'LIMIT',quantity:10,remainingQuantity:10}]}:original(url,options);
+  session.user.set({id:'u',accounts:[11,12],roles:['trader','admin']});
+  const d=TestBed.inject(Desk);TestBed.tick();tick();
+  expect(d.activeScope()).toBe('legacy-unknown');expect(d.operatorUnmanaged()).toBeTrue();
+  d.cancel(7);tick();expect(writes).toEqual([{url:'/order-matcher/cancel',body:{orderRef:7,accountId:11}}]);discardPeriodicTasks();
+ }));
  it('FR-CUI-23: on a plain bring-up an operator session trades through the operator order path; a trader session is refused',fakeAsync(()=>{
   const original=api.load;
   api.load=async(url:string,options:any={})=>url===REGISTRY_URL?{status:200,body:[]}:url===ACTIVE_URL?{status:503,body:{}}:
