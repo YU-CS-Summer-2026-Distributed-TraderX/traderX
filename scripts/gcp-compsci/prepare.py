@@ -23,7 +23,9 @@ CUSTOM_WORKLOADS = {'order-matcher-cluster','cluster-gateway','risk-extract',
                     'position-service','price-publisher','reference-data','execution-algo-engine',
                     'web-front-end-angular','web-front-end-console','api-explorer'}
 # ADR-095: the external FIX-over-TLS entry. Its CompID, its accounts and its port; render-fix-tls-access.py exposes it.
-FIX_TLS = {'port': 18143, 'compId': 'EXTQFJ', 'accounts': '22214|42422'}
+# FR-FTL-07 (2026-11-01, yaakov): every account, as CLIENT1 — a desk account created on the day is tradable from the Mac;
+# the session stays gated by its own password, the /32 allowlist and the pinned certificate.
+FIX_TLS = {'port': 18143, 'compId': 'EXTQFJ', 'accounts': '*'}
 # ADR-096 (FR-PRG-11): the rehearsal's load clients, opt-in (--fix-test-clients). Each CompID trades only its own
 # dedicated test account; passwords from Secret fix-test-clients (provision-fix-test-clients.py). The production-rig
 # clean-up task removes them, their accounts and their trades.
@@ -487,8 +489,9 @@ def validate(docs, declared=None):
                     require(var and var.group(1) in names and names.index(var.group(1)) < names.index('FIX_SESSION_AUTH')
                             and 'secretKeyRef' in env[var.group(1)].get('valueFrom', {}),
                             f'FIX CompID {compid} without a Secret-backed password')
-                    require(accounts == '*' if compid == 'CLIENT1' else re.fullmatch(r'\d+(\|\d+)*', accounts),
-                            f'FIX CompID {compid} is not bound to named accounts')
+                    # CLIENT1 and the external EXTQFJ (FR-FTL-07) trade every account; the load clients only their own.
+                    require(accounts == '*' if compid in ('CLIENT1', FIX_TLS['compId']) else re.fullmatch(r'\d+(\|\d+)*', accounts),
+                            f'FIX CompID {compid} is not bound to its accounts')
         # YU04 (FR-IMRG32/33): the gateway consumes reference-data's control feed, or a new security
         # reaches it only on restart.
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
@@ -512,8 +515,8 @@ def validate(docs, declared=None):
                 auth = env.get('FIX_SESSION_AUTH') or ''
                 mounts = {m['mountPath'] for c in pod['containers'] for m in c.get('volumeMounts', [])}
                 require(all(i and i not in (env.get('FIX_SESSION_COMPIDS') or '').split(',')
-                            and re.search(rf'(^|,){i}:\$\(FIX_EXT_PASSWORD\):\d', auth) for i in tls_ids),
-                        'external FIX CompID not TLS-only with a Secret-backed password and named accounts (ADR-095)')
+                            and re.search(rf'(^|,){i}:\$\(FIX_EXT_PASSWORD\):[\d*]', auth) for i in tls_ids),
+                        'external FIX CompID not TLS-only with a Secret-backed password and an account binding (ADR-095)')
                 require((env.get('FIX_SSL_KEYSTORE') or '').startswith('/etc/fix-tls/') and '/etc/fix-tls' in mounts
                         and any(v.get('secret', {}).get('secretName') == 'fix-tls' for v in pod.get('volumes', [])),
                         'FIX TLS keystore is not Secret fix-tls (ADR-095)')

@@ -5,7 +5,7 @@ each one is the rollout session's, with yaakov's approval. Run on production 202
 ([tasks](tasks.md)).
 
 Names: Service `fix-tls-external`, Secret `fix-tls`, address `traderx-fix-tls` (us-east1), host `fix.yaakovseif.dev`,
-port 18143, CompID `EXTQFJ` on accounts 22214 and 42422.
+port 18143, CompID `EXTQFJ` on every account (FR-FTL-07). One order from the Mac: `scripts/fix-tls/fix-order.sh`.
 
 ## 0. Before
 

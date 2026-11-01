@@ -19,3 +19,6 @@
       - plaintext got a TLS alert `15 03 03 00 02 02 50`; a connect from 34.139.122.85 (not allowlisted) timed out
         (step 7).
 - [ ] DNS: `fix` A record → 35.196.31.22 at Name.com (yaakov, step 3), then the smoke by hostname.
+- [x] EXTQFJ on every account (FR-FTL-07) and the one-order Mac CLI (FR-FTL-08). Kind 2026-11-01: Desk user carol created
+      account 65002; `fix-order.sh 65002 Buy 10 MSFT 391.00` over TLS rested (New), `fix-order.sh 65000 Sell 10 MSFT` filled
+      it at 391; carol's Desk shows MSFT +10 @ 391 (fill from 1-63139). The console FIX tab sent 65002 Sell 4 MSFT: New.

@@ -32,7 +32,8 @@ lease, so a session can resume on whichever gateway its TCP connection lands on.
    turns it into the VPC firewall rule for the forwarding rule. The renderer accepts single public IPv4 addresses only,
    never a range and never `0.0.0.0/0`. The address is a parameter, not a value in the repository.
 4. **TLS is not authentication** (FR-FTL-03). `EXTQFJ` logs on with its own `Password(554)` (Secret `fix-tls`,
-   `external-password`) through ADR-082's `FIX_SESSION_AUTH`, and is bound to named accounts (`22214|42422`), not `*`.
+   `external-password`) through ADR-082's `FIX_SESSION_AUTH`, and was bound to named accounts (`22214|42422`); since 2026-11-01 (FR-FTL-07) it is bound to `*`, so a
+   Desk account created on the day is tradable from the Mac.
 5. **The certificate is the entry's own and the client pins it** (FR-FTL-02). `provision-fix-tls.py` makes an EC P-256
    certificate for `fix.yaakovseif.dev`, the gateway keystore, and a client trust store holding exactly that certificate.
    QuickFIX/J 2.3 checks no hostname, and with no trust store it trusts every certificate (MINA's

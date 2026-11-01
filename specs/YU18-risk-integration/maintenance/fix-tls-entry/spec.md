@@ -26,6 +26,13 @@ Status: new 2026-10-29. Scope: how a FIX client outside GCP reaches the producti
   it can reach the cluster, the database's `orderbook` rows.
 - FR-FTL-06: A session on the TLS port SHALL keep ADR-086's behaviour: one gateway per live session (lease), resume on
   any replica, ADR-092's bounds.
+- FR-FTL-07 (2026-11-01, supersedes FR-FTL-03's named accounts): `EXTQFJ` SHALL be bound to every account (`*`), as
+  CLIENT1 is, so an account created on the Desk minutes earlier is tradable from the Mac. Its password, the /32
+  allowlist and the pinned certificate still gate the session; the render SHALL refuse it with no account binding.
+- FR-FTL-08: `scripts/fix-tls/fix-order.sh ACCOUNT Buy|Sell QTY TICKER [PX]` SHALL send one order through the entry
+  (Limit DAY at PX, else Market IOC) and print its ExecutionReports until it is filled, cancelled or rejected, or rests
+  (New, then 5 s quiet); exit 0 unless rejected or unanswered, 64 on bad arguments. Credentials and the trust store
+  come from `PRIVATE_DIR`, never argv.
 
 ## Acceptance
 
