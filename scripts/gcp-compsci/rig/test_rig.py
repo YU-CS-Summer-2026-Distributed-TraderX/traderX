@@ -20,6 +20,7 @@ preflight(){ :; }; require_pools(){ :; }
 pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
 pool_autoscaling(){ false; }; row_status_is(){ true; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
 snapshots_past(){ true; }
+initialize(){ call "initialize $1"; [ "${INIT_FAIL:-}" != "$1" ]; }
 admin_token(){ local n; n=$(( $(cat "$EVIDENCE/.tok" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.tok"; echo "tok$n"; }
 # TOKEN_SINGLE_USE: a token already presented has expired (a strict replay outlasts the 600 s TTL), so the member answers 401
 expired(){ local t; read -r t || t=''; [ -n "${TOKEN_SINGLE_USE:-}" ] || return 1
@@ -533,6 +534,26 @@ class FreshEpoch(unittest.TestCase):
         self.assertIsNone(first(calls, 'rig-errlog'), 'G-pre read a log on wiped claims')
         gate, consumed = first(calls, 'create configmap rig-gate'), first(calls, 'rig-epoch .*state=consumed')
         self.assertIsNotNone(consumed, out); self.assertLess(gate, consumed)
+
+    def test_a_fresh_epoch_is_initialized_after_the_gateways_and_before_the_smoke(self):
+        # FR-PRG-30: the 2026-10-31 bring-up's smoke failed UNKNOWN_ACCOUNT on the empty engine
+        rc, out, calls = run('rig_up', **self.EMPTY)
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (SCALE_UP, 'initialize accounts', 'initialize reference-data',
+                                           'rig-epoch .*state=initialized', 'web-front-end-console')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+
+    def test_a_failed_initialization_refuses_before_the_smoke_and_is_retried(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'INIT_FAIL': 'reference-data'})
+        self.assertEqual(rc, 2, out); self.assertIn('initialize-reference-data failed', out)
+        self.assertIsNone(first(calls, 'web-front-end-console')); self.assertIsNone(first(calls, 'state=initialized'))
+        # a rerun on the gated rig, the epoch still consumed: the initialization runs again
+        rc, out, calls = run('members_gated(){ true; }; rig_up', EPOCH='consumed e2')
+        self.assertEqual(rc, 0, out); self.assertIsNotNone(first(calls, 'initialize accounts'), out)
+        rc, out, calls = run('members_gated(){ true; }; rig_up', EPOCH='initialized e2')   # control: done once
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'initialize'))
+        rc, out, calls = run('rig_up')   # control: no fresh epoch, no initialization
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'initialize'))
 
     def test_a_provisioned_epoch_whose_members_are_not_empty_is_refused(self):
         self.refused('is provisioned (empty) but the members hold', **{**self.EMPTY, 'M': '100 100 5 11 22 7'})

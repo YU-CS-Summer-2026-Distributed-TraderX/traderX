@@ -626,7 +626,7 @@ rig_fresh_epoch(){
   es=$(epoch_state) || die "fresh-epoch: ConfigMap rig-epoch cannot be read"
   read -r st lbl <<<"$es"
   case $st in
-    none|consumed) ;;
+    none|consumed|initialized) ;;
     wiped) [ "$lbl" = "$label" ] || die "fresh-epoch: epoch $lbl is wiped and not yet provisioned; finish it first"
       note "resuming epoch $label (claims already being wiped)";;
     *) die "fresh-epoch: epoch $lbl is $st; it must pass a restore gate (consumed) first";;
@@ -768,6 +768,23 @@ smoke(){
 }
 
 # ---- up / down -----------------------------------------------------------------------------------------------------
+# A fresh epoch's engine knows no account and no security: the directory and the catalog go in through the sequenced
+# control endpoint before the first order (FR-PRG-30). Both initializers verify on all three members and exit non-zero
+# on any mismatch, so a failure refuses here, before the smoke; rerunning `up` retries until rig-epoch is initialized.
+initialize(){ python3 "$HERE/../initialize-$1.py" --apply; }
+fresh_epoch_initialize(){
+  [ "$DRY" = 1 ] && { note "would run on a consumed fresh epoch: initialize-accounts.py --apply, then initialize-reference-data.py --apply"; return 0; }
+  local es; es=$(epoch_state) || die "ConfigMap rig-epoch cannot be read"
+  [ "${es%% *}" = consumed ] || return 0
+  step "fresh epoch ${es#* }: the account directory and the instrument catalog into the empty engine (FR-PRG-30)"
+  initialize accounts > "$EVIDENCE/initialize-accounts.txt" 2>&1 \
+    || die "fresh epoch: initialize-accounts failed: $EVIDENCE/initialize-accounts.txt"
+  initialize reference-data > "$EVIDENCE/initialize-reference-data.txt" 2>&1 \
+    || die "fresh epoch: initialize-reference-data failed (its last check compares every security's enabled state): $EVIDENCE/initialize-reference-data.txt"
+  set_epoch "${es#* }" initialized
+  note "epoch ${es#* } initialized: accounts and reference data verified on all three members"
+}
+
 rig_up(){
   validate_args; preflight; require_pools
   note "rig up: GATEWAYS=$GATEWAYS AUTOSCALE=$AUTOSCALE context=$CTX namespace=$NS evidence=$EVIDENCE"
@@ -817,6 +834,7 @@ rig_up(){
   fi
   gateways_up
   ilb_up
+  fresh_epoch_initialize
   [ "$AUTOSCALE" = on ] && autoscale_on
   smoke
   step "rig up: done. Evidence in $EVIDENCE"

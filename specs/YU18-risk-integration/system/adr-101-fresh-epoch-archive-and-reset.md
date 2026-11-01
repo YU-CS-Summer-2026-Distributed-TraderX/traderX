@@ -50,6 +50,12 @@ sides minus the recorded gaps) plus the archived disks and tables, kept as they 
 
 ## Consequences
 
+- The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads
+  both on a consumed epoch (FR-PRG-30). Epoch e1101 (2026-10-31): 27 accounts verified; the catalog's final check
+  failed because the gateway's catalog registration (`ClusterGatewayMain`, the reference-data outbox path) enables
+  every ticker it registers, maturity ignored, so the matured `UST-BILL-20260910` reads enabled. Until that gateway
+  fix lands, `up` on e1101 refuses at this step (its rig-epoch stays consumed), by design.
+
 - Epoch-prefixed ids and FR-RI08's scoped history are not used; the old epoch is read from `arc_LABEL_*` and the
   snapshots, not from a live scope. A later move to managed runs still needs the work this ADR declines.
 - FR-DRS-36 cursors start unbound at 0 in the new `projection_cursor`, which needs no attestation.

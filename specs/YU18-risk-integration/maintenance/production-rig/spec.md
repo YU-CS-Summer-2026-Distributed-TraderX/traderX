@@ -114,6 +114,11 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-30:** On a fresh epoch whose gate has passed (`rig-epoch` consumed), `rig.sh up` SHALL load the account
+  directory and the instrument catalog into the empty engine (`initialize-accounts.py --apply`, then
+  `initialize-reference-data.py --apply`) after the gateways start and before the smoke, refuse on either one's
+  failure, and only then mark the epoch initialized; a rerun retries until it is (production 2026-10-31: the first
+  smoke on epoch e1101 was refused UNKNOWN_ACCOUNT).
 - **FR-PRG-29:** A fresh epoch SHALL archive the old one before it wipes anything (ADR-101). `rig.sh archive-members
   LABEL` SHALL snapshot each member disk with the members stopped; `rig.sh fresh-epoch LABEL` SHALL refuse unless all
   three snapshots are READY and of exactly the current disks, record the old gate ConfigMaps in
