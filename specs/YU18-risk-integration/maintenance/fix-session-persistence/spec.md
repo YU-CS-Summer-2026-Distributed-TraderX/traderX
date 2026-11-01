@@ -72,7 +72,8 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   (`FIX_SESSION_LEASE_MS`, default 3,000) after its last renewal, on the client's first Logon. The Logon is held
   while the holder is not seen renewing as live, up to TTL + 1 s, and accepted as soon as the lease is free. A
   live owner stalled past the TTL SHALL keep its sessions unless another gateway took one meanwhile, whether or
-  not that gateway still holds it. An existing
+  not that gateway still holds it, and whether or not it moved a sequence number: every acquisition SHALL move
+  the sequence record before the session is served, with or without group commit. An existing
   lease bucket SHALL be moved to the TTL when a gateway connects.
 - FR-GFS-17: A Logon with ResetSeqNumFlag=Y SHALL be answered at MsgSeqNum 1 and expect 2 next, whatever the
   stored day and whether the lease was held elsewhere, free, or released while it waited. The reset SHALL be stored
@@ -126,6 +127,7 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | one gateway, 33 sessions, window 64, venue answers at once | 18 | `FixGatewayThroughputIT` (FIX_GW_BENCH=1) | 101,479 / 114,608 / 81,543 execution reports/s; synchronous store 16,587 / 16,117 / 20,857 |
 | A stalls, B takes over, A resumes | 04 | `FixSessionPersistenceIT.anExpiredOwnerIsFenced…` | unchanged: A answers nothing, submits nothing |
 | A stalls; B takes over, moves the numbers to 7/9 and leaves; A resumes to a free lease (group commit and synchronous) | 04, 16 | `FixStoreGroupCommitIT.aStalledOwnerIsNotConfirmed…` | A not confirmed, lease left free, `K.seq` stays 7/9 (first retake: confirmed at 1/1) |
+| Synchronously, A stalls; B takes over, records a sequenced order (or only holds the session) and leaves without moving a number; A resumes | 16 | `FixStoreGroupCommitIT.aStalledOwnerIsNotConfirmedAfterAnother…Synchronously` | A not confirmed (first fence ran only under group commit: confirmed) |
 | batch 2 (requests 1-2, answer 2) with answer 2 refused by the stream; control accepted | 18 | `FixStoreGroupCommitIT.aRefusedBody…`, `.aBatchWhoseBodies…` | B resumes at target 1, sender 2: none of batch 2 durable (first build: 3/3, answer 2 missing); control 3/3 with answer 2 |
 | NATS paused; 1,025 messages set | 18 | `FixStoreGroupCommitIT.theUncommittedBound…` | 1,024 taken, the next waits and times out (first build: 1,025 taken) |
 | bucket created discard-new at 64 KiB, 2,000 messages | 15 | `FixSessionStoreBoundIT.aFullBucket…` | moved to discard-old; no write fails, session not lost (before: `maximum bytes exceeded [10077]`, the f15s cliff) |

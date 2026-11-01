@@ -834,8 +834,8 @@ final class FixSessionStore implements MessageStoreFactory {
          * FR-GFS-16: this gateway was stalled past the TTL and its lease lapsed. If nobody has served the session
          * since, take it again and keep serving: a short TTL must not cost a live session its gateway for a pause
          * nobody acted on. A free lease does not show that (codeX review 2026-10-30 §10: another gateway may have
-         * taken it, moved the numbers and left), K.seq does: every owner moves it (an acquisition fences it under
-         * group commit; every number taken or stored writes it). So retaking fences K.seq from the revision this
+         * taken it, moved the numbers and left), K.seq does: every owner moves it (every acquisition fences it, in
+         * both modes, §17; every number taken or stored writes it). So retaking fences K.seq from the revision this
          * gateway last saw, as any acquisition does (ADR-099 decision 3); if it moved, the session is not resumed.
          */
         private boolean retake() {
@@ -1055,7 +1055,9 @@ final class FixSessionStore implements MessageStoreFactory {
         /**
          * ADR-099: a new owner moves K.seq before it stores anything, so a body its predecessor still has in flight
          * (fenced on the revision that one last wrote) is refused from here on. A commit of the predecessor's that
-         * lands first only moves the revision again: reread, and fence on that.
+         * lands first only moves the revision again: reread, and fence on that. In both modes (codeX review 2026-10-30
+         * §17): K.seq is the continuity record a lapsed owner's retake checks, so an owner that only records orders or
+         * answers resends, and never moves a number, must still have moved it.
          */
         private void fence() throws IOException {
             epoch++;
@@ -1063,7 +1065,7 @@ final class FixSessionStore implements MessageStoreFactory {
             committing = false;
             inFlightBodies = 0;
             failed = null;
-            for (int attempt = 0; groupCommit; attempt++) {
+            for (int attempt = 0; ; attempt++) {
                 try {
                     final byte[] value = (sender + " " + target + " " + created).getBytes(StandardCharsets.UTF_8);
                     seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)

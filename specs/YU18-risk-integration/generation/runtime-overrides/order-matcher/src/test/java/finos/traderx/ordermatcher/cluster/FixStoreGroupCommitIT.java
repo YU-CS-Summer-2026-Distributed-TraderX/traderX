@@ -159,6 +159,52 @@ class FixStoreGroupCommitIT {
     }
 
     /**
+     * codeX review 2026-10-30 §17: synchronously, B took the session, durably recorded a sequenced order (the order
+     * bucket, not K.seq) and left without moving a number; or only answered resends. Acquiring fenced K.seq only under
+     * group commit, so A's retake found it unchanged and was confirmed over B's order. Every acquisition moves it now.
+     */
+    @Test
+    void aStalledOwnerIsNotConfirmedAfterAnotherRecordedAnOrderSynchronously() throws Exception {
+        retakeAfterQuietOwner(true);
+    }
+
+    @Test
+    void aStalledOwnerIsNotConfirmedAfterAnotherOnlyHeldTheSessionSynchronously() throws Exception {
+        retakeAfterQuietOwner(false);
+    }
+
+    private static void retakeAfterQuietOwner(final boolean recordsOrder) throws Exception {
+        final SessionID sid = new SessionID("FIX.4.4", "TRADERX", recordsOrder ? "QUIET-O" : "QUIET-R");
+        try (Connection nc = Nats.connect(url(NATS))) {
+            final FixSessionStore a = start(NATS, "gw-a");
+            final FixSessionStore b = start(NATS, "gw-b");
+            try {
+                for (final FixSessionStore s : new FixSessionStore[] { a, b }) {
+                    field(s, "groupCommit", false);
+                    s.sequenceOrders = true;
+                    s.renewalsStalled = true;
+                }
+                final MessageStore ma = a.create(sid);
+                b.create(sid);
+                assertTrue(a.acquire(sid));
+                assertTrue(a.confirm(sid), "control: A holds it");
+                nc.keyValue(FixSessionStore.LEASE_BUCKET).delete(FixSessionStore.keyOf(sid));   // A's lease lapses
+                assertTrue(b.acquire(sid));
+                if (recordsOrder) {
+                    assertEquals(1, b.recordOrder(sid, 22214, "B-ORDER", "stored inbound request"));
+                }
+                b.close();                                                                      // B leaves, 1/1
+                field(ma, "renewedAt", 0L);                                                     // A resumes
+                assertFalse(a.confirm(sid), "B served the session meanwhile, though no number moved");
+                assertEquals(1, ma.getNextTargetMsgSeqNum());
+            } finally {
+                a.close();
+                b.close();
+            }
+        }
+    }
+
+    /**
      * codeX review 2026-10-30 §11: a commit whose body the server refuses must not leave K.seq (with the inbound
      * number it carries) durable past the request that body answers. Batch 1 is held in flight so that request 2 and
      * its answer form batch 2; the stream refuses answer 2 (too large), as it would any body for its own reason.

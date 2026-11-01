@@ -25,6 +25,8 @@
       reports/s at 33 sessions), fence, lease and store-before-send kept.
 - [x] codeX review 2026-10-30 §10-12 (FR-GFS-04/16/18, ADR-099 decisions 1, 3, 7): a retake fences `K.seq`
       first; the compare-and-set waits for its batch's bodies; the bound counts the batch in flight.
+- [x] codeX review 2026-10-30 §17 (FR-GFS-16, ADR-099 decision 3): every acquisition fences `K.seq` in both
+      modes, so an owner that only recorded orders or answered resends still breaks a stalled owner's retake.
 - [ ] Measure FR-GFS-18 on kind or GKE with the hxb FIX arm, store on.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

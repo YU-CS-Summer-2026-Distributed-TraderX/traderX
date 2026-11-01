@@ -187,7 +187,7 @@ gateway-2 accepted it at +12.1 s, once the lease lapsed and a retry came.
    lease the moment it is free: the client gets in on its first attempt, about one TTL after the last renewal.
 3. **A stalled owner nobody replaced keeps its sessions.** A renewal that fails because the lease lapsed
    re-creates it if it is still free, and keeps it only if `K.seq` is still at the revision this gateway last saw
-   (ADR-099 decision 3). The cost of a short TTL is therefore paid only when a client has actually
+   (ADR-099 decision 3; every acquisition moves it, with or without group commit). The cost of a short TTL is therefore paid only when a client has actually
    moved: a live gateway stalled past 3 s loses a session only to a Logon made elsewhere meanwhile.
 4. **Never two answering.** Unchanged: every `K.seq` write is a compare-and-set on the revision this gateway
    last saw. A retake after someone else served the session fails its own write of `K.seq` and is refused before

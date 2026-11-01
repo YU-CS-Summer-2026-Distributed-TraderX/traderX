@@ -44,7 +44,7 @@ connection completes.
    - If anyone else has written the session since, the server refuses both, and the session is dropped as before.
      A body never overwrites a slot behind the fence.
 3. **A new owner fences first.** Taking a lease (Logon, fill, retake) rewrites `K.seq` at once, before anything is
-   stored. A previous owner's bodies still in flight are then refused. If one of its commits lands first, the new
+   stored, in both modes. A previous owner's bodies still in flight are then refused. If one of its commits lands first, the new
    owner rereads and fences again. A previous owner's unclaimed body that landed before the fence is for a number
    the new owner will store again before it can be sent or resent.
    - **A retake is the continuity check.** A gateway stalled past the TTL that finds its lease free again rewrites
@@ -56,6 +56,10 @@ connection completes.
      numbers and left was invisible to it, so the stalled owner was confirmed with stale numbers. Its next write
      was refused, but only after `fromApp()` had submitted the request to the engine (codeX review 2026-10-30
      §10). That retake predates group commit (ADR-086 §6b) and the synchronous store had the same gap.
+   - Every owner moves `K.seq` because every acquisition fences it. The first fence ran only under group commit,
+     so a synchronous owner that recorded a sequenced order (the order bucket, not `K.seq`) or only answered
+     resends, and left before any number moved, left `K.seq` unchanged, and the stalled owner's retake was
+     confirmed over it (codeX review 2026-10-30 §17).
 4. **Store-before-send, by a write barrier.**
    - `FixWriteBarrier` sits at the tail of each connection's MINA chain, ahead of the FIX codec and TLS. It holds
      QuickFIX/J's write of message n until the store's committed number passes n, then releases writes in order.
@@ -139,6 +143,9 @@ Tests:
     with a body the stream accepts commits the batch.
   - With NATS paused, the 1,025th message waits: the batch in flight counts (§12; the first build took 1,025).
   - All four fail on the first build. codeX's own `ReviewRetakeIT` and its body-refusal case pass now.
+  - Synchronously, a stalled owner is not confirmed after another gateway recorded an order and left, nor after
+    one only held the session (§17). Both fail on the build where only group commit fenced; codeX's
+    `ReviewSyncRetakeIT` passes now (`confirm=false`).
 - **`FixBarrierLossTest`:** a taken, uncommitted message is never sent once the lease is gone (fails on the first
   build), nor once its commit failed. Controls: with the lease held it waits and then goes; untaken and committed
   messages pass.
