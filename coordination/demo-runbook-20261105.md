@@ -14,6 +14,8 @@ Times are US Eastern.
 
 | What | How | Time |
 |---|---|---|
+| **Fresh epoch** — required: the 2026-11-01 production test load overflowed the read model's feed, so the next `up` on e1101 refuses at G3 | `rig.sh archive-members e1101b`, `rig.sh fresh-epoch e1101b` (members stopped; the 10-31 procedure) | ~40 min |
+| **Allowlist your network** — the HTTPS front door (demo/desk) and the FIX entry admit listed /32s only; 2026-11-01 your IP had changed and both answered 403 / unreachable | `curl -4 ifconfig.me`, then your access renders (`render-frontend-access.py`, `render-fix-tls-access.py --address 35.196.31.22 --source <ip>`) | 5 min |
 | Re-project cost | ≈ $5–7/h at 3 gateways + 2 loadgen nodes; each extra gateway node ≈ +$0.40/h. A 1 h rehearsal + 1 h demo ≈ $15 | — |
 | Admit the new images (console + desk carry every UI fix; the others are rebuilt at the same commit) | push the `tip-eb2e8a1c-j21` candidate (12 images + `web-front-end-desk`; build record `build-eb2e8a1c-20261101-r6/` in the coordinator's notes folder), `measure-admission.py`, `admit.py`, roll the console and desk | ~45 min |
 | KDB-X for step 4 | on the KDB-X host: `q scripts/demo-kdb/demo-hdb.q -p 5050 -db ~/traderx-demo-hdb` (first run builds 5,000,000 trades in ~10 s, later runs load in ~1 s); console env `KDB_Q_URL=http://<host>:5050` | 5 min |
@@ -22,13 +24,13 @@ Times are US Eastern.
 ## 1. Bring up the rig — start at T−45 min (~25–30 min)
 
 ```bash
-GATEWAYS=3 AUTOSCALE=on LOADGEN=2 scripts/gcp-compsci/rig/rig.sh up
+GATEWAYS=3 AUTOSCALE=on HPA_CPU_TARGET=30 LOADGEN=2 scripts/gcp-compsci/rig/rig.sh up
 ```
 
 In order: nodes (default 3, engine 3, nats 1, gateway 3; loadgen 2 starts with them) → support workloads → members
 and the restore gate → 3 gateways → internal LB → (fresh epoch only) accounts and reference data → **business day =
 today's ET date** (`BUSINESS-DAY 200 … APPLIED`, or `STALE` on a rerun; DAY orders are admitted from here) → HPA
-3..18 on CPU and the gateway-pool autoscaler 3..18 → FIX smoke → **8 idle load pods Ready**.
+3..18 on CPU at a 30% target (FR-PRG-33) and the gateway-pool autoscaler 3..18 → FIX smoke → **8 idle load pods Ready**.
 
 Done when it prints `rig up: done`. Check with `scripts/gcp-compsci/rig/rig.sh status`: HPA `cluster-gateway 3/18`.
 
@@ -70,16 +72,42 @@ A write or a system command is refused by the q process itself (`noupdate`, `sys
 2. Terminal:
 
    ```bash
-   scripts/gcp-compsci/rig/loadgen.sh start 150000 600
+   scripts/gcp-compsci/rig/loadgen.sh start 230000 120
    ```
 
-   Returns in ~15 s with `every pod is sending` (8 pods × 16 sessions, MSFT at the members' mark, 10 min).
+   Returns in ~15–20 s with `every pod is sending` (8 pods × 16 sessions, MSFT at the members' mark, 2 min).
+   **Keep it short and keep this step last**: the read model projects ~1,100 rows/s, so every second of load is a
+   backlog the Desk and console positions wait behind (production 2026-11-01: 15 min at ~218K/s overflowed the
+   20 GiB feed and the epoch's read model lost the load's trades).
 3. `kubectl --context gke_project-compsci-484414_us-east1-b_traderx-demo -n traderx get hpa cluster-gateway -w`:
-   once TARGETS passes 60% the HPA adds up to 4 gateways a minute. Each new gateway needs a node (~1–2 min),
-   so the card shows `+N starting`, then the Ready count climbs and logs `3 → 4 scaled out`, `4 → 6 …`.
-   If TARGETS stays under 60% after a minute: `loadgen.sh stop`, then `loadgen.sh start 250000 600`.
+   at ~230K/s three gateways read ~43% against the 30% target and the HPA asks for 5. Production 2026-11-01:
+   3 → 5 gateways in ~65 s (nodes ~30 s); the card shows `+2 starting`, then `5 ready` and logs `3 → 5 scaled out`.
+   The load's sessions stay on the first three gateways (long-lived TCP); new sessions land on the new ones.
 4. `scripts/gcp-compsci/rig/loadgen.sh results` when it ends (`accepted`, `rejected 0`, `imbalance 0` per pod);
    `loadgen.sh stop` cuts it short. Scale-in is slow on purpose (30 min of low CPU, then one gateway per 10 min).
+
+## 2b. FIX: from the FIX tab, and from your Mac on a fresh account (~3 min)
+
+1. Desk (any window) › `+ Add account` → e.g. "Fresh FIX account" → note its id (`Account 6500N created and admitted`).
+2. Demo console › **FIX** tab: Account = that fresh account, MSFT, Sell, 5, Price at market › **Send over FIX** →
+   the panel shows Logon, NewOrderSingle and the ExecutionReport (New) on the wire (CLIENT1 → TRADERX).
+3. Terminal on your Mac (FIX 4.4 over TLS to `35.196.31.22:18143` as `EXTQFJ`, any account, FR-FTL-07):
+
+   ```bash
+   FIX_HOST=35.196.31.22 scripts/fix-tls/fix-order.sh <fresh id> Buy 5 MSFT
+   ```
+
+   `[ok] logged on over TLS as EXTQFJ` → `[report] … status=Filled filled=5 lastPx=…` (Market IOC against the FIX-tab
+   sell). With a price it is a Limit DAY that rests: `fix-order.sh <id> Buy 10 MSFT 380`.
+4. Desk › Positions on that account: the fills, from both orders.
+
+Before Thursday check your public IPv4 (`curl -4 ifconfig.me`) is on the entry's allowlist
+(`kubectl -n traderx get svc fix-tls-external -o jsonpath='{.spec.loadBalancerSourceRanges}'`); if not, re-render it
+with your address(es) — that is your command to run:
+
+```bash
+python3 scripts/gcp-compsci/render-fix-tls-access.py --address 35.196.31.22 --source <your IPv4> | kubectl --context gke_project-compsci-484414_us-east1-b_traderx-demo apply -f -
+```
 
 ## 6. After the session (mandatory)
 
@@ -90,6 +118,20 @@ gcloud compute instances list --project project-compsci-484414
 
 `down` removes the load pods, drains the gateways, takes a snapshot, stops the members (each exits 143), sets every
 pool to 0 and stops the client VM. The listing must show no rig instance running.
+
+After the demo: the load's trades are not all in the read model, so the next `up` needs another fresh epoch.
+
+## Verified in production (2026-11-01, 12:55 pm – 1:35 pm ET, images tip-fe4949c5-j21)
+
+- `rig.sh up` in 6 min: restore gate G0–G4 incl. G2's shadow replay (FR-ERH-F16), epoch initialized, business day
+  APPLIED, HPA 3..18, smoke, 8 idle load pods.
+- `loadgen.sh start`: sending in 15–20 s; 196,348,832 orders sent and accepted, 0 rejected, 0 unanswered,
+  imbalance 0 (~218K/s for 15 min); the book back to empty.
+- HPA at 60%: never scaled (gateways at 38–45%); at 30%: 3 → 5 in ~65 s; System tab showed `5 ready`.
+- Mac FIX CLI over TLS as EXTQFJ (via a port-forward; your IP was not on the allowlist): Limit DAY sell New, Market
+  IOC buy crossed it (book empty after).
+- Not walked in production: desk/console clicks (the front door's allowlist and the operator password are yours),
+  Kdb (no KDB-X host yet), positions after trades (the read model was behind the load).
 
 ## Verified locally (kind, 2026-11-01)
 
