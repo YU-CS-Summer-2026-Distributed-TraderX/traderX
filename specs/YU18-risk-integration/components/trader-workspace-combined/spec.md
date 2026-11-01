@@ -75,10 +75,19 @@ is still a demo identity and does not establish production authentication or ben
   positions, trades and orders. Desk order mutations still go through the workspace route and SHALL
   still require owned membership (FR-CUI-17).
 
+- FR-CUI-22: A background poll SHALL keep the last confirmed view on screen: only a reset (sign-in, account or
+  run change, a failed read) draws the loading state, and a successful order action refreshes in place. Before,
+  every 4 s poll set the read state to loading and every account card flashed "Loading…" (2026-11-01).
+- FR-CUI-23: On an unmanaged run (empty registry, or no `/v2` registry) an **operator** session (the `admin`
+  role: every hosted sign-in, or a local sign-in with the operator password) SHALL read the legacy projection and
+  send submit, cancel and replace through the console's operator order path (`/order-matcher/<action>`, the
+  Demo console's own), after the same account, context and live-order checks. A session without the operator
+  role is refused as before; historical views stay refused on an unmanaged run.
+
 **Unmanaged runs, including the hosted CompSci Desk.** The CompSci render serves an unmanaged run
-(`legacy-unknown`, no registered ACTIVE descriptor), so by FR-CUI-17 the hosted Desk SHALL refuse every
-submit, cancel and replace before sending, shown as `Refused: ... Nothing sent.` (FR-CUI-19). Order entry
-on that tier is the Demo console and FIX. The acceptance half of FR-CUI-16, FR-CUI-18 and the mutation
+(`legacy-unknown`, no registered ACTIVE descriptor). By FR-CUI-17 a trader-only session SHALL refuse every
+submit, cancel and replace before sending, shown as `Refused: ... Nothing sent.` (FR-CUI-19); an operator
+session, which every hosted sign-in is, trades through the operator order path (FR-CUI-23). The acceptance half of FR-CUI-16, FR-CUI-18 and the mutation
 paths of FR-CUI-19 are proven on a managed rig only.
 
 Managed configuration uses the existing RI-06 offline provisioning, durable transition and recovery

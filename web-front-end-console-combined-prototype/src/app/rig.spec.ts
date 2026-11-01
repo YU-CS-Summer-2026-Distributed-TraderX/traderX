@@ -21,6 +21,12 @@ describe('connected desk run boundary',()=>{
     await expectAsync(readRigAccount(plain,22214,{kind:'active'})).toBeRejectedWithError(NO_MANAGED_RUN);
     expect(NO_MANAGED_RUN).toContain('Demo console');
   });
+  it('FR-CUI-23: an operator session reads the legacy projection of a plain bring-up; history stays refused',async()=>{
+    const plain=async(u:string)=>u===REGISTRY_URL?{status:200,body:[]}:u===ACTIVE_URL?{status:503,body:{}}:{status:200,body:[{accountId:22214,projectionScope:'legacy-unknown'}]};
+    const r=await readRigAccount(plain,22214,{kind:'active'},true);expect(r.scope).toBeNull();expect(r.positions.length).toBe(1);
+    await expectAsync(readRigAccount(plain,22214,{kind:'history',scope:'x'},true)).toBeRejectedWithError(NO_MANAGED_RUN);
+    await expectAsync(readRigAccount(async u=>u!==REGISTRY_URL&&u!==ACTIVE_URL&&u.includes('position')?{status:200,body:[{accountId:7,projectionScope:'legacy-unknown'}]}:plain(u),22214,{kind:'active'},true)).toBeRejected();
+  });
   it('does not treat a failed or HTML registry as legacy',async()=>{
     for(const r of [{status:503,body:[]},{status:200,body:'<html>'},{status:0,body:null}]) await expectAsync(readRigAccount(async()=>r,22214,{kind:'active'})).toBeRejected();
   });

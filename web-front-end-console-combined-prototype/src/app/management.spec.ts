@@ -35,13 +35,13 @@ describe('connected order management context',()=>{
   d.cancel(7);session.account.set(12);session.generation.update((n:number)=>n+1);TestBed.tick();tick();
   expect(writes).toEqual([]);discardPeriodicTasks();
  }));
- it('does not let an older poll restore actions while its newer replacement is pending',fakeAsync(()=>{
+ it('does not let an older poll confirm while its newer replacement is pending, and never redraws loading (no flash)',fakeAsync(()=>{
   const d=TestBed.inject(Desk);TestBed.tick();tick();
   const original=api.load;const answers:Array<()=>void>=[];
   api.load=(url:string,options:any)=>url.endsWith('orders?status=all')?new Promise(resolve=>answers.push(async()=>resolve(await original(url,options)))):original(url,options);
   void (d as any).refreshRig(false);tick();void (d as any).refreshRig(false);tick();
-  answers[0]();tick();expect(d.readState()).toBe('loading');expect(d.canChangeExisting()).toBeFalse();
-  answers[1]();tick();expect(d.readState()).toBe('ready');discardPeriodicTasks();
+  answers[0]();tick();expect((d as any).confirmed).toBeFalse();expect(d.readState()).toBe('ready');
+  answers[1]();tick();expect((d as any).confirmed).toBeTrue();expect(d.readState()).toBe('ready');discardPeriodicTasks();
  }));
  it('keeps suspended pegged orders in the working list and dispatches cancellation',fakeAsync(()=>{
   const original=api.load;
@@ -54,5 +54,16 @@ describe('connected order management context',()=>{
   const d=TestBed.inject(Desk);TestBed.tick();tick();d.cancel(7);tick();
   expect(writes.length).toBe(1);expect(writes[0]).toEqual({url:'/desk-api/orders/cancel',body:{orderRef:7,accountId:11,projectionScope:'run-a'}});
   d.runView.set({kind:'history',scope:'run-a'});d.cancel(7);tick();expect(writes.length).toBe(1);discardPeriodicTasks();
+ }));
+ it('FR-CUI-23: on a plain bring-up an operator session trades through the operator order path; a trader session is refused',fakeAsync(()=>{
+  const original=api.load;
+  api.load=async(url:string,options:any={})=>url===REGISTRY_URL?{status:200,body:[]}:url===ACTIVE_URL?{status:503,body:{}}:
+    url.endsWith('orders?status=all')?{status:200,body:[{id:'1-7',accountId:session.account(),projectionScope:'legacy-unknown',status:'NEW',orderType:'LIMIT',quantity:10,remainingQuantity:10}]}:original(url,options);
+  session.user.set({id:'u',accounts:[11,12],roles:['trader','admin']});
+  const d=TestBed.inject(Desk);TestBed.tick();tick();
+  expect(d.operatorUnmanaged()).toBeTrue();expect(d.readState()).toBe('ready');
+  d.cancel(7);tick();expect(writes).toEqual([{url:'/order-matcher/cancel',body:{orderRef:7,accountId:11}}]);
+  session.user.set({id:'u',accounts:[11,12],roles:['trader']});session.generation.update((n:number)=>n+1);TestBed.tick();tick();
+  expect(d.operatorUnmanaged()).toBeFalse();d.cancel(7);tick();expect(writes.length).toBe(1);discardPeriodicTasks();
  }));
 });

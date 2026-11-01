@@ -91,7 +91,10 @@ export class Desk {
   private pollSequence = 0;
   readonly actionBusy = signal(false);
   readonly typedOrdersEnabled = signal(false);
-  readonly canChangeExisting = computed(()=>!this.connected || (this.activeScope()!==null && this.runView().kind==='active' && this.readState()==='ready' && this.runRows().some(r=>r.projection_scope===this.activeScope() && r.phase==='ACTIVE' && !!r.descriptor_hash)));
+  /** FR-CUI-23: an unmanaged run (the CompSci rig's legacy projection) read and confirmed, and an operator session (every
+   *  hosted sign-in holds the operator password): orders go through the console's operator order path, as the Demo console's do. */
+  readonly operatorUnmanaged = computed(()=>this.connected && this.activeScope()===null && this.runLabel()==='legacy run' && !!this.session.user()?.roles?.includes('admin'));
+  readonly canChangeExisting = computed(()=>!this.connected || (this.runView().kind==='active' && this.readState()==='ready' && (this.operatorUnmanaged() || (this.activeScope()!==null && this.runRows().some(r=>r.projection_scope===this.activeScope() && r.phase==='ACTIVE' && !!r.descriptor_hash)))));
   private readController?: AbortController;
   private confirmed = false;
 
@@ -305,7 +308,9 @@ export class Desk {
     const account=this.session.account(); const view=this.runView();
     if(reset) { this.readController?.abort();this.activeScope.set(null); this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('loading');this.confirmed=false;this.runLabel.set('not confirmed'); }
     if(account===null || !this.session.check()) {this.polling=false;this.error.set('Add a trading account to start.');this.readState.set('unavailable');return;}
-    this.polling=true;this.confirmed=false;this.readState.set('loading');
+    // A background poll keeps the last confirmed view on screen (the reset branch above draws 'loading'); flipping
+    // readState here every 4 s swapped every read-gate card to "Loading…" and back: the Desk flash (FR-CUI-22).
+    this.polling=true;this.confirmed=false;
     const controller=new AbortController();this.readController=controller; const load=<T>(url:string)=>bounded(this.api.load<T>(url,{signal:controller.signal}),controller.signal); const deadline=setTimeout(()=>controller.abort(),8000);
     try {
       if(Date.now()-this.directoryAt>60000) {
@@ -316,7 +321,7 @@ export class Desk {
       }
       this.loadDirectory();
       if(!this.accounts().some(a=>a.id===account)) throw Error('Selected account is not on this rig.');
-      const data=await readRigAccount(url=>load(url),account,view);
+      const data=await readRigAccount(url=>load(url),account,view,!!this.session.user()?.roles?.includes('admin'));
       if(!this.ctx.isCurrent(token) || seq!==this.pollSequence) return;
       if(data.scope!==this.lastScope) {this.lastScope=data.scope;this.runRevision.update(n=>n+1);}
       this.runRows.set(data.runs);this.activeScope.set(data.scope);this.runLabel.set(data.scope??'legacy run');
@@ -341,12 +346,13 @@ export class Desk {
     }
     if(generation!==this.session.generation() || !this.ctx.isCurrent(token) || this.runView().kind!=='active') return {ok:false,text:'Context changed. Nothing sent.'};
     const orderAction=['/order-matcher/orders','/order-matcher/cancel','/order-matcher/replace'].includes(url);
-    if(orderAction && scope===null) return {ok:false,text:'This rig has no managed run (legacy projection, no run descriptor). The Desk trades only inside a managed run; use the Demo console. Nothing sent.'};
-    const target=orderAction?'/desk-api/orders/'+url.split('/').pop():url;
-    const payload=orderAction?{...(body as object),accountId:account,projectionScope:scope}:body;
+    const operator=orderAction && scope===null && this.operatorUnmanaged();
+    if(orderAction && scope===null && !operator) return {ok:false,text:'This rig has no managed run (legacy projection, no run descriptor). Without the operator password the Desk trades only inside a managed run. Nothing sent.'};
+    const target=operator?url:orderAction?'/desk-api/orders/'+url.split('/').pop():url;
+    const payload=operator?{...(body as object),accountId:account}:orderAction?{...(body as object),accountId:account,projectionScope:scope}:body;
     const r=await this.api.load<any>(target,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(12000)});
     const {ok,text}=actionOutcome(r.status,r.body,expected);
-    if(generation===this.session.generation() && this.ctx.isCurrent(token)) {this.log(text,ok);this.reload();}
+    if(generation===this.session.generation() && this.ctx.isCurrent(token)) {this.log(text,ok);void this.refreshRig(false);}   // same context: refresh in place, no reset flash
     return {ok,text};
     } finally {this.actionBusy.set(false);}
   }

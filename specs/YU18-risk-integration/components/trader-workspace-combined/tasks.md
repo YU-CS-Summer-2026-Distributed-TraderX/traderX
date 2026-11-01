@@ -60,3 +60,4 @@ marks every pre-dispatch refusal `sent:false` and the Desk shows it as `Refused:
 (`actionOutcome` in `desk.ts`). Before the fix the new Node test fails (9 of 10 pass); after it 10 Node
 tests and 42 Angular tests pass. Spec gaps 19 and 20 closed in FR-CUI-21 (hosted profile) and the
 unmanaged-run paragraph. Not re-run live.
+- [x] No loading flash on background polls (FR-CUI-22); operator sessions trade on an unmanaged run (FR-CUI-23), 2026-11-01.
