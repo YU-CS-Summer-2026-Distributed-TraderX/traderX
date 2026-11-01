@@ -47,7 +47,7 @@ final class ClickHouseStore {
    */
   String incarnation(String stream, String table, int part) throws Exception {
     String v = query("SELECT incarnation FROM history_cursor WHERE stream = {s:String} AND tbl = {t:String}"
-        + " AND part = {p:UInt16} ORDER BY bound DESC, incarnation = '" + FeedLane.ATTESTED + "' LIMIT 1", Map.of("s", stream, "t", table, "p", "" + part)).trim();
+        + " AND part = {p:UInt16} ORDER BY bound DESC, startsWith(incarnation, '" + FeedLane.ATTESTED + "') LIMIT 1", Map.of("s", stream, "t", table, "p", "" + part)).trim();
     return v.isEmpty() ? null : v;
   }
 

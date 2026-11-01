@@ -29,7 +29,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * refilled past the store's cursor while the feed is down. The feed must refuse P0 (no row written from the new stream,
  * /health 503, STREAM_RESET) instead of resuming at cursor + 1, which would skip the new stream's first messages;
  * P1, untouched, keeps flowing. Control: a restart on the unchanged streams resumes and takes new load. Then the
- * first-binding rule: rows past cursor 0 with no recorded stream are refused (STREAM_UNBOUND) until an operator attests.
+ * first-binding rule: rows past cursor 0 with no recorded stream are refused (STREAM_UNBOUND) until an operator attests
+ * the exact stream and cursor reconciled; an attestation of a stream since recreated is refused (STREAM_ATTEST_MISMATCH).
  */
 @Tag("integration")
 @Testcontainers
@@ -88,7 +89,8 @@ class HistoryFeedIncarnationIT {
       // Rows with no recorded stream (from before the binding existed: P1's record removed) past cursor 0 are refused
       // too, STREAM_UNBOUND, not bound to whatever stream exists now. P0 is reconciled and attested by the operator.
       ch.exec("ALTER TABLE history_cursor DELETE WHERE part = 1 SETTINGS mutations_sync = 1");
-      for (String t : new String[] {"trades", "orders"}) attest(ch, 0, t);
+      for (String t : new String[] {"trades", "orders"}) attest(nc, ch, 0, t);
+      insert(ch, 1, "trades", "0");                                     // the bare, nameless attestation: refused
       long part1Unbound = count(ch, 1);
       HistoryFeedKillIT.publish(js, 4000, 4200, published);
       Process d = start();
@@ -103,17 +105,42 @@ class HistoryFeedIncarnationIT {
       assertEquals(newP0, ch.incarnation("TRADERX_FEED_P0", "trades", 0), "the attestation is used up by the bind");
       d.destroyForcibly().waitFor();
 
-      // P1 attested; every lane opens and the feed is healthy.
-      for (String t : new String[] {"trades", "orders"}) attest(ch, 1, t);
+      // codeX §16: P1 reconciled and attested against the stream as it was, then recreated and refilled past the
+      // cursor before the feed reads the attestation. It names the old stream, so it is refused, no row written.
+      for (String t : new String[] {"trades", "orders"}) attest(nc, ch, 1, t);
+      long p1Last = nc.jetStreamManagement().getStreamInfo("TRADERX_FEED_P1").getStreamState().getLastSequence();
+      nc.jetStreamManagement().deleteStream("TRADERX_FEED_P1");
+      stream(nc, 1);
+      HistoryFeedKillIT.publish(js, 4200, 9000, published);
+      assertTrue(nc.jetStreamManagement().getStreamInfo("TRADERX_FEED_P1").getStreamState().getLastSequence() > p1Last);
+      long part0Attested = count(ch, 0);
+      Process e = start();
+      HistoryFeedKillIT.waitFor(() -> count(ch, 0) > part0Attested, 120_000);   // P0, bound, keeps flowing
+      Thread.sleep(5000);
+      assertEquals(part1Unbound, count(ch, 1), "an attestation of the old P1 may not approve the recreated one");
+      h = health();
+      assertEquals(503, h.statusCode(), h.body());
+      assertTrue(h.body().contains("STREAM_ATTEST_MISMATCH history-trades-p1")
+          && h.body().contains("STREAM_ATTEST_MISMATCH history-orders-p1"), h.body());
+      e.destroyForcibly().waitFor();
+
+      // Control: attested against P1 as it is now, every lane opens and the feed is healthy.
+      for (String t : new String[] {"trades", "orders"}) attest(nc, ch, 1, t);
       start();
       HistoryFeedKillIT.waitFor(() -> count(ch, 1) > part1Unbound, 120_000);
-      HistoryFeedKillIT.waitFor(() -> { try { return health().statusCode() == 200; } catch (Exception e) { return false; } }, 60_000);
+      HistoryFeedKillIT.waitFor(() -> { try { return health().statusCode() == 200; } catch (Exception x) { return false; } }, 60_000);
     }
   }
 
-  static void attest(ClickHouseStore ch, int part, String table) throws Exception {
+  /** What the operator writes after reconciling: this stream's incarnation now and the store's cursor now. */
+  static void attest(Connection nc, ClickHouseStore ch, int part, String table) throws Exception {
+    String now = FeedLane.incarnationOf(nc.jetStreamManagement().getStreamInfo("TRADERX_FEED_P" + part));
+    insert(ch, part, table, FeedLane.attestation(now, ch.maxSeq(table, part)));
+  }
+
+  static void insert(ClickHouseStore ch, int part, String table, String incarnation) throws Exception {
     ch.exec("INSERT INTO history_cursor (stream, tbl, part, incarnation) VALUES ('TRADERX_FEED_P" + part + "', '" + table
-        + "', " + part + ", '" + FeedLane.ATTESTED + "')");
+        + "', " + part + ", '" + incarnation + "')");
   }
 
   static void stream(Connection nc, int p) throws Exception {
