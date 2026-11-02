@@ -24,7 +24,7 @@ Times are US Eastern.
 ## 1. Bring up the rig — start at T−45 min (~25–30 min)
 
 ```bash
-GATEWAYS=3 AUTOSCALE=on HPA_CPU_TARGET=30 LOADGEN=2 scripts/gcp-compsci/rig/rig.sh up
+GATEWAYS=3 AUTOSCALE=on HPA_CPU_TARGET=20 LOADGEN=2 scripts/gcp-compsci/rig/rig.sh up
 ```
 
 In order: nodes (default 3, engine 3, nats 1, gateway 3; loadgen 2 starts with them) → support workloads → members
@@ -84,6 +84,10 @@ A write or a system command is refused by the q process itself (`noupdate`, `sys
    at ~230K/s three gateways read ~43% against the 30% target and the HPA asks for 5. Production 2026-11-01:
    3 → 5 gateways in ~65 s (nodes ~30 s); the card shows `+2 starting`, then `5 ready` and logs `3 → 5 scaled out`.
    The load's sessions stay on the first three gateways (long-lived TCP); new sessions land on the new ones.
+   **Rehearsed 2026-11-02 2:16 pm ET** (HPA target 20%, phase pause 3000 ms, FR-PRG-36): 8 pods × ~2.31M = 18.52M orders
+   sent and accepted in ~124 s, 0 rejected, 0 unanswered, imbalance 0; the HPA took the gateways 3 → 6. With the old
+   1000 ms pause the first run stopped after one phase (cold gateways answered too slowly), and at a 30% target the
+   3 s pause's ~70% duty cycle kept average CPU under it.
 4. `scripts/gcp-compsci/rig/loadgen.sh results` when it ends (`accepted`, `rejected 0`, `imbalance 0` per pod);
    `loadgen.sh stop` cuts it short. Scale-in is slow on purpose (30 min of low CPU, then one gateway per 10 min).
 
