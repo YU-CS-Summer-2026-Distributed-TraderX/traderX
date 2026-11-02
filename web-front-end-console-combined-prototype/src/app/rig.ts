@@ -47,3 +47,16 @@ export function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T>
     pending.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
   });
 }
+
+export type OtcContract = { contractId:number; ref:string; accountId:number; product:'SWAP'|'SWAPTION'; payReceive:string; notional:number;
+  fixedRate:string; convention:string; effectiveDate:string; maturityDate:string; expiryDate?:string; exerciseStyle?:string };
+/** FR-CUI-24: booked swaps and swaptions from the engine (any member: they agree). null = no member answered.
+ *  Engine state, not run-scoped, so it is read beside the account view and never fails it. */
+export async function readContracts(load: Loader, account: number, members = 3): Promise<OtcContract[] | null> {
+  for (let m = 0; m < members; m++) {
+    const r = await load(`/mem/${m}/otc/contracts?account=${account}`).catch(() => null);
+    const rows = r?.status === 200 ? (r.body as any)?.contracts : undefined;
+    if (Array.isArray(rows)) return rows.filter((c: OtcContract) => Number(c.accountId) === account);
+  }
+  return null;
+}

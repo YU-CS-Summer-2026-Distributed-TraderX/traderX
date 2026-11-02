@@ -84,6 +84,12 @@ is still a demo identity and does not establish production authentication or ben
   send submit, cancel and replace through the console's operator order path (`/order-matcher/<action>`, the
   Demo console's own), after the same account, context and live-order checks. A session without the operator
   role is refused as before; historical views stay refused on an unmanaged run.
+- FR-CUI-24: Positions SHALL list the selected account's booked swaps and swaptions (contract, product, direction,
+  notional, fixed rate, convention, effective, maturity, expiry) read from the matching engine: each member serves
+  `GET /otc/contracts?account=N` from its contract store, and the Desk tries members in turn. The read sits beside
+  the account view: no member answering says so in the card and never fails positions, fills or orders. A Desk
+  session without the operator role reaches it only with exactly `?account=N` for an account it owns; any other
+  query is refused, because the member answers every account without one.
 
 **Unmanaged runs, including the hosted CompSci Desk.** The CompSci render serves an unmanaged run
 (`legacy-unknown`, no registered ACTIVE descriptor). By FR-CUI-17 a trader-only session SHALL refuse every

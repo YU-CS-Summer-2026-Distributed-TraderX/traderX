@@ -50,5 +50,8 @@ export function deskProxyTarget(rawUrl) {
   path=path.replace(/\\/g,'/').replace(/\/+/g,'/').toLowerCase().replace(/^\/legacy(?=\/)/,'');
   const mutation=/^\/fixorder(?:\/|$)/.test(path) || /^(?:\/order-matcher|\/gw\/\d+)\/(?:orders|cancel|replace|trades)(?:\/|$)/.test(path);
   const account=path.match(/\/accounts\/(\d+)\/(?:orders|trades|positions)\/?$/) || path.match(/^\/position-service\/(?:positions|trades)\/(\d+)\/?$/);
+  // FR-CUI-24: a member's /otc/contracts filters by ?account= and answers EVERY account without it; the member's
+  // HttpServer context also matches any path under that prefix. Exactly ?account=N, or the -1 no workspace owns.
+  if(/^\/mem\/\d+\/otc/.test(path)){const q=/^account=(\d+)$/.exec(String(rawUrl).split('#')[0].split('?')[1]??'');return {mutation,account:q?Number(q[1]):-1};}
   return {mutation,account:account?Number(account[1]):null};
 }

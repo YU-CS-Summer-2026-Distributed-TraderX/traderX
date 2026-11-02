@@ -1,4 +1,4 @@
-import { NO_MANAGED_RUN, readRigAccount } from './rig';
+import { NO_MANAGED_RUN, readContracts, readRigAccount } from './rig';
 import { ACTIVE_URL, REGISTRY_URL } from '../../../web-front-end-console/src/app/run-scope';
 describe('connected desk run boundary',()=>{
   const run={projection_scope:'r1',phase:'ACTIVE'};
@@ -50,5 +50,17 @@ describe('bounded account transport',()=>{
     const p=bounded(new Promise<number>(r=>finish=r),c.signal);
     c.abort();await expectAsync(p).toBeRejectedWithError(/timed out/);finish(42);
     await expectAsync(p).toBeRejected();
+  });
+});
+describe('booked OTC contracts (FR-CUI-24)',()=>{
+  it('falls through to the next member and keeps only the selected account',async()=>{
+    const urls:string[]=[];
+    const r=await readContracts(async u=>{urls.push(u);return u.startsWith('/mem/0/')?{status:503,body:{}}:
+      {status:200,body:{contracts:[{ref:'SW-1',accountId:22214},{ref:'SW-2',accountId:99}]}};},22214);
+    expect(urls).toEqual(['/mem/0/otc/contracts?account=22214','/mem/1/otc/contracts?account=22214']);
+    expect(r!.map(c=>c.ref)).toEqual(['SW-1']);
+  });
+  it('is null when no member answers',async()=>{
+    expect(await readContracts(async()=>{throw Error('down');},22214)).toBeNull();
   });
 });

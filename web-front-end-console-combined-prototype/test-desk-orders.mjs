@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {deskOrderAction} from '../web-front-end-console/desk-orders.mjs';
+import {deskOrderAction,deskProxyTarget} from '../web-front-end-console/desk-orders.mjs';
 const body={accountId:11,projectionScope:'run-a',orderRef:7,quantity:12,limitPrice:100};
 function rig(overrides={}) {
  const writes=[];let pointers=0;
@@ -80,4 +80,10 @@ test('suspended orders retain account, run and replacement-type refusals',async(
  }
  const r=rig({order:{status:'SUSPENDED',orderType:'PEGGED'}});
  assert.equal((await deskOrderAction(r.upstream,[11],'replace',body)).status,422);assert.equal(r.writes.length,0);
+});
+test('FR-CUI-24: an OTC contracts read is owned by exactly its ?account=, and an unscoped read by no workspace',()=>{
+ assert.equal(deskProxyTarget('/mem/1/otc/contracts?account=22214').account,22214);
+ for(const u of ['/mem/0/otc/contracts','/mem/0/otc/contracts?x=1&account=11','/mem/0/otc/contracts?account=11&account=12','/mem/0/OTC/contractsX?account=11%26','/mem/0/%6ftc/contracts'])
+  assert.equal(deskProxyTarget(u).account,-1,u);
+ assert.equal(deskProxyTarget('/mem/0/bbo').account,null);
 });

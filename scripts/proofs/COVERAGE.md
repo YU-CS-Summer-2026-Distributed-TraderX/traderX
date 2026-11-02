@@ -1280,6 +1280,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-CUI-21` | LIVE |  | yu18-desk | signed-out raw proxy order 403; membership rule is non-admin local-mode (spec gap 19) |
 | YU18 | `FR-CUI-22` | CI |  |  | management.spec: an older poll's answer never confirms and readState stays `ready` through background polls (no Loading redraw) |
 | YU18 | `FR-CUI-23` | CI |  |  | rig.spec: operator reads the legacy projection of an empty registry, history refused, cross-account rows refused; management.spec: operator cancel goes to /order-matcher/cancel, a trader-only session sends nothing |
+| YU18 | `FR-CUI-24` | CI |  |  | OtcContractsJsonTest: swap and swaption rendered in the report's terms, account filter; rig.spec: member fall-through, other-account rows dropped, null when no member answers; test-desk-orders: only exactly `?account=N` is owned, every other OTC query is owned by no workspace |
 | YU18 | `FR-DA01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |

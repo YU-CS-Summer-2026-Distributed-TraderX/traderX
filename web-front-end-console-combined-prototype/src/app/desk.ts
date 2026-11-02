@@ -1,7 +1,7 @@
 import { Api, nextClientOrderId, parseOcc, PriceMark } from '../../../web-front-end-console/src/app/api';
 import { typedBody } from '../../../web-front-end-console/src/app/order-types';
 import { ACTIVE_URL, readActive } from '../../../web-front-end-console/src/app/run-scope';
-import { CONNECTED_RIG, readRigAccount, bounded } from './rig';
+import { CONNECTED_RIG, readRigAccount, readContracts, bounded, OtcContract } from './rig';
 import { Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
 import { TypedTicket, validateTicket, REASON_HINT, LIVE_STATUSES } from '../../../web-front-end-console/src/app/order-types';
 import { Context } from '../../../web-front-end-console/src/app/run-scope';
@@ -113,6 +113,8 @@ export class Desk {
   private readonly orders = signal<FixtureOrder[]>((this.connected ? [] : ORDERS).map(o => ({ ...o })));
   private readonly trades = signal<FixtureTrade[]>((this.connected ? [] : TRADES).map(t => ({ ...t })));
   private readonly positions = signal<FixturePosition[]>((this.connected ? [] : POSITIONS).map(p => ({ ...p })));
+  /** FR-CUI-24: booked swaps and swaptions for the selected account; null = the engine did not answer. */
+  readonly contracts = signal<OtcContract[] | null>([]);
   private nextRef = 106;
   private nextTrade = 7816;
 
@@ -335,6 +337,8 @@ export class Desk {
       this.trades.set(data.trades.map(t=>({account,id:String(t.id),key:t.security,side:t.side,quantity:Number(t.quantity),price:Number(t.price),state:t.state,sourceOrder:t.sourceOrderId,bookedAt:String(t.created??t.updated??'')})));
       this.orders.set(data.orders.map(o=>({account,ref:Number(String(o.id??o.orderId).split('-').pop()),key:o.security,side:o.side,quantity:Number(o.quantity),filled:o.status==='REJECTED'?0:o.status==='CANCELED'?Number.NaN:Number(o.quantity)-Number(o.remainingQuantity),orderType:o.orderType??'LIMIT',tif:o.timeInForce??'GTC',limitPrice:o.limitPrice,stopPrice:o.stopPrice,status:o.status,createdAt:o.createdAt??'',updatedAt:o.updatedAt??'',reason:o.reason})));
       this.error.set('');this.readState.set('ready');this.confirmed=true;
+      const oc=await readContracts(load,account);
+      if(this.ctx.isCurrent(token) && seq===this.pollSequence) this.contracts.set(oc);
     } catch(e) {
       if(this.ctx.isCurrent(token) && seq===this.pollSequence) {this.error.set(String(e instanceof Error?e.message:e));this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('unavailable');this.activeScope.set(null);this.confirmed=false;}
     } finally {clearTimeout(deadline);if(seq===this.pollSequence)this.polling=false;}

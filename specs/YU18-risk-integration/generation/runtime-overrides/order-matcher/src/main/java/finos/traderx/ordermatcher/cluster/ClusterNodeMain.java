@@ -401,6 +401,17 @@ public final class ClusterNodeMain {
             }
             respond(exchange, 200, sb.append('}').toString());
         });
+        // FR-CUI-24: booked swaps and swaptions, read-only, for the Desk and the console. The routes that book them
+        // are write-only and nothing else holds a contract until the end-of-day cut. ?account=N filters.
+        server.createContext("/otc/contracts", exchange -> {
+            if (service.engine() == null) {
+                respond(exchange, 503, "{\"error\":\"engine not started\"}");
+                return;
+            }
+            final String q = exchange.getRequestURI().getQuery();
+            final long account = q != null && q.startsWith("account=") ? Long.parseLong(q.substring(8).replaceAll("[^0-9].*", "")) : -1L;
+            respond(exchange, 200, otcContractsJson(service.contractTuples(), account, memberId, service.appliedSeq()));
+        });
         server.createContext("/bbo", exchange -> {
             if (service.engine() == null) {
                 respond(exchange, 503, "{\"error\":\"engine not started\"}");
@@ -1076,6 +1087,48 @@ public final class ClusterNodeMain {
     private static String env(final String name, final String fallback) {
         final String value = System.getenv(name);
         return value == null || value.isEmpty() ? fallback : value;
+    }
+
+    /** FR-CUI-24: contract tuples as JSON, in the terms of the regulatory report's OTC rows and the contracts CSV.
+     *  Reads by index up to the size seen at entry: the apply thread only appends, and a tuple is never changed. */
+    static String otcContractsJson(final java.util.List<long[]> contracts, final long account, final int memberId,
+                                   final long applied) {
+        final int n = contracts.size();
+        final StringBuilder sb = new StringBuilder(64 + n * 220);
+        sb.append("{\"member\":").append(memberId).append(",\"applied\":").append(applied).append(",\"contracts\":[");
+        boolean first = true;
+        for (int i = 0; i < n; i++) {
+            final long[] c = contracts.get(i);
+            if (c == null) {
+                break; // ponytail: unsynchronised read of an append-only list; a not-yet-visible slot ends the page
+            }
+            if (account >= 0 && c[1] != account) {
+                continue;
+            }
+            final boolean swaption = c[8] == MatchingEngineClusteredService.PRODUCT_SWAPTION;
+            final int conv = (int) c[5];
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"contractId\":").append(c[0])
+              .append(",\"ref\":\"").append(swaption ? "SWPT-" : "SW-").append(c[0])
+              .append("\",\"accountId\":").append(c[1])
+              .append(",\"product\":\"").append(swaption ? "SWAPTION" : "SWAP")
+              .append("\",\"payReceive\":\"").append(c[2] != 0L ? "PAY_FIXED" : "RECEIVE_FIXED")
+              .append("\",\"notional\":").append(c[3])
+              .append(",\"fixedRate\":\"").append(java.math.BigDecimal.valueOf(c[4], SwapContractCsv.RATE_SCALE).toPlainString())
+              .append("\",\"convention\":\"").append(finos.traderx.ordermatcher.lmax.SwapConventions.knows(conv)
+                  ? finos.traderx.ordermatcher.lmax.SwapConventions.at(conv).name() : "CONVENTION_" + conv)
+              .append("\",\"effectiveDate\":\"").append(java.time.LocalDate.ofEpochDay(c[6]))
+              .append("\",\"maturityDate\":\"").append(java.time.LocalDate.ofEpochDay(c[7])).append('"');
+            if (swaption) {
+                sb.append(",\"expiryDate\":\"").append(java.time.LocalDate.ofEpochDay(c[9]))
+                  .append("\",\"exerciseStyle\":\"").append(finos.traderx.ordermatcher.lmax.SwapConventions.exerciseStyleAt((int) c[10])).append('"');
+            }
+            sb.append('}');
+        }
+        return sb.append("]}").toString();
     }
 
     /** FR-ERH-F16: digest fields shared by /health?digest=1 and /recon/shadow-state. Hashes are decimal STRINGS:

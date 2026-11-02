@@ -539,13 +539,28 @@ const num = (v: unknown): number | undefined => v === undefined || v === null ||
     </table>
   </read-gate>
 </section>
-<section class="card"><div class="card-head"><h2>Booked swaps and swaptions</h2></div>
-  <p class="state">Kept at contract level, never netted into a position. Same list as today's blotter section; placed here, not rebuilt in the prototype.</p></section>
+<section class="card"><div class="card-head"><h2>Booked swaps and swaptions</h2>
+    <help-tip text="Kept at contract level, never netted into a position. Read from the matching engine." /></div>
+  @if (desk.contracts(); as cs) {
+    <div class="x-scroll" style="overflow-x:auto"><table data-testid="otc-contracts">
+      <thead><tr><th scope="col">Contract</th><th scope="col">Product</th><th scope="col">Direction</th><th scope="col" class="num">Notional</th>
+        <th scope="col" class="num">Fixed rate</th><th scope="col">Convention</th><th scope="col">Effective</th><th scope="col">Maturity</th><th scope="col">Expiry</th></tr></thead>
+      <tbody>
+        @for (c of cs; track c.contractId) {
+          <tr><td>{{ c.ref }}</td><td>{{ c.product === 'SWAP' ? 'Swap' : 'Swaption' }}</td><td>{{ c.payReceive === 'PAY_FIXED' ? 'Pay fixed' : 'Receive fixed' }}</td>
+            <td class="num">{{ fmtQty(c.notional) }}</td><td class="num">{{ ratePct(c.fixedRate) }}</td><td>{{ c.convention }}</td>
+            <td>{{ c.effectiveDate }}</td><td>{{ c.maturityDate }}</td><td>{{ c.expiryDate ?? '—' }}</td></tr>
+        } @empty { <tr><td colspan="9" class="faint">No swaps or swaptions booked on this account.</td></tr> }
+      </tbody>
+    </table></div>
+  } @else { <p class="state">The matching engine did not answer; contracts will appear on the next refresh.</p> }
+</section>
   `,
 })
 export class PositionsPage {
   readonly desk = inject(Desk);
   readonly inst = (key:string)=>this.desk.instrument(key); readonly fmtQty = fmtQty; readonly fmtPrice = fmtPrice; readonly fmtUsd = fmtUsd;
+  readonly ratePct = (r:string)=>(Number(r)*100).toFixed(3)+'%';
   readonly viewKey = computed(() => { const v = this.desk.runView(); return v.kind === 'history' ? v.scope : ''; });
   readonly totals = computed(() => {
     const rows = this.desk.positionRows();
