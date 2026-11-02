@@ -452,6 +452,7 @@ export class SessionDriver {
             <input class="filter" [ngModel]="filter()" (ngModelChange)="filter.set($event)"
               placeholder="filter {{ api.instruments().length }} instruments…" spellcheck="false" [disabled]="d.running()">
             <button type="button" (click)="d.picked.set([])" [disabled]="d.running() || !d.picked().length">clear</button>
+            <label class="gap"><input type="checkbox" [ngModel]="pricedOnly()" (ngModelChange)="pricedOnly.set($event)"> priced only</label>
           </div>
           <div class="list">
             @for (g of groups(); track g.label) {
@@ -688,6 +689,7 @@ export class DemoSession implements OnInit {
     } finally { this.admitting.set(false); }
   }
 
+  readonly pricedOnly = signal(true);
   /** Membership as a Set: this is read once per rendered row, and there are 500+ rows. */
   private readonly pickedSet = computed(() => new Set(this.d.picked()));
   isPicked(key: string): boolean { return this.pickedSet().has(key); }
@@ -696,7 +698,9 @@ export class DemoSession implements OnInit {
     const q = this.filter().trim().toUpperCase();
     const match = (i: { instrumentKey: string; displayName: string }) =>
       !q || i.instrumentKey.toUpperCase().includes(q) || i.displayName.toUpperCase().includes(q);
-    const of = (type: string) => this.api.instruments().filter(i => i.securityType === type && match(i));
+    // FR-CUI-26: equities and funds with no price yet are hidden (on by default); a picked one always stays.
+    const priced = (i: { instrumentKey: string }) => !this.pricedOnly() || !!this.api.prices()[i.instrumentKey] || this.isPicked(i.instrumentKey);
+    const of = (type: string) => this.api.instruments().filter(i => i.securityType === type && match(i) && (type === 'Debt' || priced(i)));
     return [
       { label: 'Equities', items: of('Equity') },
       { label: 'Funds / ETFs', items: of('Fund') },

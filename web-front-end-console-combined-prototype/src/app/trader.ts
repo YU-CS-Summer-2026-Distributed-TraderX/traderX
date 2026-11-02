@@ -120,7 +120,7 @@ export class OverviewPage {
   @if (!desk.connected) { <p class="state">The order book is read from a connected rig.</p> }
   @else if (book(); as b) {
     <p class="l1" data-testid="l1"><b>{{ b.bids[0] ? fmtQty(b.bids[0].qty) + ' × ' + px(b.bids[0].px) : '—' }}</b>
-      <span class="faint gap">bid / ask</span>
+      <span class="faint gap"> bid / ask </span>
       <b>{{ b.asks[0] ? px(b.asks[0].px) + ' × ' + fmtQty(b.asks[0].qty) : '—' }}</b>
       <span class="faint gap">last {{ b.last !== undefined ? px(b.last) : '—' }}</span></p>
     <table data-testid="l2">
@@ -173,6 +173,7 @@ export class BookCard {
       <div class="seg" role="group" aria-label="Asset class">
         @for (c of classes; track c) { <button type="button" [class.on]="cls() === c" [attr.aria-pressed]="cls() === c" (click)="cls.set(c)">{{ c }}</button> }
       </div>
+      <label class="gap"><input type="checkbox" data-testid="priced-only" [ngModel]="pricedOnly()" (ngModelChange)="pricedOnly.set($event)"> Priced only</label>
     </div>
     <table>
       <thead><tr>@for(c of columns;track c.key){<th scope="col" [attr.aria-sort]="sortKey()===c.key?(ascending()?'ascending':'descending'):'none'"><button type="button" class="sort-heading" (click)="sort(c.key)">{{c.label}} {{sortKey()===c.key?(ascending()?'↑':'↓'):''}}</button></th>}</tr></thead>
@@ -231,7 +232,10 @@ export class MarketsPage {
       default:return i.key;
     }
   }
-  readonly list = computed(() => this.desk.instrumentList().filter(i => (this.cls() === 'All' || i.cls === this.cls()) && (i.key+' '+i.name).toLowerCase().includes(this.search().toLowerCase())).sort((a,b)=>{
+  /** FR-CUI-26: hide equities with no price yet (on by default); the selected row always stays. */
+  readonly pricedOnly = signal(true);
+  readonly list = computed(() => this.desk.instrumentList().filter(i => (this.cls() === 'All' || i.cls === this.cls()) && (i.key+' '+i.name).toLowerCase().includes(this.search().toLowerCase())
+    && (!this.pricedOnly() || i.cls !== 'Equity' || !!this.desk.marks()[i.key] || i.key === this.selected())).sort((a,b)=>{
     const av=this.value(a),bv=this.value(b);if(av===null)return bv===null?a.key.localeCompare(b.key):1;if(bv===null)return -1;
     const n=typeof av==='number'&&typeof bv==='number'?av-bv:String(av).localeCompare(String(bv));return n?(this.ascending()?n:-n):a.key.localeCompare(b.key);
   }));
@@ -274,6 +278,7 @@ export class MarketsPage {
             @for (i of productList(); track i.key) { <option [value]="i.key">{{ i.key }} — {{ i.name }}</option> }
           </select>
         </label>
+          @if (product() === 'Equity') { <label class="gap"><input type="checkbox" data-testid="ticket-priced-only" [ngModel]="pricedOnly()" (ngModelChange)="pricedOnly.set($event)" [ngModelOptions]="{standalone: true}"> Priced only</label> }
         <div class="tk-live">
           @if (desk.marks()[key()]; as m) { <b>{{ fmtPrice(m.price, current()) }}</b> <span class="faint">{{ current().unit }}</span> }
           @else { <span class="faint">no price</span> }
@@ -415,7 +420,9 @@ export class OrdersPage {
   readonly editQty = signal(0); readonly editPx = signal<number | undefined>(undefined); readonly editErr = signal('');
 
   readonly current = computed(() => this.desk.instrument(this.key()));
-  readonly productList = computed(() => this.desk.instrumentList().filter(i => i.cls === this.product()));
+  readonly pricedOnly = signal(true);   // FR-CUI-26
+  readonly productList = computed(() => this.desk.instrumentList().filter(i => i.cls === this.product()
+    && (!this.pricedOnly() || i.cls !== 'Equity' || !!this.desk.marks()[i.key] || i.key === this.key())));
   readonly tifs = computed(() => TIFS_FOR[this.type()]);
   readonly filterAll = computed(() => this.session.prefs().orderFilter === 'all');
   readonly shown = computed(() => this.filterAll() ? this.desk.accountOrders() : this.desk.workingOrders());

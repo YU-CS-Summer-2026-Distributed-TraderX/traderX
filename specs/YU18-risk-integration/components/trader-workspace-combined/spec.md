@@ -97,6 +97,9 @@ is still a demo identity and does not establish production authentication or ben
   stop-limit and trailing-stop orders are off the book, a pegged order shows at its current pegged price. No
   account or order identity is served; it is market data, readable by any Desk session. Level 3 (per order) is
   not served.
+- FR-CUI-26: Every list of all equities (Desk Markets, the Desk equity ticket, the Demo console's equity ticket and
+  its session instrument picker) SHALL offer a **Priced only** toggle, on by default, hiding equities and funds
+  with no price yet. The selected or picked instrument always stays listed; options and bonds are never hidden by it.
 
 **Unmanaged runs, including the hosted CompSci Desk.** The CompSci render serves an unmanaged run
 (`legacy-unknown`, no registered ACTIVE descriptor). By FR-CUI-17 a trader-only session SHALL refuse every

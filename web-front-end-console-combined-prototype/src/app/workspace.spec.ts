@@ -214,6 +214,14 @@ describe('market controls',()=>{
   TestBed.inject(Session).signIn('trader.a');const m=TestBed.runInInjectionContext(()=>new MarketsPage());TestBed.tick();tick(300);
   m.desk.marks.set({IBM:{price:9,dir:0,receivedAt:0},AAPL:{price:100,dir:0,receivedAt:0}});m.sort('last');expect(m.list().slice(0,2).map(i=>i.key)).toEqual(['IBM','AAPL']);m.sort('last');expect(m.list().slice(0,2).map(i=>i.key)).toEqual(['AAPL','IBM']);discardPeriodicTasks();
  }));
+ it('FR-CUI-26: Priced only hides unpriced equities, keeps the selected one and every other class',fakeAsync(()=>{
+  TestBed.inject(Session).signIn('trader.a');const m=TestBed.runInInjectionContext(()=>new MarketsPage());TestBed.tick();tick(300);
+  m.desk.marks.set({AAPL:{price:100,dir:0,receivedAt:0}});m.selected.set('IBM');
+  const eq=()=>m.list().filter(i=>i.cls==='Equity').map(i=>i.key).sort();
+  expect(eq()).toEqual(['AAPL','IBM']);
+  expect(m.list().some(i=>i.cls!=='Equity')).toBeTrue();
+  m.pricedOnly.set(false);expect(eq().length).toBeGreaterThan(2);discardPeriodicTasks();
+ }));
 });
 
 describe('gateway order capabilities',()=>{

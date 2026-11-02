@@ -139,6 +139,7 @@ const PRESETS: Preset[] = [
               @for (i of equities(); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.instrumentKey }} — {{ i.displayName }}</option> }
             </select>
           </label>
+          <label class="field"><span><input type="checkbox" name="pricedOnly" [ngModel]="pricedOnly()" (ngModelChange)="pricedOnly.set($event)"> Priced only</span></label>
           <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
           <label class="field">Quantity <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
           <label class="field">Execution
@@ -385,8 +386,11 @@ export class TicketPanel {
     return t ? trailHint(t, this.livePrice()?.price) : '';
   }
 
+  /** FR-CUI-26: equities and funds with no price yet are hidden (on by default); the chosen ticker always stays. */
+  readonly pricedOnly = signal(true);
   readonly equities = computed(() =>
-    this.api.instruments().filter(i => i.securityType === 'Equity' || i.securityType === 'Fund'));
+    this.api.instruments().filter(i => (i.securityType === 'Equity' || i.securityType === 'Fund')
+      && (!this.pricedOnly() || !!this.api.prices()[i.instrumentKey] || i.instrumentKey === this.ticker())));
   readonly bonds = computed(() => {
     const want = this.cls() === 'Treasury' ? 'US_TREASURY' : 'CORPORATE_BOND';
     return this.api.instruments().filter(i => i.assetClass === want);

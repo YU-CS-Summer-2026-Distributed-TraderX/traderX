@@ -67,3 +67,5 @@ unmanaged-run paragraph. Not re-run live.
 - [x] Booked swaps and swaptions on Positions from the members' `/otc/contracts` (FR-CUI-24), 2026-11-01: the routes that book them are write-only, so the Demo console's list lived only in its own tab's sessionStorage and the Desk had a placeholder.
 - [x] FR-CUI-24 live on production 2026-11-01 11:20 pm ET (tip-b163c0c0-j21): all three members return SW-4528 (account 66001) after a down/up, and the hosted Desk's Positions lists it.
 - [x] Order book on Markets, Level 1 + Level 2 (FR-CUI-25), 2026-11-02: member `/book` over the engine's existing `bookDepth` (no engine change); Level 3 left for after the 2026-11-05 demo.
+- [x] FR-CUI-25 seen live on the hosted Desk 2026-11-02: an IBM iceberg sell 500/50 @ 195 shows 50 on the ask; a buy stop @ 200 is absent (Waiting for trigger).
+- [x] Priced-only toggle on all four all-equity lists (FR-CUI-26), 2026-11-02; quote strip spacing.
