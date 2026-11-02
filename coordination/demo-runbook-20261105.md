@@ -14,10 +14,10 @@ Times are US Eastern.
 
 | What | How | Time |
 |---|---|---|
-| ~~Fresh epoch~~ **DONE 2026-11-01 4:17–4:37 pm ET**: e1101 archived (snapshots `traderx-e1101b-m{0,1,2}`, read model in `arc_e1101b_*`), now on clean epoch e1101b. **Run no load on it before the demo** — any scale-out load leaves a read-model backlog that the next `up`'s G3 refuses | — | — |
+| **Fresh epoch NEEDED before the demo**: the 2026-11-02 scale-out rehearsal (18.52M orders) left a read-model backlog on e1101b, so a normal `up` refuses at G3. Run archive-members + fresh-epoch (~20 min) before Thursday | — | ~20 min |
 | **Allowlist your network** — the HTTPS front door (demo/desk) and the FIX entry admit listed /32s only; 2026-11-01 your IP had changed and both answered 403 / unreachable | `curl -4 ifconfig.me`, then your access renders (`render-frontend-access.py`, `render-fix-tls-access.py --address 35.196.31.22 --source <ip>`) | 5 min |
 | Re-project cost | ≈ $5–7/h at 3 gateways + 2 loadgen nodes; each extra gateway node ≈ +$0.40/h. A 1 h rehearsal + 1 h demo ≈ $15 | — |
-| ~~Admit the new images~~ **DONE 2026-11-02 12:45 pm ET**: `tip-60544a6e-j21` admitted (12/12 identical, 20 controls): Desk Kdb tab (FR-CUI-27), Level 1/2 order book on Markets (FR-CUI-25), priced-only toggle (FR-CUI-26), Desk OTC contracts, Kdb on `traderx-kdb`. Console + Desk rolled live; **at the next scale-down apply `/private/tmp/claude-501/roll1101/cand7/no-sts.yaml` + `set image sts` from pushed7.tsv so members/gateways match** (label-only difference) | — | — |
+| ~~Admit the new images~~ **DONE 2026-11-02**: `tip-60544a6e-j21` admitted (12/12 identical, 20 controls) and applied to every workload (members/gateways at 0 nodes 5:45 pm ET): Desk Kdb tab (FR-CUI-27), Level 1/2 order book (FR-CUI-25), priced-only toggle (FR-CUI-26), Desk OTC contracts, Kdb on `traderx-kdb` | — | — |
 | ~~KDB-X for step 4~~ **DONE**: VM `traderx-kdb` runs `demo-hdb.q` as `traderx-kdb.service` (5,000,000 trades); `rig.sh up`/`down` start and stop it; console `KDB_Q_URL` = its internal name. Check at bring-up: Kdb › How many trades answers | — | — |
 | Rehearse once end to end | this runbook | 1 h |
 
