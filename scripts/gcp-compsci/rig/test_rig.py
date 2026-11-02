@@ -17,7 +17,7 @@ DRY=0; mkdir -p "$EVIDENCE"
 call(){ echo "$*" >> "$LOG"; }
 sleep(){ :; }
 preflight(){ :; }; require_pools(){ :; }
-pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
+pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; deploy_rolled_out(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
 pool_autoscaling(){ false; }; row_status_is(){ true; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
 snapshots_past(){ true; }
 initialize(){ call "initialize $1"; [ "${INIT_FAIL:-}" != "$1" ]; }
@@ -929,6 +929,20 @@ class HpaTarget(unittest.TestCase):
         for v in ('5', '100', 'x'):
             rc, out = self.hpa(HPA_CPU_TARGET=v)
             self.assertEqual(rc, 2, out); self.assertIn('HPA_CPU_TARGET', out)
+
+
+class RolledOut(unittest.TestCase):
+    """FR-PRG-34: support readiness is every replica updated and available, not `rollout status`, which gives up at once
+    on a rollout flagged ProgressDeadlineExceeded after sitting at 0 nodes (production 2026-11-01 9:24 pm ET)."""
+
+    def check(self, fields):
+        rc, out, _ = run(f'unset -f deploy_rolled_out; RIG_LIB=1 . "$RIG"; kubectl(){{ echo "{fields}"; }}; deploy_rolled_out deploy/x && echo READY || echo WAIT')
+        return out.strip().splitlines()[-1]
+
+    def test_ready_only_when_every_replica_is_updated_and_available(self):
+        self.assertEqual(self.check('3 3 1 1 1 1'), 'READY')
+        for f in ('3 2 1 1 1 1', '3 3 1 0 1 1', '3 3 1 1 0 1', '3 3 1 1 1 2', '3 3 1   '):
+            self.assertEqual(self.check(f), 'WAIT', f)
 
 
 class InstanceCheck(unittest.TestCase):

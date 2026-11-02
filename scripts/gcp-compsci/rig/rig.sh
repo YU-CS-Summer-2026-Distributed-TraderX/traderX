@@ -106,6 +106,9 @@ engine_has_sysctls(){ [ -n "$(gc container node-pools describe engine-pool --clu
 gateway_replicas(){ kc get deploy cluster-gateway -o jsonpath='{.spec.replicas}'; }
 hpa_exists(){ kc get hpa cluster-gateway >/dev/null 2>&1; }
 no_pods(){ [ -z "$(kc get pods -l "app=$1" -o name 2>/dev/null)" ]; }
+# Every replica on the current template and available, whatever the Progressing condition says (FR-PRG-34).
+deploy_rolled_out(){ local v; v=$(kc get "$1" -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.spec.replicas} {.status.updatedReplicas} {.status.availableReplicas} {.status.replicas}' 2>/dev/null) || return 1
+  read -r g og want upd avail total <<<"$v"; [ "$g" = "$og" ] && [ "${upd:-0}" = "$want" ] && [ "${avail:-0}" = "$want" ] && [ "${total:-0}" = "$want" ]; }
 ready_replicas(){ [ "$(kc get "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "$2" ]; }
 ilb_has_ip(){ [ -n "$(kc get svc order-matcher-gw-ilb -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)" ]; }
 # One plain-prefix query per pool: gcloud crashes on an alternation in this filter, and a crashed query printed nothing,
@@ -850,8 +853,10 @@ rig_up(){
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
     step "support workloads Ready (everything but the members and the gateways)"
     if [ "$DRY" = 1 ]; then note "would wait: every Deployment except cluster-gateway rolled out"; else
+      # FR-PRG-34: not `rollout status`: images applied while the rig sat at 0 nodes leave rollouts flagged
+      # ProgressDeadlineExceeded, and rollout status gives up on that flag at once while the pods are still scheduling.
       for d in $(kc get deploy -o name | grep -v '/cluster-gateway$'); do
-        kc rollout status "$d" --timeout=600s >/dev/null || die "$d not Ready"
+        wait_for 900 "$d Ready" deploy_rolled_out "$d"
       done; note "ok"
     fi
     nats_record ''

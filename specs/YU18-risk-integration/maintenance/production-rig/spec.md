@@ -114,6 +114,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-34:** `rig.sh up` SHALL wait for each support Deployment by its replica counts (generation observed, every
+  replica updated and available, none extra), up to 900 s, not by `kubectl rollout status`. Images applied at 0 nodes
+  leave rollouts flagged ProgressDeadlineExceeded, which `rollout status` reports as a failure at once (production
+  2026-11-01 9:24 pm ET: account-service refused while its pod was pulling its image).
 - **FR-PRG-33:** The gateway HPA's CPU target SHALL be `HPA_CPU_TARGET` (10..99, default 60) of the gateway's request.
   Production 2026-11-01: on the binary path three gateways sat at 44% at the engine's ~230K orders/s, so a 60% target
   never scaled; at 30% the HPA went 3 -> 5 gateways in ~65 s with the load running. The demo runs 30.
