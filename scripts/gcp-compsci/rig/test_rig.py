@@ -762,6 +762,15 @@ class Clients(unittest.TestCase):
         for v in ('traderx-client-1', 'traderx-client-2', 'traderx-client-3'):
             self.assertIsNotNone(first(calls, rf'instances stop {v} '), v)
 
+    def test_kdb_vm_starts_and_stops_with_the_rig_unless_disabled(self):
+        """FR-PRG-35: the KDB-X query VM rides the rig's VM lifecycle; KDB_VM= leaves it out."""
+        rc, out, calls = run('rig_down')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'instances stop traderx-kdb '), calls)
+        rc, out, calls = run('rig_down', KDB_VM='')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(first(calls, r'traderx-kdb'), calls)
+
     def test_more_than_three_is_refused(self):
         rc, out, _ = run('echo "vms=$CLIENT_VMS"', CLIENTS='1')   # FR-PRG-26: one VM, not "1 2 1" (BSD seq 2 1)
         self.assertIn('vms=traderx-client-1\n', out)

@@ -69,6 +69,10 @@ named evidence and remove only their own resources. The component reuses the ord
   server's one `kubectl get pods -l app=cluster-gateway`, cached 2 s) and shows the Ready count, gateways
   still starting and those draining, a 10-minute strip of the Ready count, and a time-stamped log of every
   change of the Ready count (`3 → 4 scaled out`), so an HPA scale-out is visible as it happens.
+- FR-DA12 **The Kdb tab's q runs in the cloud.** In production `KDB_Q_URL` SHALL name the `traderx-kdb` VM
+  (`http://traderx-kdb.us-east1-b.c.project-compsci-484414.internal:5050`, set by `prepare.py`), where
+  `scripts/demo-kdb/install-service.sh` runs `demo-hdb.q` as `traderx-kdb.service` from yaakov's own KDB-X
+  install. The VM has no service account; ingress is IAP SSH and port 5050 from the pod range (10.92.0.0/16) only.
 - FR-DA11 **Skew is not divergence.** The System tab's member headline SHALL be green when all members report the
   same applied sequence and trades, neutral ("all N members applying — sequences K apart while orders flow") when all
   answer at different sequences, and red only when a member does not answer. Production 2026-11-01 at ~230K orders/s

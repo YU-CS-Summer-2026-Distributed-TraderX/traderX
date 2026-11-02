@@ -46,6 +46,9 @@ CLIENTS=${CLIENTS:-1}
 [[ "$CLIENTS" =~ ^[1-3]$ ]] || { echo "CLIENTS is 1..3" >&2; exit 2; }
 # FR-PRG-26: not `seq 2 $CLIENTS`; BSD seq counts DOWN for CLIENTS=1 ("2 1"), which started and stopped client-2 too.
 CLIENT_VMS=$CLIENT_VM; for ((i = 2; i <= CLIENTS; i++)); do CLIENT_VMS="$CLIENT_VMS traderx-client-$i"; done
+# FR-PRG-35: the KDB-X query VM (scripts/demo-kdb) starts and stops with the rig; KDB_VM= runs without it.
+KDB_VM=${KDB_VM-traderx-kdb}
+RIG_VMS="$CLIENT_VMS${KDB_VM:+ $KDB_VM}"
 GATE_SHADOW_PATH=${GATE_SHADOW_PATH:-/recon/shadow-state}
 EVIDENCE=${EVIDENCE:-$PWD/rig-evidence/$(date +%Y%m%d-%H%M%S)}
 DRY=0
@@ -119,7 +122,7 @@ no_rig_instances(){ local p out
     out=$(gc compute instances list --filter="name~^gke-${CLUSTER}-${p}-" --format='value(name)') || return 1
     [ -z "$out" ] || return 1
   done; }
-vm_status_is(){ local v; for v in $CLIENT_VMS; do
+vm_status_is(){ local v; for v in $RIG_VMS; do
   [ "$(gc compute instances describe "$v" --zone "$ZONE" --format='value(status)')" = "$1" ] || return 1; done; }
 pool_instances_are(){ [ "$(pool_size "$1")" = "$2" ]; }
 pool_autoscaling(){ [ "$(gc container node-pools describe gateway-pool --cluster "$CLUSTER" --zone "$ZONE" \
@@ -195,6 +198,8 @@ require_pools(){
   engine_has_sysctls || die "engine-pool has no sysctls: run 'rig.sh pools' while it is at 0"
   local v; for v in $CLIENT_VMS; do
     gc compute instances describe "$v" --zone "$ZONE" >/dev/null 2>&1 || die "$v missing: run 'rig.sh pools'"; done
+  [ -z "$KDB_VM" ] || gc compute instances describe "$KDB_VM" --zone "$ZONE" >/dev/null 2>&1 \
+    || die "$KDB_VM missing: create it (scripts/demo-kdb/README.md) or run with KDB_VM="
 }
 
 # ---- gateways held at 0 --------------------------------------------------------------------------------------------
@@ -839,17 +844,17 @@ rig_up(){
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
     loadgen_nodes
-    for v in $CLIENT_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
+    for v in $RIG_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
   else
     hold_gateways
     hold_members
-    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $CLIENT_VMS started"
+    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $RIG_VMS started"
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
     loadgen_nodes
-    for v in $CLIENT_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
+    for v in $RIG_VMS; do do_ gcloud compute instances start "$v" --zone "$ZONE" --project "$PROJECT"; done
     for p in $RIG_POOLS; do wait_for 900 "$p: $(pool_nodes $p) nodes Ready" pool_ready "$p" "$(pool_nodes $p)"; done
     step "support workloads Ready (everything but the members and the gateways)"
     if [ "$DRY" = 1 ]; then note "would wait: every Deployment except cluster-gateway rolled out"; else
@@ -961,16 +966,16 @@ rig_down(){
     note "members not 3/3 Ready ($ready): no barrier or baseline possible; stopping them as they are"
     do_ kubectl --context "$CTX" -n "$NS" scale statefulset/order-matcher-cluster --replicas=0
   fi
-  step "every rig pool to 0; $CLIENT_VMS stopped"
+  step "every rig pool to 0; $RIG_VMS stopped"
   { [ "$DRY" = 1 ] || pool_exists loadgen-pool; } && do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool \
     --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   for p in gateway-pool nats-pool engine-pool default-pool; do
     do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   done
-  local v; for v in $CLIENT_VMS; do do_ gcloud compute instances stop "$v" --zone "$ZONE" --project "$PROJECT"; done
+  local v; for v in $RIG_VMS; do do_ gcloud compute instances stop "$v" --zone "$ZONE" --project "$PROJECT"; done
   step "verified with gcloud compute instances list, not the cluster's node count"
   wait_for 900 "no rig node instance left" no_rig_instances
-  wait_for 300 "$CLIENT_VMS TERMINATED" vm_status_is TERMINATED
+  wait_for 300 "$RIG_VMS TERMINATED" vm_status_is TERMINATED
   [ "$DRY" = 1 ] || gc compute instances list --format='table(name,status,machineType.basename())' | tee "$EVIDENCE/instances-after.txt"
   [ "${DOWN_FAILED:-0}" = 0 ] || { echo "rig down: done, but a check FAILED (see above)" >&2; exit 3; }
   step "rig down: done"
@@ -1041,7 +1046,7 @@ rig_snapshot_base(){
 rig_status(){
   preflight
   for p in $RIG_POOLS; do note "$p: $(pool_size $p) instance(s)"; done
-  local v; for v in $CLIENT_VMS; do
+  local v; for v in $RIG_VMS; do
     note "$v: $(gc compute instances describe "$v" --zone "$ZONE" --format='value(status)' 2>/dev/null || echo absent)"; done
   kc get sts,deploy,hpa,svc order-matcher-gw-ilb 2>/dev/null | grep -E 'order-matcher|cluster-gateway|hpa|NAME' || true
   kc get configmap rig-gate -o jsonpath='{.data.status} {.data.at}{"\n"}' 2>/dev/null || note "no gate record"

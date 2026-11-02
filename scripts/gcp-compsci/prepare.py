@@ -26,6 +26,8 @@ CUSTOM_WORKLOADS = {'order-matcher-cluster','cluster-gateway','risk-extract',
 # FR-FTL-07 (2026-11-01, yaakov): every account, as CLIENT1 — a desk account created on the day is tradable from the Mac;
 # the session stays gated by its own password, the /32 allowlist and the pinned certificate.
 FIX_TLS = {'port': 18143, 'compId': 'EXTQFJ', 'accounts': '*'}
+# FR-DA12: the Kdb tab's q service, the traderx-kdb VM (scripts/demo-kdb) by its zonal internal name.
+KDB_Q_URL = 'http://traderx-kdb.us-east1-b.c.project-compsci-484414.internal:5050'
 # ADR-096 (FR-PRG-11): the rehearsal's load clients, opt-in (--fix-test-clients). Each CompID trades only its own
 # dedicated test account; passwords from Secret fix-test-clients (provision-fix-test-clients.py). The production-rig
 # clean-up task removes them, their accounts and their trades.
@@ -705,6 +707,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
                 for entry in env:
                     if entry['name'] in ('ADMIN_PASSWORD_HASH', 'AUTH_SESSION_SECRET'):
                         entry['valueFrom']['secretKeyRef'].pop('optional', None)
+                env[:] = [e for e in env if e['name'] != 'KDB_Q_URL'] + [{'name': 'KDB_Q_URL', 'value': KDB_Q_URL}]
             if doc['metadata']['name'] == 'risk-extract':
                 env.append({'name':'RISK_EXTRACT_READY_DIRECTORY','value':'/data/risk-extracts/ready'})
                 if NAMESPACE != 'traderx':

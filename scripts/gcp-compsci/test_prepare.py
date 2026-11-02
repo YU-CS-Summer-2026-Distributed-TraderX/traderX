@@ -148,6 +148,12 @@ class Rendering(unittest.TestCase):
         plan=__import__('json').loads((self.output/'plan.json').read_text())
         self.assertIn('fix-session-password',plan['requiredSecretKeys']['auth-secrets'])
 
+    def test_console_reads_the_kdb_vm(self):
+        """FR-DA12: the Kdb tab's q service is the traderx-kdb VM, by name, exactly once."""
+        console=next(d for d in self.docs if d['metadata']['name']=='web-front-end-console' and module.podspec(d))
+        urls=[e['value'] for e in module.podspec(console)['containers'][0]['env'] if e['name']=='KDB_Q_URL']
+        self.assertEqual(urls,['http://traderx-kdb.us-east1-b.c.project-compsci-484414.internal:5050'])
+
     def test_unauthenticated_fix_acceptor_is_refused(self):
         for mutate in ('drop-auth','literal-auth','dev-opt-out'):
             docs=copy.deepcopy(self.docs)

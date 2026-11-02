@@ -114,6 +114,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-35:** `rig.sh up` SHALL start, and `rig.sh down` stop and confirm TERMINATED, the KDB-X query VM
+  `KDB_VM` (default `traderx-kdb`, FR-DA12) with the client VMs; `up` refuses when it is missing, and `KDB_VM=`
+  runs the rig without it.
 - **FR-PRG-34:** `rig.sh up` SHALL wait for each support Deployment by its replica counts (generation observed, every
   replica updated and available, none extra), up to 900 s, not by `kubectl rollout status`. Images applied at 0 nodes
   leave rollouts flagged ProgressDeadlineExceeded, which `rollout status` reports as a failure at once (production
