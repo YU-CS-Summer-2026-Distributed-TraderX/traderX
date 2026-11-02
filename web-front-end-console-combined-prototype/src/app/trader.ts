@@ -9,6 +9,7 @@ import { RiskPage as ConnectedRiskPage } from '../../../web-front-end-console/sr
 import riskFixture from '../../../web-front-end-console/test-fixtures/risk-demo-synthetic.json';
 import { AssetClass, INSTRUMENTS, FixtureInstrument } from './fixtures';
 import { Desk, Freshness, fmtPrice, fmtQty, fmtUsd, reasonText } from './desk';
+import { Book, readBook } from './rig';
 import { Session } from './session';
 
 const inst = (k: string) => INSTRUMENTS.find(i => i.key === k)!;
@@ -108,9 +109,61 @@ export class OverviewPage {
 
 // ================================= Markets =================================
 
+/** FR-CUI-25: Level 1 (quote strip) and Level 2 (ladder) of the selected book, by each type's display rule. */
+@Component({
+  selector: 'book-card',
+  imports: [HelpTip],
+  template: `
+<section class="card" aria-labelledby="book-h" data-testid="order-book">
+  <div class="card-head"><h2 id="book-h">Order book</h2>
+    <help-tip text="The venue's displayed book. An iceberg shows only its visible slice; stop orders wait off the book until triggered. No account is shown." /></div>
+  @if (!desk.connected) { <p class="state">The order book is read from a connected rig.</p> }
+  @else if (book(); as b) {
+    <p class="l1" data-testid="l1"><b>{{ b.bids[0] ? fmtQty(b.bids[0].qty) + ' × ' + px(b.bids[0].px) : '—' }}</b>
+      <span class="faint gap">bid / ask</span>
+      <b>{{ b.asks[0] ? px(b.asks[0].px) + ' × ' + fmtQty(b.asks[0].qty) : '—' }}</b>
+      <span class="faint gap">last {{ b.last !== undefined ? px(b.last) : '—' }}</span></p>
+    <table data-testid="l2">
+      <thead><tr><th scope="col" class="num">Bid size</th><th scope="col" class="num">Bid</th><th scope="col" class="num">Ask</th><th scope="col" class="num">Ask size</th></tr></thead>
+      <tbody>
+        @for (i of rows(); track i) {
+          <tr><td class="num">{{ b.bids[i] ? fmtQty(b.bids[i].qty) : '' }}</td><td class="num">{{ b.bids[i] ? px(b.bids[i].px) : '' }}</td>
+            <td class="num">{{ b.asks[i] ? px(b.asks[i].px) : '' }}</td><td class="num">{{ b.asks[i] ? fmtQty(b.asks[i].qty) : '' }}</td></tr>
+        } @empty { <tr><td colspan="4" class="faint">Nothing resting on this book.</td></tr> }
+      </tbody>
+    </table>
+  } @else if (failed()) { <p class="state">The matching engine did not answer; retrying.</p> }
+  @else { <p class="state">Loading…</p> }
+</section>`,
+})
+export class BookCard {
+  readonly desk = inject(Desk);
+  readonly key = input.required<string>();
+  readonly book = signal<Book | null>(null);
+  readonly failed = signal(false);
+  readonly fmtQty = fmtQty;
+  readonly rows = computed(() => { const b = this.book(); return b ? [...Array(Math.max(b.bids.length, b.asks.length)).keys()] : []; });
+  readonly px = (p: number) => fmtPrice(p, this.desk.instrument(this.key()));
+  constructor() {
+    effect(onCleanup => {
+      const key = this.key();
+      if (!this.desk.connected) return;
+      untracked(() => { this.book.set(null); this.failed.set(false); });
+      let live = true;
+      const poll = async () => {
+        const b = await readBook(u => this.desk.api.load(u, { signal: AbortSignal.timeout(3000) }), key);
+        if (!live) return;
+        if (b) { this.book.set(b); this.failed.set(false); } else this.failed.set(true);
+      };
+      void poll(); const t = setInterval(() => void poll(), 2000);   // ponytail: 2 s poll, a pushed feed when Level 3 lands
+      onCleanup(() => { live = false; clearInterval(t); });
+    });
+  }
+}
+
 @Component({
   selector: 'markets-page',
-  imports: [RouterLink, PriceChip, Fresh, HelpTip, FormsModule],
+  imports: [RouterLink, PriceChip, Fresh, HelpTip, FormsModule, BookCard],
   template: `
 <div class="page-head"><h1>Markets</h1>
   <help-tip text="Prices come from several sources that are not interchangeable: replayed tape, a published reference curve, a model, a simulation, or yesterday's close carried forward. The chip says which; the age says how old it is." /></div>
@@ -153,6 +206,7 @@ export class OverviewPage {
       </dl>
       <a class="btn-primary btnlink" [routerLink]="['/desk/orders']" [queryParams]="{ i: d.key }">Trade {{ d.key }}</a>
     </section>
+    <book-card [key]="d.key" />
   }
 </div>
   `,

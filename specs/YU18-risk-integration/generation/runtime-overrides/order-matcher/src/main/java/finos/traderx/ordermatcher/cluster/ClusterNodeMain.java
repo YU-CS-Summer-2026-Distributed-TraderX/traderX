@@ -401,6 +401,42 @@ public final class ClusterNodeMain {
             }
             respond(exchange, 200, sb.append('}').toString());
         });
+        // FR-CUI-25: Level 1 and Level 2 of one book, by the venue's display rules: the engine's own level
+        // aggregates, so an iceberg counts only its displayed tranche and pending stops (off-book) never appear.
+        // GET /book?ticker=X[&levels=N], N 1..50 (default 10). Racy-but-safe edge read (bookDepth).
+        server.createContext("/book", exchange -> {
+            if (service.engine() == null) {
+                respond(exchange, 503, "{\"error\":\"engine not started\"}");
+                return;
+            }
+            final java.util.Map<String, String> q = new java.util.HashMap<>();
+            final String raw = exchange.getRequestURI().getRawQuery();
+            if (raw != null) {
+                for (final String kv : raw.split("&")) {
+                    final int eq = kv.indexOf('=');
+                    if (eq > 0) {
+                        q.put(kv.substring(0, eq), java.net.URLDecoder.decode(kv.substring(eq + 1), java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+            }
+            final String ticker = q.get("ticker");
+            final int id = ticker == null ? -1 : service.symbolIdFor(ticker);
+            if (id < 0) {
+                respond(exchange, 404, "{\"error\":\"unknown ticker\"}");
+                return;
+            }
+            int levels = 10;
+            try {
+                levels = Math.max(1, Math.min(50, Integer.parseInt(q.getOrDefault("levels", "10"))));
+            } catch (NumberFormatException ignored) {
+                // default
+            }
+            final long[] bidPx = new long[levels], bidQty = new long[levels], askPx = new long[levels], askQty = new long[levels];
+            final int nb = service.engine().bookDepth(id, finos.traderx.ordermatcher.lmax.InputEvent.SIDE_BUY, bidPx, bidQty, levels);
+            final int na = service.engine().bookDepth(id, finos.traderx.ordermatcher.lmax.InputEvent.SIDE_SELL, askPx, askQty, levels);
+            respond(exchange, 200, bookJson(ticker, bidPx, bidQty, nb, askPx, askQty, na,
+                service.engine().markPx(id), memberId, service.appliedSeq()));
+        });
         // FR-CUI-24: booked swaps and swaptions, read-only, for the Desk and the console. The routes that book them
         // are write-only and nothing else holds a contract until the end-of-day cut. ?account=N filters.
         server.createContext("/otc/contracts", exchange -> {
@@ -1087,6 +1123,31 @@ public final class ClusterNodeMain {
     private static String env(final String name, final String fallback) {
         final String value = System.getenv(name);
         return value == null || value.isEmpty() ? fallback : value;
+    }
+
+    /** FR-CUI-25: one book's top levels, best first, prices in the /bbo scale (6 decimals). */
+    static String bookJson(final String ticker, final long[] bidPx, final long[] bidQty, final int nb,
+                           final long[] askPx, final long[] askQty, final int na, final long mark,
+                           final int memberId, final long applied) {
+        final StringBuilder sb = new StringBuilder(256 + (nb + na) * 48);
+        sb.append("{\"member\":").append(memberId).append(",\"applied\":").append(applied)
+          .append(",\"ticker\":\"").append(ticker.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+        if (mark != 0L) {
+            sb.append(",\"last\":").append(java.math.BigDecimal.valueOf(mark, 6).toPlainString());
+        }
+        levelsJson(sb.append(",\"bids\":["), bidPx, bidQty, nb);
+        levelsJson(sb.append("],\"asks\":["), askPx, askQty, na);
+        return sb.append("]}").toString();
+    }
+
+    private static void levelsJson(final StringBuilder sb, final long[] px, final long[] qty, final int n) {
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append("{\"px\":").append(java.math.BigDecimal.valueOf(px[i], 6).toPlainString())
+              .append(",\"qty\":").append(qty[i]).append('}');
+        }
     }
 
     /** FR-CUI-24: contract tuples as JSON, in the terms of the regulatory report's OTC rows and the contracts CSV.

@@ -60,3 +60,17 @@ export async function readContracts(load: Loader, account: number, members = 3):
   }
   return null;
 }
+
+export type BookLevel = { px: number; qty: number };
+export type Book = { ticker: string; last?: number; bids: BookLevel[]; asks: BookLevel[] };
+/** FR-CUI-25: Level 1 + Level 2 of one book from the engine (any member). null = no member answered;
+ *  a 404 (never-registered ticker) is an empty book, not an outage. */
+export async function readBook(load: Loader, ticker: string, levels = 10, members = 3): Promise<Book | null> {
+  for (let m = 0; m < members; m++) {
+    const r = await load(`/mem/${m}/book?ticker=${encodeURIComponent(ticker)}&levels=${levels}`).catch(() => null);
+    if (r?.status === 404) return { ticker, bids: [], asks: [] };
+    const b = r?.status === 200 ? r.body as Book : undefined;
+    if (b && Array.isArray(b.bids) && Array.isArray(b.asks)) return b;
+  }
+  return null;
+}

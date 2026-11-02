@@ -90,6 +90,13 @@ is still a demo identity and does not establish production authentication or ben
   the account view: no member answering says so in the card and never fails positions, fills or orders. A Desk
   session without the operator role reaches it only with exactly `?account=N` for an account it owns; any other
   query is refused, because the member answers every account without one.
+- FR-CUI-25: Markets SHALL show the selected instrument's displayed order book: Level 1 (best bid size × price,
+  best ask price × size, last trade) and Level 2 (up to 10 levels each side, best first, visible size per level),
+  refreshed every 2 s. Each member serves `GET /book?ticker=X&levels=N` (1..50) from the engine's level aggregates,
+  which apply each order type's display rule: an iceberg counts only its displayed tranche, pending stop,
+  stop-limit and trailing-stop orders are off the book, a pegged order shows at its current pegged price. No
+  account or order identity is served; it is market data, readable by any Desk session. Level 3 (per order) is
+  not served.
 
 **Unmanaged runs, including the hosted CompSci Desk.** The CompSci render serves an unmanaged run
 (`legacy-unknown`, no registered ACTIVE descriptor). By FR-CUI-17 a trader-only session SHALL refuse every

@@ -561,6 +561,26 @@ class OrderTypesEngineTest {
     }
 
     @Test
+    void frCui25_depthIsThePublicBookByEachTypesDisplayRule() {
+        newEngine();
+        order(C, BUY, 10, p(99));
+        iceberg(D, BUY, 100, 5, p(99));     // only its 5-share tranche shows
+        order(E, BUY, 7, p(98));
+        stop(F, BUY, 50, p(105));           // pending: off-book until triggered
+        order(G, SELL, 3, p(101));
+        final long[] px = new long[5];
+        final long[] qty = new long[5];
+        assertEquals(2, engine.bookDepth(SEC, BUY, px, qty, 5));
+        assertEquals(p(99), px[0]);
+        assertEquals(15L, qty[0], "10 limit + the iceberg's 5 displayed, not its 100");
+        assertEquals(p(98), px[1]);
+        assertEquals(7L, qty[1]);
+        assertEquals(1, engine.bookDepth(SEC, SELL, px, qty, 5), "the stop is not on the book");
+        assertEquals(p(101), px[0]);
+        assertEquals(1, engine.bookDepth(SEC, BUY, px, qty, 1), "levels cap at the requested depth");
+    }
+
+    @Test
     void sc19_sizeDownKeepsPriorityAndABiggerDisplayLosesIt() {
         newEngine();
         final int ice = iceberg(B, SELL, 100, 10, p(100));

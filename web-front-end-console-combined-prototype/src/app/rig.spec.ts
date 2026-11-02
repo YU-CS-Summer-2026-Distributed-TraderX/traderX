@@ -1,4 +1,4 @@
-import { NO_MANAGED_RUN, readContracts, readRigAccount } from './rig';
+import { NO_MANAGED_RUN, readBook, readContracts, readRigAccount } from './rig';
 import { ACTIVE_URL, REGISTRY_URL } from '../../../web-front-end-console/src/app/run-scope';
 describe('connected desk run boundary',()=>{
   const run={projection_scope:'r1',phase:'ACTIVE'};
@@ -62,5 +62,15 @@ describe('booked OTC contracts (FR-CUI-24)',()=>{
   });
   it('is null when no member answers',async()=>{
     expect(await readContracts(async()=>{throw Error('down');},22214)).toBeNull();
+  });
+});
+describe('order book (FR-CUI-25)',()=>{
+  it('reads one member, encodes the ticker, and treats an unknown ticker as an empty book',async()=>{
+    const urls:string[]=[];
+    const b=await readBook(async u=>{urls.push(u);return u.startsWith('/mem/0/')?{status:503,body:{}}:{status:200,body:{ticker:'BRK B',bids:[{px:1,qty:2}],asks:[]}};},'BRK B',5);
+    expect(urls).toEqual(['/mem/0/book?ticker=BRK%20B&levels=5','/mem/1/book?ticker=BRK%20B&levels=5']);
+    expect(b!.bids.length).toBe(1);
+    expect(await readBook(async()=>({status:404,body:{}}),'ZZZ')).toEqual({ticker:'ZZZ',bids:[],asks:[]});
+    expect(await readBook(async()=>{throw Error('down');},'IBM')).toBeNull();
   });
 });

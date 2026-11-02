@@ -86,4 +86,5 @@ test('FR-CUI-24: an OTC contracts read is owned by exactly its ?account=, and an
  for(const u of ['/mem/0/otc/contracts','/mem/0/otc/contracts?x=1&account=11','/mem/0/otc/contracts?account=11&account=12','/mem/0/OTC/contractsX?account=11%26','/mem/0/%6ftc/contracts'])
   assert.equal(deskProxyTarget(u).account,-1,u);
  assert.equal(deskProxyTarget('/mem/0/bbo').account,null);
+ assert.equal(deskProxyTarget('/mem/0/book?ticker=IBM&levels=10').account,null,'FR-CUI-25: the displayed book is market data, owned by no account');
 });

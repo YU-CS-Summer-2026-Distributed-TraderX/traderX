@@ -66,3 +66,4 @@ unmanaged-run paragraph. Not re-run live.
 - [x] 2026-11-01 walkthrough: a Limit price kept after switching the ticket to Market refused the order 'field not allowed'; the ticket now carries only the fields its order type takes (workspace.spec).
 - [x] Booked swaps and swaptions on Positions from the members' `/otc/contracts` (FR-CUI-24), 2026-11-01: the routes that book them are write-only, so the Demo console's list lived only in its own tab's sessionStorage and the Desk had a placeholder.
 - [x] FR-CUI-24 live on production 2026-11-01 11:20 pm ET (tip-b163c0c0-j21): all three members return SW-4528 (account 66001) after a down/up, and the hosted Desk's Positions lists it.
+- [x] Order book on Markets, Level 1 + Level 2 (FR-CUI-25), 2026-11-02: member `/book` over the engine's existing `bookDepth` (no engine change); Level 3 left for after the 2026-11-05 demo.
