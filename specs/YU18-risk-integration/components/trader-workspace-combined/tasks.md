@@ -70,3 +70,4 @@ unmanaged-run paragraph. Not re-run live.
 - [x] FR-CUI-25 seen live on the hosted Desk 2026-11-02: an IBM iceberg sell 500/50 @ 195 shows 50 on the ask; a buy stop @ 200 is absent (Waiting for trigger).
 - [x] Priced-only toggle on all four all-equity lists (FR-CUI-26), 2026-11-02; quote strip spacing.
 - [x] FR-CUI-26 seen live on the hosted Desk and Demo console 2026-11-02 (tip-20672053-j21).
+- [x] Kdb tab on the Desk (FR-CUI-27), 2026-11-02: reuses the console's `kdb-live` panel; the 4–5 tab rule widened to 6 for it.

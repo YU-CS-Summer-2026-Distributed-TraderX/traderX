@@ -1283,6 +1283,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-CUI-24` | CI |  |  | OtcContractsJsonTest: swap and swaption rendered in the report's terms, account filter; rig.spec: member fall-through, other-account rows dropped, null when no member answers; test-desk-orders: only exactly `?account=N` is owned, every other OTC query is owned by no workspace |
 | YU18 | `FR-CUI-25` | CI |  |  | OrderTypesEngineTest frCui25: depth = limit + iceberg tranche, stop absent, best-first, capped; BookJsonTest: L1/L2 JSON, no last before a trade; rig.spec: member fall-through, encoded ticker, 404 = empty book; test-desk-orders: /book owned by no account |
 | YU18 | `FR-CUI-26` | CI |  |  | workspace.spec: Markets hides unpriced equities, keeps the selected one and other classes, shows all when off; priced-only.spec: console equity ticket same rule incl. funds |
+| YU18 | `FR-CUI-27` | CI |  |  | workspace.spec: /desk/kdb routes to KdbDeskPage, Kdb is a trader tab, every tab has a feature entry |
 | YU18 | `FR-DA01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-DA03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |

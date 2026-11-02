@@ -4,7 +4,7 @@ import { ApplicationConfig, inject, provideBrowserGlobalErrorListeners, provideZ
 import { CanActivateFn, Router, Routes, provideRouter, withComponentInputBinding } from '@angular/router';
 import { LoginPage } from './app';
 import { Session, canUse } from './session';
-import { MarketsPage, OrdersPage, OverviewPage, PositionsPage, RiskPage } from './trader';
+import { KdbDeskPage, MarketsPage, OrdersPage, OverviewPage, PositionsPage, RiskPage } from './trader';
 import { AccountsAdminPage, ControlsPage, HealthPage, MonitoringPage, OperationsPage } from './admin';
 import { ToolPage } from './tools';
 
@@ -32,6 +32,7 @@ export const routes: Routes = [
     { path: 'orders', component: OrdersPage, title: 'Orders · TraderX Desk' },
     { path: 'positions', component: PositionsPage, title: 'Positions · TraderX Desk' },
     { path: 'risk', component: RiskPage, title: 'Risk · TraderX Desk' },
+    { path: 'kdb', component: KdbDeskPage, title: 'Kdb · TraderX Desk' },
     { path: 'tools/:id', component: ToolPage, title: 'Tools · TraderX Desk' },
   ] },
   { path: 'admin', canActivate: [admin], children: [

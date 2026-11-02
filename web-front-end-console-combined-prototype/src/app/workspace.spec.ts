@@ -127,8 +127,15 @@ describe('fixture desk rules', () => {
 });
 
 describe('navigation and feature map', () => {
-  it('has four or five primary tabs per workspace', () => {
-    for (const tabs of [TRADER_TABS, ADMIN_TABS]) expect(tabs.length).toBeGreaterThanOrEqual(4), expect(tabs.length).toBeLessThanOrEqual(5);
+  it('has four to six primary tabs per workspace', () => {   // six since FR-CUI-27 (Kdb)
+    for (const tabs of [TRADER_TABS, ADMIN_TABS]) expect(tabs.length).toBeGreaterThanOrEqual(4), expect(tabs.length).toBeLessThanOrEqual(6);
+  });
+
+  it('FR-CUI-27: the Kdb tab routes to the live q page', async () => {
+    const { routes } = await import('./app.config');
+    const desk = routes.find(r => r.path === 'desk')!.children!;
+    expect(desk.find(r => r.path === 'kdb')?.component?.name).toContain('KdbDeskPage');
+    expect(TRADER_TABS.some(t => t.id === 'kdb')).toBeTrue();
   });
 
   it('places every feature on a real tab of its own workspace or in its menu', () => {

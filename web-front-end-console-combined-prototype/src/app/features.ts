@@ -26,6 +26,7 @@ export const TRADER_TABS = [
   { id: 'orders', label: 'Orders' },
   { id: 'positions', label: 'Positions' },
   { id: 'risk', label: 'Risk' },
+  { id: 'kdb', label: 'Kdb' },   // FR-CUI-27
 ];
 
 export const ADMIN_TABS = [
@@ -39,6 +40,7 @@ export const ADMIN_TABS = [
 export const FEATURES: Feature[] = [
   // ---- trader: primary tabs ----
   { id: 'account-summary', title: 'Account summary and alerts', purpose: 'What needs attention on the selected account.', from: 'new (uses blotter and activity data)', built: 'fixture', place: 'overview', ws: 'trader' },
+  { id: 'kdb-history', title: 'KDB-X history', purpose: 'Live q against a 5,000,000-trade account history.', from: 'Kdb › KDB-X history · live q', built: 'fixture', place: 'kdb', ws: 'trader' },
   { id: 'watchlist', title: 'Watchlist', purpose: 'Your own list of instruments with price, source and age.', from: 'new', built: 'fixture', place: 'markets', ws: 'trader' },
   { id: 'instrument', title: 'Instrument details', purpose: 'Terms, price unit, price source and age.', from: 'Trading › Order entry (live price line, bond terms, OCC decode)', built: 'fixture', place: 'markets', ws: 'trader' },
   { id: 'ticket', title: 'Order ticket', purpose: 'Enter orders of every supported type and time in force.', from: 'Trading › Order entry', built: 'fixture', place: 'orders', ws: 'trader' },

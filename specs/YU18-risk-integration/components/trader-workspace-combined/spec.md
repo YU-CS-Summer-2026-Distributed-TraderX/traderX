@@ -100,6 +100,9 @@ is still a demo identity and does not establish production authentication or ben
 - FR-CUI-26: Every list of all equities (Desk Markets, the Desk equity ticket, the Demo console's equity ticket and
   its session instrument picker) SHALL offer a **Priced only** toggle, on by default, hiding equities and funds
   with no price yet. The selected or picked instrument always stays listed; options and bonds are never hidden by it.
+- FR-CUI-27: The Desk SHALL have a **Kdb** trader tab showing the Demo console's live q panel (FR-DA10) against the
+  same `/kdbq` service (the `traderx-kdb` VM in production, FR-DA12): presets for any session, free-form q only
+  signed in. The trader workspace has six primary tabs.
 
 **Unmanaged runs, including the hosted CompSci Desk.** The CompSci render serves an unmanaged run
 (`legacy-unknown`, no registered ACTIVE descriptor). By FR-CUI-17 a trader-only session SHALL refuse every

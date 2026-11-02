@@ -10,6 +10,7 @@ import riskFixture from '../../../web-front-end-console/test-fixtures/risk-demo-
 import { AssetClass, INSTRUMENTS, FixtureInstrument } from './fixtures';
 import { Desk, Freshness, fmtPrice, fmtQty, fmtUsd, reasonText } from './desk';
 import { Book, readBook } from './rig';
+import { KdbLive } from '../../../web-front-end-console/src/app/kdb-live';
 import { Session } from './session';
 
 const inst = (k: string) => INSTRUMENTS.find(i => i.key === k)!;
@@ -106,6 +107,16 @@ export class OverviewPage {
   readonly notLive = computed(() => this.session.prefs().watchlist.filter(k => this.desk.freshness(k).kind !== 'live').length);
   price(k: string): string { return fmtPrice(this.desk.marks()[k].price, this.desk.instrument(k)); }
 }
+
+// ================================= Kdb =================================
+
+/** FR-CUI-27: the Demo console's live q panel (FR-DA10) on the Desk, same /kdbq service and sign-in rule. */
+@Component({
+  selector: 'kdb-desk-page',
+  imports: [KdbLive],
+  template: `<div class="page-head"><h1>Kdb</h1></div><section class="card"><kdb-live /></section>`,
+})
+export class KdbDeskPage {}
 
 // ================================= Markets =================================
 
