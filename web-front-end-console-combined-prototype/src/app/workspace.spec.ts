@@ -254,3 +254,12 @@ describe('order action outcome (FR-CUI-19)',()=>{
   expect(actionOutcome(409,{error:'Active run changed. Nothing sent.',sent:false},'canceled').text).toBe('Refused: Active run changed. Nothing sent.');
  });
 });
+
+import { priceCell } from './trader';
+describe('FR-DA07 Desk price cell', () => {
+  it('shows — for a Market order instead of its stored 0', () => {
+    expect(priceCell(0, null)).toBe('—');
+    expect(priceCell('391.5', null)).toBe('391.5');
+    expect(priceCell(0, 380)).toBe('— stop 380');
+  });
+});

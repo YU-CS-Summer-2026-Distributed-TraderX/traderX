@@ -298,7 +298,7 @@ export class MarketsPage {
               <td class="num">{{ o.ref }}</td><td class="faint">{{ o.updatedAt.slice(11) }}</td><td>{{ o.key }}</td><td>{{ o.side }}</td>
               <td class="num">{{ fmtQty(o.filled) }} / {{ fmtQty(o.quantity) }}</td>
               <td>{{ o.orderType === 'UNTYPED' ? 'Limit' : typeLabel(o.orderType) }} · {{ o.tif }}</td>
-              <td class="num">{{ o.limitPrice ?? '' }}{{ o.stopPrice ? ' stop ' + o.stopPrice : '' }}</td>
+              <td class="num">{{ priceCell(o.limitPrice, o.stopPrice) }}</td>
               <td><span class="st" [class]="o.status">{{ statusWords(o.status) }}</span>
                 @if (o.reason) { <div class="faint">{{ reasonText(o.reason) }}</div> }</td>
               <td class="acts">
@@ -414,6 +414,7 @@ export class OrdersPage {
   canPriceAtMarket():boolean {const p=this.desk.marks()[this.key()]?.price;return Number.isFinite(p)&&p>0&&this.desk.freshness(this.key()).kind==='live';}
   priceAtMarket():void {if(this.canPriceAtMarket())this.limit.set(Number(this.desk.marks()[this.key()].price.toFixed(6)));}
   setType(t: OrderType): void { this.type.set(t); this.tif.set(defaultTif(t)); }
+  readonly priceCell = priceCell;
   uses(field: 'limitPrice' | 'stopPrice' | 'displayQuantity'): boolean {
     const t = this.type();
     return field === 'limitPrice' ? ['LIMIT', 'STOP_LIMIT', 'ICEBERG', 'PEGGED'].includes(t)
@@ -471,6 +472,11 @@ export class OrdersPage {
 const FIELD_WORDS: Record<string, string> = { limitPrice: 'limit price', stopPrice: 'stop price', displayQuantity: 'shown quantity',
   pegReference: 'peg', pegOffset: 'peg offset', trailAmount: 'trail amount', trailPercentBps: 'trail (bps)',
   timeInForce: 'time in force', orderType: 'order type' };
+/** FR-DA07 on the Desk: a Market order has no limit (the read model stores 0), so the cell says — instead of 0. */
+export const priceCell = (limit: unknown, stop: unknown): string => {
+  const l = Number(limit), st = Number(stop);
+  return (l > 0 ? String(limit) : '—') + (st > 0 ? ' stop ' + stop : '');
+};
 export const plain = (s: string) => s.replace(/\b(limitPrice|stopPrice|displayQuantity|pegReference|pegOffset|trailAmount|trailPercentBps|timeInForce|orderType)\b/g, m => FIELD_WORDS[m]);
 
 const num = (v: unknown): number | undefined => v === undefined || v === null || v === '' ? undefined : Number(v);

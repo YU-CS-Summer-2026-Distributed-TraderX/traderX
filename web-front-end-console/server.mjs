@@ -1097,7 +1097,8 @@ function proxyToEdge(req, res, rewrite) {
   const reqPath = edgePath((req.url ?? '').split('?')[0]);
   if (NEEDS_INTERNAL_JWT(reqPath, req)) {
     const token = internalToken.get();
-    if (!token) return json(res, 503, {code: 'internal_auth_unavailable', error: 'Service authentication is recovering. Try again shortly.'});
+    // sent:false: refused before dispatch, so the Desk says Refused/Nothing sent, never Outcome unknown (FR-CUI-19).
+    if (!token) return json(res, 503, {code: 'internal_auth_unavailable', sent: false, error: 'Service authentication is recovering. Nothing sent; try again shortly.'});
     headers['authorization'] = `Bearer ${token}`;
     delete headers['Authorization'];
   }

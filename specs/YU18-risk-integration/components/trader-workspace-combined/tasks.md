@@ -62,3 +62,4 @@ tests and 42 Angular tests pass. Spec gaps 19 and 20 closed in FR-CUI-21 (hosted
 unmanaged-run paragraph. Not re-run live.
 - [x] No loading flash on background polls (FR-CUI-22); operator sessions trade on an unmanaged run (FR-CUI-23), 2026-11-01.
 - [x] FR-CUI-23 covers the CompSci shape (active pointer on the registry's LEGACY row); kind 2026-11-01: alice (65000) DAY sell 100 MSFT @ 390.72 and bob (65001) Market IOC buy matched, positions −100/+100. The orders table scrolls instead of clipping its actions; an engine refusal reads in operator words (`reasonText`).
+- [x] 2026-11-01 production walkthrough: a Market order's price cell showed its stored 0; the Desk now shows — (FR-DA07, `priceCell`). An operator order refused for a missing internal token (console just started) read 'Outcome unknown'; the 503 now carries `sent:false` (FR-CUI-19).
