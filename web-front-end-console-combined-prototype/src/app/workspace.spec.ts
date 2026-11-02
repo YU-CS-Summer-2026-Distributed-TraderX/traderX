@@ -161,6 +161,14 @@ describe('combined ticket context', () => {
     expect(ticket.qty()).toBe(100); expect(ticket.problem()).toContain('limit price');
     discardPeriodicTasks();
   }));
+  it('sends no hidden price after switching from Limit to Market (walkthrough 2026-11-01)', fakeAsync(() => {
+    const session = TestBed.inject(Session); session.signIn('trader.a');
+    const ticket = TestBed.runInInjectionContext(() => new OrdersPage()); TestBed.tick(); tick(300);
+    ticket.limit.set(180); ticket.setType('MARKET');
+    expect(ticket.ticket().limitPrice).toBeUndefined();
+    expect(ticket.problem()).not.toContain('field not allowed');
+    discardPeriodicTasks();
+  }));
   it('clears a price when the instrument changes within one product', fakeAsync(() => {
     const session = TestBed.inject(Session); session.signIn('trader.a');
     const ticket = TestBed.runInInjectionContext(() => new OrdersPage()); TestBed.tick(); tick(300);

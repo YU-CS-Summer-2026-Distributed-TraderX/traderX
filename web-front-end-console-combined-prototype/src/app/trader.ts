@@ -368,9 +368,12 @@ export class OrdersPage {
 
   readonly ticket = computed<TypedTicket>(() => ({
     orderType: this.type(), timeInForce: this.tif(), side: this.side(), quantity: Number(this.qty()),
-    limitPrice: num(this.limit()), stopPrice: num(this.stop()), displayQuantity: num(this.display()),
+    // Only the fields this type takes: a price typed for a Limit and kept after switching to Market is hidden, and
+    // sending it refused the order "field not allowed" (production walkthrough 2026-11-01).
+    limitPrice: this.uses('limitPrice') ? num(this.limit()) : undefined, stopPrice: this.uses('stopPrice') ? num(this.stop()) : undefined,
+    displayQuantity: this.uses('displayQuantity') ? num(this.display()) : undefined,
     pegReference: this.type() === 'PEGGED' ? this.peg() : undefined, pegOffset: this.type() === 'PEGGED' ? Number(this.pegOffset()) : undefined,
-    trailAmount: num(this.trail()), trailPercentBps: num(this.trailBps()),
+    trailAmount: this.type() === 'TRAILING_STOP' ? num(this.trail()) : undefined, trailPercentBps: this.type() === 'TRAILING_STOP' ? num(this.trailBps()) : undefined,
   }));
   readonly quantityPrompt = 'Enter a quantity for your next order.';
   readonly problem = computed(() => {
