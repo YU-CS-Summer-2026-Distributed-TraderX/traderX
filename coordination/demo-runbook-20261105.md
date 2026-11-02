@@ -17,7 +17,7 @@ Times are US Eastern.
 | ~~Fresh epoch~~ **DONE 2026-11-01 4:17–4:37 pm ET**: e1101 archived (snapshots `traderx-e1101b-m{0,1,2}`, read model in `arc_e1101b_*`), now on clean epoch e1101b. **Run no load on it before the demo** — any scale-out load leaves a read-model backlog that the next `up`'s G3 refuses | — | — |
 | **Allowlist your network** — the HTTPS front door (demo/desk) and the FIX entry admit listed /32s only; 2026-11-01 your IP had changed and both answered 403 / unreachable | `curl -4 ifconfig.me`, then your access renders (`render-frontend-access.py`, `render-fix-tls-access.py --address 35.196.31.22 --source <ip>`) | 5 min |
 | Re-project cost | ≈ $5–7/h at 3 gateways + 2 loadgen nodes; each extra gateway node ≈ +$0.40/h. A 1 h rehearsal + 1 h demo ≈ $15 | — |
-| Admit the new images (console + desk carry every UI fix; the others are rebuilt at the same commit) | push the `tip-eb2e8a1c-j21` candidate (12 images + `web-front-end-desk`; build record `build-eb2e8a1c-20261101-r6/` in the coordinator's notes folder), `measure-admission.py`, `admit.py`, roll the console and desk | ~45 min |
+| ~~Admit the new images~~ **DONE 2026-11-01 ~6 pm ET**: `tip-cac2c333-j21` admitted (12/12 payloads identical, 20 controls) and applied at 0 nodes; it carries every fix incl. the System-tab member banner (FR-DA11) and the restore gate's shadow replay (FR-ERH-F16) | — | — |
 | KDB-X for step 4 | on the KDB-X host: `q scripts/demo-kdb/demo-hdb.q -p 5050 -db ~/traderx-demo-hdb` (first run builds 5,000,000 trades in ~10 s, later runs load in ~1 s); console env `KDB_Q_URL=http://<host>:5050` | 5 min |
 | Rehearse once end to end | this runbook | 1 h |
 
