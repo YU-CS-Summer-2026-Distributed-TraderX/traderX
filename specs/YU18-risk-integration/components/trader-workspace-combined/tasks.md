@@ -65,3 +65,4 @@ unmanaged-run paragraph. Not re-run live.
 - [x] 2026-11-01 production walkthrough: a Market order's price cell showed its stored 0; the Desk now shows — (FR-DA07, `priceCell`). An operator order refused for a missing internal token (console just started) read 'Outcome unknown'; the 503 now carries `sent:false` (FR-CUI-19).
 - [x] 2026-11-01 walkthrough: a Limit price kept after switching the ticket to Market refused the order 'field not allowed'; the ticket now carries only the fields its order type takes (workspace.spec).
 - [x] Booked swaps and swaptions on Positions from the members' `/otc/contracts` (FR-CUI-24), 2026-11-01: the routes that book them are write-only, so the Demo console's list lived only in its own tab's sessionStorage and the Desk had a placeholder.
+- [x] FR-CUI-24 live on production 2026-11-01 11:20 pm ET (tip-b163c0c0-j21): all three members return SW-4528 (account 66001) after a down/up, and the hosted Desk's Positions lists it.
