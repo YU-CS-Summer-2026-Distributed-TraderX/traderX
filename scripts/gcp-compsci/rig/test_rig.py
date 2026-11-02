@@ -906,6 +906,16 @@ class LoadgenIdle(unittest.TestCase):
         self.assertEqual(len(runs), 2, out)   # 120000 / (2 pods x 16 sessions) = 3750 per session
         for c in runs:
             self.assertIn('--ticker MSFT --px 412.50 --sessions 16 --rate 3750 --secs 600', c)
+            self.assertIn('--pause-ms 3000', c)   # FR-PRG-36 default
+
+    def test_the_phase_pause_is_configurable_and_bounded(self):
+        """FR-PRG-36: 1000 ms stopped a production run after one phase (2026-11-02)."""
+        rc, out, calls = self.start('120000', LOADGEN_PAUSE_MS='8000')
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(all('--pause-ms 8000' in c for c in calls if 'nohup node /load/binary-load.mjs' in c), out)
+        for bad in ('50', '90000', 'x'):
+            rc, out, calls = self.start('120000', LOADGEN_PAUSE_MS=bad)
+            self.assertEqual(rc, 2, out); self.assertIn('LOADGEN_PAUSE_MS', out); self.assertIsNone(first(calls, 'nohup'))
 
     def test_start_refuses_without_idle_pods_without_the_gate_and_when_a_pod_does_not_start(self):
         rc, out, calls = self.start('120000', LG_PODS=' ')

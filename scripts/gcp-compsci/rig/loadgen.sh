@@ -16,6 +16,9 @@ RIG_LIB=1 . "$HERE/rig.sh"
 ACTION=${1:-}; shift || true
 ARGS=(); for a in "$@"; do [ "$a" = --dry-run ] && DRY=1 || ARGS+=("$a"); done
 SESSIONS=16
+# FR-PRG-36: the pause between 10 s phases, in which every phase's orders must be answered or binary-load.mjs stops
+# ("not balanced at the phase boundary"). 1000 ms stopped a ~185K/s run after its first phase on 2026-11-02 (~500 orders per session unanswered).
+LOADGEN_PAUSE_MS=${LOADGEN_PAUSE_MS:-3000}   # binary-load.mjs's own default
 
 manifest(){
   local image=${LOADGEN_IMAGE:-}
@@ -61,6 +64,8 @@ start(){
   local rate=${ARGS[0]:-} secs=${ARGS[1]:-1800} ticker=${ARGS[2]:-MSFT} list n per px p
   [[ "$rate" =~ ^[1-9][0-9]*$ ]] || die "usage: loadgen.sh start RATE [SECS] [TICKER]  (RATE orders/s in total)"
   [[ "$secs" =~ ^[1-9][0-9]*$ ]] || die "SECS must be a whole number of seconds"
+  [[ "$LOADGEN_PAUSE_MS" =~ ^[0-9]+$ ]] && [ "$LOADGEN_PAUSE_MS" -ge 100 ] && [ "$LOADGEN_PAUSE_MS" -le 60000 ] \
+    || die "LOADGEN_PAUSE_MS must be 100..60000, got '$LOADGEN_PAUSE_MS'"
   if [ "$DRY" = 1 ]; then n=${LOADGEN_PODS:-8}; px='<mark>'
   else
     members_gated || die "the restore gate does not cover the members now running; run rig.sh up"
@@ -72,7 +77,7 @@ start(){
   fi
   per=$(( (rate + n * SESSIONS - 1) / (n * SESSIONS) ))
   step "load: $rate orders/s ($n pods x $SESSIONS sessions x $per/s), $ticker @ $px, ${secs}s"
-  local cmd="node /load/binary-load.mjs --resolve http://order-matcher:18110 --ticker $ticker --px $px --sessions $SESSIONS --rate $per --secs $secs --phase-secs 10 --pause-ms 1000 --out /tmp/results.json"
+  local cmd="node /load/binary-load.mjs --resolve http://order-matcher:18110 --ticker $ticker --px $px --sessions $SESSIONS --rate $per --secs $secs --phase-secs 10 --pause-ms $LOADGEN_PAUSE_MS --out /tmp/results.json"
   if [ "$DRY" = 1 ]; then note "would exec in each idle pod: nohup $cmd"; return 0; fi
   for p in $list; do kc exec "$p" -- sh -c "nohup $cmd > /tmp/load.log 2>&1 &" & done
   wait

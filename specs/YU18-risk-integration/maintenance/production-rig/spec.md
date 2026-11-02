@@ -114,6 +114,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-36:** `loadgen.sh start` SHALL pass `LOADGEN_PAUSE_MS` (100..60000, default 3000) as binary-load.mjs's phase
+  pause, the window in which every 10 s phase's orders must be answered before the boundary check. 1000 ms stopped a
+  ~185K/s production run after its first phase on 2026-11-02 (~500 orders per session unanswered). A longer pause
+  lowers the load's duty cycle (3000 ms: ~70% sending), so the demo pairs it with `HPA_CPU_TARGET=20`.
 - **FR-PRG-35:** `rig.sh up` SHALL start, and `rig.sh down` stop and confirm TERMINATED, the KDB-X query VM
   `KDB_VM` (default `traderx-kdb`, FR-DA12) with the client VMs; `up` refuses when it is missing, and `KDB_VM=`
   runs the rig without it.
