@@ -148,6 +148,11 @@ class Rendering(unittest.TestCase):
         plan=__import__('json').loads((self.output/'plan.json').read_text())
         self.assertIn('fix-session-password',plan['requiredSecretKeys']['auth-secrets'])
 
+    def test_the_read_model_database_claim_is_50gi(self):
+        """FR-PRG-37: 10Gi filled on 2026-11-04 (InnoDB error 28)."""
+        claim=[d for d in self.docs if d['kind']=='PersistentVolumeClaim' and d['metadata']['name']=='eod-price-db-data']
+        self.assertEqual([c['spec']['resources']['requests']['storage'] for c in claim],['50Gi'])
+
     def test_console_reads_the_kdb_vm(self):
         """FR-DA12: the Kdb tab's q service is the traderx-kdb VM, by name, exactly once."""
         console=next(d for d in self.docs if d['metadata']['name']=='web-front-end-console' and module.podspec(d))

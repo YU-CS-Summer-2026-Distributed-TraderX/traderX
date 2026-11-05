@@ -1560,6 +1560,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-PRG-34` | CI |  |  | test_rig RolledOut: ready only with generation observed and updated = available = total = spec; five partial states wait |
 | YU18 | `FR-PRG-35` | CI |  |  | test_rig Clients: down stops traderx-kdb; KDB_VM= leaves it out |
 | YU18 | `FR-PRG-36` | CI |  |  | test_rig LoadgenIdle: --pause-ms 3000 by default, LOADGEN_PAUSE_MS=8000 passed through, 50/90000/x refused before any load starts |
+| YU18 | `FR-PRG-37` | CI |  |  | test_prepare: the rendered eod-price-db-data claim requests 50Gi |
 | YU18 | `FR-FTL-07` | CI |  |  | test_prepare: EXTQFJ renders `*`; a binding removed is refused (mutation no-accounts). Kind 2026-11-01: a Desk account created minutes earlier (65002) traded over TLS |
 | YU18 | `FR-FTL-08` | LIVE |  | scripts/fix-tls/fix-order.sh | kind 2026-11-01: Limit DAY rested New, Market IOC filled at 391, a bad side exits 64 |
 | YU18 | `FR-FTL-09` | CI |  |  | fix-web.test.mjs: only well-formed orders become fix-order.sh arguments (injection, bad side, zero qty, bad ticker, 1e9 refused). Kind 2026-11-01: Limit rests, Market fills at 391.4, cross-origin POST 403 |

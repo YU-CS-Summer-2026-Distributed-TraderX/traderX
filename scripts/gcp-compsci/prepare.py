@@ -226,6 +226,7 @@ READ_MODEL_DB = {'cpu': '6', 'memory': '24Gi', 'bufferPool': '16G', 'disk': '200
 # profile ran NATS at 2Gi and it was OOM-killed under the bridges' publish on 2026-10-30.
 READ_MODEL_DB_CLASS = 'eod-price-db-fast'
 READ_MODEL_DB_CLAIM = 'eod-price-db-fast'
+READ_MODEL_DB_CLAIM = '50Gi'   # FR-PRG-37; a claim only grows, so this never goes back down
 READ_MODEL_DB_SNAPSHOT = 'eod-price-db-pre-fast'   # taken of eod-price-db-data while the database is at 0
 
 
@@ -717,6 +718,10 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
                     env.append({'name':'RISK_EXTRACT_SINK_URI','value':'file:///data/risk-extracts'})
         if doc['metadata']['name'] == 'web-front-end-console':
             pod['serviceAccountName'] = 'web-front-end-console'
+    for doc in docs:
+        if doc['kind'] == 'PersistentVolumeClaim' and doc['metadata']['name'] == 'eod-price-db-data':
+            # FR-PRG-37: 10Gi filled on 2026-11-04 after an 18.5M-order load and an epoch archive (InnoDB error 28).
+            doc['spec']['resources']['requests']['storage'] = READ_MODEL_DB_CLAIM
     # Structured objects first, exact bucket substitutions second. No substring
     # image/project replacement masquerading as deployment identity validation.
     raw = yaml.safe_dump_all(docs, sort_keys=False)
