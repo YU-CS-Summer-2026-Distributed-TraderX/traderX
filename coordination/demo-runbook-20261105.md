@@ -14,7 +14,7 @@ Times are US Eastern.
 
 | What | How | Time |
 |---|---|---|
-| **Fresh epoch NEEDED before the demo**: the 2026-11-02 scale-out rehearsal (18.52M orders) left a read-model backlog on e1101b, so a normal `up` refuses at G3. Run archive-members + fresh-epoch (~20 min) before Thursday | — | ~20 min |
+| ~~Fresh epoch~~ **DONE 2026-11-04 7:58–9:03 pm ET**: e1101b archived (snapshots `traderx-e1104-m{0,1,2}`), now on clean epoch **e1104** (empty book, no contracts). The DB claim filled at 10Gi → expanded to 50Gi (FR-PRG-37) and a corrupt `tc.log` moved aside (`tc.log.corrupt-20261104`). **Keep the scale-out load the LAST step of the demo** | — | — |
 | **Allowlist your network** — the HTTPS front door (demo/desk) and the FIX entry admit listed /32s only; 2026-11-01 your IP had changed and both answered 403 / unreachable | `curl -4 ifconfig.me`, then your access renders (`render-frontend-access.py`, `render-fix-tls-access.py --address 35.196.31.22 --source <ip>`) | 5 min |
 | Re-project cost | ≈ $5–7/h at 3 gateways + 2 loadgen nodes; each extra gateway node ≈ +$0.40/h. A 1 h rehearsal + 1 h demo ≈ $15 | — |
 | ~~Admit the new images~~ **DONE 2026-11-02**: `tip-60544a6e-j21` admitted (12/12 identical, 20 controls) and applied to every workload (members/gateways at 0 nodes 5:45 pm ET): Desk Kdb tab (FR-CUI-27), Level 1/2 order book (FR-CUI-25), priced-only toggle (FR-CUI-26), Desk OTC contracts, Kdb on `traderx-kdb` | — | — |
