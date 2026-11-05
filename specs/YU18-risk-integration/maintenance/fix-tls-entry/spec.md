@@ -36,8 +36,9 @@ Status: new 2026-10-29. Scope: how a FIX client outside GCP reaches the producti
 - FR-FTL-09: `node scripts/fix-tls/fix-web.mjs` SHALL serve, on 127.0.0.1 only (default :7070), a page that sends each
   order through `fix-order.sh` to the entry (default 35.196.31.22:18143) and shows its ExecutionReports. It SHALL accept
   only a numeric account, Buy|Sell, a positive whole quantity, a ticker and an optional decimal price, refuse a
-  cross-origin POST, and run one order at a time. Known gap: the gateway sends no Canceled report for an IOC remainder
-  (the order row reads CANCELED), so an unfilled Market order shows New only.
+  cross-origin POST, and run one order at a time. Every order is a Limit DAY: a blank price SHALL be the engine's mark
+  for that ticker (`MARK_URL`, default the demo front door's `/mem/0/bbo`), as the Desk's "Price at market" does, so it
+  rests on an empty book instead of cancelling as a Market IOC; a ticker with no mark SHALL be refused, not sent.
 
 ## Acceptance
 

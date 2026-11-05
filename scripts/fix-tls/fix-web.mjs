@@ -10,6 +10,13 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT = fileURLToPath(new URL('./fix-order.sh', import.meta.url));
 const PORT = Number(process.env.PORT ?? 7070);
 const FIX_HOST = process.env.FIX_HOST ?? '35.196.31.22';
+// "market" = a Limit DAY at the engine's mark, as the Desk's "Price at market" does; a bare Market IOC cancels on an empty book.
+const MARK_URL = process.env.MARK_URL ?? 'https://demo.yaakovseif.dev/mem/0/bbo';
+
+export function markFor(bbo, ticker) {
+  const m = bbo?.books?.find((b) => b.ticker === ticker)?.mark;
+  return typeof m === 'number' && m > 0 ? String(Number(m.toFixed(6))) : null;
+}
 
 export function orderArgs(b) {
   const ok = b && /^\d{1,9}$/.test(String(b.account)) && ['Buy', 'Sell'].includes(b.side) && /^[1-9]\d{0,8}$/.test(String(b.qty))
@@ -38,7 +45,7 @@ label{display:grid;gap:4px;font-size:12px;color:var(--muted)}input,select{font:i
 button{font:inherit;font-weight:600;padding:8px 12px;border:0;border-radius:6px;background:var(--accent);color:#fff;cursor:pointer}button:disabled{opacity:.5}
 .entry{border-top:1px solid var(--border);padding:10px 0}.entry:first-child{border-top:0}.head{font-weight:600}.ok{color:var(--good)}.bad{color:var(--bad)}
 pre{margin:6px 0 0;white-space:pre-wrap;font:12px ui-monospace,Menlo,monospace;color:var(--muted)}</style></head><body><main>
-<h1>FIX 4.4 over TLS from this Mac</h1><p class="sub">Each order opens its own session as EXTQFJ to ${FIX_HOST}:${process.env.FIX_PORT ?? 18143} (any account). No price = Market IOC; a price = Limit DAY.</p>
+<h1>FIX 4.4 over TLS from this Mac</h1><p class="sub">Each order opens its own session as EXTQFJ to ${FIX_HOST}:${process.env.FIX_PORT ?? 18143} (any account). Every order is a Limit DAY; no price = at the market price (the engine's mark).</p>
 <form id="f"><label>Account<input name="account" inputmode="numeric" required placeholder="65000"></label>
 <label>Side<select name="side"><option>Buy</option><option>Sell</option></select></label>
 <label>Quantity<input name="qty" inputmode="numeric" required value="10"></label>
@@ -53,7 +60,7 @@ f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntr
  try{const r=await fetch('/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});const j=await r.json();
   if(first){log.textContent='';first=false;}
   const e2=document.createElement('div');e2.className='entry';const h=document.createElement('div');h.className='head '+(j.exit===0?'ok':'bad');
-  h.textContent=new Date().toLocaleTimeString()+'  '+d.side+' '+d.qty+' '+d.ticker+(d.px?' @ '+d.px:' market')+' · account '+d.account+(j.error?' — '+j.error:'');
+  h.textContent=new Date().toLocaleTimeString()+'  '+d.side+' '+d.qty+' '+d.ticker+(d.px?' @ '+d.px:' at market')+' · account '+d.account+(j.error?' — '+j.error:'');
   const p=document.createElement('pre');p.textContent=(j.lines||[]).join('\\n');e2.append(h,p);log.prepend(e2);}
  finally{b.disabled=false;b.textContent='Send over FIX';}});
 </script></main></body></html>`;
@@ -69,6 +76,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       let body; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad JSON' }); }
       const args = orderArgs(body);
       if (!args) return json(res, 400, { error: 'account, Buy|Sell, quantity, ticker and an optional price' });
+      if (args.length === 4) {
+        let px; try { px = markFor(await (await fetch(MARK_URL, { signal: AbortSignal.timeout(5000) })).json(), args[3]); } catch {}
+        if (!px) return json(res, 502, { error: `no market price for ${args[3]}; enter a price` });
+        args.push(px);
+      }
       if (busy) return json(res, 409, { error: 'an order is still in flight' });
       busy = true;
       try { return json(res, 200, await send(args)); } finally { busy = false; }
