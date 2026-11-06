@@ -76,3 +76,55 @@ Report to the engine owner: `docs/risk-integration/alex-var-es-e2e-report.md`.
   for the portfolio and attributed to every priced trade.
 - SC-RP-VARES-01: `VarEsEndToEndTest` passes in the order-matcher suite on an empty-root render, and
   `test_var_es_e2e.py` passes in the risk-portfolio-tools render.
+
+## Every instrument class, and large books, November 6
+
+Engine measured: Alex's upstream `17ac757e8ffe9b180fa6e98ca6114c474ab0e6ad` (main, October 29), unmodified, which
+`var_es_e2e.ENGINE_REVISION` now names (it was `f9cc4c1`). Requests for the engine's gaps:
+`coordination/alex-engine-requests-20261106.md`. Results: `docs/risk-integration/full-pricing-and-large-books-20261106.md`.
+
+- FR-RP-VARES-03: The TraderX half SHALL also book a coupon Treasury note and a corporate bond (binary path),
+  and European, Bermudan and American GBP-SONIA swaptions plus a USD-SOFR European over `/swaptions`. The
+  engine half SHALL map:
+  - a coupon Treasury with the extract's own schedule (semiannual, every date measured back from
+    `maturityDate`, clamped to month end, from `lastCouponDate` to maturity; a `lastCouponDate` off that walk
+    is refused);
+  - a swaption with the booking account as holder (`long_short` Long, since `/swaptions` has no short side),
+    `fixedRate` as strike and `PAY_FIXED` as payer. EUROPEAN exercises on `expiryDate`. BERMUDAN exercises on
+    `expiryDate` and every underlying period start after `effectiveDate` before maturity. AMERICAN exercises
+    from `expiryDate` to the last such period start. Bermudans and Americans calibrate on the trade's own
+    index conventions (1Y fixed, ACT/365, the index tenor), one tenor per run.
+  - a flat synthetic ATM normal swaption surface per currency.
+
+  Only an ACT/365(F) underlying maps, because the engine's swaption legs carry no day count. The run's
+  idempotency key SHALL hash the whole request, so a changed setting is a new run.
+- FR-RP-VARES-04: Every refusal SHALL name its owner. `engine` refusals carry the request id (R1 equity,
+  R2 listed option, R3 ACT/360 OIS, R4 corporate credit) of the coordination note; anything else is
+  `traderx` and is a defect of ours. The verdict is unchanged: the proof exits 0 only when every row prices.
+- FR-RP-VARES-05: `ore_parity.py`, run in the engine's environment, SHALL check the engine's t=0 NPV of
+  every sampled trade:
+  - bonds and 6M-index trades against the engine's own ORE oracle (`tests/support/ore_npv_oracle.py`), one
+    currency group at a time, relabelled USD (the engine builds every currency alike);
+  - 12M-index swaps and Europeans against QuantLib on the engine's own `MakeVanillaSwap` schedule
+    (`DiscountingSwapEngine`, `BachelierSwaptionEngine`);
+  - Bermudans and Americans by European <= Bermudan <= American on identical terms.
+
+  Flat curves only, and refused otherwise.
+- FR-RP-BOOK-01: `book_gen.py` SHALL emit a deterministic booking plan (same arguments, same bytes) across
+  every class TraderX books, on accounts grouped into desks. The plan contains terms only, never values.
+  It SHALL refuse a plan past one epoch's capacity (64 accounts, 1,024 securities, 4,096 contracts) and SHALL
+  respect the booked records' limits: int notional (a JPY booking tops out near JPY 2.1bn) and
+  `MAX_ORDER_QUANTITY` of 1,000,000 units an order (1mm face of one bond).
+- FR-RP-BOOK-02: `VarEsEndToEndTest.largeBookThroughTheRealIngress` SHALL book a plan named by
+  `TRADERX_LARGE_BOOK_PLAN` through the real gateway (binary crosses, REST swaps and swaptions). It SHALL raise
+  the per-account position limit through the sequenced operator policy (it defaults to 1,000,000 units). It
+  SHALL then cut, verify the cut on all three members and export to `TRADERX_LARGE_BOOK_OUTPUT`, printing
+  booking and cut timings. With no plan set it is skipped.
+- FR-RP-BOOK-03: `large_book.py` SHALL package such a fixture, map it as the proof does and price it as ONE
+  run. A portfolio's VaR/ES is never split. It SHALL record wall time, the engine process tree's peak
+  resident memory, request/reply bytes, the priced mix and refusals by class/owner. `--tile k` repeats the
+  priced trades with `~k` identities; a tiled run is labelled tiled, not a cut.
+- FR-RP-BOOK-04: Large-book correctness is spot-checked with `ore_parity.py --sample N` on the run's own request
+  and reply. A large run completing is not financial validation.
+- SC-RP-BOOK-01: `test_book_gen.py` passes (determinism, capacity refusals, every class present, OCC symbols
+  that `OccSymbol` reads as options).

@@ -1,5 +1,7 @@
 package finos.traderx.ordermatcher.cluster;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import finos.traderx.ordermatcher.lmax.AeronReplicationCodec;
 import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.client.AeronCluster;
@@ -10,6 +12,7 @@ import io.aeron.driver.ThreadingMode;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -78,8 +81,11 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <ul>
  *   <li>listed equity, REST {@code POST /orders} (JWT-bound account, S1);</li>
  *   <li>listed equity option (YU14, OCC symbol), FIX 4.4 {@code NewOrderSingle} (session credentials, S3);</li>
- *   <li>Treasury bill (YU16), the binary order-entry fast path (numeric security id from {@code /resolve});</li>
- *   <li>OTC rates swap (YU17), REST {@code POST /swaps}.</li>
+ *   <li>Treasury bill, coupon Treasury note and corporate bond (YU16), the binary order-entry fast path
+ *       (numeric security id from {@code /resolve});</li>
+ *   <li>OTC rates swaps (YU17), REST {@code POST /swaps};</li>
+ *   <li>OTC swaptions, European, Bermudan and American (YU17 phase 2), REST {@code POST /swaptions}
+ *       (FR-RIX-01).</li>
  * </ul>
  * The risk-engine half is {@code risk-portfolio-tools/var_es_e2e.py}, driven by
  * {@code scripts/proofs/yu18-var-es-e2e.sh}; this test writes its artifacts to
@@ -104,9 +110,12 @@ class VarEsEndToEndTest {
     static final int BUYER = 22214;
     static final int SELLER = 42422;
     static final String EQUITY = "AAPL";
-    /** OCC: root, yymmdd expiry, C, strike x 1000 (AAPL 2026-12-18 240 call). */
-    static final String OPTION = "AAPL261218C00240000";
+    /** OCC: root, yymmdd expiry, C, strike x 1000 (AAPL 2026-12-18 150 call, at the money against the 150 cross). */
+    static final String OPTION = "AAPL261218C00150000";
     static final String BOND = "UST-BILL-20270630";
+    /** A coupon Treasury note (4.25%, semiannual from maturity) and a fixed-rate corporate (30/360). */
+    static final String NOTE = "UST-4.250-20291115";
+    static final String CORPORATE = "GS-5.750-20360124";
     static final String SWAP_CONVENTIONS = "USD-SOFR-1Y-ACT360";
     /** A second swap in the one TraderX convention whose day count Alex's engine implements
      *  (ACT/365F is Actual/365 Fixed, which ORE spells ACT/365); its notional needs a sequenced FX rate. */
@@ -157,6 +166,8 @@ class VarEsEndToEndTest {
         seed(BUYER, EQUITY, 150.0);
         seed(SELLER, OPTION, 5.0);
         seed(BUYER, BOND, 0.97);
+        seed(SELLER, NOTE, 0.99);
+        seed(SELLER, CORPORATE, 1.01);
 
         // 1. listed equity over REST: a resting sell, then the buy that crosses it.
         final String bearer = DevJwt.bearer(BUYER, SELLER);
@@ -205,6 +216,15 @@ class VarEsEndToEndTest {
                 "binary SELL of the bill accepted");
             assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, binaryNew(socket, (byte) 0, BUYER, bondId, 100_000, 970_000L, 0xE2E2L),
                 "binary BUY of the bill accepted");
+            long clientId = 0xE2E3L;
+            for (final String debt : List.of(NOTE, CORPORATE)) {
+                final int id = Integer.parseInt(field(post("/resolve", null, "{\"ticker\":\"" + debt + "\"}"), "securityId"));
+                final long px = NOTE.equals(debt) ? 990_000L : 1_010_000L;
+                assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, binaryNew(socket, (byte) 1, BUYER, id, 1_000_000, px, clientId++),
+                    "binary SELL of " + debt + " accepted");
+                assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, binaryNew(socket, (byte) 0, SELLER, id, 1_000_000, px, clientId++),
+                    "binary BUY of " + debt + " accepted");
+            }
         }
 
         // 4. OTC swap over REST: pay fixed 4.2% on 10mm, sequenced through consensus like every command.
@@ -218,10 +238,23 @@ class VarEsEndToEndTest {
             + ",\"payReceive\":\"Receive\",\"notional\":5000000,\"fixedRate\":0.045,\"effectiveDate\":\"2026-10-28\","
             + "\"maturityDate\":\"2029-10-28\",\"conventions\":\"" + GBP_SWAP_CONVENTIONS + "\"}");
         assertTrue(gbpSwap.contains("\"booked\":true"), gbpSwap);
+        // ...and swaptions (FR-RIX-01): the three GBP styles on one underlying, plus a USD-SOFR European.
+        for (final String style : List.of("European", "Bermudan", "American")) {
+            final String swpt = post("/swaptions", bearer, "{\"clientOrderId\":\"e2e-swpt-" + style + "\",\"accountId\":" + SELLER
+                + ",\"payReceive\":\"Pay\",\"notional\":5000000,\"fixedRate\":0.045,\"effectiveDate\":\"2027-10-28\","
+                + "\"maturityDate\":\"2032-10-28\",\"conventions\":\"" + GBP_SWAP_CONVENTIONS + "\","
+                + "\"expiryDate\":\"2027-10-26\",\"exerciseStyle\":\"" + style + "\"}");
+            assertTrue(swpt.contains("\"booked\":true") && swpt.contains("SWPT-"), swpt);
+        }
+        final String usdSwpt = post("/swaptions", bearer, "{\"clientOrderId\":\"e2e-swpt-usd\",\"accountId\":" + BUYER
+            + ",\"payReceive\":\"Receive\",\"notional\":10000000,\"fixedRate\":0.040,\"effectiveDate\":\"2027-10-28\","
+            + "\"maturityDate\":\"2032-10-28\",\"conventions\":\"" + SWAP_CONVENTIONS + "\","
+            + "\"expiryDate\":\"2027-10-26\",\"exerciseStyle\":\"European\"}");
+        assertTrue(usdSwpt.contains("\"booked\":true"), usdSwpt);
 
-        // Every member applied the same business: three crosses (six account legs) and two contracts.
-        await(() -> services.stream().allMatch(s -> s.engine().tradeCounter() == 6 && s.contractCount() == 2),
-            "all three members booked 6 trade legs and 2 contracts");
+        // Every member applied the same business: five crosses (ten account legs) and six contracts.
+        await(() -> services.stream().allMatch(s -> s.engine().tradeCounter() == 10 && s.contractCount() == 6),
+            "all three members booked 10 trade legs and 6 contracts");
 
         // 5. venue close (ADR-069): a named log position, not a wall-clock claim.
         final String closed = post("/session", null, "{\"phase\":\"CLOSED\"}");
@@ -239,7 +272,7 @@ class VarEsEndToEndTest {
         for (final MatchingEngineClusteredService s : services) {
             assertEquals(seq, s.lastExtractCutSeq(), "one sequence N on every member");
             assertEquals(sha, s.lastExtractCutSha(), "one cut hash on every member");
-            cuts.add(renderCut(s, seq));
+            cuts.add(renderCut(s, seq, List.of(EQUITY, OPTION, BOND, NOTE, CORPORATE)));
         }
         assertEquals(cuts.get(0), cuts.get(1));
         assertEquals(cuts.get(0), cuts.get(2));
@@ -253,18 +286,23 @@ class VarEsEndToEndTest {
         final Map<Integer, RiskExtractCsv.Counterparty> counterparties = Map.of(
             BUYER, new RiskExtractCsv.Counterparty("CP-BUYER", "NS-BUYER", "USD"),
             SELLER, new RiskExtractCsv.Counterparty("CP-SELLER", "NS-SELLER", "USD"));
-        final Map<String, RiskExtractCsv.BondStatic> bonds = Map.of(BOND, RiskExtractCsv.BondStatic.treasury("0", "2027-06-30"));
+        final Map<String, RiskExtractCsv.BondStatic> bonds = Map.of(BOND, RiskExtractCsv.BondStatic.treasury("0", "2027-06-30"),
+            NOTE, RiskExtractCsv.BondStatic.treasury("4.250", "2029-11-15"),
+            CORPORATE, RiskExtractCsv.BondStatic.corporate("5.750", "2036-01-24"));
         final String positions = RiskExtractCsv.render(cut, Map.of(), counterparties, bonds, stamp);
         final String contracts = SwapContractCsv.render(cut, counterparties, stamp);
         final List<String> rows = positions.lines().filter(l -> !l.startsWith("#")).skip(1).toList();
-        assertEquals(6, rows.size(), "two accounts x three instruments:\n" + positions);
-        for (final String type : List.of(",EQUITY,", ",OPTION,", ",TREASURY,")) {
-            assertEquals(2, rows.stream().filter(r -> r.contains(type)).count(), type + " rows in\n" + positions);
+        assertEquals(10, rows.size(), "two accounts x five instruments:\n" + positions);
+        for (final var type : Map.of(",EQUITY,", 2, ",OPTION,", 2, ",TREASURY,", 4, ",CORPORATE,", 2).entrySet()) {
+            assertEquals((long) type.getValue(), rows.stream().filter(r -> r.contains(type.getKey())).count(), type.getKey() + " rows in\n" + positions);
         }
         assertTrue(rows.stream().allMatch(r -> r.contains(",CLUSTER_LAST_TRADE_AT_N,")), "marks are the cut's last trade at N");
         assertTrue(contracts.contains(",PAY_FIXED,10000000,0.042000,USD-SOFR,"), contracts);
         assertTrue(contracts.contains(",RECEIVE_FIXED,5000000,0.045000,GBP-SONIA,"), contracts);
-        assertEquals(2, contracts.lines().filter(l -> !l.startsWith("#")).skip(1).count(), "two swap contracts");
+        for (final String style : List.of(",SWAPTION,2027-10-26,EUROPEAN", ",SWAPTION,2027-10-26,BERMUDAN", ",SWAPTION,2027-10-26,AMERICAN")) {
+            assertEquals(style.endsWith("EUROPEAN") ? 2 : 1, contracts.lines().filter(l -> l.endsWith(style)).count(), style + " in\n" + contracts);
+        }
+        assertEquals(6, contracts.lines().filter(l -> !l.startsWith("#")).skip(1).count(), "two swaps and four swaptions");
 
         // Negative control on the real cut: a counterparties table that misses the seller.
         final IllegalStateException refused = assertThrows(IllegalStateException.class,
@@ -287,7 +325,126 @@ class VarEsEndToEndTest {
         assertThrows(IllegalArgumentException.class, () -> RiskExtractReady.payload(stamp, seq + 2, positions, contracts,
             pos.toUri().toString(), otc.toUri().toString()));
         System.out.println("VAR-ES-E2E-TRADERX seq=" + seq + " cutSha256=" + sha + " positions=" + rows.size()
-            + " contracts=2 sessionDate=" + SESSION_DATE + " receipt=" + receipt);
+            + " contracts=6 sessionDate=" + SESSION_DATE + " receipt=" + receipt);
+    }
+
+    /**
+     * FR-RP-BOOK-02: a {@code risk-portfolio-tools/book_gen.py} plan (every class, many accounts and desks)
+     * booked through the REAL ingress: listed crosses over the binary path, swaps and swaptions over REST,
+     * then the same close, marker, three-member cut and production exporters as the test above, written to
+     * {@code TRADERX_LARGE_BOOK_OUTPUT}. Skipped unless {@code TRADERX_LARGE_BOOK_PLAN} names a plan.
+     */
+    @Test
+    @Timeout(3600)
+    void largeBookThroughTheRealIngress() throws Exception {
+        final String planPath = System.getenv("TRADERX_LARGE_BOOK_PLAN");
+        Assumptions.assumeTrue(planPath != null && !planPath.isBlank(), "TRADERX_LARGE_BOOK_PLAN not set");
+        final JsonNode plan = new ObjectMapper().readTree(Files.readString(Path.of(planPath)));
+        launchMembers();
+        launchGateway();
+        final long t0 = System.nanoTime();
+        final List<Integer> accounts = new ArrayList<>();
+        final Map<Integer, RiskExtractCsv.Counterparty> counterparties = new HashMap<>();
+        for (final JsonNode a : plan.get("accounts")) {
+            accounts.add(a.get("accountId").asInt());
+            counterparties.put(a.get("accountId").asInt(), new RiskExtractCsv.Counterparty(
+                a.get("counterpartyId").asText(), a.get("nettingSetId").asText(), a.get("currency").asText()));
+        }
+        final List<String> tickers = new ArrayList<>();
+        final Map<String, RiskExtractCsv.BondStatic> bonds = new HashMap<>();
+        final Map<String, Integer> ids = new HashMap<>();
+        int n = 0;
+        for (final JsonNode sec : plan.get("securities")) {
+            final String ticker = sec.get("ticker").asText();
+            seed(accounts.get(n++ % accounts.size()), ticker, sec.get("price").asDouble());
+            tickers.add(ticker);
+            switch (sec.get("kind").asText()) {
+                case "TREASURY" -> bonds.put(ticker, RiskExtractCsv.BondStatic.treasury(sec.get("coupon").asText(), sec.get("maturity").asText()));
+                case "CORPORATE" -> bonds.put(ticker, RiskExtractCsv.BondStatic.corporate(sec.get("coupon").asText(), sec.get("maturity").asText()));
+                default -> { }
+            }
+            ids.put(ticker, Integer.parseInt(field(post("/resolve", null, "{\"ticker\":\"" + ticker + "\"}"), "securityId")));
+        }
+        for (int i = n; i < accounts.size(); i++) {   // every account enabled, even one the plan seeds nothing on
+            seed(accounts.get(i), tickers.get(0), plan.get("securities").get(0).get("price").asDouble());
+        }
+        plan.get("fx").fields().forEachRemaining(e -> {
+            try {
+                post("/risk/control/fxrate", null, "{\"currency\":\"" + e.getKey() + "\",\"rate\":" + e.getValue().asDouble() + "}");
+            } catch (final Exception ex) {
+                throw new IllegalStateException(ex);
+            }
+        });
+        // The per-account position limit defaults to MAX_ORDER_QUANTITY (1,000,000 units: 1mm face of one bond);
+        // a desk book needs more, so the operator raises it through the SEQUENCED policy control, as on the rig.
+        // onPolicyControl applies the limits only when BOTH are positive; concentration stays effectively off.
+        post("/risk/control/policy", null, "{\"maxPositionQuantity\":" + Integer.MAX_VALUE
+            + ",\"maxConcentrationNotionalTicks\":" + Long.MAX_VALUE / 4 + "}");
+        final long tSeeded = System.nanoTime();
+        int crosses = 0;
+        done = 0;
+        try (Socket socket = new Socket("127.0.0.1", binaryPort)) {
+            long clientId = 0x1B00_0000L;
+            for (final JsonNode x : plan.get("crosses")) {
+                final int id = ids.get(x.get("ticker").asText());
+                final long px = Math.round(x.get("price").asDouble() * 1_000_000d);
+                final int qty = x.get("qty").asInt();
+                assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, binaryNew(socket, (byte) 1, x.get("seller").asInt(), id, qty, px, clientId++), () -> "sell " + x + " reason " + lastAckReason + " after " + done + " crosses\n" + tail(gatewayLog(), 4000));
+                assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, binaryNew(socket, (byte) 0, x.get("buyer").asInt(), id, qty, px, clientId++), () -> "buy " + x + " reason " + lastAckReason + " after " + done + " crosses\n" + tail(gatewayLog(), 4000));
+                done = ++crosses;
+            }
+        }
+        final long tCrossed = System.nanoTime();
+        final String bearer = DevJwt.bearer(accounts.stream().mapToInt(Integer::intValue).toArray());
+        int otc = 0;
+        for (final JsonNode o : plan.get("otc")) {
+            final String r = post(o.get("route").asText(), bearer, o.get("body").toString());
+            assertTrue(r.contains("\"booked\":true"), o + " -> " + r);
+            otc++;
+        }
+        final long tBooked = System.nanoTime();
+        final int legs = 2 * crosses, contracts = otc;
+        await(() -> services.stream().allMatch(s -> s.engine().tradeCounter() == legs && s.contractCount() == contracts),
+            "all three members booked " + legs + " trade legs and " + contracts + " contracts");
+        assertTrue(post("/session", null, "{\"phase\":\"CLOSED\"}").contains("\"phase\":\"CLOSED\""));
+        connectMarkerClient();
+        offerMarker(1L);
+        await(() -> services.stream().allMatch(s -> s.lastExtractCutSeq() > 0 && s.lastExtractCutSha() != null), "marker applied on every member");
+        final long seq = services.get(0).lastExtractCutSeq();
+        final String sha = services.get(0).lastExtractCutSha();
+        final List<String> cuts = new ArrayList<>();
+        for (final MatchingEngineClusteredService s : services) {
+            assertEquals(seq, s.lastExtractCutSeq(), "one sequence N on every member");
+            assertEquals(sha, s.lastExtractCutSha(), "one cut hash on every member");
+            cuts.add(renderCut(s, seq, tickers));
+        }
+        assertEquals(cuts.get(0), cuts.get(1));
+        assertEquals(cuts.get(0), cuts.get(2));
+        final String cut = cuts.get(0);
+        assertEquals(sha, RiskExtractCut.sha256(cut), "the rendered cut is the one the members hashed");
+        offerMarker(2L);
+        await(() -> services.stream().allMatch(s -> s.lastExtractCutSeq() == seq + 1), "witness marker at N+1");
+        final long tCut = System.nanoTime();
+        final var stamp = new RiskExtractCsv.Stamp(seq, LocalDate.parse(plan.get("sessionDate").asText()), PRICE_VERSION, sha);
+        final String positions = RiskExtractCsv.render(cut, Map.of(), counterparties, bonds, stamp);
+        final String contractsCsv = SwapContractCsv.render(cut, counterparties, stamp);
+        final long tExported = System.nanoTime();
+        final String requested = System.getenv("TRADERX_LARGE_BOOK_OUTPUT");
+        final Path out = requested == null || requested.isBlank() ? root.resolve("large-out") : Path.of(requested);
+        Files.createDirectories(out);
+        final Path pos = out.resolve("positions.csv"), ctr = out.resolve("contracts.csv");
+        Files.writeString(out.resolve("cut.txt"), cut, StandardCharsets.US_ASCII, StandardOpenOption.CREATE_NEW);
+        Files.writeString(pos, positions, StandardCharsets.US_ASCII, StandardOpenOption.CREATE_NEW);
+        Files.writeString(ctr, contractsCsv, StandardCharsets.US_ASCII, StandardOpenOption.CREATE_NEW);
+        RiskExtractReady.publish(out.resolve("receipts"), stamp,
+            RiskExtractReady.payload(stamp, seq + 1, positions, contractsCsv, pos.toUri().toString(), ctr.toUri().toString()));
+        final long rows = positions.lines().filter(l -> !l.startsWith("#")).count() - 1;
+        System.out.println("LARGE-BOOK-TRADERX plan=" + plan.get("planSha256").asText() + " seq=" + seq + " cutSha256=" + sha
+            + " accounts=" + accounts.size() + " securities=" + tickers.size() + " crosses=" + crosses + " otc=" + otc
+            + " positions=" + rows + " cutBytes=" + cut.length()
+            + " seedMs=" + (tSeeded - t0) / 1_000_000 + " crossMs=" + (tCrossed - tSeeded) / 1_000_000
+            + " otcMs=" + (tBooked - tCrossed) / 1_000_000 + " cutMs=" + (tCut - tBooked) / 1_000_000
+            + " exportMs=" + (tExported - tCut) / 1_000_000);
     }
 
     // ---- members, gateway, marker client -----------------------------------------------------
@@ -430,9 +587,9 @@ class VarEsEndToEndTest {
         }, "marker offered");
     }
 
-    private static String renderCut(final MatchingEngineClusteredService s, final long seq) {
+    private static String renderCut(final MatchingEngineClusteredService s, final long seq, final List<String> symbols) {
         final String[] tickers = new String[MatchingEngineClusteredService.MAX_SECURITIES];
-        for (final String ticker : List.of(EQUITY, OPTION, BOND)) {
+        for (final String ticker : symbols) {
             tickers[s.symbolIdFor(ticker)] = ticker;
         }
         return RiskExtractCut.render(seq, SESSION_DATE.toEpochDay(), PRICE_VERSION, s.engine().positionTuples(),
@@ -477,6 +634,16 @@ class VarEsEndToEndTest {
         return m.group(1);
     }
 
+    /** Crosses booked so far by the large-book test, for its failure messages. */
+    private int done;
+
+    private static String tail(final String text, final int chars) {
+        return text.length() <= chars ? text : text.substring(text.length() - chars);
+    }
+
+    /** The risk-reason byte of the last binary ack (0 when accepted). */
+    private static byte lastAckReason;
+
     /** One binary NEW frame ({@link BinaryGatewayAcceptor} wire), returning the ack's status byte. */
     private static byte binaryNew(final Socket socket, final byte side, final int account, final int security,
                                   final int qty, final long limitPx, final long clOrdId) throws Exception {
@@ -501,6 +668,7 @@ class VarEsEndToEndTest {
         assertEquals(BinaryGatewayAcceptor.ACK_TYPE, ack[0] & 0xFF, "ack frame");
         final UnsafeBuffer a = new UnsafeBuffer(ack);
         assertEquals(clOrdId, a.getLong(8, ByteOrder.LITTLE_ENDIAN), "ack echoes the client's clOrdId");
+        lastAckReason = ack[3];
         return ack[1];
     }
 

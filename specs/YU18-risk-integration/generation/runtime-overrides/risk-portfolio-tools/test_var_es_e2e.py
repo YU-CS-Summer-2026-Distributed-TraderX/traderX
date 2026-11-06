@@ -45,7 +45,47 @@ class MappingTest(unittest.TestCase):
         market = m.market_for([t], '2026-10-26')
         self.assertIn('GBP-SIMINDEX-12M', market['currencies']['GBP']['index_curves'])
         self.assertEqual({'GBPUSD': 1.27}, market['fx_spots'])
-        self.assertEqual(len(m.PILLARS) * 2, len(m.factor_labels(market)))
+        self.assertIn('USD', market['currencies'], 'the base currency is a market currency even with no USD trade')
+        self.assertEqual(len(m.PILLARS) * 3, len(m.factor_labels(market)))
+
+
+class CoverageTest(unittest.TestCase):
+    """FR-RP-VARES-03/04: coupon Treasuries, swaptions, and who owns each refusal."""
+    def test_coupon_note_schedule_is_the_extracts_own(self):
+        t = m.map_position(position(security='UST-4.250-20291115', coupon='4.250', maturityDate='2029-11-15',
+                                    lastCouponDate='2026-05-15'))
+        self.assertEqual(0.0425, t['coupon_rate'])
+        self.assertEqual({'start_date': '2026-05-15', 'end_date': '2026-11-15'}, t['coupon_schedule'][0])
+        self.assertEqual('2029-11-15', t['coupon_schedule'][-1]['end_date'])
+        self.assertEqual(7, len(t['coupon_schedule']))
+        # end-of-month anchor: every date measured from maturity, clamped (Aug 31 -> Feb 28 -> Aug 31)
+        t = m.map_position(position(coupon='1', maturityDate='2027-08-31', lastCouponDate='2026-08-31'))
+        self.assertEqual(['2026-08-31', '2027-02-28'], [p['start_date'] for p in t['coupon_schedule']])
+        with self.assertRaises(m.Refused):
+            m.map_position(position(coupon='4.250', maturityDate='2029-11-15', lastCouponDate='2026-05-14'))
+
+    def test_swaption_styles_map_to_the_engines_three_products(self):
+        base = contract(contractId='SWPT-9', productType='SWAPTION', dayCount='ACT/365F', currency='GBP', floatIndex='GBP-SONIA',
+                        effectiveDate='2027-10-28', maturityDate='2032-10-28', expiryDate='2027-10-26')
+        eu = m.map_contract(dict(base, exerciseStyle='EUROPEAN'))
+        self.assertEqual(('european_swaption', '2027-10-26', 'Long', True), (eu['trade_type'], eu['exercise_date'], eu['long_short'], eu['payer']))
+        be = m.map_contract(dict(base, exerciseStyle='BERMUDAN'))
+        self.assertEqual(['2027-10-26', '2028-10-28', '2029-10-28', '2030-10-28', '2031-10-28'], be['exercise_dates'])
+        am = m.map_contract(dict(base, exerciseStyle='AMERICAN'))
+        self.assertEqual(('2027-10-26', '2031-10-28'), (am['first_exercise_date'], am['last_exercise_date']))
+        market = m.market_for([eu], '2026-10-26')
+        self.assertEqual(len(m.VOL_TENORS), len(market['currencies']['GBP']['swaption_vols']['vols']))
+        with self.assertRaises(m.Refused) as ctx:
+            m.map_contract(dict(base, exerciseStyle='EUROPEAN', dayCount='ACT/360'))
+        self.assertEqual(('engine', 'R3'), (m.refusal(ctx.exception)['owner'], m.refusal(ctx.exception)['request']))
+
+    def test_every_engine_gap_names_its_request(self):
+        for kind, request in (('EQUITY', 'R1'), ('OPTION', 'R2'), ('CORPORATE', 'R4')):
+            with self.assertRaises(m.Refused) as ctx:
+                m.map_position(position(instrumentType=kind))
+            self.assertEqual({'owner': 'engine', 'request': request},
+                             {k: m.refusal(ctx.exception)[k] for k in ('owner', 'request')})
+        self.assertEqual('traderx', m.refusal(m.Refused('TREASURY', 'x', 'zero face'))['owner'])
 
 
 class RankRuleTest(unittest.TestCase):
