@@ -6,7 +6,8 @@ rows are not counted).
 
 ## The number, and why it is not 82
 
-**115 live-provable requirements have no live proof, of 397 (282 covered, 71%).** Round 3 said 82 of 352.
+**115 live-provable requirements had no live proof, of 397 (282 covered, 71%).** Round 3 said 82 of 352. After this
+session: 110 open, 287 covered (72%), see "What remains".
 
 | Delta | Rows | Why |
 |---|---|---|
@@ -42,9 +43,9 @@ Ordered by risk, then tier (local/kind before GKE).
 | 2 | FR-DRS-20 | snapshot mode: `/v2/projection-feed/settlement?asOf=` settles from the stream | kind* (snapshot) | money | LedgerSettlementReconTest |
 | 3 | FR-DRS-21 | snapshot mode: live-blotter recon reads the stream | kind* (snapshot) | money | — |
 | 4 | FR-DRS-23 | snapshot startup: a cursor above the stream's last seq refuses | kind* (snapshot) | money | — |
-| 5 | FR-DRS-29 | snapshot: per-partition count/max/sums with the cursor; a non-increasing tradeSeq is not booked | kind* (snapshot) | money | SnapshotReadModelIT, TradeViewTest |
+| 5 | FR-DRS-29 | snapshot: per-partition count/max/sums with the cursor; a non-increasing tradeSeq is not booked — **proof since: yu18-store-failure-barrier, PARTIAL PASS** | kind* (snapshot) | money | SnapshotReadModelIT, TradeViewTest |
 | 6 | FR-DRS-30 | order-view snapshot: open orders upserted, closed deleted, cursor moved in one txn; restart refuses a gap | kind* (snapshot) | money | SnapshotReadModelIT |
-| 7 | FR-DRS-35 | a database failure is a barrier on every feed: nothing after it applied or acked until it applies | kind | money | FeedBarrierTest, JetStreamFeedAckGapIT |
+| 7 | FR-DRS-35 | a database failure is a barrier on every feed: nothing after it applied or acked until it applies — **proof since: yu18-store-failure-barrier, PASS** | kind | money | FeedBarrierTest, JetStreamFeedAckGapIT |
 | 8 | FR-DRS-32 | partition layout: one stream per partition, every feed and reader uses its partition's stream | kind* (partition) | money | SnapshotReadModelIT, HistoryFeedKillIT |
 | 9 | FR-DRS-15 | an ingest rejection logs `ALERT <bridge> partition <p>` | kind (forced 429) | money | — |
 | 10 | FR-DRS-16 | the trade bridge names each rejected side | kind (forced 429) | money | — |
@@ -77,9 +78,9 @@ Ordered by risk, then tier (local/kind before GKE).
 | 37 | FR-HST-06 | history-feed reads capture streams only; `/health` per lane; HTTP routes | kind* (ClickHouse) | ops | — |
 | 38 | FR-THT-02 | ClickHouse is the GKE system of record, rendered and started by `rig.sh up` | GKE | money | — |
 | 39 | FR-THT-03 | hot days on local SSD, older on a GCS disk; same rows before and after a move | GKE | money | — |
-| 40 | FR-XOC-03 | FIX `DUPLICATE` answered ExecType=I, OrderID ord-<ref>, never OrdStatus=8 | kind | order | FixGatewayFillReportTest |
+| 40 | FR-XOC-03 | FIX `DUPLICATE` answered ExecType=I, OrderID ord-<ref>, never OrdStatus=8 — **proof since: yu18-fix-duplicate, FAILS on suspect 17** | kind | order | FixGatewayFillReportTest |
 | 41 | FR-ERH-F9 | a PRE_OPEN retry of a key the engine decided is not queued | kind | order | — |
-| 42 | FR-ERH-F6 | an untyped replace of a stop/iceberg/peg/trailing order is refused | kind | order | — |
+| 42 | FR-ERH-F6 | an untyped replace of a stop/iceberg/peg/trailing order is refused — **proof since: yu18-untyped-replace, PASS** | kind | order | — |
 | 43 | FR-XOD-03 | a sequenced request with `seq < next` does not execute | kind (binary) | order | ExactlyOnceStreamTest |
 | 44 | FR-XOD-02 | `seq == next` is processed as an unsequenced NEW | kind (binary) | order | ExactlyOnceStreamTest |
 | 45 | FR-XOC-05 | binary ack status 2 = ambiguous; status 0 + DUPLICATE is the receipt | kind (binary) | order | — |
@@ -122,7 +123,7 @@ Ordered by risk, then tier (local/kind before GKE).
 | 82 | FR-RXT06 | the extract cut travels as one message with its row count | local | eod | — |
 | 83 | FR-RXT09 | a row with no close and no last trade (or no account) is handled per spec | local | eod | — |
 | 84 | FR-EB29 | console distinguishes EOD unavailable/pending/running/failed/mock | kind (browser) | eod | — |
-| 85 | FR-ERH-S5 | gateway and member refuse to start on an unset or known dev secret | kind | security | — |
+| 85 | FR-ERH-S5 | gateway and member refuse to start on an unset or known dev secret — **proof since: yu18-dev-secret-refusal, PASS** | kind | security | — |
 | 86 | FR-FTL-03 | TLS logon still needs the CompID password; a wrong one is refused | kind | security | — |
 | 87 | FR-CS-02 | hosted Desk session carries the desk user's own name | kind* (Desk) | security | — |
 | 88 | FR-CS-03 | Desk sign-out accepts an empty body and clears both cookies | kind* (Desk) | security | — |
@@ -166,7 +167,46 @@ Ordered by risk, then tier (local/kind before GKE).
 
 By risk: money 38, order 18, risk-gate 15, recovery 11, eod 3, security 4, ops 26.
 
-## What remains (updated as proofs land)
+## What remains (2026-11-06)
 
-See "Live-proof gap closure" at the top of [COVERAGE.md](COVERAGE.md) for what landed, and the GKE batch
-proposal at the end of this file.
+**110 open** after this session's four proofs (5 rows; coverage 287/397, 72%). Results and suspects 17–18 are in
+COVERAGE.md "Live-proof gap closure".
+
+- **The snapshot and partition rows (kind*) are now reachable at $0.** [`kind-yu18-rig.py`](kind-yu18-rig.py)
+  renders production's read-model shape on kind; FR-DRS-19/20/21/23/30/32 and FR-FFR-13 need only a proof on it.
+  FR-DRS-23 and FR-DRS-30's restart arm are destructive (stream reset, trade-processor restart): kind only.
+- **Proofs that count SQL `orderbook`/`trades` do not run on production's render.** yu18-fix-session,
+  yu18-fix-resume, yu18-projection-effect-end and yu18-fix-tls-entry assert SQL row counts that snapshot mode never
+  writes; they pass only on a rows-mode rig. Porting them to the read model's order API and the accounting endpoint
+  is the next proof-hygiene task (the same change this session made in its own proofs).
+- **Order-duplication rows still open, all kind:** FR-ERH-F9 (PRE_OPEN retry), FR-XOD-02/03 and FR-XOC-05 (need a
+  binary client; `scripts/gcp-compsci/rig/binary-load.mjs` speaks the wire), FR-ERH-F11 (65,536 FIX orders: ~2 min at
+  the rate seen here), FR-GFS-14..17.
+- **Risk-gate rows drivable on kind:** the engine's tables are small (`MAX_ACCOUNTS` 64, `POOL_SIZE` 1,024 open
+  orders), so FR-IMRG26 and FR-ERH-F7 (exhaustion refused `CAPACITY`, deterministically, on all three members) can be
+  driven on a disposable kind epoch; it leaves that epoch full, so run them last.
+- **Managed-run rows (21: FR-APR, FR-ER, FR-DRS-18, FR-CUI-03/18)** need a registered run descriptor on the rig;
+  no proof rig has had one. kind, but a rig change first.
+- **GKE only (9):** see the batch proposal below.
+
+## Proposed GKE batch (not launched)
+
+One session, one side namespace on `traderx-demo`, the round-3 pattern (build VM + pa-engine 3× c4d-standard-8 +
+pa-support 2× e2-standard-8). Rows: FR-PRG-04/08/09 (smoke over FIX from the console, the gateway ILB, the HPA to
+18), FR-THT-02/03 (ClickHouse rendered by `rig.sh up`; hot-to-GCS move returns the same rows), FR-TS12..14 and
+FR-THT-04 (the KDB-X VM tap and lane; needs the licensed VM up).
+
+| Item | Hours | Rate | Cost |
+|---|---|---|---|
+| build VM c4d-standard-16 | 0.3 | ~$0.80/h | $0.25 |
+| pa-engine 3× c4d-standard-8 | 3 | 3 × ~$0.40/h | $3.60 |
+| pa-support 2× e2-standard-8 | 3 | 2 × ~$0.27/h | $1.60 |
+| HPA scale-out to 18 gateways (FR-PRG-09), e2-standard-4 spot pool | 0.5 | 18 × ~$0.05/h | $0.45 |
+| traderx-kdb VM (FR-TS12..14, FR-THT-04), already provisioned | 1 | ~$0.40/h | $0.40 |
+| disks, LB, egress, GCS | — | — | ~$1.50 |
+| **total** | | | **~$8, cap $15** |
+
+Rates are list prices as last recorded in the round-3 notes (~$4–4.5 per 2.5 h night), not re-quoted today; the
+round-3 runs came in at $4–4.5. Against the $3,500 cap (~$2.3K spent) this is noise, but it needs yaakov's go-ahead
+and a fresh `gcloud auth` (round 3 lost one at 1:14 am ET mid-batch). FR-PRG-09's HPA run should use a 3 s phase pause
+(the rehearsal settings in `14c7860a`).

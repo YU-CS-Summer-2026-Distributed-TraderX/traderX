@@ -25,10 +25,47 @@ rows are success criteria / non-functional budgets and are owned by CI and bench
 the counts. "Covered" is per requirement ID, not per clause: a proof that exercises one arm of a
 multi-clause FR covers the row (the Note column says PARTIAL where that matters).
 
+## Live-proof gap closure (2026-11-06, tip `5cbc4e11` images on kind)
+
+**Coverage 282 → 287 of 397 live-provable (71% → 72%).** Five rows gained a proof (FR-XOC-03, FR-DRS-35, FR-DRS-29
+PARTIAL, FR-ERH-F6, FR-ERH-S5); four new proofs, each run with its negative control by
+[`run-yu18-kind.sh`](run-yu18-kind.sh) on a rig rendered by [`kind-yu18-rig.py`](kind-yu18-rig.py): the YU17 kind
+cluster tier in production's read-model shape (JetStream projection and fill feed, snapshot read model on 4
+per-partition streams, ADR-086 FIX sessions), images `traderx/cluster-node:gap18` and `traderx/trade-processor:gap18`
+built from `5cbc4e11`. $0, no cloud.
+
+| Proof | Covers | Result | Negative control |
+|---|---|---|---|
+| [`yu18-fix-duplicate.sh`](yu18-fix-duplicate.sh) + `.mjs` | FR-XOC-03 | **FAIL x3: suspect 17** | fresh ClOrdID: FAILS (new order at the session and in the read model) |
+| [`yu18-store-failure-barrier.sh`](yu18-store-failure-barrier.sh) | FR-DRS-35, FR-DRS-29 (PARTIAL) | PASS | one side removed: FAILS |
+| [`yu18-untyped-replace.sh`](yu18-untyped-replace.sh) | FR-ERH-F6 | PASS | step 2 sent typed: FAILS |
+| [`yu18-dev-secret-refusal.sh`](yu18-dev-secret-refusal.sh) | FR-ERH-S5 | PASS | ALLOW_DEV_SECRETS on every arm: FAILS |
+
+Production's snapshot read model writes no SQL `orderbook` (nor `trades`), so every proof here reads orders from
+`GET /accounts/{id}/orders?status=all` and trade completeness from `/v2/projection-feed/accounting`. Older proofs that
+count SQL `orderbook`/`trades` rows (yu18-fix-session, yu18-fix-resume, yu18-projection-effect-end, ...) pass only on
+a rows-mode rig: on production's render they would read 0. Not changed here; listed in GAP-LIST.md "What remains".
+
+### New suspects (2026-11-06)
+
+17. **FR-XOC-02/03: an aged-out DUPLICATE answer is published and overwrites the original in the read model.** A FIX
+    Sell rests and fills (ord-56, FILLED); 1,100 IOCs push it out of the engine's 1,024 terminal retention; the same
+    ClOrdID resent is answered `150=I 37=ord-56 14=5 58="DUPLICATE: ClOrdID already executed as ord-56"` but
+    **`39=8`**, and the order read model then holds ord-56 as `REJECTED reason=DUPLICATE` (createdAt = the resend,
+    filledQuantity 5) where it held FILLED. Positions stay +5/-5 and nothing is booked twice. Reproduced three times.
+    In process the engine marks that answer unpublished (`IdempotencyEvictionTest`'s retry with a `publishNats`
+    assertion added: passes), so the leak is downstream: the leader's order bridge offers every
+    `isOrderLifecycleKind` output without reading `out.publishNats` (`MatchingEngineClusteredService`, the drain
+    loop's `orderBridge.offer`). The FIX acceptor then reads the poisoned state back as `39=8`. Not fixed here.
+18. **FR-FFR-01: a FIX IOC the engine cancels on arrival is answered New and never Canceled.** `59=3` limit buys on a
+    book with no sell: each is answered `150=0 39=0 151=1`, the read model holds it `LIMIT IOC CANCELED` at the same
+    instant, and no Canceled report follows (FR-FFR-04 sends nothing for an update that adds no CumQty). A FIX client
+    believes it has a live order. FR-FFR-01 lists Canceled among the direct-ack answers.
+
 ## Gap re-count at the tip (2026-11-06, `b9415268`)
 
 Re-derived from the spec packs at the tip; the per-row list is [GAP-LIST.md](GAP-LIST.md). **282 of 397
-live-provable requirements covered (71%); 115 have no live proof.** Round 3's 82 is still 82 (no proof added
+live-provable requirements covered (71%); 115 have no live proof** (287 after the closure above). Round 3's 82 is still 82 (no proof added
 since covers one), plus 5 rows added to this matrix as `LIVE` without a proof (FR-PRG-04/08/09, FR-XOD-02/03) and
 28 of 49 requirement IDs added since round 3 that had no row at all (rows added at the end of the appendix,
 "added 2026-11-06"). NFR-XOD-01..03 are listed `LIVE` below but, as NFR rows, not counted. FR-DRS-19..23's
@@ -1380,7 +1417,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-ERH-F3` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
 | YU18 | `FR-ERH-F4` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-ERH-F5` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
-| YU18 | `FR-ERH-F6` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
+| YU18 | `FR-ERH-F6` | LIVE |  | yu18-untyped-replace | 2026-11-06 kind: PASS; untyped replace of an ICEBERG and a STOP 422 INVALID, read-model rows and every member book unchanged; the typed replace takes effect (control). NEGATIVE=1 (typed in step 2) fails. UntypedReplaceOfTypedShapeTest |
 | YU18 | `FR-ERH-F7` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
 | YU18 | `FR-ERH-F8` | LIVE |  |  | needs a purged archive / 65,536 FIX orders; not attempted |
 | YU18 | `FR-ERH-F9` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
@@ -1388,7 +1425,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-ERH-S2` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-ERH-S3` | LIVE | yu18-fix-session |  | no/wrong 554 and an unbound CompID refused; CLIENT1 trades |
 | YU18 | `FR-ERH-S4` | LIVE | yu18-gateway-auth-boundary |  |  |
-| YU18 | `FR-ERH-S5` | LIVE |  |  | refuse-to-start on dev secret: no live arm |
+| YU18 | `FR-ERH-S5` | LIVE |  | yu18-dev-secret-refusal | 2026-11-06 kind: PASS; the rig image as one-off gateway/member pods exits 1 naming AUTH_JWT_SECRET / RISK_CONTROL_TOKEN; ALLOW_DEV_SECRETS=true gets past it (control). NEGATIVE=1 fails. DevSecretsTest |
 | YU18 | `FR-ERH-S6` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-FFR-01` | LIVE |  | yu18-fix-session yu18-fix-resume | PASS on 071cde6d (two replicas) |
 | YU18 | `FR-FFR-02` | LIVE |  | yu18-fix-fill-feed | PASS on 071cde6d |
@@ -1691,12 +1728,12 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-26` | LIVE | yu05-recon |  | added 2026-11-06: bond blotter prices compared against SQL at 6 dp (suspect 13's proof) |
 | YU18 | `FR-DRS-27` | LIVE | yu18-fix-resume |  | added 2026-11-06: step 5 CumQty from the read model |
 | YU18 | `FR-DRS-28` | CI |  |  | added 2026-11-06: batch persist under one-update rules; OrderBatchProjectionIT (same observable as one update) |
-| YU18 | `FR-DRS-29` | LIVE |  |  | added 2026-11-06: snapshot mode, production's render (prepare.py); no live proof. SnapshotReadModelIT, TradeViewTest |
+| YU18 | `FR-DRS-29` | LIVE |  | yu18-store-failure-barrier | 2026-11-06 kind: PARTIAL, the committed accounting equals the closed form over 1..n (count, max, both sums, 0 duplicates); the duplicate-refusal arm is not driven. SnapshotReadModelIT, TradeViewTest |
 | YU18 | `FR-DRS-30` | LIVE |  |  | added 2026-11-06: order-view snapshot, production's render; no live proof. SnapshotReadModelIT |
 | YU18 | `FR-DRS-31` | CI |  |  | added 2026-11-06: pipelined pull, internal concurrency. FeedBarrierTest, JetStreamFeedIdleTest |
 | YU18 | `FR-DRS-32` | LIVE |  |  | added 2026-11-06: partition stream layout, production's render; no live proof |
 | YU18 | `FR-DRS-34` | CI |  |  | added 2026-11-06: capture sizing, bench (ADR-097) |
-| YU18 | `FR-DRS-35` | LIVE |  |  | added 2026-11-06: store failure is a barrier; no live proof. FeedBarrierTest, JetStreamFeedAckGapIT |
+| YU18 | `FR-DRS-35` | LIVE |  | yu18-store-failure-barrier | 2026-11-06 kind (snapshot): PASS; read_only=1 for 10 crosses, snapshotFailures rose, then positions +10/-10 and accounting = closed form over every booked side. NEGATIVE=1 (one side removed) fails. FeedBarrierTest, JetStreamFeedAckGapIT |
 | YU18 | `FR-FFR-12` | LIVE | yu18-fix-resume |  | added 2026-11-06: Canceled report keeps CumQty (step 5) |
 | YU18 | `FR-FFR-13` | LIVE |  |  | added 2026-11-06: fill feed per-partition streams; no live proof. FixFillFeedIT |
 | YU18 | `FR-FGM-01` | LIVE |  |  | added 2026-11-06: slow consumer drop; no live proof. FixGatewayMemoryBoundTest |
@@ -1732,6 +1769,6 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-THT-07` | LIVE |  |  | added 2026-11-06: no live proof |
 | YU18 | `FR-XOC-01` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: PARTIAL, one replica, no election. IdempotencyEvictionTest |
 | YU18 | `FR-XOC-02` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: resend books nothing (SQL rows) |
-| YU18 | `FR-XOC-03` | LIVE |  |  | added 2026-11-06: FIX DUPLICATE answer not driven. FixGatewayFillReportTest |
+| YU18 | `FR-XOC-03` | LIVE |  | yu18-fix-duplicate | 2026-11-06 kind (snapshot read model): FAIL x3, suspect 17: the aged-out DUPLICATE answer reaches the read model, which rewrites the FILLED original REJECTED; FIX answers 39=8. NEGATIVE=1 (fresh ClOrdID) fails as it must. FixGatewayFillReportTest, IdempotencyEvictionTest |
 | YU18 | `FR-XOC-04` | LIVE |  |  | added 2026-11-06: 262,144-key window; local tier |
 | YU18 | `FR-XOC-05` | LIVE |  |  | added 2026-11-06: binary ack status 2 not driven |
