@@ -43,6 +43,11 @@ public interface OrderSubmitter {
      * <p>Default: unsupported at this tier, reported as ambiguity so no caller claims a rejection
      * it cannot substantiate.
      */
+    /** FR-XOC-06: leader changes this submitter has seen; a null answer spanning one was stranded by the election. */
+    default long leaderChanges() {
+        return 0;
+    }
+
     default ExecResult submitCancel(int orderRef) {
         return null;
     }

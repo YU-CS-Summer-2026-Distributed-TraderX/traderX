@@ -645,29 +645,40 @@ public final class FixGatewayAcceptor {
                 sendOrderReject(sessionId, clOrdId, ticker, side, qty, error);
                 return;
             }
-            final OrderSubmitter.ExecResult result;
-            if (sessionStore != null && sessionStore.sequenceOrders) {
-                try {
-                    final quickfix.Message.Header h = order.getHeader();
-                    final boolean mayBeResend = h.isSetField(quickfix.field.PossResend.FIELD)
-                        && h.getBoolean(quickfix.field.PossResend.FIELD)
-                        || h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD);
-                    if (mayBeResend && sessionStore.orderSeq(sessionId, accountId, clOrdId, true)
-                            == FixSessionStore.AGED_OUT) {
-                        sendAgedOut(sessionId, clOrdId);
+            // FR-XOC-06: an order the gateway reaped at a leader change is resubmitted under its key, which the engine
+            // dedupes (FR-IMRG14): lost with the old leader it is booked once, committed it is restated. ADR-091 left
+            // that to the client, but FIX has no "ambiguous" answer to resend on, so the client heard nothing. Only
+            // across an election, which answers within ~1 s: a plain timeout can be past the engine's key window.
+            OrderSubmitter.ExecResult result;
+            for (int attempt = 0; ; attempt++) {
+                final long elections = submitter.leaderChanges();
+                if (sessionStore != null && sessionStore.sequenceOrders) {
+                    try {
+                        final quickfix.Message.Header h = order.getHeader();
+                        final boolean mayBeResend = attempt > 0 || h.isSetField(quickfix.field.PossResend.FIELD)
+                            && h.getBoolean(quickfix.field.PossResend.FIELD)
+                            || h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD);
+                        if (mayBeResend && sessionStore.orderSeq(sessionId, accountId, clOrdId, true)
+                                == FixSessionStore.AGED_OUT) {
+                            sendAgedOut(sessionId, clOrdId);
+                            return;
+                        }
+                        result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString(),
+                            mayBeResend);
+                    } catch (final java.io.IOException e) {
+                        // FR-XOD-12: not stored, so not submitted; the store has already ended the session
+                        log.warn("FIX order {} not stored, not submitted: {}", clOrdId, e.toString());
                         return;
                     }
-                    result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString(),
-                        mayBeResend);
-                } catch (final java.io.IOException e) {
-                    // FR-XOD-12: not stored, so not submitted; the store has already ended the session
-                    log.warn("FIX order {} not stored, not submitted: {}", clOrdId, e.toString());
-                    return;
+                } else {
+                    result = mapped instanceof OrderSubmitter.TypedOrder typed
+                        ? submitter.submitTypedOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, typed)
+                        : submitter.submitOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, (Long) mapped);
                 }
-            } else {
-                result = mapped instanceof OrderSubmitter.TypedOrder typed
-                    ? submitter.submitTypedOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, typed)
-                    : submitter.submitOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, (Long) mapped);
+                if (result != null || attempt == FAILOVER_RESUBMITS || submitter.leaderChanges() == elections) {
+                    break;
+                }
+                log.warn("FIX order {} stranded by a leader change: resubmitted under its key", clOrdId);
             }
             answer(sessionId, clOrdId, accountId, ticker, side, qty, result);
         }
@@ -1468,6 +1479,8 @@ public final class FixGatewayAcceptor {
     }
 
     private static final int DUPLICATE = finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal();
+    /** FR-XOC-06: resubmissions of one order across back-to-back elections before it stays ambiguous. */
+    private static final int FAILOVER_RESUBMITS = 2;
     private static final int OUT_OF_SEQUENCE = finos.traderx.ordermatcher.risk.RiskReason.OUT_OF_SEQUENCE.ordinal();
     private static final int STREAM_LIMIT = finos.traderx.ordermatcher.risk.RiskReason.STREAM_LIMIT.ordinal();
     private static final finos.traderx.ordermatcher.risk.RiskReason[] REASONS =

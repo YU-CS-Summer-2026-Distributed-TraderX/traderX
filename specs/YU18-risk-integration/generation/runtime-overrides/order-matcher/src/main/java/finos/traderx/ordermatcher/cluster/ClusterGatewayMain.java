@@ -721,6 +721,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // makes the self-heal fire LESS often, never more — the safe direction for a trigger
             // whose hazard is firing when a reconnect cannot help.
             offeredUnackedStreak.set(0);
+            leaderChanges.incrementAndGet();   // FR-XOC-06: the FIX acceptor resubmits what this strands
             final int expedited = FAILOVER_REAP_MS < 0 ? -1
                 : inflight.expireBy(System.currentTimeMillis() + FAILOVER_REAP_MS);
             System.out.println("CLUSTER-NEW-LEADER leader=" + leaderMemberId
@@ -736,6 +737,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * read and cleared by the owner loop. Volatile because those writers are not the owner thread.
      */
     private volatile boolean sessionLost = false;
+
+    /** FR-XOC-06: leader changes seen by the egress listener; see {@link OrderSubmitter#leaderChanges()}. */
+    private final AtomicLong leaderChanges = new AtomicLong();
+
+    @Override
+    public long leaderChanges() {
+        return leaderChanges.get();
+    }
 
     /**
      * THE WEDGE SIGNAL: consecutive orders whose offer CLEARED INTO THE LOG and whose committed ack

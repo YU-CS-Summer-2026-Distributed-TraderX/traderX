@@ -38,6 +38,17 @@ replicated state (FR-IMRG14), consulted before risk, identical on every member a
   walk already measured as a tail source (hxb stall causes). Per-stream contiguous sequences are proposed as
   [ADR-090](adr-090-exactly-once-dedupe.md), a separate decision.
 
+## Amendment 2026-11-06: a live gateway resubmits what an election stranded (FR-XOC-06)
+
+"Gateway-side retry" above is rejected because a dead gateway knows nothing. A gateway that survives a leader change
+does know: it holds the orders it reaped at the new leader. FIX gives those orders no answer (ambiguity is silence, so
+no reject is ever false), and a FIX client resends only after a reconnect. A leader kill on production on 2026-11-06
+left 7 orders unanswered for the rest of the run. So the FIX acceptor resubmits an order once its ambiguous answer
+spans a leader change. The resubmission uses the same key, and the engine's key (FR-IMRG14) still owns uniqueness.
+The resubmission lands within ~1 s of the original, inside the FR-XOC-04 window at the rates measured. A plain
+timeout is not resubmitted, because it can outlast that window. The binary path is unchanged: status 2 already tells
+its client to resend (FR-XOC-05). Cancels and replaces stay ambiguous for now.
+
 ## Consequences
 
 - Failover arms can be held to 0 ambiguous with a strict replay (allowance 0) when the client resends.

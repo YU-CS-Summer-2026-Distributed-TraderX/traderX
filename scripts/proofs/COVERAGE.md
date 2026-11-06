@@ -1780,3 +1780,4 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-XOC-03` | LIVE |  | yu18-fix-duplicate | 2026-11-06 kind (snapshot read model): FAIL x4, suspect 17: the aged-out DUPLICATE answer reaches the read model, which rewrites the FILLED original REJECTED; FIX answers 39=8. NEGATIVE=1 (fresh ClOrdID) fails as it must. FixGatewayFillReportTest, IdempotencyEvictionTest |
 | YU18 | `FR-XOC-04` | LIVE |  |  | added 2026-11-06: 262,144-key window; local tier |
 | YU18 | `FR-XOC-05` | LIVE |  |  | added 2026-11-06: binary ack status 2 not driven |
+| YU18 | `FR-XOC-06` | CI |  |  | added 2026-11-06 after production e1106's leader kill left 7 FIX orders unanswered (`inflight=7 … expedited=7`): FixGatewayFillReportTest 4 (resubmitted lost order booked, committed one restated, no resubmission without an election, bounded at 2); the 3 resubmission cases fail against 4dd3feb1's acceptor. Live re-run of the failover arm pending |
