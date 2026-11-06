@@ -25,4 +25,5 @@
       record fails the load (ADR-090 §2a). Ships in the same all-members roll as the stream table.
 - [ ] CLOUD-QUEUE row 17 "exactly-once at 400K/s", with NFR-XOD-01/02.
 - [ ] NFR-XOD-03 A/B before `FIX_EXACTLY_ONCE` is enabled on any rig.
-- [ ] Ship in a `traderx` rollout (yaakov approves): snapshot barrier, whole-cluster stop, then gateways.
+- [x] Members: in production since fresh epoch e1104 (image `tip-60544a6e-j21`, 2026-11-04); see plan, Roll.
+- [ ] Gateways: measure NFR-XOD-03 on the rig, then render `FIX_EXACTLY_ONCE=jetstream` (yaakov approves).

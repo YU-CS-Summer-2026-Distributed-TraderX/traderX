@@ -46,3 +46,26 @@ later without touching the core.
 Take a snapshot barrier on all three members, then do a whole-cluster stop and start onto the new member image,
 which loads the format-13 snapshot. Then roll the gateways one at a time. Rollback is a fresh epoch from the
 barrier snapshot. Production goes ahead only on yaakov's approval of a rollout, after the cloud row passes.
+
+**Status 2026-11-06: the member half is already in production; no member roll remains for ADR-090.** Image
+`tip-60544a6e-j21` (admitted 2026-11-02 and applied to every workload at 0 nodes) contains `f815003d` (steps 1–5) and
+`35befea0` (FR-XOD-18), and the fresh epoch e1104 (2026-11-04, FR-PRG-29) started those members on empty disks, so no
+older snapshot was ever restored by them. At tip, 51 tests pass with 0 skipped: `ExactlyOnceStreamTest` 12,
+`BinarySequencedFrameTest` 2, `SnapshotRealChannelRestoreTest` 3, `OrderRefExhaustionTest` 5, `FixExactlyOnceIT` 5,
+`ThreeMemberClusterTest` 1 (snapshot, two failovers, wiped-member rejoin), `FixSessionPersistenceIT` 14,
+`FixStoreGroupCommitIT` 9. What is left is gateway-only (step 7): render `FIX_EXACTLY_ONCE=jetstream` once NFR-XOD-03
+is measured on the rig. Until then a FIX resend past the idempotency window can still double-book (2026-10-29).
+
+**Rolling the members for any later deterministic-core change.** The StatefulSet is RollingUpdate, so a template
+apply while the members run rolls them at once with their disks. Never do that. Instead:
+1. `rig.sh down`: the gateways drain to 0, then the snapshot barrier (a snapshot past the last order on all three),
+   the shutdown baseline, and the members exit 143. No order lies past that snapshot, so the new image loads the old
+   snapshot and replays no order the old code applied.
+2. `rig.sh archive-members LABEL`: the rollback point, one disk snapshot per member (about $0.05/GB-month).
+3. With the members at 0, admit the image (ADR-096 §6) and apply the render. Nothing rolls, because there are no pods.
+4. `rig.sh up`: G0 compares the baseline on all three, G2 replays each member's log in the shadow engine of the new
+   build, G3 checks the read model, G4 = baseline. Any mismatch refuses before a gateway starts.
+5. Rollback: `rig.sh down`, re-apply the old image, `up`. That works only while the new image has written no snapshot
+   the old one cannot read. After a snapshot format bump the rollback is restoring the member disks from the step-2
+   snapshots. No `rig.sh` command does that yet (ADR-101 keeps them replayable), so it is manual. The compatibility the forward path needs is FR-XOD-09 (an older format restores with no streams). Not
+   rehearsed on kind with the disks kept: e1104 took the fresh-epoch path.
