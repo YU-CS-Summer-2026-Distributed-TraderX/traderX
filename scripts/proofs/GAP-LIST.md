@@ -7,7 +7,7 @@ rows are not counted).
 ## The number, and why it is not 82
 
 **115 live-provable requirements had no live proof, of 397 (282 covered, 71%).** Round 3 said 82 of 352. After this
-session: 110 open, 287 covered (72%), see "What remains".
+session: 106 open, 291 covered (73%), see "What remains".
 
 | Delta | Rows | Why |
 |---|---|---|
@@ -40,13 +40,13 @@ Ordered by risk, then tier (local/kind before GKE).
 | # | FR | Property | Tier | Risk | In-process test |
 |---|---|---|---|---|---|
 | 1 | FR-DRS-19 | snapshot mode: a fill the bond rule rejects appears in its partition's rejected set | kind* (snapshot) | money | — |
-| 2 | FR-DRS-20 | snapshot mode: `/v2/projection-feed/settlement?asOf=` settles from the stream | kind* (snapshot) | money | LedgerSettlementReconTest |
+| 2 | FR-DRS-20 | snapshot mode: `/v2/projection-feed/settlement?asOf=` settles from the stream — **proof since: yu18-snapshot-read-model, PASS** | kind* (snapshot) | money | LedgerSettlementReconTest |
 | 3 | FR-DRS-21 | snapshot mode: live-blotter recon reads the stream | kind* (snapshot) | money | — |
 | 4 | FR-DRS-23 | snapshot startup: a cursor above the stream's last seq refuses | kind* (snapshot) | money | — |
 | 5 | FR-DRS-29 | snapshot: per-partition count/max/sums with the cursor; a non-increasing tradeSeq is not booked — **proof since: yu18-store-failure-barrier, PARTIAL PASS** | kind* (snapshot) | money | SnapshotReadModelIT, TradeViewTest |
-| 6 | FR-DRS-30 | order-view snapshot: open orders upserted, closed deleted, cursor moved in one txn; restart refuses a gap | kind* (snapshot) | money | SnapshotReadModelIT |
+| 6 | FR-DRS-30 | order-view snapshot: open orders upserted, closed deleted, cursor moved in one txn; restart refuses a gap — **proof since: yu18-snapshot-read-model, PASS** | kind* (snapshot) | money | SnapshotReadModelIT |
 | 7 | FR-DRS-35 | a database failure is a barrier on every feed: nothing after it applied or acked until it applies — **proof since: yu18-store-failure-barrier, PASS** | kind | money | FeedBarrierTest, JetStreamFeedAckGapIT |
-| 8 | FR-DRS-32 | partition layout: one stream per partition, every feed and reader uses its partition's stream | kind* (partition) | money | SnapshotReadModelIT, HistoryFeedKillIT |
+| 8 | FR-DRS-32 | partition layout: one stream per partition, every feed and reader uses its partition's stream — **proof since: yu18-snapshot-read-model, PASS** | kind* (partition) | money | SnapshotReadModelIT, HistoryFeedKillIT |
 | 9 | FR-DRS-15 | an ingest rejection logs `ALERT <bridge> partition <p>` | kind (forced 429) | money | — |
 | 10 | FR-DRS-16 | the trade bridge names each rejected side | kind (forced 429) | money | — |
 | 11 | FR-DRS-18 | a rejected side's repair source is the member archive in consensus order | kind* (managed run) | money | — |
@@ -79,7 +79,7 @@ Ordered by risk, then tier (local/kind before GKE).
 | 38 | FR-THT-02 | ClickHouse is the GKE system of record, rendered and started by `rig.sh up` | GKE | money | — |
 | 39 | FR-THT-03 | hot days on local SSD, older on a GCS disk; same rows before and after a move | GKE | money | — |
 | 40 | FR-XOC-03 | FIX `DUPLICATE` answered ExecType=I, OrderID ord-<ref>, never OrdStatus=8 — **proof since: yu18-fix-duplicate, FAILS on suspect 17** | kind | order | FixGatewayFillReportTest |
-| 41 | FR-ERH-F9 | a PRE_OPEN retry of a key the engine decided is not queued | kind | order | — |
+| 41 | FR-ERH-F9 | a PRE_OPEN retry of a key the engine decided is not queued — **proof since: yu18-preopen-retry, PASS** | kind | order | — |
 | 42 | FR-ERH-F6 | an untyped replace of a stop/iceberg/peg/trailing order is refused — **proof since: yu18-untyped-replace, PASS** | kind | order | — |
 | 43 | FR-XOD-03 | a sequenced request with `seq < next` does not execute | kind (binary) | order | ExactlyOnceStreamTest |
 | 44 | FR-XOD-02 | `seq == next` is processed as an unsequenced NEW | kind (binary) | order | ExactlyOnceStreamTest |
@@ -169,17 +169,17 @@ By risk: money 38, order 18, risk-gate 15, recovery 11, eod 3, security 4, ops 2
 
 ## What remains (2026-11-06)
 
-**110 open** after this session's four proofs (5 rows; coverage 287/397, 72%). Results and suspects 17–18 are in
+**106 open** after this session's six proofs (9 rows; coverage 291/397, 73%). Results and suspects 17–18 are in
 COVERAGE.md "Live-proof gap closure".
 
 - **The snapshot and partition rows (kind*) are now reachable at $0.** [`kind-yu18-rig.py`](kind-yu18-rig.py)
-  renders production's read-model shape on kind; FR-DRS-19/20/21/23/30/32 and FR-FFR-13 need only a proof on it.
-  FR-DRS-23 and FR-DRS-30's restart arm are destructive (stream reset, trade-processor restart): kind only.
+  renders production's read-model shape on kind (yu18-snapshot-read-model and yu18-store-failure-barrier run on it);
+  FR-DRS-19/21/23 and FR-FFR-13 need only a proof on it. FR-DRS-23 resets a stream: destructive, kind only, last.
 - **Proofs that count SQL `orderbook`/`trades` do not run on production's render.** yu18-fix-session,
   yu18-fix-resume, yu18-projection-effect-end and yu18-fix-tls-entry assert SQL row counts that snapshot mode never
   writes; they pass only on a rows-mode rig. Porting them to the read model's order API and the accounting endpoint
   is the next proof-hygiene task (the same change this session made in its own proofs).
-- **Order-duplication rows still open, all kind:** FR-ERH-F9 (PRE_OPEN retry), FR-XOD-02/03 and FR-XOC-05 (need a
+- **Order-duplication rows still open, all kind:** FR-XOD-02/03 and FR-XOC-05 (need a
   binary client; `scripts/gcp-compsci/rig/binary-load.mjs` speaks the wire), FR-ERH-F11 (65,536 FIX orders: ~2 min at
   the rate seen here), FR-GFS-14..17.
 - **Risk-gate rows drivable on kind:** the engine's tables are small (`MAX_ACCOUNTS` 64, `POOL_SIZE` 1,024 open

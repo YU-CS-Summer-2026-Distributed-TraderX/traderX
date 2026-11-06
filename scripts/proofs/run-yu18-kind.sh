@@ -20,8 +20,10 @@ export CTX NS FIX_TARGET="${FIX_TARGET:-svc/order-matcher}"
 LOG="${PROOF_LOG_DIR:-${TMPDIR:-/tmp}/yu18-kind-proofs}"; mkdir -p "${LOG}"
 ACCOUNTS="${ACCOUNTS:-22214 42422}"
 
-# Ordered by risk (order duplication, money, risk gate, security); none rolls a workload.
-PROOFS=(yu18-fix-duplicate yu18-store-failure-barrier yu18-untyped-replace yu18-dev-secret-refusal)
+# Ordered by risk (order duplication, money, risk gate, security).
+# Only yu18-snapshot-read-model restarts a workload (trade-processor): it runs last.
+PROOFS=(yu18-fix-duplicate yu18-preopen-retry yu18-store-failure-barrier yu18-untyped-replace yu18-dev-secret-refusal
+        yu18-snapshot-read-model)
 if [[ $# -gt 0 ]]; then
   sel=(); for p in "${PROOFS[@]}"; do for w in "$@"; do [[ "${p}" == *"${w}"* ]] && { sel+=("${p}"); break; }; done; done
   PROOFS=("${sel[@]}")

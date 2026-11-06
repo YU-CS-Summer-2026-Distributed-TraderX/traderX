@@ -27,8 +27,8 @@ multi-clause FR covers the row (the Note column says PARTIAL where that matters)
 
 ## Live-proof gap closure (2026-11-06, tip `5cbc4e11` images on kind)
 
-**Coverage 282 → 287 of 397 live-provable (71% → 72%).** Five rows gained a proof (FR-XOC-03, FR-DRS-35, FR-DRS-29
-PARTIAL, FR-ERH-F6, FR-ERH-S5); four new proofs, each run with its negative control by
+**Coverage 282 → 291 of 397 live-provable (71% → 73%).** Nine rows gained a proof (FR-XOC-03, FR-DRS-35, FR-DRS-29
+PARTIAL, FR-ERH-F6, FR-ERH-S5, FR-ERH-F9, FR-DRS-20, FR-DRS-30, FR-DRS-32); six new proofs, each run with its negative control by
 [`run-yu18-kind.sh`](run-yu18-kind.sh) on a rig rendered by [`kind-yu18-rig.py`](kind-yu18-rig.py): the YU17 kind
 cluster tier in production's read-model shape (JetStream projection and fill feed, snapshot read model on 4
 per-partition streams, ADR-086 FIX sessions), images `traderx/cluster-node:gap18` and `traderx/trade-processor:gap18`
@@ -40,6 +40,8 @@ built from `5cbc4e11`. $0, no cloud.
 | [`yu18-store-failure-barrier.sh`](yu18-store-failure-barrier.sh) | FR-DRS-35, FR-DRS-29 (PARTIAL) | PASS | one side removed: FAILS |
 | [`yu18-untyped-replace.sh`](yu18-untyped-replace.sh) | FR-ERH-F6 | PASS | step 2 sent typed: FAILS |
 | [`yu18-dev-secret-refusal.sh`](yu18-dev-secret-refusal.sh) | FR-ERH-S5 | PASS | ALLOW_DEV_SECRETS on every arm: FAILS |
+| [`yu18-preopen-retry.sh`](yu18-preopen-retry.sh) | FR-ERH-F9 | PASS | fresh key in PRE_OPEN: FAILS (queued) |
+| [`yu18-snapshot-read-model.sh`](yu18-snapshot-read-model.sh) | FR-DRS-20, 30, 32 | PASS | snapshot row deleted while down: FAILS |
 
 Production's snapshot read model writes no SQL `orderbook` (nor `trades`), so every proof here reads orders from
 `GET /accounts/{id}/orders?status=all` and trade completeness from `/v2/projection-feed/accounting`. Older proofs that
@@ -65,7 +67,7 @@ a rows-mode rig: on production's render they would read 0. Not changed here; lis
 ## Gap re-count at the tip (2026-11-06, `b9415268`)
 
 Re-derived from the spec packs at the tip; the per-row list is [GAP-LIST.md](GAP-LIST.md). **282 of 397
-live-provable requirements covered (71%); 115 have no live proof** (287 after the closure above). Round 3's 82 is still 82 (no proof added
+live-provable requirements covered (71%); 115 have no live proof** (291 after the closure above). Round 3's 82 is still 82 (no proof added
 since covers one), plus 5 rows added to this matrix as `LIVE` without a proof (FR-PRG-04/08/09, FR-XOD-02/03) and
 28 of 49 requirement IDs added since round 3 that had no row at all (rows added at the end of the appendix,
 "added 2026-11-06"). NFR-XOD-01..03 are listed `LIVE` below but, as NFR rows, not counted. FR-DRS-19..23's
@@ -1361,7 +1363,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-17` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
 | YU18 | `FR-DRS-18` | LIVE |  |  | /recon/catchup-events needs a managed run (FR-APR) |
 | YU18 | `FR-DRS-19` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
-| YU18 | `FR-DRS-20` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
+| YU18 | `FR-DRS-20` | LIVE |  | yu18-snapshot-read-model | 2026-11-06 kind: PASS; settlement total and per-partition sides equal the committed accounting, settlesOn = trade date + T+1 business days (Fri -> Mon) |
 | YU18 | `FR-DRS-21` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | YU18 | `FR-DRS-22` | LIVE | yu05-recon |  | recon grace |
 | YU18 | `FR-DRS-23` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
@@ -1420,7 +1422,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-ERH-F6` | LIVE |  | yu18-untyped-replace | 2026-11-06 kind: PASS; untyped replace of an ICEBERG and a STOP 422 INVALID, read-model rows and every member book unchanged; the typed replace takes effect (control). NEGATIVE=1 (typed in step 2) fails. UntypedReplaceOfTypedShapeTest |
 | YU18 | `FR-ERH-F7` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
 | YU18 | `FR-ERH-F8` | LIVE |  |  | needs a purged archive / 65,536 FIX orders; not attempted |
-| YU18 | `FR-ERH-F9` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
+| YU18 | `FR-ERH-F9` | LIVE |  | yu18-preopen-retry | 2026-11-06 kind: PASS; PRE_OPEN resend of a resting key answered with its ref, queueDepth 0 on all members, one order after the open. NEGATIVE=1 (fresh key) queued: fails |
 | YU18 | `FR-ERH-S1` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-ERH-S2` | LIVE | yu18-gateway-auth-boundary |  |  |
 | YU18 | `FR-ERH-S3` | LIVE | yu18-fix-session |  | no/wrong 554 and an unbound CompID refused; CLIENT1 trades |
@@ -1729,9 +1731,9 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-27` | LIVE | yu18-fix-resume |  | added 2026-11-06: step 5 CumQty from the read model |
 | YU18 | `FR-DRS-28` | CI |  |  | added 2026-11-06: batch persist under one-update rules; OrderBatchProjectionIT (same observable as one update) |
 | YU18 | `FR-DRS-29` | LIVE |  | yu18-store-failure-barrier | 2026-11-06 kind: PARTIAL, the committed accounting equals the closed form over 1..n (count, max, both sums, 0 duplicates); the duplicate-refusal arm is not driven. SnapshotReadModelIT, TradeViewTest |
-| YU18 | `FR-DRS-30` | LIVE |  |  | added 2026-11-06: order-view snapshot, production's render; no live proof. SnapshotReadModelIT |
+| YU18 | `FR-DRS-30` | LIVE |  | yu18-snapshot-read-model | 2026-11-06 kind (snapshot-ms 5000): PASS; a resting order is in order_view_snapshot with the order-view cursor past its message, a cancelled one is deleted, trade-processor stopped and started lists it open. NEGATIVE=1 (its snapshot row deleted while down) fails. SnapshotReadModelIT |
 | YU18 | `FR-DRS-31` | CI |  |  | added 2026-11-06: pipelined pull, internal concurrency. FeedBarrierTest, JetStreamFeedIdleTest |
-| YU18 | `FR-DRS-32` | LIVE |  |  | added 2026-11-06: partition stream layout, production's render; no live proof |
+| YU18 | `FR-DRS-32` | LIVE |  | yu18-snapshot-read-model | 2026-11-06 kind (P=4): PASS; TRADERX_FEED_P<p> each capture only /orders.<p> and /trades.<p>, equal max_bytes, a cross lands 2 sides on its partition only |
 | YU18 | `FR-DRS-34` | CI |  |  | added 2026-11-06: capture sizing, bench (ADR-097) |
 | YU18 | `FR-DRS-35` | LIVE |  | yu18-store-failure-barrier | 2026-11-06 kind (snapshot): PASS; read_only=1 for 10 crosses, snapshotFailures rose, then positions +10/-10 and accounting = closed form over every booked side. NEGATIVE=1 (one side removed) fails. FeedBarrierTest, JetStreamFeedAckGapIT |
 | YU18 | `FR-FFR-12` | LIVE | yu18-fix-resume |  | added 2026-11-06: Canceled report keeps CumQty (step 5) |
