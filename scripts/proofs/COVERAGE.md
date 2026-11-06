@@ -27,8 +27,9 @@ multi-clause FR covers the row (the Note column says PARTIAL where that matters)
 
 ## Live-proof gap closure (2026-11-06, tip `5cbc4e11` images on kind)
 
-**Coverage 282 → 291 of 397 live-provable (71% → 73%).** Nine rows gained a proof (FR-XOC-03, FR-DRS-35, FR-DRS-29
-PARTIAL, FR-ERH-F6, FR-ERH-S5, FR-ERH-F9, FR-DRS-20, FR-DRS-30, FR-DRS-32); six new proofs, each run with its negative control by
+**Coverage 282 → 299 of 397 live-provable (71% → 75%).** Seventeen rows gained a proof (FR-XOC-03, FR-DRS-35,
+FR-DRS-29 PARTIAL, FR-ERH-F6, FR-ERH-S5, FR-ERH-F9, FR-DRS-20, FR-DRS-30, FR-DRS-32, FR-RCM01..03, FR-RD01..04,
+FR-GMR-08); eight new proofs, each run with its negative control by
 [`run-yu18-kind.sh`](run-yu18-kind.sh) on a rig rendered by [`kind-yu18-rig.py`](kind-yu18-rig.py): the YU17 kind
 cluster tier in production's read-model shape (JetStream projection and fill feed, snapshot read model on 4
 per-partition streams, ADR-086 FIX sessions), images `traderx/cluster-node:gap18` and `traderx/trade-processor:gap18`
@@ -42,6 +43,8 @@ built from `5cbc4e11`. $0, no cloud.
 | [`yu18-dev-secret-refusal.sh`](yu18-dev-secret-refusal.sh) | FR-ERH-S5 | PASS | ALLOW_DEV_SECRETS on every arm: FAILS |
 | [`yu18-preopen-retry.sh`](yu18-preopen-retry.sh) | FR-ERH-F9 | PASS | fresh key in PRE_OPEN: FAILS (queued) |
 | [`yu18-snapshot-read-model.sh`](yu18-snapshot-read-model.sh) | FR-DRS-20, 30, 32 | PASS | snapshot row deleted while down: FAILS |
+| [`yu18-risk-capacity-metrics.sh`](yu18-risk-capacity-metrics.sh) | FR-RCM01..03 | PASS | rests one lot more than expected: FAILS |
+| [`yu18-readiness-diagnostics.sh`](yu18-readiness-diagnostics.sh) | FR-RD01..04, FR-GMR-08 | PASS | no peer away: FAILS |
 
 Production's snapshot read model writes no SQL `orderbook` (nor `trades`), so every proof here reads orders from
 `GET /accounts/{id}/orders?status=all` and trade completeness from `/v2/projection-feed/accounting`. Older proofs that
@@ -67,7 +70,7 @@ a rows-mode rig: on production's render they would read 0. Not changed here; lis
 ## Gap re-count at the tip (2026-11-06, `b9415268`)
 
 Re-derived from the spec packs at the tip; the per-row list is [GAP-LIST.md](GAP-LIST.md). **282 of 397
-live-provable requirements covered (71%); 115 have no live proof** (291 after the closure above). Round 3's 82 is still 82 (no proof added
+live-provable requirements covered (71%); 115 have no live proof** (299 after the closure above). Round 3's 82 is still 82 (no proof added
 since covers one), plus 5 rows added to this matrix as `LIVE` without a proof (FR-PRG-04/08/09, FR-XOD-02/03) and
 28 of 49 requirement IDs added since round 3 that had no row at all (rows added at the end of the appendix,
 "added 2026-11-06"). NFR-XOD-01..03 are listed `LIVE` below but, as NFR rows, not counted. FR-DRS-19..23's
@@ -1471,7 +1474,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GMR-05` | LIVE | yu18-member-runtime |  | PASS on 40d93f6b: exit 143 in 0 s (suspect 1 closed) |
 | YU18 | `FR-GMR-06` | CI |  |  | render/admission counts: test_prepare |
 | YU18 | `FR-GMR-07` | LIVE | yu04-live-delta yu04-offline-catchup yu17-book-retick yu15-option-persistence |  | the four control-feed proofs PASS on 40d93f6b |
-| YU18 | `FR-GMR-08` | LIVE |  |  | ready gate / negative DNS TTL: no black-box observable driven |
+| YU18 | `FR-GMR-08` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; member 2 deleted and polled every ~20 ms from member 0: 397 answers 503 through INIT/CANVASS, ready only at CLOSED with 200. ReadinessDiagnosticsTest |
 | YU18 | `FR-GMR-09` | LIVE |  |  | ready gate / negative DNS TTL: no black-box observable driven |
 | YU18 | `FR-GMR-10` | LIVE |  | yu18-member-disk-survives | PASS MODE=scale and MODE=delete (suspect 15 closed); MODE=reschedule not run (needs a spare engine node) |
 | YU18 | `FR-GP01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1636,13 +1639,13 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-RA-04` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RA-05` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RA-06` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
-| YU18 | `FR-RCM01` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
-| YU18 | `FR-RCM02` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
-| YU18 | `FR-RCM03` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
-| YU18 | `FR-RD01` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
-| YU18 | `FR-RD02` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
-| YU18 | `FR-RD03` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
-| YU18 | `FR-RD04` | LIVE |  |  | diagnostic metric/readout shape: no live proof (unit) |
+| YU18 | `FR-RCM01` | LIVE |  | yu18-risk-capacity-metrics | 2026-11-06 kind: PASS; a 7 @ 47 rest reserves exactly 329e6 ticks on the account and aggregate on all 3 members, released on cancel; a 7 @ 50 cross adds 350e6 executed to both sides. NEGATIVE=1 (rests 8) fails. RiskCapacityMetricsTest |
+| YU18 | `FR-RCM02` | LIVE |  | yu18-risk-capacity-metrics | 2026-11-06 kind: PASS; samples kept after release; a refused never-admitted account creates no label |
+| YU18 | `FR-RCM03` | LIVE |  | yu18-risk-capacity-metrics | 2026-11-06 kind: PASS; account labels = traderx_risk_accounts on every member |
+| YU18 | `FR-RD01` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; 200/ready/CLOSED healthy, 503 on every not-ready sample of a rejoin. ReadinessDiagnosticsTest |
+| YU18 | `FR-RD02` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; 2/2 complete healthy, 1 observed / 1 unavailable partial with a peer away. NEGATIVE=1 (no peer away) fails |
+| YU18 | `FR-RD03` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; observedLag = max(0, maxObservedPeerApplied - applied), withinLagTolerance consistent with configuredMaxLag |
+| YU18 | `FR-RD04` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; sample started <= completed, within 10 s of wall clock; scope maximum_observed_applied_sequence |
 | YU18 | `FR-RMA01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RMA02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-RMA03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |

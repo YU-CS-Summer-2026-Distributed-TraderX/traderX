@@ -7,7 +7,7 @@ rows are not counted).
 ## The number, and why it is not 82
 
 **115 live-provable requirements had no live proof, of 397 (282 covered, 71%).** Round 3 said 82 of 352. After this
-session: 106 open, 291 covered (73%), see "What remains".
+session: 98 open, 299 covered (75%), see "What remains".
 
 | Delta | Rows | Why |
 |---|---|---|
@@ -108,17 +108,17 @@ Ordered by risk, then tier (local/kind before GKE).
 | 67 | FR-AE03 | VWAP slices across buckets by volume profile | kind | risk-gate | — |
 | 68 | FR-AE09 | empty volume profile falls back | kind | risk-gate | — |
 | 69 | FR-MAR03 | risk readout carries memberId/source/sampling/freshness fields | kind | risk-gate | — |
-| 70 | FR-RCM01 | member `/metrics` risk-capacity gauges | kind | risk-gate | RiskCapacityMetricsTest |
-| 71 | FR-RCM02 | unknown state is "unavailable" with monetary samples absent; empty is a real 0 | kind | risk-gate | — |
-| 72 | FR-RCM03 | series bounded by occupied account slots | kind | risk-gate | — |
+| 70 | FR-RCM01 | member `/metrics` risk-capacity gauges — **proof since: yu18-risk-capacity-metrics, PASS** | kind | risk-gate | RiskCapacityMetricsTest |
+| 71 | FR-RCM02 | unknown state is "unavailable" with monetary samples absent; empty is a real 0 — **proof since: yu18-risk-capacity-metrics, PASS** | kind | risk-gate | — |
+| 72 | FR-RCM03 | series bounded by occupied account slots — **proof since: yu18-risk-capacity-metrics, PASS** | kind | risk-gate | — |
 | 73 | FR-AE08 | algo engine rebuilds parents by replaying JetStream on startup | kind | recovery | — |
 | 74 | FR-ERH-F8 | full-history replay is strict; a purged archive refuses | kind | recovery | — |
-| 75 | FR-GMR-08 | member `/ready` refuses until election CLOSED | kind | recovery | ReadinessDiagnosticsTest |
+| 75 | FR-GMR-08 | member `/ready` refuses until election CLOSED — **proof since: yu18-readiness-diagnostics, PASS** | kind | recovery | ReadinessDiagnosticsTest |
 | 76 | FR-GMR-09 | member JVM never caches a failed name lookup | kind | recovery | MemberDnsCacheTest |
-| 77 | FR-RD01 | `/ready` keeps legacy fields; gated on a CLOSED election | kind | recovery | ReadinessDiagnosticsTest |
-| 78 | FR-RD02 | readiness reports peer-slot coverage | kind | recovery | — |
-| 79 | FR-RD03 | readiness reports observed lag and tolerance | kind | recovery | — |
-| 80 | FR-RD04 | readiness sample timestamps; cold engine nulls | kind | recovery | — |
+| 77 | FR-RD01 | `/ready` keeps legacy fields; gated on a CLOSED election — **proof since: yu18-readiness-diagnostics, PASS** | kind | recovery | ReadinessDiagnosticsTest |
+| 78 | FR-RD02 | readiness reports peer-slot coverage — **proof since: yu18-readiness-diagnostics, PASS** | kind | recovery | — |
+| 79 | FR-RD03 | readiness reports observed lag and tolerance — **proof since: yu18-readiness-diagnostics, PASS** | kind | recovery | — |
+| 80 | FR-RD04 | readiness sample timestamps; cold engine nulls — **proof since: yu18-readiness-diagnostics, PASS** | kind | recovery | — |
 | 81 | FR-GFS-13 | a fresh epoch purges `FIX_SESSIONS` | kind | recovery | — |
 | 82 | FR-RXT06 | the extract cut travels as one message with its row count | local | eod | — |
 | 83 | FR-RXT09 | a row with no close and no last trade (or no account) is handled per spec | local | eod | — |
@@ -169,7 +169,7 @@ By risk: money 38, order 18, risk-gate 15, recovery 11, eod 3, security 4, ops 2
 
 ## What remains (2026-11-06)
 
-**106 open** after this session's six proofs (9 rows; coverage 291/397, 73%). Results and suspects 17–18 are in
+**98 open** after this session's eight proofs (17 rows; coverage 299/397, 75%). Results and suspects 17–18 are in
 COVERAGE.md "Live-proof gap closure".
 
 - **The snapshot and partition rows (kind*) are now reachable at $0.** [`kind-yu18-rig.py`](kind-yu18-rig.py)
