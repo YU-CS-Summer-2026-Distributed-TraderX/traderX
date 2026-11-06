@@ -1,6 +1,7 @@
 # FR-THT-05: every file that touches the SQL `trades` table, with where it goes. Checked by sql-trades-readers.sh
-# --inventory (exact match). Remove a line when its file no longer touches SQL trades; the table stops being
-# written (FR-THT-01) only when sql-trades-readers.sh with no argument passes. Recorded 2026-11-06.
+# --inventory (exact match). Remove a line when its file no longer touches SQL trades. FR-THT-01 (option A, decided
+# 2026-11-06): the table keeps each account's blotter window; KEEP lines read or write only that window and stay.
+# Rows mode stops being written only when sql-trades-readers.sh with no argument passes. Recorded 2026-11-06.
 scripts/bench/load/measure-trade-processor-db-rate.sh                                                                                                             # rig/proof tooling counts SQL trades -> history store
 scripts/desk-managed-recovery/proof.mjs                                                                                                                           # rig/proof tooling counts SQL trades -> history store
 scripts/desk-managed-recovery/setup.py                                                                                                                            # rig/proof tooling counts SQL trades -> history store
@@ -42,20 +43,20 @@ specs/YU18-risk-integration/components/managed-run-ui/proofs/fixture-rows-run-b.
 specs/YU18-risk-integration/components/managed-run-ui/proofs/managed-acceptance-proof.mjs                                                                         # managed-run proof fixtures/assertions -> history store
 specs/YU18-risk-integration/components/managed-run-ui/proofs/real-transition-proof.mjs                                                                            # managed-run proof fixtures/assertions -> history store
 specs/YU18-risk-integration/components/managed-run-ui/proofs/setup-managed-acceptance.py                                                                          # managed-run proof fixtures/assertions -> history store
-specs/YU18-risk-integration/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml                                           # schema: dropped with the table (ADR-101-style archive first)
-specs/YU18-risk-integration/generation/runtime-overrides/position-service/src/main/java/finos/traderx/positionservice/repository/TradeRepository.java             # blotter/trade history REST (console) -> history-feed /history/accounts/{id}/fills
-specs/YU18-risk-integration/generation/runtime-overrides/postgres-database-replacement/mariadb-init/initialSchema.sql                                             # schema: dropped with the table (ADR-101-style archive first)
-specs/YU18-risk-integration/generation/runtime-overrides/postgres-database-replacement/mariadb-migrations/ri06.sql                                                # schema: dropped with the table (ADR-101-style archive first)
-specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/main/java/finos/traderx/tradeprocessor/service/ProjectionTransitionService.java      # managed-run scope transition counts rows
+specs/YU18-risk-integration/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml                                           # KEEP: schema; the table stays for the window
+specs/YU18-risk-integration/generation/runtime-overrides/position-service/src/main/java/finos/traderx/positionservice/repository/TradeRepository.java             # KEEP: blotter REST reads the window, not history (FR-THT-01 option A)
+specs/YU18-risk-integration/generation/runtime-overrides/postgres-database-replacement/mariadb-init/initialSchema.sql                                             # KEEP: schema; the table stays for the window
+specs/YU18-risk-integration/generation/runtime-overrides/postgres-database-replacement/mariadb-migrations/ri06.sql                                                # KEEP: schema; the table stays for the window
+specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/main/java/finos/traderx/tradeprocessor/service/ProjectionTransitionService.java      # KEEP: epoch-namespace guard on current state
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/main/java/finos/traderx/tradeprocessor/service/SettlementService.java                # settlement state Processing->Settled on rows (current state: needs a home before the cut)
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/main/java/finos/traderx/tradeprocessor/service/TradeService.java                     # rows mode: one row per side (the write path FR-THT-01 cuts)
-specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/main/java/finos/traderx/tradeprocessor/service/TradeSnapshotStore.java               # snapshot mode: per-account blotter window + settlement counts (current state, ADR-097); stays or -> history
+specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/main/java/finos/traderx/tradeprocessor/service/TradeSnapshotStore.java               # KEEP: writes the blotter window + settlement counts (current state, ADR-097)
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/AutomaticRecoveryLiveIT.java          # test of the above; moves with its subject
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/AutomaticRecoveryPersistenceIT.java   # test of the above; moves with its subject
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/EventRecoveryLiveIT.java              # test of the above; moves with its subject
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/EventRecoveryPersistenceIT.java       # test of the above; moves with its subject
-specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/GeneratedDatabaseSchemaIT.java        # test of the above; moves with its subject
+specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/GeneratedDatabaseSchemaIT.java        # KEEP: schema test; the table stays for the window
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/RunMigrationLiveIT.java               # test of the above; moves with its subject
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/SettlementServiceTest.java            # test of the above; moves with its subject
 specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/TradeIdentityPersistenceIT.java       # test of the above; moves with its subject
-specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/TradeSnapshotStoreConcurrencyIT.java  # test of the above; moves with its subject
+specs/YU18-risk-integration/generation/runtime-overrides/trade-processor/src/test/java/finos/traderx/tradeprocessor/service/TradeSnapshotStoreConcurrencyIT.java  # KEEP: test of the window writer

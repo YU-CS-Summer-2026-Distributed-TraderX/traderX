@@ -64,5 +64,7 @@ kept.
   blotter window. The 10-30 loss was upstream of every store: the bridge publishes NATS dropped while it was
   OOM-killed (FR-PRG-28), so ClickHouse fed from the same streams would have missed the same 89.7M sides. The history
   store is exact only for what reaches the stream, and it must keep up with `TRADERX_FEED`'s discard-old retention.
+- **The blotter window stays in SQL** (decided 2026-11-06): it is current state; FR-THT-01 retires rows mode, not
+  the window. The 10-30 gap stays recorded (synthetic history, not rebuilt).
 - **One epoch per store**: refs restart at a fresh epoch (ADR-101), so the history tables must be archived with the
   epoch (FR-THT-08, proposed).

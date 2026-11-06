@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # FR-THT-05: every file that reads or writes the SQL `trades` table, against the recorded inventory.
-#   sql-trades-readers.sh              the drop gate: lists what still touches SQL trades; exit 1 while anything does
+#   sql-trades-readers.sh              the cut gate: lists what still touches SQL trades beyond the blotter window (lines
+#                                      not marked KEEP:); exit 1 while anything does
 #   sql-trades-readers.sh --inventory  exit 0 only when the tree matches sql-trades-readers.txt exactly: a new reader,
 #                                      or a moved one still listed, fails (CI-safe while the move is under way)
 #   sql-trades-readers.sh --selftest   both modes on a planted tree, both ways
@@ -14,6 +15,8 @@ found(){ git -C "$ROOT" ls-files -z -- specs/YU18-risk-integration scripts web-f
   | grep -zv -e '/history-feed/' -e '/history-store-bakeoff/' -e 'kdb' -e '/node_modules/' -e '^scripts/trade-history-tiers/' -e '\.md$' \
   | (cd "$ROOT" && xargs -0 rg -l -i -e '\b(from|join|into|update|table)\s+`?trades\b' 2>/dev/null || true) | sort; }
 recorded(){ sed -e 's/[[:space:]]*#.*//' -e '/^[[:space:]]*$/d' "$LIST" | sort; }
+# FR-THT-01 option A: the window's own readers and writers stay on SQL.
+kept(){ grep -E '#[[:space:]]*KEEP:' "$LIST" | sed 's/[[:space:]]*#.*//' | sort; }
 
 case ${1:-} in
   --inventory)
@@ -31,14 +34,19 @@ case ${1:-} in
     echo 'scripts/x/recon.sh   # recon' > "$t/scripts/trade-history-tiers/sql-trades-readers.txt"
     THT_ROOT=$t "$me" --inventory >/dev/null 2>&1 || { echo "FAIL: the recorded reader failed --inventory"; ok=0; }
     THT_ROOT=$t "$me" >/dev/null 2>&1 && { echo "FAIL: the drop gate passed with a reader left"; ok=0; }
+    echo 'SELECT * FROM trades WHERE accountid=?' > "$t/scripts/x/blotter.sh"; git -C "$t" add -A
+    printf 'scripts/x/recon.sh   # recon\nscripts/x/blotter.sh # KEEP: window\n' > "$t/scripts/trade-history-tiers/sql-trades-readers.txt"
+    THT_ROOT=$t "$me" 2>/dev/null | grep -qx scripts/x/blotter.sh && { echo "FAIL: the gate counted a KEEP reader"; ok=0; }
+    THT_ROOT=$t "$me" >/dev/null 2>&1 && { echo "FAIL: the gate passed with a non-KEEP reader beside a KEEP one"; ok=0; }
     echo 'curl history-feed:18095/history/accounts/1/fills' > "$t/scripts/x/recon.sh"; git -C "$t" add -A   # moved
     echo 'SELECT 1 FROM trades' > "$t/scripts/x/untracked.sh"                 # a peer's untracked file: not counted
-    THT_ROOT=$t "$me" >/dev/null 2>&1 || { echo "FAIL: the drop gate refused a tree with no reader"; ok=0; }
+    THT_ROOT=$t "$me" >/dev/null 2>&1 || { echo "FAIL: the gate refused a tree with only a KEEP reader"; ok=0; }
     THT_ROOT=$t "$me" --inventory >/dev/null 2>&1 && { echo "FAIL: a stale inventory entry passed"; ok=0; }
     [ $ok = 1 ] && echo "selftest PASS" ;;
   "")
     left=$(found)
-    [ -z "$left" ] && { echo "no SQL trades reader left: the table may stop being written (FR-THT-01)"; exit 0; }
-    printf '%s\n' "$left"; echo "$(wc -l <<<"$left" | tr -d ' ') files still touch SQL trades" >&2; exit 1 ;;
+    left=$(comm -23 <(printf '%s\n' "$left" | sed '/^$/d') <(kept))
+    [ -z "$left" ] && { echo "only blotter-window readers left: rows mode may stop being written (FR-THT-01)"; exit 0; }
+    printf '%s\n' "$left"; echo "$(wc -l <<<"$left" | tr -d ' ') files still read SQL trades as history" >&2; exit 1 ;;
   *) echo "usage: $0 [--inventory|--selftest]" >&2; exit 2 ;;
 esac
