@@ -9,7 +9,9 @@
 - [ ] Move blotter/history (position-service `TradeRepository`), the managed-run proofs and the SQL-counting proofs;
   the blotter stays on the window (FR-THT-01 option A, 2026-11-06); the proofs need a history store on kind.
 - [x] Cut gate distinguishes the window from history (FR-THT-05): `KEEP:` inventory lines (window writer, blotter,
-  epoch-namespace guard, schema) stay; `sql-trades-readers.sh` passes once only they remain. 50 history readers left.
+  epoch-namespace guard, schema) stay; `sql-trades-readers.sh` passes once only they remain. The 50 others are tagged
+  (2026-11-06): WINDOW 16 (own fresh trades; verify on kind), ACCOUNTING 2 (high-water guard -> `projection_accounting`),
+  RI06 16 (projection recovery / managed runs), ROWS 16 (rows-mode writer and features, deleted with it).
 - [x] Restore gate checks the history store per partition (FR-THT-06, SC-THT-04 with delete/duplicate mutations): G3h,
   real-ClickHouse check script + offline gate tests. Opt-in until FR-THT-02.
 - [ ] Retire rows mode (FR-THT-01): snapshot + jetstream the only trade-processor path and the kind/base default;

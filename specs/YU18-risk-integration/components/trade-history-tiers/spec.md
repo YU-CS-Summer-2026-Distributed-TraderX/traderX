@@ -77,3 +77,6 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   It needs `use`kx.objstor` and its `init[]` first, `GCLOUD_PROJECT_ID`, and gcloud credentials. Without `init` the
   `gs://` dates are absent with no error, so an HDB guard must count dates, never trust a clean load.
 - `HISTORY_HOT_DAYS` and the GCS bucket's region and class (us-east1 Standard, same as the TAQ buckets).
+- RI06 projection recovery (explicit and automatic catch-up from a peer, managed-run transitions, the console's
+  operator catch-up) books recovered trades as SQL rows (`TradeService.processRecoveredTrades`); snapshot mode has no
+  equivalent but its own stream replay from the cursor. Retiring rows mode retires or ports it: yaakov to decide.
