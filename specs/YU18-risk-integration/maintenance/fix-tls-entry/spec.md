@@ -40,6 +40,10 @@ Status: new 2026-10-29. Scope: how a FIX client outside GCP reaches the producti
   for that ticker (`MARK_URL`, default the demo front door's `/mem/0/bbo`), as the Desk's "Price at market" does, so it
   rests on an empty book instead of cancelling as a Market IOC; a ticker with no mark SHALL be refused, not sent.
 
+- FR-FTL-10 (2026-11-06): The TLS port SHALL offer TLS 1.2 only. Under TLS 1.3, MINA 2.1.4 (QuickFIX/J 2.3.1) left
+  a Logon that arrived with the end of the handshake unread until the client closed, so a client that logs on at once
+  (QuickFIX/J does) waited for its logon timeout. `FixGatewayTlsTest` fails on TLS 1.3 and passes on TLS 1.2.
+
 ## Acceptance
 
 | Case | FR | Where | Expected |

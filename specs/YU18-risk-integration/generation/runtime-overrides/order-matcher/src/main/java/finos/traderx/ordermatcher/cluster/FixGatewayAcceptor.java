@@ -301,7 +301,10 @@ public final class FixGatewayAcceptor {
             settings.setString(sid, "SocketKeyStore", tlsKeystore);
             settings.setString(sid, "SocketKeyStorePassword", tlsKeystorePassword);
             settings.setString(sid, "KeyStoreType", "PKCS12");
-            settings.setString(sid, "EnabledProtocols", "TLSv1.3,TLSv1.2");
+            // FR-FTL-10: TLS 1.2 only. MINA 2.1.4 (under QuickFIX/J 2.3.1) holds TLS 1.3 application data that arrives
+            // with the handshake until the next read, so a client's Logon sat unread until it gave up.
+            // ponytail: drop the pin when QuickFIX/J ships a MINA whose SslHandler handles TLS 1.3 (2.2+).
+            settings.setString(sid, "EnabledProtocols", "TLSv1.2");
         }
         final FixWriteBarrier barrier = persistent ? new FixWriteBarrier(sessionStore) : null;
         if (persistent) {

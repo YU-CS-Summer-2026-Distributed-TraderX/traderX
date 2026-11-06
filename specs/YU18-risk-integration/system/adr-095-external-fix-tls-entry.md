@@ -71,3 +71,10 @@ lease, so a session can resume on whichever gateway its TCP connection lands on.
 - **TLS on the existing port for every CompID** (`FIX_SSL_KEYSTORE` alone, the ENGINE-REVIEW S3 switch). It would move
   the console's in-cluster FIX ticket and every in-region client to TLS at once; the external entry should not change
   them.
+
+## Amendment 2026-11-06: TLS 1.2 only (FR-FTL-10)
+
+The TLS port offered TLS 1.3 and 1.2. `FixGatewayTlsTest` failed on every CI run from 10-29 and locally: the handshake
+completed, but MINA 2.1.4 (QuickFIX/J 2.3.1's transport) held the Logon that followed it until the client closed the
+socket 5 s later. Pinning the port to TLS 1.2 makes the same test pass. TLS 1.2 is enough for this entry (an allowlisted
+/32 and a pinned certificate); lift the pin when QuickFIX/J moves to a MINA with the rewritten SSL handler.

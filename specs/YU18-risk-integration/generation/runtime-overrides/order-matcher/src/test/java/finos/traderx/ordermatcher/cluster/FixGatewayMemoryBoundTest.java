@@ -84,7 +84,9 @@ class FixGatewayMemoryBoundTest {
         }
 
         // The same orders from a client that never reads: its answers can queue up to the limit, then the session ends.
-        try (Socket silent = logon("CLIENT1")) {
+        // A 4 KiB receive window keeps the answers in the gateway: Linux grows loopback buffers to megabytes, which held
+        // all 16384 answers (~11 MB) in the kernel and none in MINA, so the limit was never reached on CI.
+        try (Socket silent = logon("CLIENT1", 4096)) {
             final Thread sender = new Thread(() -> {
                 try {
                     final OutputStream out = silent.getOutputStream();
@@ -174,7 +176,16 @@ class FixGatewayMemoryBoundTest {
     }
 
     private Socket logon(final String comp) throws Exception {
-        final Socket s = new Socket("127.0.0.1", port);
+        return logon(comp, 0);
+    }
+
+    /** {@code receiveBuffer} > 0 is set before connecting, so it bounds the window the gateway sees. */
+    private Socket logon(final String comp, final int receiveBuffer) throws Exception {
+        final Socket s = new Socket();
+        if (receiveBuffer > 0) {
+            s.setReceiveBufferSize(receiveBuffer);
+        }
+        s.connect(new java.net.InetSocketAddress("127.0.0.1", port));
         s.setTcpNoDelay(true);
         s.getOutputStream().write(frame(comp, 1, "A", "98=0", "108=30", "141=Y"));
         await(() -> {
