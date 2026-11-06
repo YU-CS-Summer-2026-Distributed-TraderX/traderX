@@ -734,6 +734,22 @@ class Down(unittest.TestCase):
         self.assertIsNotNone(first(calls, r'resize .*default-pool --num-nodes 0'), 'pools left billing')
 
 
+class SnapshotBarrier(unittest.TestCase):
+    """FR-PRG-02: the barrier waits for each member past its OWN snapshot count. 2026-11-06 (e1106): after a failover
+    replaced member 2, its per-process counter read 5 against member 0's 8, and down refused forever."""
+    def past(self, counts, *base):
+        m = ''.join(f'M{i}="0 0 0 h p {c}"; ' for i, c in enumerate(counts))
+        return subprocess.run(['bash', '-c', f'RIG_LIB=1 . "{RIG}"; member(){{ local v="M$1"; echo "${{!v}}"; }}; '
+                               f'{m} snapshots_past {" ".join(map(str, base))}'], capture_output=True, text=True).returncode
+
+    def test_a_replaced_member_with_a_lower_count_passes_once_it_advances(self):
+        self.assertEqual(self.past([11, 11, 6], 10, 10, 5), 0)
+
+    def test_any_member_that_has_not_advanced_holds_the_barrier(self):
+        self.assertNotEqual(self.past([11, 11, 5], 10, 10, 5), 0)
+        self.assertNotEqual(self.past([10, 11, 6], 10, 10, 5), 0)
+
+
 class Nats(unittest.TestCase):
     """FR-PRG-28: a NATS restart or replacement under a run is never a clean run (2026-10-30: OOM-killed 7x, unseen)."""
     def test_up_records_the_nats_pod_and_down_finds_it_intact(self):
