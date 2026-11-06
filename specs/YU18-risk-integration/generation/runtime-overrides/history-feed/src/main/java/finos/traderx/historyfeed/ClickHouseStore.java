@@ -27,7 +27,15 @@ final class ClickHouseStore {
   static final String SETTINGS = " ENGINE=MergeTree PARTITION BY toDate(ts) ORDER BY (account, ts)"
       + " SETTINGS fsync_after_insert=1, fsync_part_directory=1";
 
-  void createTables() throws Exception {
+  void createTables() throws Exception { createTables(0); }
+
+  /**
+   * FR-THT-03: with {@code hotDays > 0} both history tables take the {@code tiered} storage policy (the server's
+   * config: volume {@code default} on local disk, volume {@code cold} on the GCS-backed object disk) and a TTL that moves
+   * a date partition to {@code cold} once it is {@code hotDays} old. An existing table is moved onto the policy once;
+   * a table already on it is left alone (changing the hot window later is an operator's ALTER).
+   */
+  void createTables(int hotDays) throws Exception {
     exec("CREATE TABLE IF NOT EXISTS trades (ts DateTime64(3), seq UInt64, part UInt16, trade_seq UInt64,"
         + " side FixedString(1), account UInt32, security LowCardinality(String), qty UInt32, px Float64,"
         + " order_ref UInt64, cseq UInt64)" + SETTINGS);
@@ -39,6 +47,13 @@ final class ClickHouseStore {
     exec("CREATE TABLE IF NOT EXISTS history_cursor (stream String, tbl String, part UInt16, incarnation String,"
         + " bound DateTime64(3) DEFAULT now64(3)) ENGINE=MergeTree ORDER BY (stream, tbl, part, bound)"
         + " SETTINGS fsync_after_insert=1, fsync_part_directory=1");
+    if (hotDays <= 0) return;
+    for (String t : new String[]{"trades", "orders"}) {
+      if (query("SELECT storage_policy FROM system.tables WHERE database = currentDatabase() AND name = {t:String}",
+          Map.of("t", t)).trim().equals("tiered")) continue;
+      exec("ALTER TABLE " + t + " MODIFY SETTING storage_policy = 'tiered'");
+      exec("ALTER TABLE " + t + " MODIFY TTL toDate(ts) + toIntervalDay(" + hotDays + ") TO VOLUME 'cold'");
+    }
   }
 
   /** The incarnation this lane's rows are bound to, or null when none was ever bound. The latest binding wins. */

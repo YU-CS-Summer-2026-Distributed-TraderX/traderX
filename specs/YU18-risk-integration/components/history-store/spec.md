@@ -39,7 +39,7 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
 - FR-HST-06: The `history-feed` service (`generation/runtime-overrides/history-feed`, rendered; image
   `traderx/history-feed:yu18`) SHALL read the capture streams only, never create or size one, with trade-processor's
   environment names (`NATS_ADDRESS`, `PROJECTION_FEED_STREAM`, `PROJECTION_FEED_PARTITIONS`,
-  `PROJECTION_FEED_STREAM_LAYOUT`) plus `CLICKHOUSE_URL`. It SHALL serve `GET /health` (per lane: stream, cursor,
+  `PROJECTION_FEED_STREAM_LAYOUT`) plus `CLICKHOUSE_URL` and `HISTORY_HOT_DAYS` (0; the tiering of FR-THT-03). It SHALL serve `GET /health` (per lane: stream, cursor,
   rows, pending, recreates, write failures; 503 until every lane is open) and, on port 18095,
   `/history/accounts/{id}/fills?day=&limit=(≤1000)&offset=`, `/history/accounts/{id}/tca?from=&to=`,
   `/history/accounts/{id}/positions?asOf=`, `/history/vwap?from=&to=` (JSON) and `/history/export/{trades|orders}?day=`

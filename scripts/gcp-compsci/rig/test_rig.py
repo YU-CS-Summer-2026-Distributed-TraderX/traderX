@@ -40,6 +40,9 @@ kubectl(){
       n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
       v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; expired && return 8; echo "$REINDEX";;
+    *"get sts clickhouse"*) [ -n "${HIST:-}" ];;   # HIST: the history store's per-partition check rows; unset = no store
+    *"history-feed:18095/health"*) echo '{"ready":true,"lanes":[{"pending":0},{"pending":0}]}';;
+    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7; printf '%b\n' "$HIST";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
@@ -366,6 +369,32 @@ class Up(unittest.TestCase):
 
     def test_an_accounting_that_cannot_be_read_is_refused_at_g3(self):
         self.assertIn('the accounting could not be read', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT_FAIL='1'))
+
+    # FR-THT-06 / SC-THT-04: the history store (ClickHouse) per partition: count, max, sums of trade_seq and its square,
+    # duplicates. Sides 1,3,5 on partition 0 and 2,4 on partition 1 for the members' trades = 5.
+    HIST = '0\\t3\\t5\\t9\\t35\\t0\\n1\\t2\\t4\\t6\\t20\\t0'
+
+    def test_the_history_store_is_checked_against_the_members_trades(self):
+        rc, out, _ = run('rig_up', HIST=self.HIST)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
+        rc, out, _ = run('rig_up', HIST='0\\t3\\t5\\t9\\t35\\t0', UNPROJECTED='2-2 4-4', TRADE_ROWS='3\t3\t5\t0')
+        self.assertEqual(rc, 0, out)                     # 2 and 4 recorded unprojected: never reached the stream
+
+    def test_a_rig_without_the_history_store_skips_it_until_production_renders_one(self):
+        rc, out, _ = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3h skipped: no history store', out)
+
+    def test_a_history_store_with_a_deleted_or_duplicated_row_is_refused(self):
+        for rows, why in (('0\\t3\\t5\\t9\\t35\\t0\\n1\\t1\\t2\\t2\\t4\\t0', 'holds 4 sides'),           # side 4 deleted
+                          ('0\\t4\\t5\\t14\\t60\\t1\\n1\\t2\\t4\\t6\\t20\\t0', '1 duplicated'),           # side 5 twice
+                          ('0\\t3\\t5\\t9\\t35\\t0\\n1\\t2\\t2\\t4\\t8\\t1', '1 duplicated'),             # 4 deleted AND 2 doubled
+                          ('0\\t3\\t6\\t10\\t46\\t0\\n1\\t2\\t4\\t6\\t20\\t0', 'above the members trades')):  # a side never booked
+            self.assertIn(why, self.refused('G3h', HIST=rows))
+
+    def test_an_unreadable_history_store_is_refused(self):
+        self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
 
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')

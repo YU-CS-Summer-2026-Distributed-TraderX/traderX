@@ -1,6 +1,7 @@
 # Trade history tiers
 
-Status: proposed 2026-11-01, not started; scheduled after the 2026-11-05 conference. Decision:
+Status: first slice landed 2026-11-06, local and kind only (tiering policy, reader inventory, recon on ClickHouse,
+G3h history-store gate check, KDB-X `gs://` answered); nothing in production. Decision:
 [ADR-102](../../system/adr-102-trade-history-off-mariadb.md). Issue: `issues/risk-integration/32-trade-history-off-mariadb.md`.
 
 Trade history moves off MariaDB: ClickHouse (the existing [history store](../history-store/README.md) feed) is the

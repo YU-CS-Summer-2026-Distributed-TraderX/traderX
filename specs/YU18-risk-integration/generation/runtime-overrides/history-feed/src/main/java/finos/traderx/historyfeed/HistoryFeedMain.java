@@ -27,7 +27,7 @@ import java.util.concurrent.Executors;
  * <p>Environment (the trade-processor names where they mean the same thing): NATS_ADDRESS, PROJECTION_FEED_STREAM
  * (TRADERX_FEED), PROJECTION_FEED_PARTITIONS (1), PROJECTION_FEED_STREAM_LAYOUT (one | partition: TRADERX_FEED_P&lt;p&gt;),
  * CLICKHOUSE_URL (http://clickhouse:8123), HISTORY_BATCH_ROWS (100000), HISTORY_FLUSH_MS (500), HISTORY_FETCH (5000),
- * HISTORY_HTTP_PORT (18095).
+ * HISTORY_HTTP_PORT (18095), HISTORY_HOT_DAYS (0: no tiering; n: partitions older than n days move to the cold volume).
  *
  * <p>HTTP: GET /health; GET /history/accounts/{id}/fills?day=&amp;limit=&amp;offset=; /history/accounts/{id}/tca?from=&amp;to=;
  * /history/accounts/{id}/positions?asOf=; /history/vwap?from=&amp;to=; /history/export/{trades|orders}?day= (CSV).
@@ -45,10 +45,11 @@ public final class HistoryFeedMain {
     int flushMs = Integer.parseInt(env("HISTORY_FLUSH_MS", "500"));
     int fetch = Integer.parseInt(env("HISTORY_FETCH", "5000"));
     int port = Integer.parseInt(env("HISTORY_HTTP_PORT", "18095"));
+    int hotDays = Integer.parseInt(env("HISTORY_HOT_DAYS", "0"));   // FR-THT-03: 0 = everything stays on local disk
 
     ClickHouseStore store = new ClickHouseStore(env("CLICKHOUSE_URL", "http://clickhouse:8123"));
     for (int attempt = 1; ; attempt++) {     // the store may start after us
-      try { store.createTables(); break; }
+      try { store.createTables(hotDays); break; }
       catch (Exception e) { if (attempt == 60) throw e; System.err.println("clickhouse not ready: " + e); Thread.sleep(2000); }
     }
     List<FeedLane> lanes = new ArrayList<>();

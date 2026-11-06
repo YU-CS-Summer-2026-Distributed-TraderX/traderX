@@ -1,6 +1,6 @@
 # ADR-102: Trade history leaves MariaDB for time-series tiers (ClickHouse system of record, KDB-X analytics)
 
-Status: proposed 2026-11-01, scheduled after the 2026-11-05 conference. Nothing in the demo build changes (yaakov:
+Status: proposed 2026-11-01; first slice implemented 2026-11-06 (local and kind; findings at the end). Nothing in the demo build changes (yaakov:
 "adding it now would ... ruin an already stable system"). Pack: [trade history tiers](../components/trade-history-tiers/spec.md).
 Relates to ADR-097 (snapshot read model), ADR-098 (history store, ClickHouse feed), FR-DRS-34 (per-partition streams),
 and the bake-off in `docs/engineering/history-store-bakeoff.md`.
@@ -51,3 +51,18 @@ kept.
 - Rejected: KDB-X as the only store (per-instance caps, every analytic query must stay under the 16 GiB heap);
   BigQuery/Bigtable (seconds per query, or point reads without analytics; neither is local-testable on kind);
   keeping trades in MariaDB with bigger hardware (the append-only table keeps growing).
+
+## Findings, 2026-11-06 (first slice, local)
+
+- **KDB-X Community reads `gs://` HDB segments.** Measured with `scripts/trade-history-tiers/kdb-objstor-check.sh`
+  on a real bucket: decision 3's `par.txt` segments on GCS are available, so cold KDB-X dates may live in GCS. It
+  needs `use`kx.objstor` plus `init[]`; without it the GCS dates load as absent with no error.
+- **ClickHouse tiering works on the upgrade path** (`HistoryTierIT`): an existing local table moves onto the
+  `tiered` policy only if its hot volume is named `default`.
+- **The restore gate's history check is G3h** (FR-THT-06), the snapshot G3's closed form over ClickHouse.
+- **Snapshot mode already took per-trade rows out of SQL** (ADR-097): production's `trades` is each account's
+  blotter window. The 10-30 loss was upstream of every store: the bridge publishes NATS dropped while it was
+  OOM-killed (FR-PRG-28), so ClickHouse fed from the same streams would have missed the same 89.7M sides. The history
+  store is exact only for what reaches the stream, and it must keep up with `TRADERX_FEED`'s discard-old retention.
+- **One epoch per store**: refs restart at a fresh epoch (ADR-101), so the history tables must be archived with the
+  epoch (FR-THT-08, proposed).

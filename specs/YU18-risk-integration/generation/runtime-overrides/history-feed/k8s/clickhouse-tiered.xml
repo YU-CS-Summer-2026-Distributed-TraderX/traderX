@@ -1,0 +1,26 @@
+<!-- FR-THT-03: the `tiered` storage policy history-feed puts its tables on when HISTORY_HOT_DAYS > 0. Volume `default` (hot) is
+     the server's local disk; volume `cold` is an S3-protocol object disk. On GKE that is GCS through its XML API
+     (HISTORY_COLD_ENDPOINT=https://storage.googleapis.com/<bucket>/<prefix>/, HMAC key id and secret); on kind and in
+     HistoryTierIT, MinIO. Mount into /etc/clickhouse-server/config.d/ only together with the three variables. -->
+<clickhouse>
+  <storage_configuration>
+    <disks>
+      <cold_object>
+        <type>s3</type>
+        <endpoint from_env="HISTORY_COLD_ENDPOINT"/>
+        <access_key_id from_env="HISTORY_COLD_KEY_ID"/>
+        <secret_access_key from_env="HISTORY_COLD_SECRET"/>
+        <support_batch_delete>false</support_batch_delete>  <!-- GCS has no DeleteObjects -->
+        <metadata_path>/var/lib/clickhouse/disks/cold_object/</metadata_path>
+      </cold_object>
+    </disks>
+    <policies>
+      <tiered>
+        <volumes>
+          <default><disk>default</disk></default>  <!-- named as the default policy's volume, so an existing table can move onto this policy -->
+          <cold><disk>cold_object</disk></cold>
+        </volumes>
+      </tiered>
+    </policies>
+  </storage_configuration>
+</clickhouse>

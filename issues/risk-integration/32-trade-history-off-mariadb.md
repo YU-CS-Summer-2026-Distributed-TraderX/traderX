@@ -1,7 +1,6 @@
 # RI32 — Move trade history off MariaDB into time-series tiers (after the conference)
 
-Updated: 2026-11-01. Status: open, not started. **Do not start before the 2026-11-05 conference**: the demo build stays
-as it is. Owner: yaakov + coordinator. Spec: `specs/YU18-risk-integration/components/trade-history-tiers/`
+Updated: 2026-11-06. Status: open, first slice landed locally (see "State, 2026-11-06"); nothing in production. Owner: yaakov + coordinator. Spec: `specs/YU18-risk-integration/components/trade-history-tiers/`
 (FR-THT-01..07), decision ADR-102.
 
 Problem: every trade side is a MariaDB row. That append-only table is the read model's write ceiling (89.7M sides
@@ -16,3 +15,32 @@ Acceptance: the spec's SC-THT-01..04: 400K orders/s with MariaDB writing current
 queryable in under 1 s cold per account in both stores; a GCS-moved partition answers identically; the restore gate
 checks the history store and refuses a deleted or duplicated row. Every SQL `trades` reader moved before the table
 stops being written. Production steps only through admission and a yaakov-confirmed bring-up.
+
+## State, 2026-11-06
+
+Landed (local and kind, tests at the effect end with negative controls): ClickHouse tiering policy (FR-THT-03,
+`HistoryTierIT`), the SQL `trades` reader inventory (FR-THT-05, 58 files, `sql-trades-readers.sh`), the FR-DRS-33
+recon on ClickHouse, the restore gate's history-store check G3h (FR-THT-06), and the KDB-X answer: Community serves
+`gs://` HDB segments (ADR-102 findings). Not landed: FR-THT-02 (ClickHouse on GKE), moving the blotter and the proofs,
+the write-path cut, the KDB-X feed lane, the scale and rebuild proofs.
+
+Blocking decision (yaakov): in snapshot mode (production, ADR-097) SQL `trades` already holds only each account's
+blotter window, which is current state. Is FR-THT-01 "rows mode retired" or "the window moves to ClickHouse too"?
+
+## The 89.7M sides of 2026-10-30 (proposal, not decided)
+
+Today they are recorded, not rebuilt: `rig-unprojected` = `3392665-662922190 663474186-753187098` (yaakov's yes,
+2026-10-31), and the epoch was archived (ADR-101). The sides were never on the stream (bridge publishes dropped while
+NATS was OOM-killed), so no store fed from the streams can have them. The old epoch's journal survives in the GCE
+snapshots `traderx-e1101-m{0,1,2}` (250 GB each). Options:
+
+1. **Keep recorded** (no cost). The range stays a known gap in the read model; the members' journal snapshots remain
+   the record. History queries over 10-30 are incomplete and say so.
+2. **Rebuild into the archived epoch's history** (proposed). Restore one snapshot to a disk, run an offline journal
+   reader (the shadow-replay path G2 already uses) that emits each trade side 663,474,186..753,187,098 as a
+   history row with its consensus sequence, into ClickHouse tables `arc_e1101_trades` (FR-THT-08), then check them
+   with G3h's closed form over exactly that range. Needs code (a journal-to-rows exporter, its test on kind with a
+   deliberately dropped range), one c4d-standard-16 (~$0.85/h) for ~3 h and a 250 GB Hyperdisk from the snapshot for
+   a day (~$1): about $5 to $10 with retries. The
+   SQL read model is not touched (snapshot mode would only window it).
+3. **Rebuild the read model's rows too**: SQL rows for 89.7M sides is what RI32 removes; not proposed.

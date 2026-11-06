@@ -458,6 +458,47 @@ print("; ".join(bad) or f"OK {got[0]} sides")
   note "G3 ok: the read model booked sides $((${base:-0} + 1))..$t${ranges:+ except $ranges}, each once; $(jq -r .openOrders <<<"$digest") open orders"
 }
 
+# ---- the history store's check (FR-THT-06, ADR-102) -----------------------------------------------------------------
+# ClickHouse's trades are checked like the snapshot accounting: per partition the count, highest trade_seq, wrapped sums
+# of trade_seq and trade_seq^2 (UInt64 arithmetic wraps mod 2^64 as the closed form does) and the duplicates, summed and
+# compared with the closed form over the epoch's sides 1..t minus the unprojected ranges. The store is fed from cursor 0
+# (FR-THT-07), so there is no base. A deleted row breaks the count, a duplicated one is counted, a swapped one the sums.
+HISTORY_CHECK_SQL="SELECT part, count(), max(trade_seq), sum(trade_seq), sum(trade_seq * trade_seq), count() - uniqExact(trade_seq) FROM trades GROUP BY part ORDER BY part FORMAT TSV"
+history_health(){ kc exec deploy/trade-processor -- curl -sf -m15 http://history-feed:18095/health; }
+# Every lane open and nothing pending: with the gateways at 0 the store then holds all the stream has.
+history_caught_up(){ history_health | jq -e '.ready and (.lanes | length > 0 and all(.pending == 0))' >/dev/null; }
+# The verdict on HISTORY_CHECK_SQL's rows for members' trades t and the unprojected ranges: "OK n sides" or why not.
+history_verdict(){ python3 -c '
+import sys
+t,ranges,rows=int(sys.argv[1]),sys.argv[2].split(),[l.split("\t") for l in sys.argv[3].splitlines() if l.strip()]
+M=1<<64
+def S(k,n): return [n, n*(n+1)//2, n*(n+1)*(2*n+1)//6][k]
+want=[S(k,t) for k in range(3)]
+for r in ranges:
+    a,b=map(int,r.split("-")); a,b=max(a,1),min(b,t)
+    if a<=b: want=[w-(S(k,b)-S(k,a-1)) for k,w in enumerate(want)]
+got=[sum(int(r[1]) for r in rows), sum(int(r[3]) for r in rows)%M, sum(int(r[4]) for r in rows)%M]
+dups=sum(int(r[5]) for r in rows); top=max([int(r[2]) for r in rows] or [0])
+bad=[]
+if dups: bad.append(f"{dups} duplicated trade side(s)")
+if top>t: bad.append(f"highest trade_seq {top} above the members trades {t}")
+if got!=[want[0],want[1]%M,want[2]%M]: bad.append(f"holds {got[0]} sides (sums {got[1]},{got[2]}), want {want[0]} ({want[1]%M},{want[2]%M})")
+print("; ".join(bad) or f"OK {got[0]} sides")
+' "$@"; }
+g3_history(){
+  local t=$1 ranges rows verdict
+  # ponytail: opt-in until FR-THT-02 renders the store into the production manifests; then its absence is refused.
+  kc get sts clickhouse -o name >/dev/null 2>&1 || { note "G3h skipped: no history store (sts/clickhouse) on $NS"; return 0; }
+  wait_for 600 "every history-feed lane open with nothing pending (G3h)" history_caught_up
+  rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
+    || die "G3h: the history store could not be read"
+  printf '%s\n' "$rows" > "$EVIDENCE/gate-history.tsv"
+  ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
+  verdict=$(history_verdict "$t" "$ranges" "$rows")
+  [ "${verdict%% *}" = OK ] || die "G3h (history store): $verdict (unprojected ${ranges:-none}): $EVIDENCE/gate-history.tsv"
+  note "G3h ok: the history store holds trade sides 1..$t${ranges:+ except $ranges}, each once"
+}
+
 # ---- the restore gate (FR-PRG-03) --------------------------------------------------------------------------------
 # Applied alone proves nothing: a snapshot load that skipped a record still ends at the full log's applied. The
 # reference never comes from a snapshot: (A) a replay from log position 0, (B) the read model, which the members do
@@ -470,6 +511,7 @@ restore_gate(){
     note "would check: G1 each member's replay from 0 reaches its applied and reproduces its trade count"
     note "would check: G2 (check A) each member's $GATE_SHADOW_PATH book/position hashes equal its own; refuse if absent"
     note "would check: G3 (check B) read-model md5s equal those read before the members started"
+    note "would check: G3h (FR-THT-06) the history store holds sides 1..trades each once, when sts/clickhouse exists"
     note "would check: G4 the members equal the rig-shutdown-baseline ConfigMap, when one exists"
     note "would record: ConfigMap rig-gate (PASS, member pod UIDs)"
     return 0
@@ -558,6 +600,7 @@ restore_gate(){
   echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
   note "G3 ok: read model unchanged"
+  g3_history "$t"
   # FR-PRG-23: any failed read, or a baseline that exists without a well-formed members line, refuses: a read error
   # must never stand in for "no baseline". FR-PRG-29: nor may a missing one. Only a provisioned fresh epoch (whose
   # baseline `rig.sh fresh-epoch` moved into its history) starts without one.
