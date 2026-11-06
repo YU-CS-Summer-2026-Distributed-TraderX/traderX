@@ -2,10 +2,10 @@
 / First run builds a date-partitioned HDB of N trades (default 5,000,000) over a year of weekdays for ACCOUNT
 / (default 99000001), deterministic (fixed seed); later runs load it. Then it answers POST /q {"q":"..."} with
 / {columns, rows (first 2000), count, ms} or {error, ms}. Every query runs under reval: read-only, no system commands.
-/   q demo-hdb.q -p 5050 [-db DIR] [-n 5000000] [-account 99000001]
+/   q demo-hdb.q -p 5050 [-db DIR ($HOME/traderx-demo-hdb)] [-n 5000000] [-account 99000001]
 o:.Q.opt .z.x;
 arg:{[k;d] $[k in key o; first o k; d]};
-DB:hsym `$arg[`db;"/tmp/traderx-demo-hdb"];
+DB:hsym `$arg[`db;getenv[`HOME],"/traderx-demo-hdb"];   / FR-DA12: durable by default; the VM service passes /var/lib/traderx-kdb/hdb
 N:"J"$arg[`n;"5000000"];
 ACCT:"I"$arg[`account;"99000001"];
 SYMS:`AAPL`MSFT`AMZN`NVDA`GOOGL`META`TSLA`JPM`V`XOM`UNH`JNJ`WMT`PG`MA`HD`CVX`KO`PEP`BAC;

@@ -75,6 +75,9 @@ named evidence and remove only their own resources. The component reuses the ord
   install. The VM has no service account; ingress is IAP SSH and port 5050 from the pod range (10.92.0.0/16) only.
   Installed 2026-11-01: `count trades` = 5,000,000; a quarter's VWAP by symbol over the internal name in 16 ms.
   Seen live in the Demo console's Kdb tab 2026-11-02 (presets and free-form q, signed in).
+  The HDB's home SHALL be durable: the service builds and loads `/var/lib/traderx-kdb/hdb` on the VM's persistent
+  boot disk (pd-balanced), and a bare `q demo-hdb.q` defaults to `$HOME/traderx-demo-hdb`, never `/tmp`. The build is
+  deterministic (fixed seed), so a lost HDB is rebuilt identically on the next start (2026-11-06).
 - FR-DA11 **Skew is not divergence.** The System tab's member headline SHALL be green when all members report the
   same applied sequence and trades, neutral ("all N members applying — sequences K apart while orders flow") when all
   answer at different sequences, and red only when a member does not answer. Production 2026-11-01 at ~230K orders/s
