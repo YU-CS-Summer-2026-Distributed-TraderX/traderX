@@ -114,6 +114,16 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-38:** `rig/test-data-cleanup.sh` SHALL clear the load test accounts (FIX 9900002–9900008, binary
+  9900010–9900017) from the read model. `plan` SHALL change nothing and list, per archived epoch and for the live epoch,
+  each account table's rows on those accounts, their directory rows, Secret `fix-test-clients` and the member-disk
+  snapshots. `apply LABEL...` SHALL delete those accounts' rows from `arc_<LABEL>_{orderbook,order_view_snapshot,trades,
+  positions}` only, in one transaction per label, and fail unless none remain. It SHALL never touch the live epoch's
+  tables: G3 compares them with the members' trades, and the members' positions on those accounts go only with a fresh
+  epoch (FR-PRG-29), which archives the live rows where `apply` can then clear them. `--accounts` SHALL delete the
+  accounts' `accounts`/`accountusers` rows only once no table, live or archived, holds a row of theirs; `--secret`
+  deletes Secret `fix-test-clients` (renders without `--fix-test-clients` from then on). Disk snapshots SHALL be listed,
+  never deleted (ADR-101). Running it on production needs yaakov's yes.
 - **FR-PRG-37:** `prepare.py` SHALL render the read-model database claim `eod-price-db-data` at 50Gi. 10Gi filled on
   2026-11-04 after the 18.5M-order scale-out rehearsal and an epoch archive: the schema-migrate init container's
   temporary mariadbd failed with InnoDB error 28 and `rig.sh up` refused at eod-price-db Ready. The live claim was
