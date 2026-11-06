@@ -1,5 +1,7 @@
 # Missed-event recovery specification
 
+**Retired 2026-11-06** with rows mode (trade-history-tiers FR-THT-01, yaakov's decision): recovery booked SQL trade rows, which the snapshot read model no longer writes; its stream replay from the committed cursor is the recovery, and a fresh epoch (ADR-101) covers an outage past retention. Code, tests and proofs removed. FR-ER01..07 and NFR-ER01/02 are retired; FR-ER08's readers stay (proof `scripts/proofs/yu18-projection-readers.sh`).
+
 - FR-ER01: Explicit local operator recovery binds the registered managed descriptor and selected ACTIVE or DRAINING scope. Never infer legacy attribution, activate, unfreeze, or mutate sealed/unselected scopes.
 - FR-ER02: Obtain complete archive-generated production events at a stable applied boundary. Refuse missing recording prefixes, discontinuities, truncation, changing boundaries, descriptor mismatch, or configured capacity exhaustion. NATS is a low-latency notification path, not completeness authority.
 - FR-ER03: Before changes, validate every event identity, ordered sequence/ordinal, trade counter and every retained trade/order against source. Refuse duplicate/conflicting source events and orphan/conflicting SQL history. Never overwrite immutable trade economics.

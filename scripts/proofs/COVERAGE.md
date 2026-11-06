@@ -827,13 +827,13 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | 16 | money/positions | YU18 | `FR-DRS-20` | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | 17 | money/positions | YU18 | `FR-DRS-21` | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | 18 | money/positions | YU18 | `FR-DRS-23` | snapshot-mode only; the production render is rows (FR-DRS-25) |
-| 19 | money/positions | YU18 | `FR-ER01` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 20 | money/positions | YU18 | `FR-ER02` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 21 | money/positions | YU18 | `FR-ER03` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 22 | money/positions | YU18 | `FR-ER04` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 23 | money/positions | YU18 | `FR-ER05` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 24 | money/positions | YU18 | `FR-ER06` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 25 | money/positions | YU18 | `FR-ER07` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
+| 19 | money/positions | YU18 | `FR-ER01` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 20 | money/positions | YU18 | `FR-ER02` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 21 | money/positions | YU18 | `FR-ER03` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 22 | money/positions | YU18 | `FR-ER04` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 23 | money/positions | YU18 | `FR-ER05` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 24 | money/positions | YU18 | `FR-ER06` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 25 | money/positions | YU18 | `FR-ER07` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
 | 26 | risk decisions | YU03 | `FR-IMRG07` | gateway/BLP disagreement counted: no live arm (needs a stale replica) |
 | 27 | risk decisions | YU03 | `FR-IMRG09` | stale-price classification: no live arm |
 | 28 | risk decisions | YU03 | `FR-IMRG19` | gateway/BLP disagreement counted: no live arm (needs a stale replica) |
@@ -1361,14 +1361,14 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-EB29` | LIVE |  |  | console EOD status distinctions: no live proof |
 | YU18 | `FR-EB30` | CI |  |  | offline eod-risk-bundles coordinator/intake: test-state-YU18-eod-risk-bundles.sh |
 | YU18 | `FR-EB31` | CI |  |  | offline eod-risk-bundles coordinator/intake: test-state-YU18-eod-risk-bundles.sh |
-| YU18 | `FR-ER01` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER02` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER03` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER04` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER05` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER06` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER07` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER08` | LIVE | yu18-operator-recovery |  | readers only; the catch-up route is closed on this tier (trade-processor has no RISK_CONTROL_TOKEN) |
+| YU18 | `FR-ER01` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER02` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER03` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER04` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER05` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER06` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER07` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER08` | LIVE | yu18-projection-readers |  | readers; not yet run under the new name (was yu18-operator-recovery, PASS) |
 | YU18 | `FR-ERH-C1` | LIVE | yu18-console-sessions |  |  |
 | YU18 | `FR-ERH-C2` | LIVE | yu18-legacy-trade-bearer |  |  |
 | YU18 | `FR-ERH-F1` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |

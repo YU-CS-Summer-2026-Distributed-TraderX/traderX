@@ -14,7 +14,7 @@ scoped order reader and gateway status. The operative YU18 gateway adds an optio
 identity precondition; all deterministic matching, snapshot-v13 STP state and recovery remain in
 the accepted engine implementation. The Desk fences reads and actions by its account/run context.
 
-The disposable proof launcher under `scripts/desk-managed-recovery/` builds generated Java services,
+The disposable proof launcher under `scripts/desk-managed-recovery/` (retired 2026-11-06 with RI06 recovery) built generated Java services,
 uses separate single-member Aeron storage and named local SQL/NATS containers, runs actual
 transition/catch-up HTTP endpoints, and checks the shipped Desk in Chrome. An empty isolated
 kubeconfig and ports 28800–28999 prevent accidental retained-cluster selection. It stops owned

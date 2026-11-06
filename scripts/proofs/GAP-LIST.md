@@ -6,7 +6,7 @@ rows are not counted).
 
 ## The number, and why it is not 82
 
-**115 live-provable requirements have no live proof, of 397 (282 covered, 71%).** Round 3 said 82 of 352.
+**115 live-provable requirements have no live proof, of 397 (282 covered, 71%).** Since retired (2026-11-06, rows mode and RI06 recovery, FR-THT-01): 18 rows marked RETIRED below, leaving 97 of 379 (74% covered). Round 3 said 82 of 352.
 
 | Delta | Rows | Why |
 |---|---|---|
@@ -49,24 +49,24 @@ Ordered by risk, then tier (local/kind before GKE).
 | 9 | FR-DRS-15 | an ingest rejection logs `ALERT <bridge> partition <p>` | kind (forced 429) | money | — |
 | 10 | FR-DRS-16 | the trade bridge names each rejected side | kind (forced 429) | money | — |
 | 11 | FR-DRS-18 | a rejected side's repair source is the member archive in consensus order | kind* (managed run) | money | — |
-| 12 | FR-APR01 | catch-up boundary B = applied seq captured before the page | kind* (managed run) | money | — |
-| 13 | FR-APR02 | a page holds exact production wire bytes | kind* (managed run) | money | — |
-| 14 | FR-APR03 | coordinates are (descriptor hash, seq, output-chain digest) | kind* (managed run) | money | — |
-| 15 | FR-APR04 | afterSeq == B answers idle; afterSeq > B refuses | kind* (managed run) | money | — |
-| 16 | FR-APR05 | cursor row per scope with descriptor hash and protocol version | kind* (managed run) | money | — |
-| 17 | FR-APR06 | one atomic page under the write lock and fenced lease | kind* (managed run) | money | — |
-| 18 | FR-APR07 | a new cursor starts at genesis and re-verifies every row | kind* (managed run) | money | — |
-| 19 | FR-APR08 | one lease row; takeover increments the fence | kind* (managed run) | money | — |
-| 20 | FR-APR09 | the worker never freezes, seals, selects or activates a run | kind* (managed run) | money | — |
-| 21 | FR-APR10 | triggers: startup, NATS reconnect edge, periodic | kind* (managed run) | money | — |
-| 22 | FR-APR11 | `GET /v2/projection-completeness` is read-only and separates the states | kind* (managed run) | money | — |
-| 23 | FR-ER01 | operator recovery binds the registered managed descriptor and scope | kind* (managed run) | money | — |
-| 24 | FR-ER02 | archive events at a stable boundary; refuse gaps/truncation | kind* (managed run) | money | RunIdentityConsensusTest |
-| 25 | FR-ER03 | validate every event identity before any change | kind* (managed run) | money | — |
-| 26 | FR-ER04 | restore missing trades and final order states idempotently | kind* (managed run) | money | — |
-| 27 | FR-ER05 | recovery rows + position correction + checkpoint in one transaction | kind* (managed run) | money | — |
-| 28 | FR-ER06 | operator API additive; scope revalidated under the lock | kind* (managed run) | money | — |
-| 29 | FR-ER07 | positions equal the signed sum of retained trades before any write | kind* (managed run) | money | — |
+| 12 | FR-APR01 | RETIRED 2026-11-06 (FR-THT-01): catch-up boundary B = applied seq captured before the page | kind* (managed run) | money | — |
+| 13 | FR-APR02 | RETIRED 2026-11-06 (FR-THT-01): a page holds exact production wire bytes | kind* (managed run) | money | — |
+| 14 | FR-APR03 | RETIRED 2026-11-06 (FR-THT-01): coordinates are (descriptor hash, seq, output-chain digest) | kind* (managed run) | money | — |
+| 15 | FR-APR04 | RETIRED 2026-11-06 (FR-THT-01): afterSeq == B answers idle; afterSeq > B refuses | kind* (managed run) | money | — |
+| 16 | FR-APR05 | RETIRED 2026-11-06 (FR-THT-01): cursor row per scope with descriptor hash and protocol version | kind* (managed run) | money | — |
+| 17 | FR-APR06 | RETIRED 2026-11-06 (FR-THT-01): one atomic page under the write lock and fenced lease | kind* (managed run) | money | — |
+| 18 | FR-APR07 | RETIRED 2026-11-06 (FR-THT-01): a new cursor starts at genesis and re-verifies every row | kind* (managed run) | money | — |
+| 19 | FR-APR08 | RETIRED 2026-11-06 (FR-THT-01): one lease row; takeover increments the fence | kind* (managed run) | money | — |
+| 20 | FR-APR09 | RETIRED 2026-11-06 (FR-THT-01): the worker never freezes, seals, selects or activates a run | kind* (managed run) | money | — |
+| 21 | FR-APR10 | RETIRED 2026-11-06 (FR-THT-01): triggers: startup, NATS reconnect edge, periodic | kind* (managed run) | money | — |
+| 22 | FR-APR11 | RETIRED 2026-11-06 (FR-THT-01): `GET /v2/projection-completeness` is read-only and separates the states | kind* (managed run) | money | — |
+| 23 | FR-ER01 | RETIRED 2026-11-06 (FR-THT-01): operator recovery binds the registered managed descriptor and scope | kind* (managed run) | money | — |
+| 24 | FR-ER02 | RETIRED 2026-11-06 (FR-THT-01): archive events at a stable boundary; refuse gaps/truncation | kind* (managed run) | money | RunIdentityConsensusTest |
+| 25 | FR-ER03 | RETIRED 2026-11-06 (FR-THT-01): validate every event identity before any change | kind* (managed run) | money | — |
+| 26 | FR-ER04 | RETIRED 2026-11-06 (FR-THT-01): restore missing trades and final order states idempotently | kind* (managed run) | money | — |
+| 27 | FR-ER05 | RETIRED 2026-11-06 (FR-THT-01): recovery rows + position correction + checkpoint in one transaction | kind* (managed run) | money | — |
+| 28 | FR-ER06 | RETIRED 2026-11-06 (FR-THT-01): operator API additive; scope revalidated under the lock | kind* (managed run) | money | — |
+| 29 | FR-ER07 | RETIRED 2026-11-06 (FR-THT-01): positions equal the signed sum of retained trades before any write | kind* (managed run) | money | — |
 | 30 | FR-THT-01 | MariaDB holds current state only; each side applied to positions exactly once | kind* (ClickHouse) | money | — |
 | 31 | FR-THT-06 | restore gate verifies the history store per partition (count + ordered hash) | kind* (ClickHouse) | money | — |
 | 32 | FR-THT-07 | either store rebuilds from cursor 0 equal to the one it replaces | kind* (ClickHouse) | money | — |
