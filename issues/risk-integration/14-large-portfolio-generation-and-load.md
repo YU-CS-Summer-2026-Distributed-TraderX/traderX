@@ -53,3 +53,22 @@ October 7 status reconciliation: the top status and next action supersede earlie
 ## October 14 current local CPU milestone
 
 [Bounded local CPU integration](resolved/local-cpu-portfolio-integration-20261014.md) is done: human-approved `b9fb0843` integrated at `c249adc5`, with separate owned engine `270a907a` on numerical base `c3d7c6a`. Canonical source/generated suites each pass 27 tests; full private YU18 composition, 16-file runtime parity and required gates pass. Reviewed actual local CPU proof completed eight synthetic jobs/1,416 positions, content-bound GET-only recovery and mismatch refusals. The accepted C8/EOD engine `e770f912` and original Alex checkout remain unchanged. These are local correctness/recovery observations, not a throughput benchmark or general financial acceptance. Broader RI14 scale/driver comparisons and LR03 connected account/run/provenance acceptance stay open.
+
+## November 6: genuine large books through the real ingress, measured locally
+
+- **Generator and booking.** `book_gen.py` (FR-RP-BOOK-01) writes a seeded booking plan across every class
+  and 64 accounts on 8 desks. `VarEsEndToEndTest.largeBookThroughTheRealIngress` (FR-RP-BOOK-02) books it
+  through the real gateway into a genuine three-member cut: 6,000 crosses, 4,000 OTC contracts, 7,364
+  position rows.
+- **Pricing.** `large_book.py` (FR-RP-BOOK-03) prices it as one run against Alex's `17ac757`, with ORE/QuantLib
+  spot checks (FR-RP-BOOK-04): 300 of 300 agree, max 2.2e-7.
+  - 2,864 priced trades: npv in 58 s;
+  - npv + market_risk at 256 scenarios in 1,496 s, 2.8 GiB peak.
+- **Where it breaks.**
+  - TraderX: the epoch caps (64 accounts, 1,024 securities, 4,096 contracts); int notional (JPY ~2.1bn);
+    1,000,000 units an order and position by default; ~5 MiB of `LimitBook` per traded security per member.
+  - Engine: superlinear XLA compile of a whole-portfolio `jnp.stack` (8,000 operands take 280 s), filed as R6.
+- **Cloud.** A bounded projection is ≤ ~$45. It is held until R6, and not launched.
+
+Details: `docs/risk-integration/full-pricing-and-large-books-20261106.md`. Still open: tool comparison (k6 or
+Locust), overload and restart under load, and qualified device scaling.
