@@ -25,6 +25,15 @@ rows are success criteria / non-functional budgets and are owned by CI and bench
 the counts. "Covered" is per requirement ID, not per clause: a proof that exercises one arm of a
 multi-clause FR covers the row (the Note column says PARTIAL where that matters).
 
+## Gap re-count at the tip (2026-11-06, `b9415268`)
+
+Re-derived from the spec packs at the tip; the per-row list is [GAP-LIST.md](GAP-LIST.md). **282 of 397
+live-provable requirements covered (71%); 115 have no live proof.** Round 3's 82 is still 82 (no proof added
+since covers one), plus 5 rows added to this matrix as `LIVE` without a proof (FR-PRG-04/08/09, FR-XOD-02/03) and
+28 of 49 requirement IDs added since round 3 that had no row at all (rows added at the end of the appendix,
+"added 2026-11-06"). NFR-XOD-01..03 are listed `LIVE` below but, as NFR rows, not counted. FR-DRS-19..23's
+"snapshot-mode only" is stale: the production render is snapshot mode since ADR-097.
+
 ## Round 3 (2026-10-28 overnight, tip `41a77949`; FIX on `071cde6d`)
 
 Same rules: black-box, assertions from the specs, interface material (contracts, manifests, env names, deploy
@@ -1676,3 +1685,52 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `NFR-XOD-01` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: leader snapshot halt |
 | YU18 | `NFR-XOD-02` | LIVE |  |  | implemented (ADR-090); live proof pending, CLOUD-QUEUE row 17: arm xs vs same-lane control: p50/p99 |
 | YU18 | `NFR-XOD-03` | LIVE |  |  | implemented (ADR-090), FIX opt-in off; pending: fix-session-latency.mjs vs ADR-086 baseline |
+| YU04 | `FR-IMRG36` | LIVE | yu18-control-republish |  | added 2026-11-06 (gap re-count): the purged and deleted control streams are refilled in version order |
+| YU13 | `FR-TR08` | LIVE | yu13-otel-trace-join yu13-otel-reject-trace-log-join |  | added 2026-11-06: both derive the account-scoped key and find every predicted id |
+| YU18 | `FR-DRS-26` | LIVE | yu05-recon |  | added 2026-11-06: bond blotter prices compared against SQL at 6 dp (suspect 13's proof) |
+| YU18 | `FR-DRS-27` | LIVE | yu18-fix-resume |  | added 2026-11-06: step 5 CumQty from the read model |
+| YU18 | `FR-DRS-28` | CI |  |  | added 2026-11-06: batch persist under one-update rules; OrderBatchProjectionIT (same observable as one update) |
+| YU18 | `FR-DRS-29` | LIVE |  |  | added 2026-11-06: snapshot mode, production's render (prepare.py); no live proof. SnapshotReadModelIT, TradeViewTest |
+| YU18 | `FR-DRS-30` | LIVE |  |  | added 2026-11-06: order-view snapshot, production's render; no live proof. SnapshotReadModelIT |
+| YU18 | `FR-DRS-31` | CI |  |  | added 2026-11-06: pipelined pull, internal concurrency. FeedBarrierTest, JetStreamFeedIdleTest |
+| YU18 | `FR-DRS-32` | LIVE |  |  | added 2026-11-06: partition stream layout, production's render; no live proof |
+| YU18 | `FR-DRS-34` | CI |  |  | added 2026-11-06: capture sizing, bench (ADR-097) |
+| YU18 | `FR-DRS-35` | LIVE |  |  | added 2026-11-06: store failure is a barrier; no live proof. FeedBarrierTest, JetStreamFeedAckGapIT |
+| YU18 | `FR-FFR-12` | LIVE | yu18-fix-resume |  | added 2026-11-06: Canceled report keeps CumQty (step 5) |
+| YU18 | `FR-FFR-13` | LIVE |  |  | added 2026-11-06: fill feed per-partition streams; no live proof. FixFillFeedIT |
+| YU18 | `FR-FGM-01` | LIVE |  |  | added 2026-11-06: slow consumer drop; no live proof. FixGatewayMemoryBoundTest |
+| YU18 | `FR-FGM-02` | LIVE |  |  | added 2026-11-06: inbound backpressure; no live proof. FixGatewayMemoryBoundTest |
+| YU18 | `FR-FGM-03` | CI |  |  | added 2026-11-06: lease read streams the log (heap shape) |
+| YU18 | `FR-FGM-04` | CI |  |  | added 2026-11-06: FIX heap budget, bench |
+| YU18 | `FR-FGM-05` | LIVE |  |  | added 2026-11-06: fill feed retry and metrics; no live proof. FillFeedRetryTest |
+| YU18 | `FR-FGM-06` | CI |  |  | added 2026-11-06: ack-deadline queue bound. InflightRetentionTest |
+| YU18 | `FR-FTL-01` | LIVE | yu18-fix-tls-entry |  | added 2026-11-06: kind 2026-10-29 PASS (TLS port only, plaintext gets no FIX answer) |
+| YU18 | `FR-FTL-02` | CI |  |  | added 2026-11-06: certificate/trust-store/secret placement; test_prepare, FixGatewayTlsTest |
+| YU18 | `FR-FTL-03` | LIVE |  |  | added 2026-11-06: a wrong password over TLS is not driven by yu18-fix-tls-entry |
+| YU18 | `FR-FTL-04` | LIVE | yu18-fix-tls-entry |  | added 2026-11-06: kind, /32 allowlist enforced (denied source cannot connect) |
+| YU18 | `FR-FTL-05` | LIVE | yu18-fix-tls-entry |  | added 2026-11-06: runs scripts/fix-tls/fix-tls-smoke.sh, effect end in the members and SQL |
+| YU18 | `FR-FTL-06` | LIVE |  |  | added 2026-11-06: TLS session lease/resume not driven |
+| YU18 | `FR-GFS-14` | LIVE |  |  | added 2026-11-06: resend window not driven. FixSessionStoreBoundIT |
+| YU18 | `FR-GFS-15` | LIVE |  |  | added 2026-11-06: full bucket not driven |
+| YU18 | `FR-GFS-16` | LIVE |  |  | added 2026-11-06: yu18-fix-resume resumes after a release, not a dead gateway. FixSessionPersistenceIT |
+| YU18 | `FR-GFS-17` | LIVE |  |  | added 2026-11-06: reset against a stored later day not driven. FixSessionPersistenceIT |
+| YU18 | `FR-GFS-18` | CI |  |  | added 2026-11-06: group commit ordering. FixBarrierLossTest, FixFenceProbeTest |
+| YU18 | `FR-HST-01` | LIVE |  |  | added 2026-11-06: history store not in any proof rig. RowsTest |
+| YU18 | `FR-HST-02` | CI |  |  | added 2026-11-06: lane/batch mechanics |
+| YU18 | `FR-HST-03` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
+| YU18 | `FR-HST-04` | CI |  |  | added 2026-11-06: ClickHouse write shape |
+| YU18 | `FR-HST-05` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
+| YU18 | `FR-HST-06` | LIVE |  |  | added 2026-11-06: no live proof |
+| YU18 | `FR-HST-07` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedIncarnationIT |
+| YU18 | `FR-THT-01` | LIVE |  |  | added 2026-11-06: in flight (trade-history-tiers) |
+| YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
+| YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
+| YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |
+| YU18 | `FR-THT-05` | CI |  |  | added 2026-11-06: the reader inventory is itself a test |
+| YU18 | `FR-THT-06` | LIVE |  |  | added 2026-11-06: no live proof |
+| YU18 | `FR-THT-07` | LIVE |  |  | added 2026-11-06: no live proof |
+| YU18 | `FR-XOC-01` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: PARTIAL, one replica, no election. IdempotencyEvictionTest |
+| YU18 | `FR-XOC-02` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: resend books nothing (SQL rows) |
+| YU18 | `FR-XOC-03` | LIVE |  |  | added 2026-11-06: FIX DUPLICATE answer not driven. FixGatewayFillReportTest |
+| YU18 | `FR-XOC-04` | LIVE |  |  | added 2026-11-06: 262,144-key window; local tier |
+| YU18 | `FR-XOC-05` | LIVE |  |  | added 2026-11-06: binary ack status 2 not driven |
