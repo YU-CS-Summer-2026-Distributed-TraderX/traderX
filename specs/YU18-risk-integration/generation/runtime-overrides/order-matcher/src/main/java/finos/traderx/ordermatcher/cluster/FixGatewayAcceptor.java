@@ -811,11 +811,25 @@ public final class FixGatewayAcceptor {
                 sendCancelReport(sessionId, clOrdId, origClOrdId, ticker, side, orderRef, cancel);
                 return;
             }
-            final boolean unknown = result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND;
+            final boolean agedOut = agedOut(sessionId, origClOrdId, orderRef, result);
+            final boolean unknown = result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND && !agedOut;
             sendCancelReject(sessionId, unknown ? "NONE" : "ord-" + orderRef, clOrdId, origClOrdId,
-                unknown ? OrdStatus.REJECTED : ordStatusOf(result.kind()),
+                unknown ? OrdStatus.REJECTED : agedOut ? OrdStatus.DONE_FOR_DAY : ordStatusOf(result.kind()),
                 unknown ? CxlRejReason.UNKNOWN_ORDER : CxlRejReason.TOO_LATE_TO_CANCEL,
-                unknown ? "no such order" : "order already terminal");
+                unknown ? "no such order" : agedOut ? AGED_OUT : "order already terminal");
+        }
+
+        private static final String AGED_OUT = "order already terminal; its final state is no longer retained";
+
+        /**
+         * FR-XOC-03: the engine no longer knows a ref this session's own ClOrdID mapping names. The mapping comes only
+         * from an accepted or DUPLICATE answer, so the order existed and has left terminal retention: it is terminal
+         * (DONE_FOR_DAY, as the restatement says without a read model), never "no such order" / OrderID NONE.
+         */
+        private boolean agedOut(final SessionID sessionId, final String origClOrdId, final int orderRef,
+                                final OrderSubmitter.ExecResult result) {
+            return result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND
+                && Integer.valueOf(orderRef).equals(refByClOrdId.get(qualify(sessionId, origClOrdId)));
         }
 
         /**
@@ -896,11 +910,12 @@ public final class FixGatewayAcceptor {
                 return;
             }
             if (!result.accepted()) {
-                final boolean unknown = result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND;
+                final boolean agedOut = agedOut(sessionId, origClOrdId, orderRef, result);
+                final boolean unknown = result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND && !agedOut;
                 sendCancelReject(sessionId, unknown ? "NONE" : "ord-" + orderRef, clOrdId, origClOrdId,
-                    unknown ? OrdStatus.REJECTED : ordStatusOf(result.kind()),
+                    unknown ? OrdStatus.REJECTED : agedOut ? OrdStatus.DONE_FOR_DAY : ordStatusOf(result.kind()),
                     unknown ? CxlRejReason.UNKNOWN_ORDER : CxlRejReason.TOO_LATE_TO_CANCEL,
-                    unknown ? "no such order" : "replace rejected; order unchanged",
+                    unknown ? "no such order" : agedOut ? AGED_OUT : "replace rejected; order unchanged",
                     CxlRejResponseTo.ORDER_CANCEL_REPLACE_REQUEST);
                 return;
             }

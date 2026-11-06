@@ -78,7 +78,7 @@ Ordered by risk, then tier (local/kind before GKE).
 | 37 | FR-HST-06 | history-feed reads capture streams only; `/health` per lane; HTTP routes | kind* (ClickHouse) | ops | — |
 | 38 | FR-THT-02 | ClickHouse is the GKE system of record, rendered and started by `rig.sh up` | GKE | money | — |
 | 39 | FR-THT-03 | hot days on local SSD, older on a GCS disk; same rows before and after a move | GKE | money | — |
-| 40 | FR-XOC-03 | FIX `DUPLICATE` answered ExecType=I, OrderID ord-<ref>, never OrdStatus=8 — **proof since: yu18-fix-duplicate, FAILS on suspect 17** | kind | order | FixGatewayFillReportTest |
+| 40 | FR-XOC-03 | FIX `DUPLICATE` answered ExecType=I, OrderID ord-<ref>, never OrdStatus=8 — **proof since: yu18-fix-duplicate; failed on suspect 17, PASS since its fix** | kind | order | FixGatewayFillReportTest |
 | 41 | FR-ERH-F9 | a PRE_OPEN retry of a key the engine decided is not queued — **proof since: yu18-preopen-retry, PASS** | kind | order | — |
 | 42 | FR-ERH-F6 | an untyped replace of a stop/iceberg/peg/trailing order is refused — **proof since: yu18-untyped-replace, PASS** | kind | order | — |
 | 43 | FR-XOD-03 | a sequenced request with `seq < next` does not execute | kind (binary) | order | ExactlyOnceStreamTest |
