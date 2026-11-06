@@ -177,7 +177,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   ingest queue unchanged. A run SHALL NOT look clean after NATS restarted: `rig.sh up` refuses a NATS pod that has
   already restarted and records the one it came up with (ConfigMap `rig-nats`), `rig.sh down` reports a restart, a
   replacement or a missing pod as FAILED (evidence `nats-restarts.txt`, exit 3) and still tears down to zero, and
-  `rig.sh status` shows it. Production 2026-10-30, 3:03 pm: a 2Gi pod with NATS's memory store unset was OOM-killed 7
+  `rig.sh status` shows it. While the rig is up, `loadgen.sh start` SHALL refuse a NATS that restarted and
+  `loadgen.sh results` SHALL report one as FAILED (exit 3) after the pods' counts, so the operator sees it at the load,
+  not only at `down`. Production 2026-10-30, 3:03 pm: a 2Gi pod with NATS's memory store unset was OOM-killed 7
   times under the binary arm's ~150K trades/s bridge publish. Each restart took the FIX session store down, every FIX
   Logon was refused, and ~89.7M trade sides were lost, while the rig looked up. The 12Gi sizing measured on the bench
   existed only in the snapshot read-model profile, which production did not run.

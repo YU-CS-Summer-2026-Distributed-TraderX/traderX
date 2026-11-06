@@ -6,7 +6,8 @@
 #       With AUTOSCALE=on, ~120000/s on 3 gateways holds their CPU above the HPA's 60% and the HPA adds gateways.
 #   scripts/gcp-compsci/rig/loadgen.sh stop       kills the load in every pod; the pods stay, idle. A kill between phase
 #       boundaries can leave that phase's unbalanced test-account orders resting: prefer letting SECS run out.
-#   scripts/gcp-compsci/rig/loadgen.sh results    each pod's RESULT line from its last run
+#   scripts/gcp-compsci/rig/loadgen.sh results    each pod's RESULT line from its last run; FAILED (exit 3) if NATS
+#       restarted since `up` (FR-PRG-28), so a load whose trades NATS dropped never reads as clean
 #   scripts/gcp-compsci/rig/loadgen.sh manifest   the idle Deployment that rig.sh up applies (LOADGEN_PODS replicas)
 #
 # The load itself is binary-load.mjs (FR-PRG-16): its own test accounts 9900010-17, book-neutral, one price.
@@ -74,6 +75,7 @@ start(){
     px=$(mark_of "$ticker"); [[ "$px" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "$ticker has no mark on member 0"
     px=$(printf '%.2f' "$px")
     for p in $list; do [ -z "$(running "$p")" ] || die "$p is already running a load (loadgen.sh stop first)"; done
+    local np; np=$(nats_problems "$(nats_uid)"); [ -z "$np" ] || die "NATS (FR-PRG-28): $np"
   fi
   per=$(( (rate + n * SESSIONS - 1) / (n * SESSIONS) ))
   step "load: $rate orders/s ($n pods x $SESSIONS sessions x $per/s), $ticker @ $px, ${secs}s"
@@ -103,7 +105,15 @@ stop(){
   note "load stopped at $(et); the pods stay idle"
 }
 
-results(){ local p; for p in $(pods); do echo "$p $(kc exec "$p" -- sh -c 'grep ^RESULT /tmp/load.log || tail -2 /tmp/load.log' 2>&1)"; done; }
+results(){
+  local p np
+  for p in $(pods); do echo "$p $(kc exec "$p" -- sh -c 'grep ^RESULT /tmp/load.log || tail -2 /tmp/load.log' 2>&1)"; done
+  # FR-PRG-28: the pods' counts are the gateways' answers; a NATS restart meanwhile dropped the bridges' trade sides
+  # and the FIX session store's Logons without touching them (production 2026-10-30).
+  np=$(nats_problems "$(nats_uid)")
+  [ -z "$np" ] || { echo "FAILED: NATS did not stay up through the load (FR-PRG-28): $np" >&2; exit 3; }
+  note "NATS intact (FR-PRG-28)"
+}
 
 [ "${LOADGEN_LIB:-0}" = 1 ] && return 0
 case $ACTION in

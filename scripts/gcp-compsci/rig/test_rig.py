@@ -958,6 +958,19 @@ class LoadgenIdle(unittest.TestCase):
         rc, out, calls = self.start('fast')
         self.assertEqual(rc, 2, out); self.assertIn('usage', out)
 
+    def test_start_refuses_and_results_fail_when_nats_restarted(self):
+        """FR-PRG-28: production 2026-10-30's load pods all read clean while NATS was OOM-killed under them."""
+        oom = nats_pods(('u1', 'Running', 1, 'OOMKilled'))
+        rc, out, calls = self.start('120000', NATS_PODS=oom)
+        self.assertEqual(rc, 2, out); self.assertIn('OOMKilled', out); self.assertIsNone(first(calls, 'nohup'))
+        results = f'LOADGEN_LIB=1 . "{self.LG}" results; results'
+        rc, out, _ = run(results, NATS_PODS=oom)
+        self.assertEqual(rc, 3, out); self.assertIn('FAILED: NATS', out); self.assertIn('lg-a', out)
+        rc, out, _ = run(results, NATS_PODS=nats_pods(('u2', 'Running', 0, '')))   # replaced since up recorded u1
+        self.assertEqual(rc, 3, out); self.assertIn('replaced', out)
+        rc, out, _ = run(results)   # control: the pod up recorded, never restarted
+        self.assertEqual(rc, 0, out); self.assertIn('NATS intact', out)
+
 
 class HpaTarget(unittest.TestCase):
     """FR-PRG-33: the HPA's CPU target is HPA_CPU_TARGET (default 60); 2026-11-01 three gateways at ~230K/s binary sat at
