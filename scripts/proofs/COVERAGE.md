@@ -37,7 +37,7 @@ built from `5cbc4e11`. $0, no cloud.
 
 | Proof | Covers | Result | Negative control |
 |---|---|---|---|
-| [`yu18-fix-duplicate.sh`](yu18-fix-duplicate.sh) + `.mjs` | FR-XOC-03 | **FAIL x3: suspect 17** | fresh ClOrdID: FAILS (new order at the session and in the read model) |
+| [`yu18-fix-duplicate.sh`](yu18-fix-duplicate.sh) + `.mjs` | FR-XOC-03 | **FAIL x4: suspect 17** | fresh ClOrdID: FAILS (new order at the session and in the read model) |
 | [`yu18-store-failure-barrier.sh`](yu18-store-failure-barrier.sh) | FR-DRS-35, FR-DRS-29 (PARTIAL) | PASS | one side removed: FAILS |
 | [`yu18-untyped-replace.sh`](yu18-untyped-replace.sh) | FR-ERH-F6 | PASS | step 2 sent typed: FAILS |
 | [`yu18-dev-secret-refusal.sh`](yu18-dev-secret-refusal.sh) | FR-ERH-S5 | PASS | ALLOW_DEV_SECRETS on every arm: FAILS |
@@ -57,7 +57,10 @@ a rows-mode rig: on production's render they would read 0. Not changed here; lis
     Sell rests and fills (ord-56, FILLED); 1,100 IOCs push it out of the engine's 1,024 terminal retention; the same
     ClOrdID resent is answered `150=I 37=ord-56 14=5 58="DUPLICATE: ClOrdID already executed as ord-56"` but
     **`39=8`**, and the order read model then holds ord-56 as `REJECTED reason=DUPLICATE` (createdAt = the resend,
-    filledQuantity 5) where it held FILLED. Positions stay +5/-5 and nothing is booked twice. Reproduced three times.
+    filledQuantity 5) where it held FILLED. Positions stay +5/-5 and nothing is booked twice. Reproduced four times.
+    The FIX `39` races the poisoning: `39=8` in three runs, `39=2` in the fourth, where the answer read the read model
+    before the DUPLICATE update landed. That run reached step 4, which also fails: an `OrderCancelRequest` by
+    `OrigClOrdID` after the DUPLICATE answer resolves to `37=NONE`, not `ord-<ref>` (FR-XOC-03 keeps the mapping).
     In process the engine marks that answer unpublished (`IdempotencyEvictionTest`'s retry with a `publishNats`
     assertion added: passes), so the leak is downstream: the leader's order bridge offers every
     `isOrderLifecycleKind` output without reading `out.publishNats` (`MatchingEngineClusteredService`, the drain
@@ -1774,6 +1777,6 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-THT-07` | LIVE |  |  | added 2026-11-06: no live proof |
 | YU18 | `FR-XOC-01` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: PARTIAL, one replica, no election. IdempotencyEvictionTest |
 | YU18 | `FR-XOC-02` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: resend books nothing (SQL rows) |
-| YU18 | `FR-XOC-03` | LIVE |  | yu18-fix-duplicate | 2026-11-06 kind (snapshot read model): FAIL x3, suspect 17: the aged-out DUPLICATE answer reaches the read model, which rewrites the FILLED original REJECTED; FIX answers 39=8. NEGATIVE=1 (fresh ClOrdID) fails as it must. FixGatewayFillReportTest, IdempotencyEvictionTest |
+| YU18 | `FR-XOC-03` | LIVE |  | yu18-fix-duplicate | 2026-11-06 kind (snapshot read model): FAIL x4, suspect 17: the aged-out DUPLICATE answer reaches the read model, which rewrites the FILLED original REJECTED; FIX answers 39=8. NEGATIVE=1 (fresh ClOrdID) fails as it must. FixGatewayFillReportTest, IdempotencyEvictionTest |
 | YU18 | `FR-XOC-04` | LIVE |  |  | added 2026-11-06: 262,144-key window; local tier |
 | YU18 | `FR-XOC-05` | LIVE |  |  | added 2026-11-06: binary ack status 2 not driven |
