@@ -10,7 +10,7 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
 - FR-THT-01: MariaDB SHALL hold current state only (positions, open orders, accounts, reference data, EOD prices,
   and each account's blotter window with the settlement counts, ADR-097's snapshot store). trade-processor SHALL run
   the snapshot read model only: every trade side applied to `positions` exactly once, no SQL `trades` row per side
-  (rows mode retired) once FR-THT-05's gate passes. Nothing SHALL read SQL `trades` as history (decided 2026-11-06,
+  (rows mode retired: implemented 2026-11-06; the trade feed refuses any other mode). Nothing SHALL read SQL `trades` as history (decided 2026-11-06,
   option A: the window is current state; moving it to ClickHouse would put history-feed lag and availability on the
   blotter for no growth bound the window does not already have).
 - FR-THT-02: ClickHouse (`history-feed`) SHALL be the trade history's system of record on GKE: every trade side and

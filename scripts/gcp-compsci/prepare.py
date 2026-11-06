@@ -822,7 +822,8 @@ if __name__=='__main__':
     p.add_argument('--no-bridges',action='store_true',help="members' NATS bridges off for a throughput run (FR-PRG-14)")
     p.add_argument('--throughput-members',action='store_true',help="the bench's 450K member settings (FR-PRG-15)")
     p.add_argument('--read-model',choices=['rows','snapshot'],default='rows',
-                   help='snapshot = the stream-backed read model with SQL snapshots, sized for high rates (FR-PRG-20)')
+                   help='snapshot = the read model sized for high rates (FR-PRG-20). rows leaves trade-processor on its own'
+                        ' default, which since FR-THT-01 is also snapshot (one partition, unsized): production passes snapshot')
     p.add_argument('--partitions',type=int,help=f'read-model partitions with --read-model snapshot (default {READ_MODEL_PARTITIONS})')
     args=p.parse_args()
     import ipaddress

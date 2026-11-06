@@ -255,14 +255,13 @@ read_model(){ local q name fp
     echo "accounting=$(jq -cS '[(.trades // {} | to_entries[] | .value | del(.cursor, .streamLast)),
       (.orders // {} | to_entries[] | .value | del(.cursor, .streamLast))]' <<<"$acct" | md5of)"; fi; }
 sql_ready(){ [ "$(sql 'select 1')" = 1 ]; }
-# FR-PRG-22: the read model's mode, failing closed. Unset or "rows" (trade-processor's default) is rows, "snapshot" is
-# snapshot; a Deployment that cannot be read, or any other value, fails, and the gate refuses. Never a fallback to the
-# row G3: a snapshot read model checked by the row G3 has no row per side, and a row read model checked by the
-# accounting would be judged by numbers it never wrote.
+# FR-PRG-22: the read model's mode, failing closed. Unset or "snapshot" (trade-processor's only mode since FR-THT-01) is
+# snapshot; "rows" was retired and trade-processor refuses to start on it. A Deployment that cannot be read, or any
+# other value, fails, and the gate refuses.
 tp_mode(){ local v
   v=$(kc get deploy trade-processor -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TRADE_PROJECTION_MODE")].value}') \
     || { echo "trade-processor's TRADE_PROJECTION_MODE cannot be read" >&2; return 1; }
-  case $v in ''|rows) echo rows;; snapshot) echo snapshot;; *) echo "trade-processor's TRADE_PROJECTION_MODE is '$v'" >&2; return 1;; esac; }
+  case $v in ''|snapshot) echo snapshot;; *) echo "trade-processor's TRADE_PROJECTION_MODE is '$v' (rows was retired, FR-THT-01)" >&2; return 1;; esac; }
 # FR-PRG-22: a failed or empty fetch fails (curl -f: an HTTP error is a failure, not a body to hash).
 accounting(){ local a
   a=$(kc exec deploy/trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) && [ -n "$a" ] || return 1
@@ -395,38 +394,19 @@ past_restore_errors(){
   note "G-pre ok: no refused snapshot record in any member's error log"
 }
 
-# Check B for the row read model: SQL holds the members' trade sides 1..t (minus the unprojected ranges), each once.
-# Used by G3 and by `rig.sh snapshot-base` (FR-PRG-22), which records t only where this holds.
-g3_rows_sides(){
-  local t=$1
-  # Check B, trades: the engine's trade sides in the read model are exactly 1..trades, each number once. Legacy ids are
-  # <n>-B / <n>-S (seed rows are named otherwise); a managed run's e1-<epoch>- ids are not read here, so it is refused.
-  [ "$(jq -r '.projectionScope // "null"' <<<"$2")" = null ] \
-    || die "G3: the members run a managed projection scope; this trade-count check reads legacy trade ids only"
-  # Ranges recorded with `rig.sh unprojected A-B` (a run with the bridges off) are excluded: SQL holds exactly
-  # 1..trades minus those ranges, each number once, and nothing inside them.
-  local ranges removed=0 inr=0 r a b want
-  ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
-  for r in $ranges; do a=${r%-*}; b=${r#*-}; removed=$((removed + b - a + 1)); inr="$inr + (n between $a and $b)"; done
-  read -r n distinct top inside <<<"$(sql "select count(*), count(distinct n), coalesce(max(n),0), coalesce(sum($inr),0) from (select cast(substring_index(id,'-',1) as unsigned) n from trades where right(id,2) in ('-B','-S') and concat(cast(substring_index(id,'-',1) as unsigned),right(id,2))=id) x")"
-  want=$((t - removed))
-  [ "$n" = "$want" ] && [ "$distinct" = "$want" ] && [ "$top" -le "$t" ] && [ "$inside" = 0 ] \
-    || die "G3: the members booked $t trade sides (${removed} unprojected: ${ranges:-none}), the read model holds $n (distinct $distinct, highest $top, $inside inside an unprojected range)"
-  note "G3 ok: the read model holds trade sides 1..$t${ranges:+ except $ranges}, each once"
-}
-
 # ---- G3 for the snapshot read model (ADR-097, FR-PRG-21) ----------------------------------------------------------------
 # SQL holds snapshots, not a row per trade side, so check B reads the committed accounting (FR-DRS-29/30) instead. It is
 # exact in O(P): a partition refuses a side whose tradeSeq is not above its last (duplicates), so the booked sides are
 # distinct; then count, highest and the wrapped sums of seq and seq^2 must equal the closed form over the expected set,
 # (base, trades] minus the `rig.sh unprojected` ranges. base is the rows-era count recorded at the switch to snapshot
-# mode (ConfigMap rig-snapshot-base; 0 on a read model born in snapshot mode). The order view's committed open orders
+# mode (ConfigMap rig-snapshot-base, kept until the epoch is archived); absent, it is 0: since rows mode was retired
+# (FR-THT-01) every read model is born in snapshot mode, and a wrong 0 fails closed (the closed form disagrees). The order view's committed open orders
 # must equal the members' restored openOrders. Every committed cursor must have reached its subject's last message.
 g3_snapshot(){
   local t=$1 digest=$2 acct base ranges verdict
-  # FR-PRG-22: the base is recorded once at the switch (`rig.sh snapshot-base`); without it G3 has no expected set.
   base=$(kc get configmap rig-snapshot-base -o jsonpath='{.data.base}' 2>/dev/null || true)
-  [[ $base =~ ^[0-9]+$ ]] || die "G3 (snapshot read model): no rig-snapshot-base recorded; record it with 'rig.sh snapshot-base' after a passing row G3, at the switch"
+  base=${base:-0}
+  [[ $base =~ ^[0-9]+$ ]] || die "G3 (snapshot read model): rig-snapshot-base holds '$base', not a number"
   accounting >/dev/null || die "G3 (snapshot read model): the accounting could not be read (/v2/projection-feed/accounting)"
   wait_for 600 "every read-model partition committed up to the stream's last message (G3)" accounting_caught_up
   acct=$(accounting) || die "G3 (snapshot read model): the accounting could not be read (/v2/projection-feed/accounting)"
@@ -578,24 +558,12 @@ restore_gate(){
   [ -z "$shadow" ] || note "G2 ok: each member's replay from 0 holds its restored book, positions and trades"
   fi
   local mode; mode=$(tp_mode) || die "G3: trade-processor's projection mode is unreadable or unknown; neither G3 is assumed (FR-PRG-22)"
-  if [ "$mode" = snapshot ]; then
-    [ -n "$digest" ] || digest=$(kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- 'localhost:8080/health?digest=1')
-    # The closed form counts one tradeSeq numbering from 1; a managed run restarts it per epoch, so it is refused.
-    [ "$(jq -r '.projectionScope // "null"' <<<"$digest")" = null ] \
-      || die "G3: the members run a managed projection scope; the accounting check reads one legacy tradeSeq numbering"
-    g3_snapshot "$t" "$digest"
-  else
-    if [ -n "$shadow" ]; then
-      # Check B's member side: the open orders the members restored are the open rows the read model holds.
-      open_rows=$(sql "select count(*) from orderbook where status in ('NEW','PARTIALLY_FILLED')")
-      [ "$(jq -r .openOrders <<<"$digest")" = "$open_rows" ] \
-        || die "G3: members restored $(jq -r .openOrders <<<"$digest") open orders, the read model holds $open_rows"
-    elif [ "$fresh" = 1 ]; then
-      open_rows=$(sql "select count(*) from orderbook where status in ('NEW','PARTIALLY_FILLED')")
-      [ "$open_rows" = 0 ] || die "G3: fresh epoch ${es#* }: the members are empty, the read model holds '$open_rows' open orders"
-    fi
-    g3_rows_sides "$t" "${digest:-null}"
-  fi
+  [ "$mode" = snapshot ] || die "G3: trade-processor's projection mode is '$mode'"
+  [ -n "$digest" ] || digest=$(kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- 'localhost:8080/health?digest=1')
+  # The closed form counts one tradeSeq numbering from 1; a managed run restarts it per epoch, so it is refused.
+  [ "$(jq -r '.projectionScope // "null"' <<<"$digest")" = null ] \
+    || die "G3: the members run a managed projection scope; the accounting check reads one legacy tradeSeq numbering"
+  g3_snapshot "$t" "$digest"
   after=$(read_model) || die "G3: the read model could not be read after the members started"
   echo "$after" > "$EVIDENCE/read-model-after.txt"
   [ "$after" = "$before" ] || die "G3: the read model moved while the members started: $EVIDENCE/read-model-{before,after}.txt"
@@ -1063,28 +1031,7 @@ rig_unprojected(){
   note "recorded: trade sides $range were not projected (G3 excludes them)"
 }
 
-# ---- the switch from the row read model to the snapshot one (FR-PRG-22): `rig.sh snapshot-base` --------------------
-# Records, once, how many trade sides the row read model already holds, so the snapshot G3 expects (base, trades]. Only
-# with no trading (gateways at 0), on members a passing gate covers, on the row read model, and where the row check
-# itself passes now. Written once with `create` (never apply): a second run, or a race, is refused.
-rig_snapshot_base(){
-  preflight
-  local have mode t i
-  have=$(kc get configmap rig-snapshot-base -o jsonpath='{.data.base}' 2>/dev/null || true)
-  [ -z "$have" ] || die "snapshot-base: already recorded ($have); it is written once"
-  mode=$(tp_mode) || die "snapshot-base: trade-processor's projection mode is unreadable or unknown"
-  [ "$mode" = rows ] || die "snapshot-base: the read model is already '$mode'; the base is taken on the row read model, before the switch"
-  no_pods cluster-gateway || die "snapshot-base: gateways are running; take the base with no trading (gateways at 0)"
-  members_gated || die "snapshot-base: the running members are not the ones a passing restore gate covered (rig.sh up)"
-  t=$(member 0 | cut -d' ' -f3)
-  for i in 1 2; do [ "$(member "$i" | cut -d' ' -f3)" = "$t" ] || die "snapshot-base: the members disagree on trades"; done
-  [[ $t =~ ^[0-9]+$ ]] || die "snapshot-base: the members' trades is not a number: '$t'"
-  g3_rows_sides "$t" "$(kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- 'localhost:8080/health?digest=1')"
-  [ "$DRY" = 1 ] && { note "would record: rig-snapshot-base base=$t"; return 0; }
-  kc create configmap rig-snapshot-base --from-literal=base="$t" --from-literal=at="$(date -u +%FT%TZ)" >/dev/null \
-    || die "snapshot-base: could not create it (already recorded?)"
-  note "recorded: rig-snapshot-base base=$t (the row read model holds sides 1..$t)"
-}
+
 
 rig_status(){
   preflight
@@ -1116,12 +1063,11 @@ main(){
     down) rig_down;;
     status) rig_status;;
     unprojected) rig_unprojected "${1:-}";;
-    snapshot-base) rig_snapshot_base;;
     archive-members) rig_archive_members "${1:-}";;
     fresh-epoch) rig_fresh_epoch "${1:-}";;
     member-disk) rig_member_disk "${1:-}";;
     loadgen) rig_loadgen "${1:-}";;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off LOADGEN=N $0 pools|up|down|status|unprojected A-B|snapshot-base|archive-members LABEL|fresh-epoch LABEL|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off LOADGEN=N $0 pools|up|down|status|unprojected A-B|archive-members LABEL|fresh-epoch LABEL|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

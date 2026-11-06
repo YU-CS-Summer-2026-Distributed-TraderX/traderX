@@ -11,7 +11,7 @@
 -- its refusal prints, per row, the statement that attests it with the stream it found (codeX review §16). Runbook:
 --   1. Start the build; it refuses. Collect the statements, all in one refusal per view:
 --        kubectl -n traderx logs deploy/trade-processor | grep -o 'UPDATE projection_cursor SET stream_created_ns=[^;]*;'
---   2. With trading quiesced, reconcile the read model: rig G3 and fr-drs-33-order-fill-recon.sql, both clean.
+--   2. With trading quiesced, reconcile the read model: rig G3 and fr-drs-33-order-fill-recon.sql, both clean (that file is now scripts/trade-history-tiers/order-fill-recon.clickhouse.sql).
 --   3. Run the collected statements here, unedited. Each changes one row, and only while that row still holds the
 --      printed cursor unbound; a replay changes nothing. Never write a binding by hand.
 --   4. Restart. Rows bound to the stream that was reconciled resume. If the stream was recreated since step 1, the

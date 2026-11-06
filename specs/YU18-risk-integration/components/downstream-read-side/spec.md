@@ -1,5 +1,10 @@
 # Downstream read side specification
 
+**2026-11-06 (trade-history-tiers FR-THT-01):** the trade feed's row projection and the core feed are retired; the
+trade feed runs jetstream + snapshot only. Requirements and clauses scoped to "row projection" of trades (FR-DRS-02's
+persisted watermark, FR-DRS-22's jetstream catch-up hold, the row-path cases of FR-DRS-35) no longer apply to trades;
+the order feed's modes are unchanged.
+
 Status: implemented, 2026-10-27 (FR-DRS-11..25 added the same day; FR-DRS-26 and FR-DRS-27 2026-10-28; FR-DRS-28, FR-DRS-29..32 2026-10-29). Dependencies: JetStream on the existing NATS server, the YU18 trade
 and order bridges, MariaDB.
 
@@ -217,7 +222,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   the row's consensus sequence and ordinal is ignored. `JetStreamFeedAckGapIT` runs on a real JetStream. Before this
   rule the durable resumed after a kill -9 lost the batch lifetime A was delivered, and the running durable and the
   pipelined feed each lost a stolen pull response.
-  The one-off recon of rows written before this rule (`scripts/gcp-compsci/rig/fr-drs-33-order-fill-recon.sql`, read
+  The one-off recon of rows written before this rule (`scripts/gcp-compsci/rig/fr-drs-33-order-fill-recon.sql`, removed with rows mode on 2026-11-06 in favour of `scripts/trade-history-tiers/order-fill-recon.clickhouse.sql`; read
   only, before trading) compares each order row's filled quantity with its trade sides, and lists trade sides whose
   order has no row. A booking through the gateway's `/trades` (the demo ticket, `TYPE_TRADE_NEW`) is a trade with no
   order: since ADR-100 its sides publish `bookingSource: TICKET` and no `sourceOrderId` (null join key), and no order

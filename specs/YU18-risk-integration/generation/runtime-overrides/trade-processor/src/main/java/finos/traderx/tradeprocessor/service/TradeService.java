@@ -103,6 +103,10 @@ public class TradeService {
    * a hung reference-data call must not hold a connection and row locks — so the transaction is
    * template-driven rather than annotation-driven. Non-Treasury orders do no lookup at all.
    */
+  // ponytail: the row writer (processTrade/processTrades) has no runtime caller since rows mode was retired
+  // (FR-THT-01): the feed books through book() into TradeView. It stays only because YU05/YU16's inherited
+  // TradeServiceIdempotencyTest and TreasuryBookingTest drive the shared booking math through it; delete it with
+  // YU18 shadows of those two tests.
   public TradeBookingResult processTrade(TradeOrder order) {
     log.debug("Trade order received: {}", order);
 

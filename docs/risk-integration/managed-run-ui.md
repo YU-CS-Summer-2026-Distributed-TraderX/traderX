@@ -1,5 +1,7 @@
 # Managed-run UI (console blotter)
 
+**Retired 2026-11-06** (trade-history-tiers FR-THT-01): run transitions (prepare/freeze/verify/select/activate) verified full SQL trade and order populations, which the snapshot read model no longer holds; ADR-101's fresh-epoch archive replaced them. `transition.py`, its tests, `test-live-migration.sh` and the transition proofs were removed; read-only run browsing (RunRegistry, `/v2/projections`) and `provision.py` stay.
+
 Updated 2026-09-24 (review corrections R1–R3 applied). Owner: Claude (managed-run UI lane). Status: implemented on branch `claude/managed-run-ui`, review needed. Not deployed; no retained rig or installation was touched. Component pack: [managed-run-ui](../../specs/YU18-risk-integration/components/managed-run-ui/README.md).
 
 ## What the operator sees

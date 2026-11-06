@@ -15,60 +15,29 @@ import io.nats.client.Message;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 
 /**
- * Consumes booked trades off NATS and hands them to {@link TradeService} in batches rather than
- * one DB transaction per trade. Under load, each trade previously cost its own round trip to
- * MariaDB (SELECT position + INSERT trade + UPDATE position); batching collapses that to a
- * handful of round trips per batch via {@code saveAll()} + Hibernate JDBC batching (see
- * {@code spring.jpa.properties.hibernate.jdbc.batch_size} in application.properties).
- *
- * <p>{@code onMessage} is called on the single NATS dispatcher thread, so it never blocks on the
- * queue — it just offers and returns. A dedicated flush thread drains the queue: eagerly once
- * {@link #BATCH_SIZE} trades are queued, or at worst every {@link #MAX_LATENCY_MILLIS} so trades
- * never sit indefinitely under low load.
- *
- * <p><b>YU18 downstream redesign, {@code traderx.feed.mode=jetstream}:</b> no core subscription and
- * no in-process queue. One {@link JetStreamFeed} pull thread per OWNED partition fetches batches
- * from the capture stream's durable consumer and acks them after the SQL commit, so a slow or
- * restarting projection lags and catches up instead of dropping. See JetStreamFeed.
+ * The trade store (ADR-097, the only projection since FR-THT-01 retired rows mode on 2026-11-06): one
+ * {@link JetStreamFeed} pull thread per OWNED partition replays the capture stream from the committed cursor into
+ * an in-memory {@link TradeView}, and a snapshot thread writes positions, each changed account's blotter window
+ * and the cursor to SQL every snapshot-ms. Trade history lives in the history store (history-feed), not SQL.
  */
 public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements DisposableBean {
   static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TradeFeedHandler.class);
 
-  // YU18: 1000 (was 100) - with the per-row registry reads gone, a batch costs a fixed handful of
-  // round trips, so the batch size is the throughput lever. Matches hibernate.jdbc.batch_size.
   private static final int BATCH_SIZE = 1000;
-  private static final long MAX_LATENCY_MILLIS = 10;
 
-  /**
-   * YU18: BOUNDED. The unbounded queue turned a slow database into an OutOfMemoryError (measured:
-   * a 256 MB heap died 11 s into a 100K msg/s flood) and the restart lost the whole backlog. Core
-   * NATS has no replay either way, so a full queue drops - but it drops COUNTED, the process stays
-   * up, and the gap counter below names how many trade sides never reached the projection.
-   * The jetstream feed mode is the fix that turns that loss into lag.
-   */
-  static final int QUEUE_CAPACITY = Integer.getInteger("traderx.trade-feed.queue-capacity", 20_000);
-  // 20K = 20 batches of slack. Sized against the DEFAULT heap (25% of the 1 GiB pod limit = 256 MB):
-  // two 200K queues of parsed events filled it and the process still died of OOM (measured).
-
-  private final BlockingQueue<TradeOrder> pending = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
-  private final AtomicLong dropped = new AtomicLong();
   private final AtomicLong applied = new AtomicLong();
   private final TradeSeqGaps gaps = new TradeSeqGaps();
-  private volatile Thread flushThread;
   private final List<Thread> feedThreads = new ArrayList<>();
   private volatile boolean running = true;
 
-  // Feed wiring (application.properties); Java defaults keep the plain-constructed test path on core.
-  @Value("${traderx.feed.mode:core}") String feedMode = "core";
+  // Feed wiring (application.properties). Only jetstream + snapshot remain (FR-THT-01); anything else refuses to start.
+  @Value("${traderx.feed.mode:jetstream}") String feedMode = "jetstream";
   @Value("${traderx.feed.partition-count:1}") int partitionCount = 1;
   @Value("${traderx.feed.owned:all}") String ownedPartitions = "all";
   @Value("${traderx.feed.stream:TRADERX_FEED}") String stream = "TRADERX_FEED";
@@ -79,9 +48,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   // and the per-batch SQL costs (lock, prefetch, counter) amortized over ~200 rows instead of 1000,
   // tripling CPU per trade row. Latency under low load is bounded by this value.
   @Value("${traderx.feed.fetch-wait-ms:200}") long fetchWaitMillis = 200;
-  // YU18 trade store (docs/engineering/downstream-at-400k.md §7): "snapshot" books trades in memory
-  // (TradeView) and writes SQL every snapshotMillis; "rows" is the row-per-trade path.
-  @Value("${traderx.trade-projection.mode:rows}") String projectionMode = "rows";
+  @Value("${traderx.trade-projection.mode:snapshot}") String projectionMode = "snapshot";
   @Value("${traderx.trade-projection.snapshot-ms:5000}") long snapshotMillis = 5000;
   @Value("${traderx.trade-projection.blotter-depth:100}") int blotterDepth = 100;
   private final Map<Integer, TradeView> views = new ConcurrentHashMap<>();
@@ -89,9 +56,6 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private final AtomicLong snapshotRows = new AtomicLong();
   private final AtomicLong snapshotFailures = new AtomicLong();
   private final AtomicLong refused = new AtomicLong();   // snapshot mode: messages skipped as refused (FR-DRS-35)
-  // Row projection on the jetstream feed: per owned partition, the latest instant at which every side the
-  // stream held had committed to SQL. The recon needs it after an outage, while the replay is still running.
-  private final Map<Integer, Long> caughtUpAt = new ConcurrentHashMap<>();
   private volatile String snapshotScope;
 
   public TradeFeedHandler() {
@@ -106,31 +70,21 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private TradeSnapshotStore snapshotStore;
   @Autowired(required = false)
   private RunRegistry runRegistry;
-  @Autowired(required = false)
-  private org.springframework.jdbc.core.JdbcTemplate jdbc;
-  @Autowired(required = false)
-  private org.springframework.transaction.support.TransactionTemplate transactions;
 
   boolean jetstream() { return "jetstream".equalsIgnoreCase(feedMode); }
   boolean snapshotMode() { return "snapshot".equalsIgnoreCase(projectionMode); }
 
   @Override
-  protected boolean autoSubscribe() { return !jetstream(); }
+  protected boolean autoSubscribe() { return false; }
 
   @Override
   public void afterPropertiesSet() throws Exception {
-    super.afterPropertiesSet();
-    // Row projection: the gap counter's watermark survives a restart (TradeSeqGaps). The snapshot
-    // projection replays from its own stream cursor instead.
-    if (jdbc != null && !snapshotMode() && partitionCount <= 1) {
-      gaps.persistIn(
-          epoch -> jdbc.query("SELECT stream_seq FROM projection_cursor WHERE projection_scope=? AND partition_id=0",
-              (rs, i) -> rs.getLong(1), TradeSeqGaps.SCOPE + epoch).stream().findFirst().orElse(null),
-          (epoch, seq) -> jdbc.update("INSERT INTO projection_cursor(projection_scope,partition_id,stream_seq,consensus_seq)"
-              + " VALUES (?,0,?,0) ON DUPLICATE KEY UPDATE stream_seq=GREATEST(stream_seq,VALUES(stream_seq))",
-              TradeSeqGaps.SCOPE + epoch, seq));
+    if (!jetstream() || !snapshotMode()) {   // before connecting: a retired mode never touches the broker or SQL
+      throw new IllegalStateException("trade feed: rows mode and the core feed were retired (FR-THT-01); traderx.feed.mode="
+          + feedMode + ", traderx.trade-projection.mode=" + projectionMode + " must be jetstream and snapshot");
     }
-    if (jetstream()) {
+    super.afterPropertiesSet();
+    {
       try {
         startJetStream();
       } catch (Exception refused) {
@@ -146,25 +100,13 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
         exit.start();
         throw refused;
       }
-      return;
     }
-    flushThread = new Thread(this::flushLoop, "trade-feed-batch-flush");
-    flushThread.setDaemon(true);
-    flushThread.start();
   }
 
   private void startJetStream() throws Exception {
     JetStreamFeed.ensureStreams(connection(), stream, streamLayout, partitionCount, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
     if (writeLock != null) { writeLock.ensurePartitions(partitionCount); }
-    if (snapshotMode()) { startSnapshotMode(); return; }
-    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
-      String subject = JetStreamFeed.subject("/trades", p, partitionCount);
-      caughtUpAt.put(p, 0L);
-      feedThreads.add(JetStreamFeed.start("trade-feed-p" + p, connection(), streamName(p), subject,
-          JetStreamFeed.durable("tp-trades-p" + p, subject), BATCH_SIZE, Duration.ofMillis(fetchWaitMillis),
-          msgs -> onJetStreamBatch(p, msgs), head -> caughtUpAt.put(p, System.currentTimeMillis())));
-    }
-    log.info("trade feed: jetstream mode, {} of {} partitions owned", feedThreads.size(), partitionCount);
+    startSnapshotMode();
   }
 
   /**
@@ -226,7 +168,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   /** The stream partition {@code p} is read from (FR-DRS-32). */
   public String streamName(int p) { return JetStreamFeed.streamFor(stream, streamLayout, p, Math.max(1, partitionCount)); }
   public int partitionCount() { return Math.max(1, partitionCount); }
-  public boolean ledgerMode() { return jetstream() && snapshotMode(); }
+  public boolean ledgerMode() { return true; }
 
   void onSnapshotBatch(int partition, List<Message> msgs) {
     TradeView view = views.get(partition);
@@ -283,114 +225,24 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   public long snapshotFailures() { return snapshotFailures.get(); }
   public long refused() { return refused.get(); }
   public Map<Integer, TradeView> views() { return views; }
-  public String projectionMode() { return snapshotMode() ? "snapshot" : "rows"; }
-
-  /**
-   * Row projection on the jetstream feed: the instant (epoch ms) by which every side the stream held had
-   * committed to SQL, on every owned partition; 0 until each has caught up once since start.
-   * ponytail: min over OWNED partitions; a replica owning a subset never vouches for the others.
-   */
-  public long caughtUpAt() {
-    return caughtUpAt.values().stream().mapToLong(Long::longValue).min().orElse(0L);
-  }
-  public boolean jetstreamRows() { return jetstream() && !snapshotMode(); }
-
-  /** One fetched batch: decode on this partition's own thread, project, count. */
-  void onJetStreamBatch(int partition, List<Message> msgs) {
-    // A short batch drained the consumer: everything stored before this fetch began is in it or before it.
-    long drainedAt = msgs.size() < BATCH_SIZE ? System.currentTimeMillis() - fetchWaitMillis : -1;
-    ProjectionWriteLock.partition(partition);
-    List<TradeOrder> batch = new ArrayList<>(msgs.size());
-    for (Message m : msgs) {
-      try {
-        TradeOrder t = decode(m.getData());
-        if (t != null) { batch.add(t); }
-      } catch (Exception x) {
-        log.error("undecodable /trades message skipped: {}", x.toString());
-      }
-    }
-    if (batch.isEmpty()) { return; }
-    // The gap counter needs every tradeSeq in order; with partitions each thread sees a subsequence.
-    if (partitionCount <= 1) { for (TradeOrder order : batch) { gaps.observe(order.getId()); } }
-    processBatch(batch);
-    if (drainedAt > 0) { caughtUpAt.merge(partition, drainedAt, Math::max); }
-  }
+  public String projectionMode() { return "snapshot"; }
 
   @Override
   public void destroy() {
     running = false;
-    if (flushThread != null) {
-      flushThread.interrupt();
-    }
     for (Thread t : feedThreads) { t.interrupt(); }
   }
 
+  /** Never called: there is no core subscription ({@link #autoSubscribe} is false). */
   @Override
-  public void onMessage(Envelope<?> envelope, TradeOrder order) {
-    if (!pending.offer(order)) {
-      long n = dropped.incrementAndGet();
-      if (n == 1 || n % 10_000 == 0) {
-        log.warn("trade-feed queue full ({}): dropped={} - the projection is behind the cluster and these trade sides are lost", QUEUE_CAPACITY, n);
-      }
-    }
-  }
+  public void onMessage(Envelope<?> envelope, TradeOrder order) { }
 
-  public long dropped() { return dropped.get(); }
-  /** Trade sides handed to the projection (both modes), for a rate that does not need SQL. */
+  public long dropped() { return 0; }   // nothing is queued, so nothing drops; the stream retains it
+  /** Trade sides booked into the views, for a rate that does not need SQL. */
   public long applied() { return applied.get(); }
   public TradeSeqGaps gaps() { return gaps; }
-  public int backlog() { return pending.size(); }
-  public String feedMode() { return jetstream() ? "jetstream" : "core"; }
-
-  private void flushLoop() {
-    List<TradeOrder> batch = new ArrayList<>(BATCH_SIZE);
-    while (running) {
-      try {
-        TradeOrder first = pending.poll(MAX_LATENCY_MILLIS, TimeUnit.MILLISECONDS);
-        if (first == null) {
-          continue;
-        }
-        batch.add(first);
-        pending.drainTo(batch, BATCH_SIZE - 1);
-        for (TradeOrder order : batch) { gaps.observe(order.getId()); }
-        processBatch(batch);
-        batch.clear();
-      } catch (InterruptedException x) {
-        Thread.currentThread().interrupt();
-      }
-    }
-  }
-
-  private void processBatch(List<TradeOrder> batch) {
-    try {
-      if (transactions != null && gaps.persisted()) {
-        // The watermark commits with the batch: a restart counts exactly the sides that never committed.
-        transactions.executeWithoutResult(s -> { tradeService.processTrades(batch); gaps.save(); });
-      } else {
-        tradeService.processTrades(batch);
-      }
-      applied.addAndGet(batch.size());
-    } catch (Exception x) {
-      log.error("Batch trade processing failed for {} trades; retrying individually", batch.size(), x);
-      // Fall back to per-trade processing so one bad order doesn't silently drop the whole batch.
-      int refused = 0;
-      for (TradeOrder order : batch) {
-        try {
-          tradeService.processTrade(order);
-          applied.incrementAndGet();
-        } catch (Exception individualFailure) {
-          // FR-DRS-35: on the jetstream feed a store failure is redelivered (the sides already booked are ignored as
-          // duplicates), not counted as refused and acked. The core feed has no redelivery: it can only count.
-          if (jetstream() && JetStreamFeed.retryable(individualFailure)) { throw JetStreamFeed.barrier(individualFailure); }
-          refused++;
-          log.error("Error processing trade order {}", order, individualFailure);
-        }
-      }
-      // FR-DRS-02: a refused side is acked and never committed, so it is missing like a lost one.
-      gaps.refused(refused);
-      gaps.save();
-    }
-  }
+  public int backlog() { return 0; }
+  public String feedMode() { return "jetstream"; }
 
   /**
    * Contiguity of the engine's per-leg trade counter, as it reaches the projection. Every booked

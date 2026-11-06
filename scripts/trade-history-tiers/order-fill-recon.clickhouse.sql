@@ -1,4 +1,4 @@
--- FR-DRS-33 recon on the history store (FR-THT-05): the SQL version (scripts/gcp-compsci/rig/fr-drs-33-order-fill-recon.sql)
+-- FR-DRS-33 recon on the history store (FR-THT-05): the SQL version (scripts/gcp-compsci/rig/fr-drs-33-order-fill-recon.sql, removed with rows mode 2026-11-06)
 -- moved to ClickHouse, READ-ONLY. It reads every trade side and every order event the capture streams carried, so it
 -- holds in snapshot mode and at any volume; the SQL version needs rows mode (snapshot mode prunes `trades`).
 -- Join key: trades.order_ref (the numeric part of sourceOrderId) = orders.order_ref. order_ref 0 is a /trades ticket

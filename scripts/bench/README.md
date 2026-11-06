@@ -5,7 +5,7 @@ falsifiable ✔/✘ correctness proofs, which now live in [`../proofs`](../proof
 
 | Dir | What it holds |
 |---|---|
-| [`load/`](load) | Order-entry **load generators** (REST/binary/FIX) and the orchestrators that drive them: `max-load` / `avg-max-load` / `batch-load` / `batch-experiment` (REST + batch), `fix-load` / `fix-multi` (FIX), `bin-multi` (binary), `rest-completed-control`, `order-matcher-bench`, the `run-*` ladders, `yu13-two-account-bench`, `measure-trade-processor-db-rate`, `reset-order-matcher-k8s` (the `RESET_CMD` helper), `spike-demo`. Kept together because the orchestrators spawn the generators by relative path. |
+| [`load/`](load) | Order-entry **load generators** (REST/binary/FIX) and the orchestrators that drive them: `max-load` / `avg-max-load` / `batch-load` / `batch-experiment` (REST + batch), `fix-load` / `fix-multi` (FIX), `bin-multi` (binary), `rest-completed-control`, `order-matcher-bench`, the `run-*` ladders, `yu13-two-account-bench`, `reset-order-matcher-k8s` (the `RESET_CMD` helper), `spike-demo`. Kept together because the orchestrators spawn the generators by relative path. |
 | [`latency/`](latency) | Latency & failover **probes**: `rest-latency-probe`, `failover-client-probe`, `failover-bimodal-probe`. |
 | [`replay/`](replay) | Market-data replay: `taq-replay` (NYSE TAQ prints → book) and its `taq-curate` data-prep. |
 

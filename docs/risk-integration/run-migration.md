@@ -1,5 +1,7 @@
 # Local run identity and projection migration
 
+**Retired 2026-11-06** (trade-history-tiers FR-THT-01): run transitions (prepare/freeze/verify/select/activate) verified full SQL trade and order populations, which the snapshot read model no longer holds; ADR-101's fresh-epoch archive replaced them. `transition.py`, its tests, `test-live-migration.sh` and the transition proofs were removed; read-only run browsing (RunRegistry, `/v2/projections`) and `provision.py` stay.
+
 Updated 2026-09-24. Owner: Codex RI-06. This capability is implemented in the YU18 authoritative overrides; verification and review status are recorded in the recovery component tasks. It has not been activated on any retained rig. Earlier findings in [the recovery matrix](recovery-identity.md) describe the pre-migration baseline.
 
 ## Identity and compatibility

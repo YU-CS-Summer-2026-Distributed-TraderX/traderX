@@ -118,27 +118,4 @@ class ReconciliationProjectionGraceTest {
         assertEquals(2, r.status().missingInProjection());
     }
 
-    @Test
-    void onTheDurableFeedASideIsHeldPastTheGraceUntilTheReplayHasCaughtUp() {
-        // Rows over the jetstream feed, back from an outage: t-2 and t-3 are still in the stream behind the replay.
-        insert(1);
-        insert(4);
-        var feed = mock(finos.traderx.tradeprocessor.TradeFeedHandler.class);
-        when(feed.jetstreamRows()).thenReturn(true);
-        when(feed.caughtUpAt()).thenReturn(0L);   // not caught up since the restart
-        ReconciliationService r = recon(FILL + GRACE + 60_000);
-        r.subscribers(List.of(feed));
-        r.sweep();
-        assertEquals(0, r.status().missingInProjection(), "past the grace but the replay has not caught up: held");
-        assertEquals(1, r.status().cursor());
-
-        insert(2);   // the replay delivers t-2; t-3 was never in the stream
-        when(feed.caughtUpAt()).thenReturn(FILL + GRACE + 65_000);
-        at(r, FILL + GRACE + 70_000);
-        r.sweep();
-        var s = r.status();
-        assertEquals(3, s.matched(), "the replayed side ends MATCHED");
-        assertEquals(1, s.missingInProjection(), "the side the caught-up feed never delivered ends MISSING");
-        assertEquals(4, s.cursor());
-    }
 }
