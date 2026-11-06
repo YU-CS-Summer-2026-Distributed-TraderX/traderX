@@ -6,9 +6,15 @@
 - [ ] Production run writing both SQL `trades` and ClickHouse; per-partition count and hash equal.
 - [x] Inventory test of every SQL `trades` reader (FR-THT-05): `sql-trades-readers.sh`, 58 recorded 2026-11-06.
 - [x] Move the FR-DRS-33 recon to the history store (`order-fill-recon.clickhouse.sql`, real-ClickHouse test).
-- [ ] Verify the 22 WINDOW readers in snapshot mode on kind (each reads its own fresh trades from the blotter window),
-  then mark them KEEP; port or retire the 4 ROWS-PROOF recon proofs (they plant SQL-row mismatches; recon reads the
-  ledger). Blotter stays on the window (FR-THT-01 option A, 2026-11-06).
+- [x] Port the recon proofs to the ledger recon (yaakov, 2026-11-06): `recon-ledger-subject.py` plants a field
+  mismatch on the capture stream (trade-processor at 0) and an orphan as one window row, each restored in `finally`;
+  `yu05-recon.sh` PASS on kind traderx-tht, both controls named, both negative mutants refused. The SQL-row helper
+  `recon-proof-subject.py` (managed epoch-v1 runs only) and its offline tests removed.
+- [~] Verify the WINDOW readers on kind (2026-11-06, traderx-tht, production's read-model shape): PASS
+  yu18-projection-effect-end, yu05-settlement, yu05-auth-entitlements, yu13-clordid-suppression (negative: snapshots
+  off, it fails at the window read). FR-THT-01 at the effect end: TRADE_PROJECTION_MODE unset starts snapshot, `rows`
+  refuses to start. Left: 18 WINDOW readers whose rig needs services the kind cluster tier lacks (inventory says
+  which). Fixed on the way: yu05-common/yu13/yu16 hard-coded the dev DB password; they use the container's own.
 - [x] Cut gate distinguishes the window from history (FR-THT-05): `KEEP:` inventory lines (window writer, blotter,
   epoch-namespace guard, schema) stay; `sql-trades-readers.sh` passes once only they remain. The 50 others are tagged
   (2026-11-06): WINDOW 16 (own fresh trades; verify on kind), ACCOUNTING 2 (high-water guard -> `projection_accounting`),

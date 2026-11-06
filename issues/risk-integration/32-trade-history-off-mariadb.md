@@ -27,7 +27,9 @@ the write-path cut, the KDB-X feed lane, the scale and rebuild proofs.
 Decided (yaakov, 2026-11-06): FR-THT-01 is option A, rows mode retired. SQL `trades` keeps each account's blotter
 window (current state, ADR-097); nothing reads it as history. The cut gate (`sql-trades-readers.sh`) now passes once
 only the `KEEP:` window readers remain. Rows mode retired the same day (with RI06 recovery and run transitions);
-40 readers left: KEEP 13, WINDOW 22 (verify on kind), ROWS-PROOF 4 (port or retire), ROWS 1 (unreachable writer).
+Kind traderx-tht the same day: recon ported to the ledger (yu05-recon PASS with both controls), 4 window proofs PASS,
+unset mode = snapshot and `rows` refuses at the effect end. 38 readers: KEEP 19, WINDOW 18 (need services the kind
+cluster tier lacks), ROWS 1 (unreachable writer).
 
 ## The 89.7M sides of 2026-10-30 (decided: keep recorded)
 

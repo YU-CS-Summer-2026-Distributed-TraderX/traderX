@@ -62,7 +62,7 @@ step() { echo; echo "=== $* ==="; }
 # possible message for a container-name mismatch.
 SQL_DB="${SQL_DB:-eod-price-db}"
 SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
-sql() { vlog "      SQL: $1"; ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+sql() { vlog "      SQL: $1"; ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- sh -c 'mariadb -u"${MARIADB_USER:-traderx}" -p"${MARIADB_PASSWORD:-traderx}" traderx -sN -e "$1"' sh "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 rows() { sql "SELECT COUNT(*) FROM trades WHERE security='${TICKER}';"; }
@@ -151,9 +151,7 @@ echo "[ok] fresh key booked orderRef ${REF2} and added 2 rows (total ${AFTER_NEW
 echo "[ok] so step 3's suppression was the KEY, not an inert book"
 
 step "5. the SQL rows"
-${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- mariadb -utraderx -ptraderx traderx -e "
-  SELECT id, accountid, security, side, quantity, price FROM trades WHERE security='${TICKER}' ORDER BY id;
-" 2>/dev/null | sed 's/^/  /'
+sql "SELECT id, accountid, security, side, quantity, price FROM trades WHERE security='${TICKER}' ORDER BY id;" | sed 's/^/  /'
 
 echo
 echo "=== PASS — a resent client order id is answered with the original booking, asserted in SQL ==="

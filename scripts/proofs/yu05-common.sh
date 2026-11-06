@@ -27,7 +27,8 @@ DB_DEPLOY=${DB_DEPLOY:-eod-price-db}
 
 # dbq <sql>  -> tab-separated rows, no header (for reading the MariaDB projection; settlement state
 # has no HTTP read endpoint, it lives only in the trade-processor projection — FR-PTC07).
-dbq(){ $K exec "deploy/${DB_DEPLOY}" -- sh -c "mariadb -utraderx -ptraderx traderx -N -B -e \"$1\"" 2>/dev/null; }
+# The database container's own credentials (a production-shaped rig randomizes them); traderx where it has none.
+dbq(){ $K exec "deploy/${DB_DEPLOY}" -- sh -c "mariadb -u\"\${MARIADB_USER:-traderx}\" -p\"\${MARIADB_PASSWORD:-traderx}\" traderx -N -B -e \"$1\"" 2>/dev/null; }
 
 # mint <admin:true|false> <accounts-json e.g. [] or [22214]>  -> prints the raw JWT
 mint(){

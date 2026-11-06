@@ -173,8 +173,12 @@ fi
 echo "   ── forward sweep (fresh classification, journal blotter → projection) ──"
 ENGINE_T=$($K exec order-matcher-cluster-0 -- sh -c 'wget -qO- http://localhost:8080/metrics' \
   2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')
+# Rows mode was retired (trade-history-tiers FR-THT-01): SQL holds blotter windows, so "projected" is the trade
+# store's committed accounting (booked sides), not a row count.
+booked(){ curl -s -m8 "$TP/v2/projection-feed/accounting" -H "Authorization: Bearer $ADMIN" \
+  | python3 -c 'import json,sys; print(sum(int(v.get("sides",0)) for v in json.load(sys.stdin).get("trades",{}).values()))' 2>/dev/null; }
 for _ in $(seq 1 30); do
-  SQLT=$(dbq "SELECT COUNT(*) FROM trades;")
+  SQLT=$(booked)
   [ "${SQLT:-0}" -ge "${ENGINE_T:-1}" ] && break
   sleep 2
 done
@@ -281,31 +285,30 @@ fi
 [ "${MISSING:-0}" -gt 0 ] && echo "     (missing=$MISSING is bridge lag counted at classification time; the set comparison below is the verdict)"
 
 # ---- 3b. negative control: a PERSISTENT field mismatch must fail a fresh classification -------
-# Mutate a positively identified SQL/live-window row, require its exact id in a fresh
-# processor's mismatch log, restore, and require clean reclassification of that subject.
-# Counters alone cannot identify which row failed. The helper restores on EXIT/INT/TERM/HUP;
-# SIGKILL or loss of database/control-plane connectivity cannot guarantee remote restoration.
-# YU18 persists scoped recon checkpoints. The helper pauses the sole processor replica,
-# saves/resets only the selected scope, observes the exact subject in a NEW pod's logs,
-# and restores subject/checkpoint/replicas even on catchable interruption. Legacy/unknown
-# scope refuses instead of attributing an unqualified id to the current run.
-python3 "$here/recon-proof-subject.py" --context "$CTX" --db-deploy "$DB_DEPLOY" --om "$OM" \
-  --attempts "${RECON_PROOF_ATTEMPTS:-90}" --poll-seconds "${RECON_PROOF_POLL_SECONDS:-2}" <<<"$ADMIN" &
-SUBJECT_PID=$!
+# The forward recon reads the capture stream (the ledger), not SQL, since rows mode was retired (FR-THT-01): the
+# control plants on the stream. recon-ledger-subject.py, with trade-processor at 0, swaps the subject's stream message
+# for a copy with quantity+1, requires a fresh pod to name it FIELD_MISMATCH, restores the original, and requires a
+# clean reclassification; it restores the stream, the scoped checkpoint and the replica count in `finally`.
+$K get pod nats-box >/dev/null 2>&1 || { $K run nats-box --image=natsio/nats-box:latest --image-pull-policy=IfNotPresent \
+  --restart=Never -- sleep 86400 >/dev/null && $K wait --for=condition=Ready pod/nats-box --timeout=120s >/dev/null; } \
+  || { bad "no nats-box pod for the stream plant"; exit 1; }
+SUBJECT_PID=""
 subject_interrupted(){
   trap '' INT TERM HUP
-  kill -TERM "$SUBJECT_PID" 2>/dev/null || true
-  wait "$SUBJECT_PID" || true
+  [ -n "$SUBJECT_PID" ] && { kill -TERM "$SUBJECT_PID" 2>/dev/null || true; wait "$SUBJECT_PID" || true; }
   exit 1
 }
+python3 "$here/recon-ledger-subject.py" --mode mismatch --context "$CTX" --ns "${NS:-traderx}" --db-deploy "$DB_DEPLOY" \
+  --om "$OM" --attempts "${RECON_PROOF_ATTEMPTS:-90}" --poll "${RECON_PROOF_POLL_SECONDS:-2}" <<<"$ADMIN" &
+SUBJECT_PID=$!
 trap subject_interrupted INT TERM HUP
 wait "$SUBJECT_PID"; SUBJECT_RC=$?
 trap - INT TERM HUP
 if [ "$SUBJECT_RC" -ne 0 ]; then
-  bad "exact scoped subject control failed or refused; see diagnostic above"
-  # Do not continue into the orphan mutation after a failed cleanup/precondition.
+  bad "the ledger field-mismatch control failed or refused; see diagnostic above"
   exit 1
 fi
+own_tp_forward || { bad "trade-processor unreachable after the control"; exit 1; }
 
 # ---- 4. orphan sweep: every projection row must have journal provenance -----------------------
 echo "   ── full-history sweep (admin): every projection row vs the whole log ──"
@@ -314,18 +317,16 @@ echo "   ── full-history sweep (admin): every projection row vs the whole lo
 ENGINE_TRADES=$($K exec order-matcher-cluster-0 -- sh -c 'wget -qO- http://localhost:8080/metrics' \
   2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')
 for _ in $(seq 1 30); do
-  SQL_TRADES=$(dbq "SELECT COUNT(*) FROM trades;")
+  SQL_TRADES=$(booked)
   [ "${SQL_TRADES:-0}" -ge "${ENGINE_TRADES:-1}" ] && break
   sleep 2
 done
-say "engine trades / SQL rows" "${ENGINE_TRADES:-?} / ${SQL_TRADES:-?}"
+say "engine trades / booked sides" "${ENGINE_TRADES:-?} / ${SQL_TRADES:-?}"
 
-# The same proof helper owns a unique, attributed projection-only row for this invocation.
-# Its INSERT is scoped atomically, and cleanup reconciles ambiguous outcomes with full-row
-# ownership predicates. Catchable signals wait for the bounded operation and qualified cleanup.
-python3 "$here/recon-proof-subject.py" --mode orphan --context "$CTX" \
-  --db-deploy "$DB_DEPLOY" --om "$OM" --attempts "${RECON_PROOF_ATTEMPTS:-90}" \
-  --poll-seconds "${RECON_PROOF_POLL_SECONDS:-2}" <<<"$ADMIN" &
+# One uniquely named projection-only row for an idle seed account: the snapshot store rewrites only accounts that
+# trade, so it stands until the helper deletes it. The sweep must name it, then must not once it is gone.
+python3 "$here/recon-ledger-subject.py" --mode orphan --context "$CTX" --ns "${NS:-traderx}" --db-deploy "$DB_DEPLOY" \
+  --om "$OM" <<<"$ADMIN" &
 SUBJECT_PID=$!
 trap subject_interrupted INT TERM HUP
 wait "$SUBJECT_PID"; ORPHAN_RC=$?

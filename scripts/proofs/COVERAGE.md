@@ -1,5 +1,15 @@
 # Proof coverage against the specs
 
+## Snapshot-only read model on kind (2026-11-06, trade-history-tiers, kind traderx-tht)
+
+Rows mode retired (FR-THT-01). Rig: kind-yu18-rig.py's render (snapshot, P=4 partition streams), images from
+`trade-history-tiers`. PASS: `yu05-recon` (ported: stream-planted FIELD_MISMATCH and window-row orphan, each named
+and restored; mutants with the plant removed refuse), `yu18-projection-effect-end`, `yu05-settlement`,
+`yu05-auth-entitlements`, `yu13-clordid-suppression` (negative: TRADE_PROJECTION_SNAPSHOT_MS=1h, it fails at the
+window read). `yu16-bond-position`: trades reach the window; positions need reference-data (bonds book Rejected
+without it). `yu18-market-order`: fails on the SQL orderbook (ORDER_FEED_PERSIST=false), not on trades. Suspect 4
+(the recon's scoped control refusing legacy scope) is gone with the old helper.
+
 Audited 2026-10-27 against the spec packs on `traderX-risk-integration`, round 1 at `b28fd9f3`, round 2 at `40d93f6b` and round 3 at `41a77949` / `071cde6d` (state
 `YU18-risk-integration` and every YU state it carries). Written **black-box, from the specs only**:
 spec prose, ADRs, contracts, data models, messaging maps, `quickstart.md`, `docs/` and the existing
