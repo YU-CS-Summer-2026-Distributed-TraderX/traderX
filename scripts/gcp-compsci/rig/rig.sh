@@ -1108,8 +1108,10 @@ rig_loadgen(){
 }
 
 main(){
-  local action=${1:-}; shift || true
-  [ "${1:-}" = --dry-run ] && DRY=1
+  local action=${1:-} a rest=(); shift || true
+  # Anywhere after the action: `archive-members LABEL --dry-run` once ignored it and snapshotted production.
+  for a in "$@"; do if [ "$a" = --dry-run ]; then DRY=1; else rest+=("$a"); fi; done
+  set -- ${rest[@]+"${rest[@]}"}
   case $action in
     pools) validate_args; preflight; rig_pools;;
     up) rig_up;;

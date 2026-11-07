@@ -1035,6 +1035,18 @@ class Plan(unittest.TestCase):
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertNotIn('CONTACTED', p.stderr)
 
+    def test_dry_run_after_a_label_writes_nothing(self):   # it once snapshotted production, flag ignored
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, PATH=f'{d}:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin', EVIDENCE=d + '/ev')
+            for tool in ('kubectl', 'gcloud'):   # reads answer as for stopped members on one disk
+                Path(d, tool).write_text(f'#!/bin/sh\necho "{tool} $*" >> {d}/calls\ncase "$*" in *volumeName*) echo pvc-x;; '
+                                         '*volumeHandle*) echo projects/p/zones/us-east1-b/disks/pvc-x;; *replicas*) echo 0;; esac\n')
+                os.chmod(Path(d, tool), 0o755)
+            p = subprocess.run(['bash', str(RIG), 'archive-members', 'e1', '--dry-run'], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn('would: gcloud compute snapshots create traderx-e1-m2', p.stdout)
+            self.assertNotIn('snapshots create', Path(d, 'calls').read_text())
+
     def test_arguments_are_refused(self):
         for env in ({'GATEWAYS': '0'}, {'GATEWAYS': '19'}, {'GATEWAYS': 'x'}, {'AUTOSCALE': 'maybe'},
                     {'GATEWAYS': '18', 'AUTOSCALE': 'on'}):

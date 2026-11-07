@@ -1,6 +1,6 @@
 # Exactly-once client specification
 
-Status: FR-XOC-01, 02, 04, 05 describe the venue as it is; FR-XOC-03 is new. Scope: the order-entry contract a
+Status: FR-XOC-01, 02, 04, 05 describe the venue as it is; FR-XOC-03 and FR-XOC-06 are new. Scope: the order-entry contract a
 client relies on to resend after a gateway kill or a leader kill without losing or duplicating an order.
 Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
 
@@ -29,6 +29,12 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
 - FR-XOC-05: The binary acceptor's ack status 2 (ambiguous) SHALL mean no committed decision reached the gateway:
   the order may or may not have executed, and a resend with the same `clOrdId` is safe (FR-XOC-01). Status 0 with
   reason `DUPLICATE` and a ref > 0 SHALL be read as the receipt for that ref.
+- FR-XOC-06: A FIX `NewOrderSingle` whose submit comes back ambiguous after the gateway saw a leader change while it
+  waited SHALL be resubmitted by that gateway under the same key (and, on an ADR-090 stream, at its stored sequence),
+  at most twice, and answered by the result: booked once if the old leader lost it, restated (`150=I`) if it had
+  committed. An ambiguous answer with no leader change in between SHALL NOT be resubmitted, since a plain timeout
+  can outlast the FR-XOC-04 window. Production 2026-11-06 (e1106, leader kill under CLIENT2-8): 7 such orders were
+  never answered, because FIX carries no ambiguous answer for a client to resend on and the sessions stayed up.
 
 ## Acceptance
 
@@ -38,6 +44,10 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
 | retry of a retained order | 01, 02 | `IdempotencyEvictionTest.retryOfARetainedOrder…` | one output: ORDER_FILLED, original ref, `publishNats=false` |
 | FIX resend, original aged out, read model present | 03 | `FixGatewayFillReportTest.aResentClOrdId…` | `150=I`, `37=ord-42`, `39=2`, CumQty 5, Text `DUPLICATE…` |
 | same, no read model | 03 | `FixGatewayFillReportTest.withoutAReadModel…` | `150=I`, `37=ord-42`, `39=3`, never `39=8` |
+| FIX order stranded by an election, lost | 06 | `FixGatewayFillReportTest.anOrderStrandedByAnElection…` | resubmitted once under the same key; `150=0` for `ord-7` |
+| same, committed before the election | 06 | `FixGatewayFillReportTest.anOrderThatCommittedBeforeTheElection…` | `150=I` for `ord-42`; not booked twice |
+| ambiguous with no election | 06 | `FixGatewayFillReportTest.anAmbiguousAnswerWithoutAnElection…` | one submit, no answer |
+| back-to-back elections | 06 | `FixGatewayFillReportTest.resubmissionsAcrossRepeatedElections…` | three submits, then ambiguous |
 | binary client through a gateway kill and a leader kill | 01, 02, 05 | harness arm `xo`, local triad | 0 missing / duplicate / ambiguous; strict native replay, allowance 0 |
 | stub gateways: 20 ambiguous, a gateway dies with 20 in flight | 05 | harness `tests/test_loadgen_exactly_once.mjs` | 600/600 executed once; today's loadgen fails |
 | FIX client through a gateway kill and a leader kill, ADR-086 sessions | 01, 03 | harness arm `xof`, local triad | 0 missing / duplicate / ambiguous; strict native replay, allowance 0 |

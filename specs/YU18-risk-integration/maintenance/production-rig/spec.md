@@ -16,6 +16,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - Every step SHALL check live state before it changes it, so a re-run is safe.
   - A check that does not hold SHALL stop the run with `REFUSED` and exit non-zero, and no later step SHALL run.
   - `--dry-run` SHALL print every step and contact neither kubectl nor gcloud.
+  - `--dry-run` SHALL be honoured anywhere after the action, including after a LABEL/SIZE/N argument, and SHALL then
+    run no mutating command (reads of live state are allowed for the labelled actions). On 2026-11-06
+    `archive-members e1106 --dry-run` ignored the flag and created the production snapshots.
   - `GATEWAYS` outside 1..18, `AUTOSCALE` other than on/off, or `AUTOSCALE=on` with 18 gateways SHALL be refused.
 - **FR-PRG-02:** `rig.sh down` SHALL:
   - scale the gateways to 0 first (each drains, FR-PRG-07) and delete the internal LB;

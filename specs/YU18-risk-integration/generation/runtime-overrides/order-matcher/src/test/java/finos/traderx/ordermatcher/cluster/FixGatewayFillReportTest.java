@@ -375,6 +375,86 @@ class FixGatewayFillReportTest {
         Session.sendToTarget(cancel, c.sessionId);
     }
 
+    /** The engine as seen across an election: each answer in turn; a null answer may come with a leader change. */
+    private static final class FailoverSubmitter implements OrderSubmitter {
+        final List<ExecResult> answers = new CopyOnWriteArrayList<>();
+        final List<String> keys = new CopyOnWriteArrayList<>();
+        final AtomicInteger changes = new AtomicInteger();
+        volatile boolean electionOnNull = true;
+
+        @Override
+        public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
+                                      final char side, final int qty, final long limitPxTicks) {
+            keys.add(clOrdId);
+            final ExecResult r = answers.isEmpty() ? null : answers.remove(0);
+            if (r == null && electionOnNull) {
+                changes.incrementAndGet();   // the gateway reaped this order at a new leader
+            }
+            return r;
+        }
+
+        @Override
+        public long leaderChanges() {
+            return changes.get();
+        }
+    }
+
+    /** FR-XOC-06: an order stranded by an election and lost with the old leader is booked once, by its resubmission. */
+    @Test
+    void anOrderStrandedByAnElectionIsResubmittedUnderItsKeyAndAnswered() throws Exception {
+        final FailoverSubmitter submitter = new FailoverSubmitter();
+        submitter.answers.add(null);
+        submitter.answers.add(new OrderSubmitter.ExecResult(true, 7, OutputEvent.KIND_ORDER_ACCEPTED));
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "f1", Side.BUY, 5, 50.0);
+        final ExecutionReport r = c.await(m -> is(m, "f1", ExecType.NEW));
+        assertNotNull(r, "the stranded order was never answered");
+        assertEquals("ord-7", r.getString(OrderID.FIELD));
+        assertEquals(2, submitter.keys.size(), "want the original and one resubmission");
+        assertEquals(submitter.keys.get(0), submitter.keys.get(1), "the resubmission must carry the same key");
+    }
+
+    /** FR-XOC-06: one that committed before the election is restated by the engine's key, never booked twice. */
+    @Test
+    void anOrderThatCommittedBeforeTheElectionIsRestatedNotBookedTwice() throws Exception {
+        final FailoverSubmitter submitter = new FailoverSubmitter();
+        submitter.answers.add(null);
+        submitter.answers.add(new OrderSubmitter.ExecResult(false, 42, OutputEvent.KIND_ORDER_REJECTED,
+            (byte) finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal()));
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "f2", Side.BUY, 5, 50.0);
+        final ExecutionReport r = c.await(m -> "f2".equals(cl(m)));
+        assertNotNull(r, "the stranded order was never answered");
+        assertEquals(ExecType.ORDER_STATUS, r.getChar(ExecType.FIELD));
+        assertEquals("ord-42", r.getString(OrderID.FIELD));
+    }
+
+    /** A timeout with no election is not resubmitted: past the key window a resubmission could execute twice. */
+    @Test
+    void anAmbiguousAnswerWithoutAnElectionIsNotResubmitted() throws Exception {
+        final FailoverSubmitter submitter = new FailoverSubmitter();
+        submitter.electionOnNull = false;
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "f3", Side.BUY, 5, 50.0);
+        Thread.sleep(1_000);
+        assertEquals(1, submitter.keys.size(), "resubmitted without a leader change");
+        assertTrue(c.reports.stream().noneMatch(m -> "f3".equals(cl(m))), "an ambiguous order was answered");
+    }
+
+    /** Elections back to back: bounded, so a flapping cluster cannot hold the session's dispatcher forever. */
+    @Test
+    void resubmissionsAcrossRepeatedElectionsAreBounded() throws Exception {
+        final FailoverSubmitter submitter = new FailoverSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "f4", Side.BUY, 5, 50.0);
+        Thread.sleep(1_000);
+        assertEquals(3, submitter.keys.size(), "want the original and two resubmissions");
+    }
+
     // ----- harness ---------------------------------------------------------------------------
 
     private static void assertFill(final ExecutionReport r, final String orderId, final char ordStatus,
