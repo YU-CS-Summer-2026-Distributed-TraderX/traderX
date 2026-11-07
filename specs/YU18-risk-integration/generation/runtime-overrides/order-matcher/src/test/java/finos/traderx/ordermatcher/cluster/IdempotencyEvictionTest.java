@@ -49,8 +49,9 @@ class IdempotencyEvictionTest {
     void retryAfterTerminalEvictionIsAnsweredAsDuplicateNotExecutedAgain() {
         final MatchingEngineClusteredService s = new MatchingEngineClusteredService();
         s.initEngine();
-        final List<long[]> acks = new ArrayList<>();   // {kind, orderRef, riskReason}
-        s.outputSink(o -> acks.add(new long[] { o.kind, o.orderRef, o.riskReason }));
+        final List<long[]> acks = new ArrayList<>();   // {kind, orderRef, riskReason, bridged}
+        s.outputSink(o -> acks.add(new long[] { o.kind, o.orderRef, o.riskReason,
+            MatchingEngineClusteredService.bridgesOrder(o) ? 1 : 0 }));
         apply(s, ctl(InputEvent.TYPE_ACCOUNT_CONTROL, 1, 0));
         apply(s, ctl(InputEvent.TYPE_ACCOUNT_CONTROL, 2, 0));
         apply(s, ctl(InputEvent.TYPE_SECURITY_CONTROL, 0, 0));
@@ -62,6 +63,8 @@ class IdempotencyEvictionTest {
         final int originalRef = (int) s.nextOrderRef() - 1;
         apply(s, order(2, InputEvent.SIDE_SELL, 10, 0L));   // fills the original -> terminal
         assertEquals(10, s.engine().positionQuantity(1, 0));
+        assertEquals(1L, acks.stream().filter(a -> a[0] == OutputEvent.KIND_ORDER_FILLED && a[1] == originalRef)
+            .mapToLong(a -> a[3]).max().orElse(-1), "the real fill IS bridged (the guard is not a blanket mute)");
         for (int i = 0; i < 1100; i++) {                    // age it out of the 1,024 ring
             apply(s, order(99, InputEvent.SIDE_BUY, 1, 0L));  // unknown account -> REJECTED terminal
         }
@@ -76,6 +79,7 @@ class IdempotencyEvictionTest {
         assertEquals(OutputEvent.KIND_ORDER_REJECTED, (byte) acks.get(0)[0]);
         assertEquals(originalRef, (int) acks.get(0)[1], "the answer names the ORIGINAL ref");
         assertEquals(RiskReason.DUPLICATE.ordinal(), (int) acks.get(0)[2]);
+        assertEquals(0L, acks.get(0)[3], "the DUPLICATE answer never reaches the order bridge (suspect 17)");
 
         apply(s, order(2, InputEvent.SIDE_SELL, 10, 0L));
         assertEquals(10, s.engine().positionQuantity(1, 0), "the keyed order executed exactly once");
@@ -90,7 +94,7 @@ class IdempotencyEvictionTest {
         final MatchingEngineClusteredService s = new MatchingEngineClusteredService();
         s.initEngine();
         final List<long[]> outs = new ArrayList<>();   // {kind, orderRef, publishNats}
-        s.outputSink(o -> outs.add(new long[] { o.kind, o.orderRef, o.publishNats ? 1 : 0 }));
+        s.outputSink(o -> outs.add(new long[] { o.kind, o.orderRef, MatchingEngineClusteredService.bridgesOrder(o) ? 1 : 0 }));
         apply(s, ctl(InputEvent.TYPE_ACCOUNT_CONTROL, 1, 0));
         apply(s, ctl(InputEvent.TYPE_ACCOUNT_CONTROL, 2, 0));
         apply(s, ctl(InputEvent.TYPE_SECURITY_CONTROL, 0, 0));
@@ -106,7 +110,7 @@ class IdempotencyEvictionTest {
         assertEquals(1, outs.size(), "exactly one output");
         assertEquals(OutputEvent.KIND_ORDER_FILLED, (byte) outs.get(0)[0], "the original's state");
         assertEquals(originalRef, (int) outs.get(0)[1]);
-        assertEquals(0L, outs.get(0)[2], "a restatement is not published");
+        assertEquals(0L, outs.get(0)[2], "a restatement is not bridged");
         assertEquals(10, s.engine().positionQuantity(1, 0));
     }
 }

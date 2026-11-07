@@ -37,7 +37,7 @@ built from `5cbc4e11`. $0, no cloud.
 
 | Proof | Covers | Result | Negative control |
 |---|---|---|---|
-| [`yu18-fix-duplicate.sh`](yu18-fix-duplicate.sh) + `.mjs` | FR-XOC-03 | **FAIL x4: suspect 17** | fresh ClOrdID: FAILS (new order at the session and in the read model) |
+| [`yu18-fix-duplicate.sh`](yu18-fix-duplicate.sh) + `.mjs` | FR-XOC-03 | PASS (FAIL x4 before the suspect-17 fix) | fresh ClOrdID: FAILS (new order at the session and in the read model) |
 | [`yu18-store-failure-barrier.sh`](yu18-store-failure-barrier.sh) | FR-DRS-35, FR-DRS-29 (PARTIAL) | PASS | one side removed: FAILS |
 | [`yu18-untyped-replace.sh`](yu18-untyped-replace.sh) | FR-ERH-F6 | PASS | step 2 sent typed: FAILS |
 | [`yu18-dev-secret-refusal.sh`](yu18-dev-secret-refusal.sh) | FR-ERH-S5 | PASS | ALLOW_DEV_SECRETS on every arm: FAILS |
@@ -64,7 +64,16 @@ a rows-mode rig: on production's render they would read 0. Not changed here; lis
     In process the engine marks that answer unpublished (`IdempotencyEvictionTest`'s retry with a `publishNats`
     assertion added: passes), so the leak is downstream: the leader's order bridge offers every
     `isOrderLifecycleKind` output without reading `out.publishNats` (`MatchingEngineClusteredService`, the drain
-    loop's `orderBridge.offer`). The FIX acceptor then reads the poisoned state back as `39=8`. Not fixed here.
+    loop's `orderBridge.offer`). The FIX acceptor then reads the poisoned state back as `39=8`.
+    **Fixed (2026-11-06, branch `missing-proofs`).** (a) The order bridge carries only outputs with `publishNats`
+    (`MatchingEngineClusteredService.bridgesOrder`): every unpublished lifecycle output is an answer that changed
+    nothing (a duplicate restatement, a refused request against a live order), so none of them may reach the read
+    model. (b) The `37=NONE` was the FIX acceptor: the mapping resolved ord-<ref>, the engine answered the cancel
+    `ORDER_NOT_FOUND` (aged out), and the reject dropped the ref. A ref this session's own ClOrdID map names is now
+    rejected as `ord-<ref>`, `39=3`, too late (cancel and replace); an unmapped ClOrdID stays `NONE`. CI:
+    `IdempotencyEvictionTest` (the DUPLICATE answer is not bridged, the real fill is) and
+    `FixGatewayFillReportTest.aCancelOfARestatedOrderTheEngineNoLongerRetainsNamesItAsDone`, each failing with its
+    fix reverted. Live: the full `run-yu18-kind.sh` on a fresh rig (`gap18-s17b`), 8 PASS, 8 negative controls FAIL.
 18. **FR-FFR-01: a FIX IOC the engine cancels on arrival is answered New and never Canceled.** `59=3` limit buys on a
     book with no sell: each is answered `150=0 39=0 151=1`, the read model holds it `LIMIT IOC CANCELED` at the same
     instant, and no Canceled report follows (FR-FFR-04 sends nothing for an update that adds no CumQty). A FIX client
@@ -1777,6 +1786,6 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-THT-07` | LIVE |  |  | added 2026-11-06: no live proof |
 | YU18 | `FR-XOC-01` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: PARTIAL, one replica, no election. IdempotencyEvictionTest |
 | YU18 | `FR-XOC-02` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: resend books nothing (SQL rows) |
-| YU18 | `FR-XOC-03` | LIVE |  | yu18-fix-duplicate | 2026-11-06 kind (snapshot read model): FAIL x4, suspect 17: the aged-out DUPLICATE answer reaches the read model, which rewrites the FILLED original REJECTED; FIX answers 39=8. NEGATIVE=1 (fresh ClOrdID) fails as it must. FixGatewayFillReportTest, IdempotencyEvictionTest |
+| YU18 | `FR-XOC-03` | LIVE |  | yu18-fix-duplicate | 2026-11-06 kind (snapshot read model), image `gap18-s17b`: PASS after the suspect-17 fix (FAIL x4 before it): 39=2 from an unpoisoned read model, a cancel by OrigClOrdID names ord-<ref> 39=3. NEGATIVE=1 (fresh ClOrdID) fails as it must. FixGatewayFillReportTest, IdempotencyEvictionTest |
 | YU18 | `FR-XOC-04` | LIVE |  |  | added 2026-11-06: 262,144-key window; local tier |
 | YU18 | `FR-XOC-05` | LIVE |  |  | added 2026-11-06: binary ack status 2 not driven |

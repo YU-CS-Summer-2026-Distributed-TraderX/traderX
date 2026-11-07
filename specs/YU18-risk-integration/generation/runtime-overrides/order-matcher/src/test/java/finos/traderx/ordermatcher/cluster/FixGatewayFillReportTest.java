@@ -80,6 +80,7 @@ class FixGatewayFillReportTest {
         final AtomicInteger nextRef = new AtomicInteger(1);
         volatile IntConsumer beforeAck = ref -> { };
         volatile ExecResult answer;   // when set, the engine's answer to every order
+        volatile ExecResult cancelAnswer;   // when set, the engine's answer to every cancel
 
         @Override
         public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
@@ -94,6 +95,9 @@ class FixGatewayFillReportTest {
 
         @Override
         public ExecResult submitCancel(final int orderRef) {
+            if (cancelAnswer != null) {
+                return cancelAnswer;
+            }
             return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
     }
@@ -336,6 +340,41 @@ class FixGatewayFillReportTest {
         assertEquals(OrdStatus.DONE_FOR_DAY, r.getChar(OrdStatus.FIELD), "never OrdStatus=8");
     }
 
+    /**
+     * FR-XOC-03 (suspect 17, step 4): the DUPLICATE answer keeps ClOrdID -> ord-42, and a cancel by that OrigClOrdID
+     * the engine answers ORDER_NOT_FOUND (the original left retention) names ord-42 as done, never OrderID NONE. A
+     * ClOrdID this session never mapped is still "no such order".
+     */
+    @Test
+    void aCancelOfARestatedOrderTheEngineNoLongerRetainsNamesItAsDone() throws Exception {
+        final StubSubmitter submitter = new StubSubmitter();
+        submitter.answer = new OrderSubmitter.ExecResult(false, 42, OutputEvent.KIND_ORDER_REJECTED,
+            (byte) finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal());
+        submitter.cancelAnswer = new OrderSubmitter.ExecResult(false, 42, OutputEvent.KIND_ORDER_NOT_FOUND);
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "r3", Side.BUY, 5, 50.0);
+        assertNotNull(c.await(m -> "r3".equals(cl(m))), "the resend was not answered");
+        sendCancel(c, "c3", "r3");
+        sendCancel(c, "c4", "never-sent");
+        final quickfix.fix44.OrderCancelReject r = c.awaitReject("c3");
+        assertNotNull(r, "no cancel reject");
+        assertEquals("ord-42", r.getString(OrderID.FIELD), "the mapped order, not NONE");
+        assertEquals(OrdStatus.DONE_FOR_DAY, r.getChar(OrdStatus.FIELD));
+        assertEquals(quickfix.field.CxlRejReason.TOO_LATE_TO_CANCEL, r.getInt(quickfix.field.CxlRejReason.FIELD));
+        final quickfix.fix44.OrderCancelReject u = c.awaitReject("c4");
+        assertNotNull(u, "no cancel reject for the unmapped ClOrdID");
+        assertEquals("NONE", u.getString(OrderID.FIELD), "an order this session never had stays unknown");
+    }
+
+    private static void sendCancel(final Client c, final String clOrdId, final String origClOrdId) throws Exception {
+        final quickfix.fix44.OrderCancelRequest cancel = new quickfix.fix44.OrderCancelRequest(
+            new quickfix.field.OrigClOrdID(origClOrdId), new ClOrdID(clOrdId), new Side(Side.BUY), new TransactTime());
+        cancel.set(new Symbol("IBM"));
+        cancel.set(new Account("11"));
+        Session.sendToTarget(cancel, c.sessionId);
+    }
+
     // ----- harness ---------------------------------------------------------------------------
 
     private static void assertFill(final ExecutionReport r, final String orderId, final char ordStatus,
@@ -418,6 +457,7 @@ class FixGatewayFillReportTest {
         final String compId;
         final CountDownLatch loggedOn = new CountDownLatch(1);
         final List<ExecutionReport> reports = new CopyOnWriteArrayList<>();
+        final List<quickfix.fix44.OrderCancelReject> rejects = new CopyOnWriteArrayList<>();
         volatile SessionID sessionId;
 
         Client(final String compId) {
@@ -428,6 +468,18 @@ class FixGatewayFillReportTest {
             for (int i = 0; i < 100; i++) {
                 for (final ExecutionReport r : reports) {
                     if (p.test(r)) {
+                        return r;
+                    }
+                }
+                Thread.sleep(50);
+            }
+            return null;
+        }
+
+        quickfix.fix44.OrderCancelReject awaitReject(final String clOrdId) throws Exception {
+            for (int i = 0; i < 100; i++) {
+                for (final quickfix.fix44.OrderCancelReject r : rejects) {
+                    if (clOrdId.equals(r.getString(ClOrdID.FIELD))) {
                         return r;
                     }
                 }
@@ -474,6 +526,8 @@ class FixGatewayFillReportTest {
         public void fromApp(final Message message, final SessionID sessionId) {
             if (message instanceof ExecutionReport report) {
                 reports.add(report);
+            } else if (message instanceof quickfix.fix44.OrderCancelReject reject) {
+                rejects.add(reject);
             }
         }
     }

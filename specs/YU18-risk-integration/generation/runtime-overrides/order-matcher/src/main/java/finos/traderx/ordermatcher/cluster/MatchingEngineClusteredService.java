@@ -2690,6 +2690,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         drainOutputs(activeSession);
     }
 
+    /** Whether the order bridge carries this output. publishNats=false marks an answer that changed
+     *  nothing (a duplicate replay, a refused request against a live order): bridged, the read model
+     *  would overwrite the order's real row with it — suspect 17, a FILLED original rewritten
+     *  REJECTED/DUPLICATE. Package-private for IdempotencyEvictionTest. */
+    static boolean bridgesOrder(final OutputEvent out) {
+        return out.publishNats && OutputEvent.isOrderLifecycleKind(out.kind);
+    }
+
     /** Drain engine outputs emitted by the just-applied event and echo them to the session. */
     private void drainOutputs(final ClientSession session) {
         final long cursor = outputRing.getCursor();
@@ -2727,8 +2735,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // the trade bridge. Covers both the input's own order and counterparty resting orders
             // hit by an aggressor (FLAG_RESTING_UPDATE) — so an STP/replace cancel of a resting
             // order is observable to its owner via this feed (brief 07).
-            if (OutputEvent.isOrderLifecycleKind(out.kind) && role == Cluster.Role.LEADER
-                && orderBridge != null) {
+            if (bridgesOrder(out) && role == Cluster.Role.LEADER && orderBridge != null) {
                 // The trace id goes ONLY on the applying order's own egress. A resting order hit
                 // by an aggressor is a DIFFERENT order, and the key we hold is the aggressor's:
                 // stamping it would put a real, resolvable trace id on a stranger's row, which
