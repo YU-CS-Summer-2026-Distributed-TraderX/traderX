@@ -1,6 +1,6 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76, for the 2026-11-05 demo on epoch e1101: every private image from one tip 60544a6e (FR-CUI-27 Desk Kdb tab, FR-CUI-26 priced-only toggle, FR-CUI-25 Level 1/2 order book on Markets, FR-CUI-24 booked OTC contracts on the Desk, FR-DA12 Kdb tab on the traderx-kdb VM, Market price and ticket-field fixes, FR-DA11 member banner, FR-PRG-33 HPA target, FR-ERH-F16 restore-gate shadow replay, FR-PRG-31/32 business day + idle load, FR-CUI-22/23 desk, FR-DA08/09/10 console, FR-PRG-30 initializer fix, and 790c245d's catalog-feed gateway fix). No workload exception.",
-  "imageSourceCommit": "60544a6eabacf9639bbff305b417612dec0102ee",
+  "note": "ADR-096 \u00a76, for the 2026-11-07 combined production session (fresh epoch): every private image from one tip 889e47be, the merge of missing-proofs (suspect 17, order bridge honours publishNats), prod-hardening (FR-XOC-06 FIX failover resubmit, FR-PRG-29 --dry-run), rig-barrier-per-member (FR-PRG-02) and trade-history-tiers (FR-THT-01 option A, rows mode retired) onto 60544a6e's line. No workload exception.",
+  "imageSourceCommit": "889e47be0fd491fd81e611a069f4849e695f861a",
   "workloads": {}
 }
