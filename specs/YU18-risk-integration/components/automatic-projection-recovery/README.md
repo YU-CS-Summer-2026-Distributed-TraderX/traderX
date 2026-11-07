@@ -1,6 +1,6 @@
 # Automatic projection recovery
 
-Owner: Claude (auto-recovery lane). Status: implemented; local review pending, 2026-09-25.
+Owner: Claude (auto-recovery lane). Status: retired 2026-11-06 (implemented 2026-09-25).
 
 Managed-run SQL projections catch up automatically from the authoritative Aeron archive on
 consumer startup, NATS reconnect and a periodic cadence, while trading continues. Builds on

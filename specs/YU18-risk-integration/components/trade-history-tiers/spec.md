@@ -7,9 +7,12 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
 
 ## Requirements
 
-- FR-THT-01: MariaDB SHALL hold current state only (positions, open orders, accounts, reference data, EOD prices).
-  trade-processor SHALL apply every trade side to `positions` exactly once and SHALL NOT insert it into SQL `trades`
-  once FR-THT-05 holds.
+- FR-THT-01: MariaDB SHALL hold current state only (positions, open orders, accounts, reference data, EOD prices,
+  and each account's blotter window with the settlement counts, ADR-097's snapshot store). trade-processor SHALL run
+  the snapshot read model only: every trade side applied to `positions` exactly once, no SQL `trades` row per side
+  (rows mode retired: implemented 2026-11-06; the trade feed refuses any other mode). Nothing SHALL read SQL `trades` as history (decided 2026-11-06,
+  option A: the window is current state; moving it to ClickHouse would put history-feed lag and availability on the
+  blotter for no growth bound the window does not already have).
 - FR-THT-02: ClickHouse (`history-feed`) SHALL be the trade history's system of record on GKE: every trade side and
   order event exactly once (FR-HST-03), on the per-partition streams (FR-DRS-34), rendered into the production
   manifests and started by `rig.sh up`. Its health SHALL be part of the rig's readiness.
@@ -74,7 +77,6 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   It needs `use`kx.objstor` and its `init[]` first, `GCLOUD_PROJECT_ID`, and gcloud credentials. Without `init` the
   `gs://` dates are absent with no error, so an HDB guard must count dates, never trust a clean load.
 - `HISTORY_HOT_DAYS` and the GCS bucket's region and class (us-east1 Standard, same as the TAQ buckets).
-- Whether SQL `trades` in snapshot mode is history at all: ADR-097's snapshot store already keeps only each account's
-  blotter window and the settlement counts there. Its readers (blotter, settlement, managed-run transition) read
-  current state; the full-history readers are the proofs, the rows-mode G3 and the recon. yaakov to decide whether
-  FR-THT-01 means "rows mode off" (the window stays in SQL as current state) or the window moves too.
+- RI06 projection recovery (explicit and automatic catch-up from a peer, managed-run transitions, the console's
+  operator catch-up) books recovered trades as SQL rows (`TradeService.processRecoveredTrades`); snapshot mode has no
+  equivalent but its own stream replay from the cursor. Retiring rows mode retires or ports it: yaakov to decide.

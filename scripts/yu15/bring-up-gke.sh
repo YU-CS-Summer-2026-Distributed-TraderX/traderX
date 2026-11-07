@@ -65,7 +65,7 @@ say "leader is member ${leader}"
 sql() { "${K[@]}" exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -N -e "$1" 2>/dev/null; }
 ENG="$("${K[@]}" exec "order-matcher-cluster-${leader}" -- sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null \
   | awk '/^traderx_cluster_trades/ {print $2}')"
-SQLMAX="$(sql "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id,'-',1) AS UNSIGNED)),0) FROM trades;")"
+SQLMAX="$(sql "SELECT COALESCE(MAX(max_seq),0) FROM projection_accounting;")"
 [[ "${ENG}" =~ ^[0-9]+$ && "${SQLMAX}" =~ ^[0-9]+$ ]] \
   || die "could not read engine counter ('${ENG}') or SQL max trade id ('${SQLMAX}') — refusing to run blind"
 say "engine trade counter=${ENG}  highest trade id in SQL=${SQLMAX}"

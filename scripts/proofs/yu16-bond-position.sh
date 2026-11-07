@@ -40,7 +40,7 @@ step() { echo; echo "=== $* ==="; }
 # followed by the answer, and a count compared against "2" reads as a mismatch forever. Measured
 # 2026-08-21: step 2's row count came back as the warning plus "0" and the proof failed claiming
 # rows had landed when none had. seed-proof-fixtures.sh already passes the flag; this did not.
-sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -c mariadb -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -u"${MARIADB_USER:-traderx}" -p"${MARIADB_PASSWORD:-traderx}" traderx -sN -e "$1"' sh "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"

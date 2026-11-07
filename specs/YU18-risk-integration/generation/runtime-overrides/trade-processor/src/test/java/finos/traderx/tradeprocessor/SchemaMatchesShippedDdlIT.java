@@ -63,7 +63,7 @@ class SchemaMatchesShippedDdlIT {
 
   @Container
   static final GenericContainer<?> NATS =
-      new GenericContainer<>(DockerImageName.parse("nats:2.10-alpine")).withExposedPorts(4222);
+      new GenericContainer<>(DockerImageName.parse("nats:2.10-alpine")).withCommand("-js").withExposedPorts(4222);   // the trade feed is JetStream-only (FR-THT-01)
 
   private static String productionDdlAuto;
 
@@ -194,7 +194,7 @@ class SchemaMatchesShippedDdlIT {
   }
 
   /** Reads one block-scalar key out of the configmap, so the test can never drift from it. */
-  private static String sqlFromConfigMap(final String key) throws IOException {
+  static String sqlFromConfigMap(final String key) throws IOException {   // also TradeProcessorContextIT
     final List<String> lines = Files.readAllLines(CONFIGMAP);
     final StringBuilder sql = new StringBuilder();
     boolean inBlock = false;

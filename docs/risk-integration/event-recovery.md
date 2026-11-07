@@ -1,5 +1,7 @@
 # Local missed-event recovery
 
+**Retired 2026-11-06** with rows mode (trade-history-tiers FR-THT-01, yaakov's decision): recovery booked SQL trade rows, which the snapshot read model no longer writes; its stream replay from the committed cursor is the recovery, and a fresh epoch (ADR-101) covers an outage past retention. Code, tests and proofs removed.
+
 RI06 O1, 2026-09-24. Operator-triggered managed-run catch-up from retained Aeron history. No retained installation has been activated. See the [component specification](../../specs/YU18-risk-integration/components/event-recovery/spec.md).
 
 Automatic catch-up (2026-09-25) is a separate opt-in worker built on the same archive authority; see [automatic projection catch-up](automatic-projection-recovery.md). This operator endpoint is unchanged.

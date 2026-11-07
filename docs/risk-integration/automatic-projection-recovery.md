@@ -1,5 +1,7 @@
 # Automatic projection catch-up
 
+**Retired 2026-11-06** with rows mode (trade-history-tiers FR-THT-01, yaakov's decision): recovery booked SQL trade rows, which the snapshot read model no longer writes; its stream replay from the committed cursor is the recovery, and a fresh epoch (ADR-101) covers an outage past retention. Code, tests and proofs removed.
+
 RI06, 2026-09-25. Managed-run SQL projections catch up from the authoritative Aeron archive
 without an operator call: on consumer startup, on a NATS subscriber reconnect, and on a periodic
 cadence that does not depend on NATS. See the

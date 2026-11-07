@@ -1,5 +1,7 @@
 # Combined managed recovery and console acceptance
 
+**Retired 2026-11-06** (trade-history-tiers FR-THT-01): run transitions (prepare/freeze/verify/select/activate) verified full SQL trade and order populations, which the snapshot read model no longer holds; ADR-101's fresh-epoch archive replaced them. `transition.py`, its tests, `test-live-migration.sh` and the transition proofs were removed; read-only run browsing (RunRegistry, `/v2/projections`) and `provision.py` stay.
+
 2026-09-25. Local synthetic acceptance in `codex/managed-acceptance-20260925`, based on
 `29ad72cb1157ed5796da35c8e835a81733768045`. The unchanged integrated runtime **failed** catch-up;
 the narrow timestamp comparison correction described below is required for the passing result.

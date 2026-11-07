@@ -24,10 +24,14 @@ recon on ClickHouse, the restore gate's history-store check G3h (FR-THT-06), and
 `gs://` HDB segments (ADR-102 findings). Not landed: FR-THT-02 (ClickHouse on GKE), moving the blotter and the proofs,
 the write-path cut, the KDB-X feed lane, the scale and rebuild proofs.
 
-Blocking decision (yaakov): in snapshot mode (production, ADR-097) SQL `trades` already holds only each account's
-blotter window, which is current state. Is FR-THT-01 "rows mode retired" or "the window moves to ClickHouse too"?
+Decided (yaakov, 2026-11-06): FR-THT-01 is option A, rows mode retired. SQL `trades` keeps each account's blotter
+window (current state, ADR-097); nothing reads it as history. The cut gate (`sql-trades-readers.sh`) now passes once
+only the `KEEP:` window readers remain. Rows mode retired the same day (with RI06 recovery and run transitions);
+Kind traderx-tht the same day: recon ported to the ledger (yu05-recon PASS with both controls), 4 window proofs PASS,
+unset mode = snapshot and `rows` refuses at the effect end. 38 readers: KEEP 19, WINDOW 18 (need services the kind
+cluster tier lacks), ROWS 1 (unreachable writer).
 
-## The 89.7M sides of 2026-10-30 (proposal, not decided)
+## The 89.7M sides of 2026-10-30 (decided: keep recorded)
 
 Today they are recorded, not rebuilt: `rig-unprojected` = `3392665-662922190 663474186-753187098` (yaakov's yes,
 2026-10-31), and the epoch was archived (ADR-101). The sides were never on the stream (bridge publishes dropped while
@@ -42,5 +46,8 @@ snapshots `traderx-e1101-m{0,1,2}` (250 GB each). Options:
    with G3h's closed form over exactly that range. Needs code (a journal-to-rows exporter, its test on kind with a
    deliberately dropped range), one c4d-standard-16 (~$0.85/h) for ~3 h and a 250 GB Hyperdisk from the snapshot for
    a day (~$1): about $5 to $10 with retries. The
-   SQL read model is not touched (snapshot mode would only window it).
+   SQL read model is not touched (snapshot mode would only window it). Not pursued: see below.
 3. **Rebuild the read model's rows too**: SQL rows for 89.7M sides is what RI32 removes; not proposed.
+
+Decided (yaakov, 2026-11-06): option 1. The trade history is synthetic and none of it is needed; the gap stays
+recorded in `rig-unprojected` and no rebuild is run.

@@ -376,10 +376,6 @@ public class ReconciliationService {
         Optional<Trade> local = tradeRepository.findById(entry.id());
         if (local.isEmpty()) {
             if (clock.millis() - entry.execTimeMillis() < projectionGraceMs) return false;
-            // Durable feed: after an outage the replay may still be delivering it. MISSING only once the
-            // feed has caught up at least a grace after the fill.
-            if (ledgerFeed != null && ledgerFeed.jetstreamRows()
-                && ledgerFeed.caughtUpAt() < entry.execTimeMillis() + projectionGraceMs) return false;
             missingInProjection.increment();
             log.warn("recon MISSING_IN_PROJECTION id={} account={} security={}",
                 entry.id(), entry.accountId(), entry.security());

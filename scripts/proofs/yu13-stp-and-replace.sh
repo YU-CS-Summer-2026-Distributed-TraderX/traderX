@@ -588,7 +588,7 @@ ${K} get deploy trade-processor >/dev/null 2>&1 || fail "trade-processor is not 
 # the cluster reporting success. That is the third instance of the silent-read-model-drop class in
 # this project, after the VARCHAR(15) OCC bug and the trades.accountid foreign key. Refuse to run
 # rather than assert against a read model that cannot see this epoch.
-SQL_MAX_TRADE="$(sql "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id,'-',1) AS UNSIGNED)),0) FROM trades;")"
+SQL_MAX_TRADE="$(sql "SELECT COALESCE(MAX(max_seq),0) FROM projection_accounting;")"
 ENGINE_TRADES="$(${K} exec order-matcher-cluster-0 -- \
   sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')"
 [[ "${ENGINE_TRADES:-0}" -ge "${SQL_MAX_TRADE:-0}" ]] || fail \

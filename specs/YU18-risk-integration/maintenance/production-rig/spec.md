@@ -210,10 +210,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - G4: only a `NotFound` for ConfigMap `rig-shutdown-baseline` SHALL mean a first bring-up. Any other failed read
     SHALL refuse. A baseline that exists SHALL carry a well-formed members line (applied, engineApplied, trades, two
     hashes, snapshots), or G4 refuses.
-- **FR-PRG-22:** The restore gate's choice between the row G3 and the snapshot G3 SHALL fail closed.
-  - trade-processor's `TRADE_PROJECTION_MODE` SHALL be read from its Deployment. Unset or `rows` is the row G3,
-    `snapshot` the snapshot G3. A Deployment that cannot be read, or any other value, SHALL refuse G3, never fall back
-    to either.
+- **FR-PRG-22:** The restore gate's read of the projection mode SHALL fail closed.
+  - trade-processor's `TRADE_PROJECTION_MODE` SHALL be read from its Deployment. Unset or `snapshot` is the snapshot
+    G3; `rows` was retired (trade-history-tiers FR-THT-01, 2026-11-06, with the row G3 and `rig.sh snapshot-base`). A
+    Deployment that cannot be read, or any other value, SHALL refuse G3. An absent `rig-snapshot-base` is base 0.
   - The accounting fetch SHALL fail on an HTTP error or an empty body (`curl -f`). A failed fetch SHALL fail
     `read_model`, never hash as `accounting=md5("")`, and refuse G3.
   - The snapshot G3 SHALL refuse while ConfigMap `rig-snapshot-base` is missing or not a number.

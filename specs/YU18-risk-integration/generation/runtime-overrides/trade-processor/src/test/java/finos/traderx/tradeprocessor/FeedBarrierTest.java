@@ -2,6 +2,7 @@ package finos.traderx.tradeprocessor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -102,24 +103,21 @@ class FeedBarrierTest {
     assertEquals(2, view.cut().accounting().sides());
   }
 
+  @Test void theRetiredRowsModeAndCoreFeedRefuseToStart() {   // FR-THT-01
+    for (String[] m : new String[][] {{"jetstream", "rows"}, {"core", "snapshot"}, {"core", "rows"}}) {
+      TradeFeedHandler h = new TradeFeedHandler();
+      h.feedMode = m[0];
+      h.projectionMode = m[1];
+      IllegalStateException x = assertThrows(IllegalStateException.class, h::afterPropertiesSet);
+      assertTrue(x.getMessage().contains("retired (FR-THT-01)"), x.getMessage());
+    }
+  }
+
   @Test void aRefusalInsideAStoreExceptionIsStillARefusal() {
     var constraint = new org.springframework.dao.DataIntegrityViolationException("Data too long for column 'security'");
     assertEquals(false, JetStreamFeed.retryable(new org.springframework.transaction.TransactionSystemException("commit", constraint)));
     assertEquals(true, JetStreamFeed.retryable(new org.springframework.transaction.CannotCreateTransactionException("no connection", DOWN)));
     assertEquals(false, JetStreamFeed.retryable(new IllegalStateException("Data too long for column 'security'")));
-  }
-
-  @Test void rowModeTradeStoreFailureIsRedeliveredNotRefused() throws Exception {
-    TradeService service = mock(TradeService.class);
-    when(service.processTrades(anyList())).thenThrow(DOWN);
-    when(service.processTrade(any())).thenThrow(DOWN);
-    TradeFeedHandler h = new TradeFeedHandler();
-    h.feedMode = "jetstream";
-    field(h, "tradeService", service);
-
-    assertThrows(RuntimeException.class, () -> h.onJetStreamBatch(0, List.of(trade(1), trade(2))),
-        "the failure reaches the feed, which redelivers the batch");
-    assertEquals(0, h.gaps().missing(), "a side the database could not take is not counted as refused and acked");
   }
 
   @Test void rowModeOrderStoreFailureIsRedeliveredNotRejected() throws Exception {

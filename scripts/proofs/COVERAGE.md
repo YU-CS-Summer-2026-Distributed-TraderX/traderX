@@ -1,5 +1,15 @@
 # Proof coverage against the specs
 
+## Snapshot-only read model on kind (2026-11-06, trade-history-tiers, kind traderx-tht)
+
+Rows mode retired (FR-THT-01). Rig: kind-yu18-rig.py's render (snapshot, P=4 partition streams), images from
+`trade-history-tiers`. PASS: `yu05-recon` (ported: stream-planted FIELD_MISMATCH and window-row orphan, each named
+and restored; mutants with the plant removed refuse), `yu18-projection-effect-end`, `yu05-settlement`,
+`yu05-auth-entitlements`, `yu13-clordid-suppression` (negative: TRADE_PROJECTION_SNAPSHOT_MS=1h, it fails at the
+window read). `yu16-bond-position`: trades reach the window; positions need reference-data (bonds book Rejected
+without it). `yu18-market-order`: fails on the SQL orderbook (ORDER_FEED_PERSIST=false), not on trades. Suspect 4
+(the recon's scoped control refusing legacy scope) is gone with the old helper.
+
 Audited 2026-10-27 against the spec packs on `traderX-risk-integration`, round 1 at `b28fd9f3`, round 2 at `40d93f6b` and round 3 at `41a77949` / `071cde6d` (state
 `YU18-risk-integration` and every YU state it carries). Written **black-box, from the specs only**:
 spec prose, ADRs, contracts, data models, messaging maps, `quickstart.md`, `docs/` and the existing
@@ -881,13 +891,13 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | 16 | money/positions | YU18 | `FR-DRS-20` | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | 17 | money/positions | YU18 | `FR-DRS-21` | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | 18 | money/positions | YU18 | `FR-DRS-23` | snapshot-mode only; the production render is rows (FR-DRS-25) |
-| 19 | money/positions | YU18 | `FR-ER01` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 20 | money/positions | YU18 | `FR-ER02` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 21 | money/positions | YU18 | `FR-ER03` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 22 | money/positions | YU18 | `FR-ER04` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 23 | money/positions | YU18 | `FR-ER05` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 24 | money/positions | YU18 | `FR-ER06` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| 25 | money/positions | YU18 | `FR-ER07` | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
+| 19 | money/positions | YU18 | `FR-ER01` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 20 | money/positions | YU18 | `FR-ER02` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 21 | money/positions | YU18 | `FR-ER03` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 22 | money/positions | YU18 | `FR-ER04` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 23 | money/positions | YU18 | `FR-ER05` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 24 | money/positions | YU18 | `FR-ER06` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| 25 | money/positions | YU18 | `FR-ER07` | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
 | 26 | risk decisions | YU03 | `FR-IMRG07` | gateway/BLP disagreement counted: no live arm (needs a stale replica) |
 | 27 | risk decisions | YU03 | `FR-IMRG09` | stale-price classification: no live arm |
 | 28 | risk decisions | YU03 | `FR-IMRG19` | gateway/BLP disagreement counted: no live arm (needs a stale replica) |
@@ -1415,14 +1425,14 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-EB29` | LIVE |  |  | console EOD status distinctions: no live proof |
 | YU18 | `FR-EB30` | CI |  |  | offline eod-risk-bundles coordinator/intake: test-state-YU18-eod-risk-bundles.sh |
 | YU18 | `FR-EB31` | CI |  |  | offline eod-risk-bundles coordinator/intake: test-state-YU18-eod-risk-bundles.sh |
-| YU18 | `FR-ER01` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER02` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER03` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER04` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER05` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER06` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER07` | LIVE |  |  | TIER GAP: needs a managed-run rig (see "Operator recovery: the rig it needs"); yu18-operator-recovery skips with the reason |
-| YU18 | `FR-ER08` | LIVE | yu18-operator-recovery |  | readers only; the catch-up route is closed on this tier (trade-processor has no RISK_CONTROL_TOKEN) |
+| YU18 | `FR-ER01` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER02` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER03` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER04` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER05` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER06` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER07` | LIVE |  |  | RETIRED 2026-11-06 with rows mode (trade-history-tiers FR-THT-01) |
+| YU18 | `FR-ER08` | LIVE | yu18-projection-readers |  | readers; not yet run under the new name (was yu18-operator-recovery, PASS) |
 | YU18 | `FR-ERH-C1` | LIVE | yu18-console-sessions |  |  |
 | YU18 | `FR-ERH-C2` | LIVE | yu18-legacy-trade-bearer |  |  |
 | YU18 | `FR-ERH-F1` | LIVE |  |  | deterministic-core edge cases: unit only (SC-ERH-01) |
@@ -1630,8 +1640,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-FTL-09` | CI |  |  | fix-web.test.mjs: only well-formed orders become fix-order.sh arguments (injection, bad side, zero qty, bad ticker, 1e9 refused). markFor: blank price = the mark, no mark refused. Production 2026-11-05: blank price rests at the mark. Kind 2026-11-01: Limit rests, Market fills at 391.4, cross-origin POST 403 |
 | YU18 | `FR-ERH-F14` | CI |  |  | GatewayCatalogFeedTest on three members: a catalog delta registers and enables a new symbol; after an operator disable, a replay by the same gateway and by a restarted one leaves it disabled on every engine. Fails against the previous gateway ("re-enabled the operator-disabled UST-BILL-20260910") |
 | YU18 | `FR-ERH-F15` | CI |  |  | MemberSecurityReadoutTest: admin-only, 404 on a child path, 503 on a cold member, each registered ticker with its applied control (an enabled-then-disabled bill reads false) |
-| YU18 | `FR-PRG-28` | CI |  |  | test_prepare NatsMemory: the rows render's NATS has request = limit = 24Gi (under the 26 GiB nats-pool budget), GOMEMLIMIT 20GiB (<= 85%), and max_memory_store + max_buffered_size within half of it; validate() refuses 2026-10-30's 2Gi pod, a limit over the node, request != limit, no or an oversized GOMEMLIMIT, an unset max_memory_store and an oversized ingest queue. test_rig Nats: `up` records the pod and refuses one that already restarted before any member starts; `down` reports an OOMKilled restart, a replaced, extra or missing pod and an unreadable listing as FAILED (exit 3) and still reaches zero; control: an intact pod passes. Both fail against the pre-fix files. test_rig LoadgenIdle: `loadgen.sh start` refuses an OOMKilled NATS before any load starts; `results` exits 3 with FAILED on an OOMKilled or replaced pod; control: the recorded pod passes. kind 2026-11-06, `yu18-nats-memory-kind.sh` (NATS 2.14, 8 core publishers into a file stream): control (the 10-30 config, 2Gi, no GOMEMLIMIT, store unset) OOMKilled within 30 s, and rig.sh's own `nats_problems` reported "restarted 1x; last OOMKilled (exit 137)" (PASS). Fixed (6Gi, GOMEMLIMIT 5GiB, 256MB): two ~12 min runs at up to 400K msgs/s x 600 B with 0 restarts and 0 cgroup oom_kill. The heap held at ~94% of GOMEMLIMIT, not at the 1 GB queue. The second run's verdict was FAIL: its last pod listing timed out on a loaded host, and the script fails closed |
-| YU18 | `FR-DRS-33` recon | local (docker) |  |  | test_order_fill_recon on mariadb:11.4: a ticket booking (`1-0`, no order) passes; a real order with no row (`1-10`) and a stale filled quantity are still found. Control: the unamended query 3 fails the ticket case. Production run 2026-10-30: q1 disagree 0 / 3,392,648 agree |
+| YU18 | `FR-PRG-28` | CI |  |  | test_prepare NatsMemory: the rows render's NATS has request = limit = 24Gi (under the 26 GiB nats-pool budget), GOMEMLIMIT 20GiB (<= 85%), and max_memory_store + max_buffered_size within half of it; validate() refuses 2026-10-30's 2Gi pod, a limit over the node, request != limit, no or an oversized GOMEMLIMIT, an unset max_memory_store and an oversized ingest queue. test_rig Nats: `up` records the pod and refuses one that already restarted before any member starts; `down` reports an OOMKilled restart, a replaced, extra or missing pod and an unreadable listing as FAILED (exit 3) and still reaches zero; control: an intact pod passes. Both fail against the pre-fix files |
+| YU18 | `FR-DRS-33` recon | local (docker) |  |  | test_order_fill_recon_clickhouse on ClickHouse 25.8 (the mariadb test_order_fill_recon was removed with rows mode, 2026-11-06); was: test_order_fill_recon on mariadb:11.4: a ticket booking (`1-0`, no order) passes; a real order with no row (`1-10`) and a stale filled quantity are still found. Control: the unamended query 3 fails the ticket case. Production run 2026-10-30: q1 disagree 0 / 3,392,648 agree |
 | YU18 | `FR-DRS-36` migration | local (docker) |  |  | test_migrate_fr_drs_36 on mariadb:11.4: from an empty volume, the pre-FR-DRS-36 table with a cursor (kept, binding NULL), and a migrated one, applied twice, the column exists; the pre-FR-DRS-36 cursor write still works (rollback); its statements are ri06.sql's. Control: the unmigrated table refuses `SELECT stream_created_ns` |
 | YU18 | `FR-PRG-21` | CI |  |  | test_rig Up: snapshot G3 over the accounting (lost, duplicated, cross-partition doubled, beyond-members sides, open orders that differ: each REFUSED; rows-era base and unprojected window exact); control: counts-only check passes the cross-partition double and fails the test; production pending |
 | YU18 | `FR-PRG-20` | CI |  |  | test_prepare SnapshotReadModel (profile rendered; partitions, view snapshot, layout, feed mode, NATS store, DB claim without snapshot source: each refused); measured on throwaway VMs (ADR-097 Evidence, 125K orders/s at P=8); production pending |

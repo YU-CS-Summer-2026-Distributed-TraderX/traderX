@@ -933,7 +933,7 @@ if [[ "${NEED_FRESH}" == "0" ]]; then
     sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')"
   SQL_MAX_TRADE="$(_k exec deploy/eod-price-db -c mariadb -- \
     mariadb -utraderx -ptraderx traderx -sN -e \
-    "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id,'-',1) AS UNSIGNED)),0) FROM trades;" 2>/dev/null)"
+    "SELECT COALESCE(MAX(max_seq),0) FROM projection_accounting;" 2>/dev/null)"
   if [[ ! "${ENGINE_TRADES}" =~ ^[0-9]+$ || ! "${SQL_MAX_TRADE}" =~ ^[0-9]+$ ]]; then
     echo "[fail] could not read engine tradeCounter ('${ENGINE_TRADES}') or SQL max trade id ('${SQL_MAX_TRADE}') -- refusing to run blind"
     exit 1

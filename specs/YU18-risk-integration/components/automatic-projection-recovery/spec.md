@@ -1,5 +1,7 @@
 # Automatic projection recovery specification
 
+**Retired 2026-11-06** with rows mode (trade-history-tiers FR-THT-01, yaakov's decision): recovery booked SQL trade rows, which the snapshot read model no longer writes; its stream replay from the committed cursor is the recovery, and a fresh epoch (ADR-101) covers an outage past retention. Code, tests and proofs removed. Every FR-APR and NFR-APR is retired; the member's read-only `GET /recon/catchup-events` is left in place unused.
+
 Scope: managed epoch-v1 runs whose SQL scope is the selected ACTIVE or DRAINING scope. Unknown
 legacy history, sealed/unselected scopes, unproven initial balances, conflicting immutable rows
 and missing/trimmed archives remain refusals that need operator review.

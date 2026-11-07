@@ -137,6 +137,9 @@ def acct(p0=(3, 5, 9, 35, 0), p1=(2, 4, 6, 20, 0), resting=(1, 1), orders=True):
     return json.dumps({'scope': 'legacy-unknown', 'partitions': 2, 'trades': t, **({'orders': o} if orders else {})})
 
 
+GOOD['ACCT'] = acct()   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
+
+
 def run(body, **env):
     with tempfile.TemporaryDirectory() as d:
         e = {**os.environ, **GOOD, **env, 'RIG': str(RIG), 'EVIDENCE': d + '/ev', 'LOG': d + '/calls'}
@@ -219,15 +222,7 @@ class Up(unittest.TestCase):
         self.refused('G2', SHADOW=GOOD['SHADOW'].replace('"complete":true', '"complete":false'))
 
     def test_restored_open_orders_that_the_read_model_lacks_are_refused(self):
-        self.refused('G3', OPEN_ROWS='1')
-
-    def test_the_read_model_must_hold_exactly_the_members_trade_sides(self):
-        # Production 2026-10-29: trades 18 on the members = rows 1-B/S..18-B/S in SQL, beside 13 seed rows.
-        for rows in ('4\t4\t4\t0', '5\t4\t5\t0', '5\t5\t6\t0', '6\t6\t6\t0'):   # missing, duplicate number, gap, extra
-            out = self.refused('G3', TRADE_ROWS=rows)
-            self.assertIn('the members booked 5 trade sides', out)
-        rc, out, _ = run('rig_up')
-        self.assertIn('G3 ok: the read model holds trade sides 1..5, each once', out)
+        self.refused('G3', ACCT=acct(resting=(1, 0)))
 
     def test_without_bridges_the_smoke_ends_at_the_fix_answers(self):
         rc, out, calls = run('rig_up', MEMBER_ENV='JAVA_TOOL_OPTIONS CLUSTER_EGRESS_COALESCE')
@@ -290,14 +285,6 @@ class Up(unittest.TestCase):
         stamp = subprocess.run(['node', '-e', line + '\nconsole.log(t())'], capture_output=True, text=True, check=True).stdout.strip()
         self.assertRegex(stamp, r'^\d{8}-\d\d:\d\d:\d\d\.\d{3}$')
 
-    def test_a_recorded_unprojected_window_is_excluded_exactly(self):
-        # C1 (full-throughput run with the bridges off): trade sides 3-4 never reach SQL; the gate excludes exactly them.
-        rc, out, _ = run('rig_up', UNPROJECTED='3-4', TRADE_ROWS='3\t3\t5\t0')
-        self.assertEqual(rc, 0, out)
-        self.assertIn('G3 ok: the read model holds trade sides 1..5 except 3-4, each once', out)
-        for rows in ('5\t5\t5\t2', '3\t3\t5\t1', '2\t2\t5\t0'):   # window not excluded, a row inside it, one missing
-            self.assertIn('unprojected: 3-4', self.refused('G3', UNPROJECTED='3-4', TRADE_ROWS=rows))
-
     def test_recording_a_window_appends_and_checks_its_form(self):
         rc, out, calls = run('rig_unprojected 10-20', UNPROJECTED='3-4')
         self.assertEqual(rc, 0, out)
@@ -358,14 +345,17 @@ class Up(unittest.TestCase):
         for mode in ('snapshots', 'ROWS', 'off'):
             self.assertIn('projection mode is unreadable or unknown', self.refused('G3', TP_MODE=mode))
 
-    def test_rows_or_unset_is_the_row_g3(self):
-        for mode in ('', 'rows'):
-            rc, out, _ = run('rig_up', TP_MODE=mode)
-            self.assertEqual(rc, 0, out)
-            self.assertIn('G3 ok: the read model holds trade sides 1..5, each once', out)
+    def test_unset_is_the_snapshot_g3_and_rows_is_refused(self):
+        rc, out, calls = run('rig_up', TP_MODE='')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(first(calls, r'from trades where right'), 'a row check ran')
+        self.assertIn('projection mode is unreadable or unknown', self.refused('G3', TP_MODE='rows'))   # retired, FR-THT-01
 
-    def test_a_snapshot_g3_without_a_recorded_base_is_refused(self):
-        self.assertIn('no rig-snapshot-base recorded', self.refused('G3', TP_MODE='snapshot', ACCT=acct()))
+    def test_a_snapshot_g3_without_a_recorded_base_takes_0(self):
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', ACCT=acct())   # a read model born in snapshot mode
+        self.assertEqual(rc, 0, out)
+        three_to_five = acct(p0=(2, 5, 8, 34, 0), p1=(1, 4, 4, 16, 0))   # base 2 would be needed: refused, not guessed
+        self.assertIn('booked 3 sides', self.refused('G3', TP_MODE='snapshot', ACCT=three_to_five))
 
     def test_an_accounting_that_cannot_be_read_is_refused_at_g3(self):
         self.assertIn('the accounting could not be read', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT_FAIL='1'))
@@ -378,7 +368,7 @@ class Up(unittest.TestCase):
         rc, out, _ = run('rig_up', HIST=self.HIST)
         self.assertEqual(rc, 0, out)
         self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
-        rc, out, _ = run('rig_up', HIST='0\\t3\\t5\\t9\\t35\\t0', UNPROJECTED='2-2 4-4', TRADE_ROWS='3\t3\t5\t0')
+        rc, out, _ = run('rig_up', HIST='0\\t3\\t5\\t9\\t35\\t0', UNPROJECTED='2-2 4-4', ACCT=acct(p1=(0, 0, 0, 0, 0)))
         self.assertEqual(rc, 0, out)                     # 2 and 4 recorded unprojected: never reached the stream
 
     def test_a_rig_without_the_history_store_skips_it_until_production_renders_one(self):
@@ -548,7 +538,9 @@ class FreshEpoch(unittest.TestCase):
     """FR-PRG-29 / ADR-101: a fresh epoch wipes the member disks only after READY snapshots of exactly those disks, and
     the gate accepts an empty epoch and a missing baseline only while `rig-epoch` says provisioned. Each refusal test
     fails against the pre-FR-PRG-29 rig.sh, whose G4 took a missing baseline as a first bring-up."""
-    EMPTY = {'EPOCH': 'provisioned e2', 'BASELINE_ABSENT': '1', 'M': '0 -1 0 0 0 0', 'TRADE_ROWS': '0\t0\t0\t0', 'OPEN_ROWS': '0'}
+    EMPTY = {'EPOCH': 'provisioned e2', 'BASELINE_ABSENT': '1', 'M': '0 -1 0 0 0 0',
+             'ACCT': acct(p0=(0, 0, 0, 0, 0), p1=(0, 0, 0, 0, 0), resting=(0, 0)),
+             'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":0,"positions":0,"digestTrades":0}'}
 
     def refused(self, gate, body='rig_up', **env):
         rc, out, calls = run(body, **env)
@@ -603,7 +595,7 @@ class FreshEpoch(unittest.TestCase):
         self.refused('the wipe is incomplete', **{**self.EMPTY, 'CLAIMS': 'persistentvolumeclaim/data-order-matcher-cluster-1'})
 
     def test_a_provisioned_epoch_with_open_rows_is_refused(self):
-        self.refused("the read model holds '2' open orders", **{**self.EMPTY, 'OPEN_ROWS': '2'})
+        self.refused('G3', **{**self.EMPTY, 'ACCT': acct(p0=(0, 0, 0, 0, 0), p1=(0, 0, 0, 0, 0), resting=(1, 1))})
 
     def test_a_wiped_epoch_archives_the_read_model_with_trade_processor_stopped(self):
         rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2'})
@@ -848,40 +840,12 @@ class ReadModel(unittest.TestCase):
 
     def test_each_table_is_one_in_db_aggregate(self):
         # FR-PRG-27: count and two md5 sums per table, computed by MariaDB; never a dump (no ORDER BY, no row stream)
-        out = self.rm('printf \'7\\t1\\t2\\n\'')
+        snapshot = 'case "$*" in *TRADE_PROJECTION_MODE*) echo snapshot;; *accounting*) echo \'{"trades":{}}\';; esac'
+        out = self.rm('printf \'7\\t1\\t2\\n\'', snapshot)
         self.assertIn('rc=0', out)
         for t in ('trades', 'positions', 'orderbook'):
             self.assertIn(f'{t}=7:1:2', out)
         self.assertIn('rc=1', self.rm('echo row'))   # an answer that is not count:sum:sum is a failure, not a hash
-
-class SnapshotBase(unittest.TestCase):
-    """FR-PRG-22: `rig.sh snapshot-base` records the row read model's side count once, only where the row check holds."""
-    GOOD = 'members_gated(){ true; }; '
-
-    def test_it_records_the_members_trades_once(self):
-        rc, out, calls = run(self.GOOD + 'rig_snapshot_base')
-        self.assertEqual(rc, 0, out)
-        self.assertIsNotNone(first(calls, r'create configmap rig-snapshot-base --from-literal=base=5 '), out)
-        self.assertIsNone(first(calls, r'rig-snapshot-base.*(apply|--dry-run)'), 'written with apply, so not write-once')
-
-    def test_a_second_run_is_refused(self):
-        rc, out, calls = run(self.GOOD + 'rig_snapshot_base', SNAP_BASE='3')
-        self.assertEqual(rc, 2, out)
-        self.assertIn('written once', out)
-        self.assertIsNone(first(calls, r'create configmap rig-snapshot-base'))
-
-    def test_it_is_refused_unless_the_row_read_model_holds_the_sides_with_nothing_trading(self):
-        for body, env, why in ((self.GOOD, {'TP_MODE': 'snapshot'}, "already 'snapshot'"),
-                               (self.GOOD, {'TP_MODE_FAIL': '1'}, 'unreadable or unknown'),
-                               (self.GOOD + 'no_pods(){ false; }; ', {}, 'gateways are running'),
-                               ('members_gated(){ false; }; ', {}, 'passing restore gate'),
-                               (self.GOOD, {'M1': '100 100 6 11 22 7'}, 'members disagree'),
-                               (self.GOOD, {'TRADE_ROWS': '4\t4\t4\t0'}, 'the members booked 5 trade sides')):
-            rc, out, calls = run(body + 'rig_snapshot_base', **env)
-            self.assertEqual(rc, 2, (why, out))
-            self.assertIn(why, out)
-            self.assertIsNone(first(calls, r'create configmap rig-snapshot-base'), why)
-
 
 class Loadgen(unittest.TestCase):
     """FR-PRG-16: loadgen-pool is sized only by `rig.sh loadgen N`, within 0..16."""

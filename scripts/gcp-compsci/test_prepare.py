@@ -335,7 +335,7 @@ class Rendering(unittest.TestCase):
         tp=next(d for d in self.docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
         self.assertEqual(env['PROJECTION_FEED_MODE'],'jetstream')
-        self.assertNotIn('TRADE_PROJECTION_MODE',env)   # row projection: SQL trades stays complete
+        self.assertNotIn('TRADE_PROJECTION_MODE',env)   # unset: trade-processor's only mode, snapshot (FR-THT-01), unsized
         docs=copy.deepcopy(self.docs)
         tp=next(d for d in docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_MODE')['value']='core'
