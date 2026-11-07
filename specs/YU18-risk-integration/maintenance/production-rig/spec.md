@@ -23,7 +23,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 - **FR-PRG-02:** `rig.sh down` SHALL:
   - scale the gateways to 0 first (each drains, FR-PRG-07) and delete the internal LB;
   - when all three members are Ready, take a snapshot barrier (ClusterTool on the leader with its own
-    `JAVA_TOOL_OPTIONS`, `traderx_cluster_snapshots` advanced on all three) and record ConfigMap
+    `JAVA_TOOL_OPTIONS`, `traderx_cluster_snapshots` advanced on all three, each past its own count before the
+    barrier, since the counter is per process and restarts when a member's pod is replaced) and record ConfigMap
     `rig-shutdown-baseline`;
   - stop the members and require each container to have terminated with exit code 143;
   - resize every rig pool to 0, stop the client VM, and verify with `gcloud compute instances list` that no rig node

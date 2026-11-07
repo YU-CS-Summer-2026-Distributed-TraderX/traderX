@@ -305,7 +305,9 @@ member(){ # member <i>: applied engineApplied trades orderHash positionHash snap
     "$(awk '/^traderx_book_order_hash/{print $NF}' <<<"$m")" "$(awk '/^traderx_book_position_hash/{print $NF}' <<<"$m")" \
     "$(awk '/^traderx_cluster_snapshots/{print $NF}' <<<"$m")"
 }
-snapshots_past(){ local i n; for i in 0 1 2; do n=$(member "$i" | cut -d' ' -f6); [ "${n:-0}" -gt "$1" ] || return 1; done; }
+# snapshots_past <s0> <s1> <s2>: each member past ITS OWN count. The counter is per process, so a member whose pod
+# was replaced (a failover) restarts it from 0; one shared baseline could never be passed (2026-11-06, e1106).
+snapshots_past(){ local i n b=("$@"); for i in 0 1 2; do n=$(member "$i" | cut -d' ' -f6); [ "${n:-0}" -gt "${b[$i]:-0}" ] || return 1; done; }
 admin_token(){ # minted inside trade-processor, so the master secret never leaves the cluster; never printed
   kc exec deploy/trade-processor -- sh -c 'curl -s -m8 -X POST localhost:18091/auth/dev-token \
     -H "X-Auth-Master-Secret: $AUTH_DEV_TOKEN_MASTER_SECRET" -H "Content-Type: application/json" \
@@ -985,8 +987,8 @@ rig_down(){
     step "snapshot barrier and shutdown baseline"
     if [ "$DRY" = 1 ]; then note "would run: ClusterTool snapshot on the leader; wait traderx_cluster_snapshots +1 on all three"
       note "would record: ConfigMap rig-shutdown-baseline (applied, trades, hashes; read model)"; else
-      local s0 leader i
-      s0=$(member 0 | cut -d' ' -f6)
+      local s leader i
+      s=$(for i in 0 1 2; do member "$i" | cut -d' ' -f6; done | tr '\n' ' ')
       leader=$(for i in 0 1 2; do kc exec "order-matcher-cluster-$i" -c cluster-node -- wget -qO- localhost:8080/health \
         | jq -r --arg i "$i" 'select(.role=="LEADER") | $i'; done)
       [ -n "$leader" ] || die "no leader to snapshot"
@@ -996,7 +998,7 @@ rig_down(){
         JAVA_TOOL_OPTIONS="-Xmx128m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED" \
         java -cp "/opt/app/classes:/opt/app/lib/*" io.aeron.cluster.ClusterTool /data/cluster snapshot >/dev/null \
         || die "ClusterTool snapshot failed on member $leader"
-      wait_for 120 "snapshot counter past $s0 on all three" snapshots_past "$s0"
+      wait_for 120 "snapshot counter past each member's own (${s% }) on all three" snapshots_past $s
       local m rm; m=$(member 0)
       rm=$(read_model) || die "baseline: the read model could not be read (FR-PRG-19); the rig is still up"
       kc create configmap rig-shutdown-baseline --from-literal=members="$m" --from-literal=readModel="$rm" \
