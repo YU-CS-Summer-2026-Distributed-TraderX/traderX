@@ -65,9 +65,14 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   the store held 0 of the next 6 sides. A health without `unowned` (an older image) refuses too.
   Mandatory since FR-THT-02 renders the store (2026-11-07): no `sts/clickhouse` is a refusal. The sums are
   order-insensitive: the order is the stream's, held by FR-HST-03's cursor, so a set check is the exact one.
-- FR-THT-08 (proposed 2026-11-06): A fresh epoch (ADR-101) SHALL archive the history tables with the read model's
-  epoch tables (`arc_<label>_trades`, `_orders`, `_history_cursor`), because trade and order refs restart at 1 and
-  G3h and the recon read one numbering. Until then a fresh epoch over a non-empty store is refused by G3h.
+- FR-THT-08: A fresh epoch (ADR-101) SHALL archive the history tables with the read model's epoch tables
+  (`arc_<label>_trades`, `_orders`, `_history_cursor`), because trade and order refs restart at 1 and G3h and the
+  recon read one numbering. `rig.sh up`'s `archive_read_model` renames them with history-feed stopped, before the
+  capture streams are deleted, and history-feed recreates them empty on start. Each moves once (a retry skips it);
+  a live table found beside its archive is an earlier attempt's and SHALL be empty, else the archive is refused, and
+  its `history_cursor` is emptied because the retry deletes the stream incarnation it binds (2026-11-08, e1108:
+  without the move history-feed refused `STREAM_RESET` on the old epoch's cursor, and the tables were renamed by
+  hand).
 - FR-THT-07: Either store SHALL be rebuildable from the capture streams from its cursor 0, with the result equal to
   the store it replaces (count and hash, FR-THT-06).
 

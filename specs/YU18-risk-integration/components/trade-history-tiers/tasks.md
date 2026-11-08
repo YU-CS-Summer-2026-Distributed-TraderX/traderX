@@ -53,4 +53,7 @@
 - [x] Check KDB-X Community object storage on `gs://`; record the answer in ADR-102 (yes, with `objstor` init).
 - [ ] q gateway over several HDB processes; `par.txt` over several disks.
 - [ ] 1.5B trade sides scale proof (SC-THT-01, SC-THT-02); rebuild-from-cursor-0 proof (FR-THT-07).
-- [ ] FR-THT-08: the fresh-epoch archive moves the history tables too.
+- [x] FR-THT-08: the fresh-epoch archive moves the history tables too (`archive_read_model`, 2026-11-08; with it,
+  a retried archive restarts trade-processor and history-feed at their recorded counts, FR-PRG-29). `test_rig`
+  FreshEpoch; both new cases fail against the rig.sh before it. Not yet exercised on a live fresh epoch. The archive
+  records itself (rig-epoch `archived`), so a retry after trade-processor restarted only restarts (2026-11-08, e1108).

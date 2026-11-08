@@ -80,6 +80,32 @@ the retry free of a delete. Tests: `test_rig.FreshEpoch` (history-feed held acro
 three claims pass the retry, with members holding anything refused; 1 claim refused; a wiped epoch with claims refused
 before any rename). Each fails against the rig.sh before it.
 
+**Amendment 2026-11-08 (production, e1108):** two more gaps on the same path. (1) The reset deleted TRADERX_FEED while
+the history store still held the old epoch's rows, bound in `history_cursor` to the deleted incarnation; history-feed
+refused `STREAM_RESET` (correctly) and `up` timed out. The tables were renamed to `arc_e1108_*` by hand. The archive
+now does that (FR-THT-08): with history-feed and trade-processor stopped, ClickHouse `trades`, `orders` and
+`history_cursor` move to `arc_<label>_*` one RENAME each, since a multi-table RENAME is not atomic there, so a retry
+skips what moved. A live table beside its archive must be empty, and its cursor is emptied, because the retry deletes
+the stream incarnation it binds. history-feed recreates the tables on start. (2) A refused `up` had already scaled
+trade-processor and history-feed to 0, and the retry read that 0 as the count to restore, then waited 300 s on an
+accounting endpoint with no pod. The archive now records each count on the Deployment (annotation
+`traderx-rig-held-replicas`) when it first stops it, restarts at that count and removes the record. A Deployment at 0
+with nothing recorded is refused, since the rig cannot know its rendered count. `members_stopped` checks the members
+and the gateways only, so it holds with trade-processor at 0. That is intended: neither is a member. Tests:
+`test_rig.FreshEpoch` (the history tables moved after history-feed stops and before the stream delete, a retry that
+renames nothing and empties only the cursor, a non-empty live table refused, none touched when not rendered; the
+recorded counts restored over a live 0, a 0 with no record refused before any rename or delete). Both new cases fail
+against the rig.sh before it.
+
+Later the same day, a retry after trade-processor was restored refused `projection_cursor is not empty after the
+archive`: the running trade-processor had written its seq-0 cursors (`legacy-unknown`, `order-view:legacy-unknown`) for
+the new empty stream, and the archive re-ran its emptiness check. rig-epoch was set to provisioned by hand. The archive
+now records itself: wiped -> **archived** (tables moved and checked, streams deleted) -> provisioned (trade-processor
+and history-feed answering). `up` on archived skips the archive and only restarts; a Deployment already released (no
+record, replicas > 0) is left as it is. `fresh-epoch` refuses an archived epoch. Test:
+`test_the_archive_records_itself_and_each_retry_ordering_resumes` (stopped inside the archive, after it before the
+restart, after trade-processor restarted with live rows; at 0 with no record refused; claims under archived refused).
+
 ## Consequences
 
 - The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads

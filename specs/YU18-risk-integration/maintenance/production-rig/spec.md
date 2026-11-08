@@ -189,7 +189,15 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   11:01 pm ET: `rollout status` returned on a probe-less pod, the accounting read got connection refused 10 s before
   it listened, and G3 refused). history-feed, when rendered, SHALL be stopped with trade-processor and started only
   after that answer, because it binds its lanes to the stream incarnation it starts on (2026-11-07 11:28 pm ET: one
-  started before the reset read the deleted stream and G3h timed out). `up` SHALL turn wiped into provisioned only
+  started before the reset read the deleted stream and G3h timed out). Each Deployment the archive stops SHALL
+  restart at the replica count recorded on it (annotation `traderx-rig-held-replicas`) when the archive first stopped
+  it, never at its live count, and SHALL be refused when it is at 0 with no count recorded (2026-11-08, e1108: a
+  refused `up` had left trade-processor and history-feed at 0, and the retry restored 0). The precondition that the
+  members and gateways are stopped covers only those two: trade-processor or history-feed at 0 does not fail it. The archive SHALL record its own completion (rig-epoch
+  `archived`, after the capture streams are deleted and before trade-processor restarts), and `up` on an archived epoch
+  SHALL only restart trade-processor and history-feed, never re-run the archive or its emptiness check (2026-11-08,
+  e1108: the restarted trade-processor had written its seq-0 cursors, and a retried archive refused projection_cursor
+  as not empty). `up` SHALL turn wiped into provisioned only
   with no member claim; under provisioned, all three claims are that epoch's own (an `up` refused after the members
   started) and SHALL be read like any other, with G0 refusing unless the members are empty, and 1 or 2 claims SHALL
   refuse (2026-11-07: twice deleted by hand). The gate SHALL accept empty members and no shutdown baseline only while
