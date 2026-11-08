@@ -135,6 +135,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   amendment 2026-11-08), `ARCHIVE_PURGE_HOLD_FILE=/data/archive-purge.hold`, its own small JVM, requests = limits, and
   the pod's default container left on the member. `validate()` SHALL refuse an agent on another image, without that
   hold file, not Guaranteed, or that neither discards nor offloads history by name. The default render has none.
+  Admission (`admit.py`) SHALL count the agent as one more container slot, on the member's own image, only when it
+  is rendered; every other slot count is unchanged.
   - Once the log is purged, a replay from 0 refuses by design (`RECOVERY_ARCHIVE_*`). When the members' pod carries
     `archive-purge`, G1 and G2 SHALL read each member's `/recon/tail-state` instead: a shadow restored with the member's
     own `loadSnapshot` from the oldest snapshot it still retains (its recording present and its position covered by the
