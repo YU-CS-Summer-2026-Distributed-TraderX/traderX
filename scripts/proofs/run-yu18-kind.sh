@@ -10,7 +10,9 @@
 #   python3 scripts/proofs/kind-yu18-rig.py --tag <tag> | kubectl --context kind-traderx-gap18 apply -f -
 #   CTX=kind-traderx-gap18 NS=traderx bash scripts/proofs/run-yu18-kind.sh [proof-name-substring...]
 #
-# On GKE, a disposable namespace beside production, on the idle loadgen pool (production's namespace is refused):
+# On GKE, a disposable namespace beside production, on the idle loadgen pool (production's namespace is refused).
+# First resize system-pool to 1 (docs/deployment/compsci-gke.md "Node plan": kube-dns and konnectivity need an
+# untainted node), and back to 0 at teardown; never create an untainted pool of your own:
 #   python3 scripts/proofs/kind-yu18-rig.py --tag <tag> --ns pa-proof-<x> \
 #     --registry us-east1-docker.pkg.dev/<project>/<repo> --pool loadgen-pool | kubectl --context <gke> apply -f -
 #   CTX=<gke> NS=pa-proof-<x> bash scripts/proofs/run-yu18-kind.sh

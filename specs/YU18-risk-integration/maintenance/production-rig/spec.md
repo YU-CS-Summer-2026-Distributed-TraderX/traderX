@@ -71,6 +71,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     - create `gateway-pool` on c4d-standard-8 with the static CPU manager;
     - create `history-pool` on c4d-standard-8 (Hyperdisk Balanced for the store's claim), tainted `traderx-history`;
       `up` brings it to 1 node and waits for `sts/clickhouse` with the support workloads; `down` takes it to 0.
+  - `system-pool` (2026-11-07, created by the operator, not by `rig.sh`): one untainted e2-standard-2 kept at 0, so
+    kube-dns and konnectivity-agent have a node when `default-pool` is at 0. A side rig SHALL resize it to 1 before it
+    applies anything and to 0 at its teardown; it SHALL NOT create an untainted pool of its own. It is not in
+    `RIG_POOLS`: `rig.sh` neither sizes nor zeroes it (docs/deployment/compsci-gke.md "Node plan").
 - **FR-PRG-06:** Gateways run one per node.
   - The Deployment SHALL have no replica count in the pack, a required hostname anti-affinity, and a guaranteed
     whole-CPU pod (4 CPU / 2Gi). `validate()` SHALL refuse otherwise.
