@@ -26,8 +26,8 @@ with equal rows. GKE, same evening, disposable namespace pa-proof-tht on tht-* p
 cold partition on real GCS; torn down to zero (about $0.45). Not yet: a production bucket + HMAC key, production
 build/admission, production bring-up. Cost while up: history-pool
 1 × c4d-standard-8 (≈ $0.38/h on-demand, the rate recorded in docs/deployment/traderx-demo-rollout-20261026.md); the
-200Gi claim and the node's 100 GB boot disk are storage, not priced here. FR-THT-08 still open: a fresh epoch over a
-non-empty store is refused by G3h.
+200Gi claim and the node's 100 GB boot disk are storage, not priced here. FR-THT-08 landed 2026-11-08: the fresh-epoch
+archive moves the history tables (test_rig only; e1108's were renamed by hand).
 
 ## State, 2026-11-06
 

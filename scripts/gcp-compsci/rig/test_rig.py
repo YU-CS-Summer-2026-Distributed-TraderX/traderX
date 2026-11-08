@@ -45,8 +45,17 @@ kubectl(){
       jq -cn --arg f "${FEED:-}" '{streams: 1, account_details: [{stream_detail: [$f | splits(" ") | select(. != "")
         | split(":") | {name: .[0], state: {messages: (.[1] | tonumber)}}]}]}';;
     *"nc localhost 4222"*) echo 'INFO {"server_id":"x"}'; echo 'MSG r 1 40'; echo '{"type":"stream_delete_response","success":true}';;
-    *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ];;   # HIST_ABSENT: no history store rendered
-    *"get deploy history-feed"*) [ -n "${HIST_ABSENT:-}" ] || echo 1;;
+    *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ] && echo statefulset.apps/clickhouse;;   # HIST_ABSENT: no history store rendered
+    *"annotations.traderx-rig-held-replicas"*)   # HELD_<deploy>: a count an earlier (refused) run recorded on it
+      n="$*"; d=${n#*get deploy }; d=${d%% *}; v="HELD_${d//-/_}"
+      if [ -f "$EVIDENCE/.held-$d" ]; then cat "$EVIDENCE/.held-$d"; else echo "${!v:-}"; fi;;
+    *"annotate deploy "*) n="$*"; d=${n#*annotate deploy }; d=${d%% *}; r=${n#*traderx-rig-held-replicas}
+      case $r in -*) rm -f "$EVIDENCE/.held-$d"; touch "$EVIDENCE/.held-$d";; =*) r=${r#=}; echo "${r%% *}" > "$EVIDENCE/.held-$d";; esac;;
+    *"get deploy history-feed -o jsonpath={.spec.replicas}"*) echo "${HF_SPEC:-1}";;
+    *"get deploy history-feed"*) [ -n "${HIST_ABSENT:-}" ] || echo deployment.apps/history-feed;;
+    *clickhouse-client*) case "$*" in   # CH_LIVE / CH_ARC: whether the live / archived history tables exist
+      *"EXISTS TABLE arc_"*) echo "${CH_ARC:-0}";; *"EXISTS TABLE"*) echo "${CH_LIVE:-1}";;
+      *"count() FROM arc_"*) echo 81140;; *"count() FROM"*) echo "${CH_ROWS:-0}";; esac;;
     *"history-feed:18095/health"*) echo "$HIST_HEALTH";;
     *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
       t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
@@ -75,7 +84,7 @@ kubectl(){
     *"get pvc -o name"*) printf '%s\n' ${CLAIMS:-};;
     *"get pvc data-order-matcher-cluster-"*volumeName*) n="$*"; n=${n#*cluster-}; echo "pv-${n%% *}";;
     *"get pv pv-"*volumeHandle*) n="$*"; n=${n#*pv-}; echo "projects/p/zones/us-east1-b/disks/disk-${n%% *}";;
-    *"get deploy trade-processor -o jsonpath={.spec.replicas}"*) echo 1;;
+    *"get deploy trade-processor -o jsonpath={.spec.replicas}"*) echo "${TP_SPEC:-1}";;
     *"count(*) from information_schema.tables"*) echo "${ARC_EXISTS:-0}";;
     *"from information_schema.tables"*) printf '%s\n' ${PRESENT:-trades positions orderbook order_view_snapshot projection_accounting projection_cursor projection_trade_days projection_recon};;
     *"select count(*) from arc_"*) echo 42;;
@@ -679,7 +688,7 @@ class FreshEpoch(unittest.TestCase):
                                            r'scale statefulset/order-matcher-cluster --replicas=3')]
         self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
         rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'ARC_EXISTS': '1'})   # a re-run renames nothing
-        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'RENAME TABLE'))
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'eod-price-db.*RENAME TABLE'))
         # FR-PRG-29: a volume older than a table's first-boot SQL never got it; only the tables present move
         rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'PRESENT': 'trades positions orderbook projection_cursor'})
         self.assertEqual(rc, 0, out)
@@ -721,6 +730,49 @@ class FreshEpoch(unittest.TestCase):
         _, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'HIST_ABSENT': '1'})   # no store (G3h refuses later)
         self.assertIsNotNone(first(calls, r'scale deploy/trade-processor --replicas=1'), out)
         self.assertIsNone(first(calls, 'scale deploy/history-feed'))
+
+    # FR-THT-08 (production 2026-11-08, e1108): the reset deleted TRADERX_FEED while the history store still held the old
+    # epoch's rows bound to its incarnation, and history-feed refused STREAM_RESET. Its tables move to arc_<label>_* while
+    # it is stopped, before the stream is deleted; it recreates them on start.
+    CH = 'clickhouse-client -q '
+    def test_a_wiped_epoch_archives_the_history_store_while_history_feed_is_stopped(self):
+        wiped = {**self.EMPTY, 'EPOCH': 'wiped e2', 'FEED': 'TRADERX_FEED:0'}
+        rc, out, calls = run('rig_up', **wiped)
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'scale deploy/history-feed --replicas=0', self.CH + 'RENAME TABLE trades TO arc_e2_trades$',
+                                           self.CH + 'RENAME TABLE orders TO arc_e2_orders$', self.CH + 'RENAME TABLE history_cursor TO arc_e2_history_cursor$',
+                                           r'STREAM.DELETE.TRADERX_FEED', r'scale deploy/history-feed --replicas=1')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        self.assertIn('arc_e2_trades holds 81140 sides', out)
+        self.assertIsNone(first(calls, 'TRUNCATE'))
+        # a retry: everything moved; the live tables are an earlier attempt's, empty, and only its cursor is emptied
+        rc, out, calls = run('rig_up', **wiped, CH_ARC='1')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(first(calls, self.CH + 'RENAME')); self.assertIsNotNone(first(calls, self.CH + 'TRUNCATE TABLE history_cursor$'))
+        out, calls = self.refused('arc_e2_trades exists and the live trades holds 3 rows', **wiped, CH_ARC='1', CH_ROWS='3')
+        self.assertIsNone(first(calls, 'STREAM.DELETE')); self.assertIsNone(first(calls, 'TRUNCATE'))
+        rc, out, calls = run('rig_up', **wiped, CH_LIVE='0')   # a store never written: nothing to move
+        self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, self.CH + 'RENAME'))
+        _, out, calls = run('rig_up', **wiped, HIST_ABSENT='1')   # control: no store rendered, none touched
+        self.assertIsNone(first(calls, 'clickhouse-client'))
+
+    # FR-PRG-29 (production 2026-11-08, e1108): a refused up had already stopped trade-processor and history-feed, and the
+    # retry read their live 0 as the count to restore. Each restarts at the count recorded when the archive first stopped it.
+    def test_a_retried_archive_restarts_at_the_recorded_counts_not_the_live_zero(self):
+        wiped = {**self.EMPTY, 'EPOCH': 'wiped e2'}
+        rc, out, calls = run('rig_up', **wiped)
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'annotate deploy trade-processor traderx-rig-held-replicas=1 ', r'scale deploy/trade-processor --replicas=0',
+                                           r'scale deploy/trade-processor --replicas=1', r'annotate deploy trade-processor traderx-rig-held-replicas-')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        rc, out, calls = run('rig_up', **wiped, TP_SPEC='0', HF_SPEC='0', HELD_trade_processor='2', HELD_history_feed='1')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'scale deploy/trade-processor --replicas=2'), out)
+        self.assertIsNotNone(first(calls, r'scale deploy/history-feed --replicas=1'), out)
+        self.assertIsNone(first(calls, r'held-replicas=[0-9]'), 'a retry re-recorded its count')
+        for env, d in (({'TP_SPEC': '0'}, 'trade-processor'), ({'HF_SPEC': '0'}, 'history-feed')):   # at 0, nothing recorded
+            out, calls = self.refused(f'{d} is at 0 replicas with none recorded', **wiped, **env)
+            self.assertIsNone(first(calls, 'STREAM.DELETE'), d); self.assertIsNone(first(calls, 'RENAME TABLE'), d)
 
     def test_a_capture_stream_still_holding_messages_or_unreadable_is_refused(self):
         for env, why in (({'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:3'}, 'TRADERX_FEED_P1 still holds 3 messages'),

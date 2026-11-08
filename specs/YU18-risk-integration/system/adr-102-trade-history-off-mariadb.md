@@ -69,4 +69,4 @@ kept.
   transitions were removed the same day: all three wrote or verified SQL trade rows; the stream replay from the
   committed cursor and ADR-101's fresh epoch are the recovery paths.
 - **One epoch per store**: refs restart at a fresh epoch (ADR-101), so the history tables must be archived with the
-  epoch (FR-THT-08, proposed).
+  epoch (FR-THT-08: `rig.sh` `archive_read_model`, 2026-11-08).

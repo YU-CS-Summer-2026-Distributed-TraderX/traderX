@@ -643,6 +643,8 @@ epoch_state(){ # "<state> <label>", "none" when no record; fails when the record
   else rm -f "$err"; return 1; fi; }
 set_epoch(){ kc create configmap rig-epoch --from-literal=label="$1" --from-literal=state="$2" \
   --from-literal=at="$(date -u +%FT%TZ)" --dry-run=client -o yaml | kc apply -f - >/dev/null; }
+# The members and the gateways only: trade-processor and history-feed are not members, and a refused fresh-epoch up may
+# leave them at 0 (archive_read_model restarts them at their recorded counts).
 members_stopped(){ [ "$(kc get sts order-matcher-cluster -o jsonpath='{.spec.replicas}')" = 0 ] \
   && no_pods order-matcher-cluster && no_pods cluster-gateway; }
 member_disk(){ # member_disk <i>: "<zone> <disk>" of the claim's persistent disk
@@ -746,21 +748,61 @@ reset_feed(){
   done <<<"$streams"
 }
 
+# FR-PRG-29: a stopped Deployment restarts at the count recorded on it when the archive first stopped it, never the live
+# count (production 2026-11-08: a refused up had left trade-processor and history-feed at 0, and the retry "restored" 0).
+HELD=traderx-rig-held-replicas
+hold(){ # hold <deploy>: record its replica count on it, once (a retry keeps the first), then stop it
+  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model archive: $1 cannot be read"
+  if [ -z "$r" ]; then
+    r=$(kc get deploy "$1" -o jsonpath='{.spec.replicas}') || die "read-model archive: $1 cannot be read"
+    [[ $r =~ ^[1-9][0-9]*$ ]] || die "read-model archive: $1 is at ${r:-no} replicas with none recorded: scale it to its rendered count, then rerun"
+    kc annotate deploy "$1" "$HELD=$r" --overwrite >/dev/null || die "read-model archive: $1's replica count cannot be recorded"
+  fi
+  kc scale "deploy/$1" --replicas=0 >/dev/null || die "read-model archive: $1 cannot be stopped"
+  wait_for 300 "$1 stopped (restarts at $r)" no_pods "$1"; }
+release(){ # release <deploy>: back to its recorded count, the record removed
+  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") && [[ $r =~ ^[1-9][0-9]*$ ]] \
+    || die "read-model archive: $1 has no recorded replica count to restart at"
+  kc scale "deploy/$1" --replicas="$r" >/dev/null || die "read-model archive: $1 cannot be restarted"
+  kc annotate deploy "$1" "$HELD-" >/dev/null || die "read-model archive: $1's replica record cannot be removed"; }
+
+# FR-THT-08 (production 2026-11-08, e1108): the history store is the old epoch's too. history-feed bound its lanes to the
+# deleted stream's incarnation and refused STREAM_RESET. Its tables move to arc_<label>_* while it is stopped; it
+# recreates them empty on start. Renamed one at a time (a multi-table RENAME is not atomic in ClickHouse), so a retry
+# skips what moved; the live tables it then finds are an earlier attempt's, empty, whose cursor binds a stream
+# incarnation this retry deletes again, so the cursor is emptied.
+HISTORY_TABLES="trades orders history_cursor"
+chq(){ kc exec sts/clickhouse -c clickhouse -- clickhouse-client -q "$1"; }
+archive_history(){
+  local label=$1 t live arc n
+  for t in $HISTORY_TABLES; do
+    live=$(chq "EXISTS TABLE $t") && arc=$(chq "EXISTS TABLE arc_${label}_$t") && [[ $live$arc =~ ^[01][01]$ ]] \
+      || die "history archive: $t cannot be looked up"
+    if [ "$arc" = 0 ]; then
+      [ "$live" = 0 ] || chq "RENAME TABLE $t TO arc_${label}_$t" >/dev/null || die "history archive: $t cannot be renamed"
+    elif [ "$live" = 1 ] && [ "$t" = history_cursor ]; then
+      chq "TRUNCATE TABLE history_cursor" >/dev/null || die "history archive: an earlier attempt's history_cursor cannot be emptied"
+    elif [ "$live" = 1 ]; then
+      n=$(chq "SELECT count() FROM $t") && [ "$n" = 0 ] || die "history archive: arc_${label}_$t exists and the live $t holds ${n:-unreadable} rows"
+    fi
+  done
+  note "history store archived: arc_${label}_trades holds $(chq "SELECT count() FROM arc_${label}_trades" 2>/dev/null || echo '?') sides; history-feed recreates the live tables"
+}
+
 archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*, the live tables recreated empty
-  local label=$1 t renames='' have reps hreps present
+  local label=$1 t renames='' have hf present
   step "read model: the old epoch's tables into arc_${label}_*, recreated empty (trade-processor stopped meanwhile)"
-  [ "$DRY" = 1 ] && { note "would rename: $EPOCH_TABLES"; return 0; }
-  reps=$(kc get deploy trade-processor -o jsonpath='{.spec.replicas}') || die "read-model archive: trade-processor cannot be read"
+  [ "$DRY" = 1 ] && { note "would rename: $EPOCH_TABLES; history store: $HISTORY_TABLES"; return 0; }
   # FR-THT-02: history-feed binds its lanes to the capture stream's incarnation at start, so it is stopped across the
   # reset and started after trade-processor recreates the streams (production 2026-11-07 11:28 pm ET: one started
   # before the reset kept reading the deleted stream, and G3h timed out). Empty when no history store is rendered.
-  hreps=$(kc get deploy history-feed --ignore-not-found -o jsonpath='{.spec.replicas}') || die "read-model archive: history-feed cannot be read"
-  if [ -n "$hreps" ]; then
-    kc scale deploy/history-feed --replicas=0 >/dev/null || die "read-model archive: history-feed cannot be stopped"
-    wait_for 300 "history-feed stopped" no_pods history-feed
+  hf=$(kc get deploy history-feed --ignore-not-found -o name) || die "read-model archive: history-feed cannot be read"
+  [ -z "$hf" ] || hold history-feed
+  hold trade-processor
+  if [ -n "$hf" ]; then
+    [ -n "$(kc get sts clickhouse --ignore-not-found -o name)" ] || die "history archive: history-feed is rendered but sts/clickhouse is not"
+    archive_history "$label"
   fi
-  kc scale deploy/trade-processor --replicas=0 >/dev/null || die "read-model archive: trade-processor cannot be stopped"
-  wait_for 300 "trade-processor stopped" no_pods trade-processor
   have=$(sql "select count(*) from information_schema.tables where table_schema=database() and table_name='arc_${label}_trades'") \
     && [[ $have =~ ^[01]$ ]] || die "read-model archive: the archive cannot be looked up"
   # Only the epoch tables this database has: a volume older than a table's first-boot SQL never got it (init scripts
@@ -803,13 +845,13 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
   done
   note "archived: arc_${label}_trades holds $(sql "select count(*) from arc_${label}_trades") rows; live tables empty"
   reset_feed   # with trade-processor, the members and the gateways at 0
-  kc scale deploy/trade-processor --replicas="${reps:-1}" >/dev/null || die "read-model archive: trade-processor cannot be restarted"
+  release trade-processor
   kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
   # FR-PRG-29: Ready is not listening on a render without trade-processor's readiness probe (production 2026-11-07
   # 11:01 pm ET: G3's accounting read got connection refused 10 s before it listened), so wait for what G3 reads.
   wait_for 300 "trade-processor's accounting answers (/v2/projection-feed/accounting)" accounting
-  if [ -n "$hreps" ]; then   # the accounting answering means the streams exist again, at their new incarnation
-    kc scale deploy/history-feed --replicas="$hreps" >/dev/null || die "read-model archive: history-feed cannot be restarted"
+  if [ -n "$hf" ]; then   # the accounting answering means the streams exist again, at their new incarnation
+    release history-feed
     wait_for 300 "history-feed Ready on the new streams" deploy_rolled_out deploy/history-feed
   fi
 }
