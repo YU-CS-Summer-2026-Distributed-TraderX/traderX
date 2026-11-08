@@ -172,6 +172,11 @@ workload, including the gateway's `cluster-node`, runs the tip.
   - `admit.py`: every compiled image's `sourceCommit`, before any evidence is read. An exception image is bound to
     its own commit's derivation, carried in the plan as evidence.
   - `admission-controls.py`: the same refusals against the real measured pack.
+- **The build-context population has one source** (amended 2026-11-07): `build-images.py`'s `COMPONENTS`. `admit.py`
+  requires the derivation's contexts to be exactly that set (`check_contexts`), and `measure-admission.py` refuses to
+  load if its component map differs. The count it replaced, a literal 11, refused the 43006beb candidate once FR-THT-02
+  added history-feed, although all 13 payloads were byte-identical (388/388 for history-feed). Private images 13 + the
+  exceptions, upstream 10 (ClickHouse), slots 26.
 - **The codec is proven, not assumed.** `rig/codec-compat.sh` loads each side's real compiled
   `AeronReplicationCodec`, `InputEvent` and SBE classes in separate class loaders. For every command type the members
   know, both sides encode the same event: unflagged, SHADOW-flagged, and as an order instruction. The bytes must be

@@ -114,6 +114,17 @@ class Admit(unittest.TestCase):
         self.admit.check_population(self.plan())
         self.assertEqual(self.admit.PRIVATE_IMAGES, 14)   # 13 + the declared exception
 
+    def test_the_build_context_population_is_build_images_components(self):
+        # 43006beb (2026-11-07): admit required 11 contexts after FR-THT-02 made it 12; every payload matched.
+        full = {c: '0' * 64 for c in self.admit.BUILD_CONTEXTS}
+        self.assertIn('history-feed', full); self.assertEqual(len(full), 12)
+        self.admit.check_contexts({'contexts': full})
+        for receipt in ({k: v for k, v in full.items() if k != 'history-feed'}, {**full, 'stray': '0' * 64}):
+            with self.assertRaisesRegex(self.admit.ri20.Refusal, 'incomplete selected build-context population'):
+                self.admit.check_contexts({'contexts': receipt})
+        _, measure = declared_modules()
+        self.assertEqual(set(measure.COMPONENTS), self.admit.BUILD_CONTEXTS)
+
     def test_neither_commit(self):
         self.refuses('neither declared commit', **{'trade-service': {'sourceCommit': OTHER}})
 
@@ -148,7 +159,7 @@ class Admit(unittest.TestCase):
             root = HERE.parents[1]
             receipt = {'schema': 'traderx-generation-derivation-v1', 'state': 'YU18-risk-integration', 'role': 'fix',
                        'ancestry': sorted(self.admit.ri20.lineage(root, 'YU18-risk-integration')),
-                       'sourceInputsSha256': '0' * 64, 'contexts': {str(i): '0' * 64 for i in range(11)}}
+                       'sourceInputsSha256': '0' * 64, 'contexts': {c: '0' * 64 for c in self.admit.BUILD_CONTEXTS}}
             plan = {'schema': 'traderx-compsci-intended-deployment-v1', 'target': self.admit.TARGET,
                     'state': 'YU18-risk-integration', 'renderedSha256': self.admit.digest(b''),
                     'contexts': receipt['contexts'], 'imageSourceCommit': self.admit.REVIEWED_IMAGE_COMMIT}
