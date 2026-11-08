@@ -52,6 +52,7 @@ RIG_VMS="$CLIENT_VMS${KDB_VM:+ $KDB_VM}"
 GATE_SHADOW_PATH=${GATE_SHADOW_PATH:-/recon/shadow-state}
 EVIDENCE=${EVIDENCE:-$PWD/rig-evidence/$(date +%Y%m%d-%H%M%S)}
 DRY=0
+SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke reads back
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
 pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
@@ -241,7 +242,12 @@ members_gated(){
 }
 
 # ---- read-model and member fingerprints ------------------------------------------------------------------------------
-row_status_is(){ [ "$(sql "select status from orderbook where orderid like '%-$1'")" = "$2" ]; }
+# order_status_is <account> <ref> <status> (bearer $ORDER_TOKEN, passed on stdin, never on argv): trade-processor's order read model, the one FIX status
+# requests read (FR-FIX04): the memory order view in snapshot mode (ORDER_FEED_PERSIST=false never writes SQL
+# orderbook, production 2026-11-07), the orderbook rows otherwise. One effect end for either render.
+order_status_is(){ kc exec -i deploy/trade-processor -- sh -c 'read -r t; curl -sf -m10 -H "Authorization: Bearer $t" \
+    "localhost:18091/accounts/$1/orders?status=all"' sh "$1" <<<"$ORDER_TOKEN" \
+  | jq -e --arg r "-$2" --arg s "$3" 'any(.[]; (.id | endswith($r)) and .status == $s)' >/dev/null; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
 md5of(){ python3 -c 'import hashlib,sys; print(hashlib.md5(sys.stdin.buffer.read()).hexdigest()[:16])'; }
 # FR-PRG-19: a query that fails is not an empty table. sql() discards stderr, so an empty answer is a failure.
@@ -821,9 +827,9 @@ autoscale_on(){
 members_bridged(){ kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' \
   | tr ' ' '\n' | grep -qx TRADE_BRIDGE_NATS_URL; }
 smoke(){
-  step "smoke: a FIX order and its cancel through a gateway, then its row in the read model"
+  step "smoke: a FIX order and its cancel through a gateway, then its state in the order read model"
   if [ "$DRY" = 1 ]; then note "would run: fix-smoke.mjs in web-front-end-console (resting buy inside the collar, cancel)"
-    note "would check: the order's orderbook row reaches CANCELED"; return 0; fi
+    note "would check: the order reaches CANCELED in trade-processor's order read model"; return 0; fi
   local out ref
   if ! out=$(kc exec -i deploy/web-front-end-console -c console -- node - < "$HERE/fix-smoke.mjs" 2>&1); then
     echo "$out" > "$EVIDENCE/smoke.txt"; die "smoke: the FIX script failed: $EVIDENCE/smoke.txt"; fi
@@ -831,7 +837,8 @@ smoke(){
   grep -q '^NEW ' <<<"$out" && grep -q '^CANCELED ' <<<"$out" || die "smoke: no New + Canceled pair: $EVIDENCE/smoke.txt"
   ref=$(awk '/^NEW /{print $2}' <<<"$out")
   if members_bridged; then
-    wait_for 60 "orderbook row for order $ref CANCELED (the read model, FR-PRG-04)" row_status_is "$ref" CANCELED
+    ORDER_TOKEN=$(admin_token); [ -n "$ORDER_TOKEN" ] || die "smoke: no admin token for the order read model"
+    wait_for 60 "order $ref CANCELED in the order read model (FR-PRG-04)" order_status_is "$SMOKE_ACCOUNT" "$ref" CANCELED
   else   # FR-PRG-14: members rendered without bridges never feed the read model; the FIX answers are the effect end
     note "smoke: members run without bridges (FR-PRG-14): order $ref New and Canceled over FIX; no read-model row expected"
   fi

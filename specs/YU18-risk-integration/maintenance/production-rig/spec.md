@@ -51,7 +51,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   | G4 | when `rig-shutdown-baseline` exists, the members' applied, trades and hashes equal it (not engineApplied, which a restore resets to -1) |
 - **FR-PRG-04:** The smoke order SHALL go through a gateway over FIX from `web-front-end-console`.
   - It is a resting Buy 1 two percent under the mark (inside the collar), acked New, then cancelled.
-  - The order's `orderbook` row SHALL reach CANCELED within 60 s.
+  - The order SHALL read CANCELED within 60 s in trade-processor's order read model (`GET /accounts/{id}/orders?status=all`,
+    the one FIX status requests read, FR-FIX04): the memory order view in snapshot mode, the `orderbook` rows otherwise.
+    Amended 2026-11-07: with `ORDER_FEED_PERSIST=false` SQL `orderbook` is never written, and production's `up` refused
+    after a clean New/Canceled. Members without bridges (FR-PRG-14) end at the FIX answers.
   - The FIX password SHALL NOT appear in any line it prints.
 - **FR-PRG-05:** The production candidate (`prepare.py`) SHALL:
   - place members on `engine-pool`, gateways on `gateway-pool`, NATS on `nats-pool`, and ClickHouse with history-feed

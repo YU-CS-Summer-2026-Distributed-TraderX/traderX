@@ -18,7 +18,7 @@ call(){ echo "$*" >> "$LOG"; }
 sleep(){ :; }
 preflight(){ :; }; require_pools(){ :; }
 pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; deploy_rolled_out(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
-pool_autoscaling(){ false; }; row_status_is(){ true; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
+pool_autoscaling(){ false; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
 snapshots_past(){ true; }
 initialize(){ call "initialize $1"; [ "${INIT_FAIL:-}" != "$1" ]; }
 admin_token(){ local n; n=$(( $(cat "$EVIDENCE/.tok" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.tok"; echo "tok$n"; }
@@ -40,6 +40,7 @@ kubectl(){
       n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
       v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; expired && return 8; echo "$REINDEX";;
+    *"orders?status=all"*) cat > "$EVIDENCE/.order-stdin"; echo "$ORDERS";;   # the order read model
     *"8222/jsz"*) [ -n "${FEED_FAIL:-}" ] && return 1   # FEED: "<stream>:<messages> ..." on NATS, unset = none
       jq -cn --arg f "${FEED:-}" '{streams: 1, account_details: [{stream_detail: [$f | splits(" ") | select(. != "")
         | split(":") | {name: .[0], state: {messages: (.[1] | tonumber)}}]}]}';;
@@ -143,7 +144,8 @@ def acct(p0=(3, 5, 9, 35, 0), p1=(2, 4, 6, 20, 0), resting=(1, 1), orders=True):
     return json.dumps({'scope': 'legacy-unknown', 'partitions': 2, 'trades': t, **({'orders': o} if orders else {})})
 
 
-GOOD['ACCT'] = acct()   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
+GOOD['ACCT'] = acct()
+GOOD['ORDERS'] = '[{"id":"om-7","status":"CANCELED"}]'   # the smoke order (NEW 7), cancelled, in the order read model   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
 
 
 def run(body, **env):
@@ -174,6 +176,19 @@ class Up(unittest.TestCase):
         self.assertIn('G4 ok: equals the shutdown baseline', out)
         self.assertIn('ok: sts/clickhouse Ready (the history store, FR-THT-02)', out)   # FR-THT-02: part of readiness
         self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
+
+    # FR-PRG-04 (production 2026-11-07): ORDER_FEED_PERSIST=false never writes SQL orderbook, so the smoke waited for a row
+    # that cannot exist and refused after a clean New/Canceled. The effect end is trade-processor's order read model.
+    def test_the_smoke_reads_the_cancel_from_the_order_read_model(self):
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('ok: order 7 CANCELED in the order read model (FR-PRG-04)', out)
+        self.assertIsNone(first(calls, r'from orderbook where orderid'))
+        self.assertTrue(any('orders?status=all' in c and 'tok' not in c for c in calls))   # the bearer never on argv
+        for orders, why in (('[{"id":"om-7","status":"NEW"}]', 'still open'), ('[{"id":"om-17","status":"CANCELED"}]', 'another order'),
+                            ('[]', 'absent')):
+            rc, out, _ = run('wait_for(){ "${@:3}" >/dev/null 2>&1 || die "timed out waiting for: $2"; note "ok: $2"; }; rig_up', ORDERS=orders)
+            self.assertEqual(rc, 2, why); self.assertIn('order 7 CANCELED in the order read model', out, why)
 
     def test_pools_creates_the_history_pool_tainted_for_the_store(self):
         rc, out, _ = run('DRY=1; rig_pools')
@@ -244,7 +259,7 @@ class Up(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('members run without bridges (FR-PRG-14)', out)
         rc, out, _ = run('rig_up')   # with bridges the read-model row is still required
-        self.assertIn('CANCELED (the read model, FR-PRG-04)', out)
+        self.assertIn('CANCELED in the order read model (FR-PRG-04)', out)
 
     def test_a_failed_smoke_script_is_refused_with_its_output_kept(self):
         # Production 2026-10-29: the script exited 1 under set -e with no REFUSED line and no evidence.

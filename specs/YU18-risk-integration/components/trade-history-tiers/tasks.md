@@ -32,6 +32,8 @@
 - [x] Production findings 2026-11-07 (coordinator): every render names `TRADE_PROJECTION_MODE=snapshot`
   (`test_prepare`, refused when absent); a fresh epoch's `up` deletes its empty capture streams and refuses a
   non-empty one (`test_rig`, A/B; `feed_streams`/`nats_api` exercised on a real NATS 2.14). FR-PRG-29, ADR-101.
+  The smoke reads its cancel from trade-processor's order read model, not SQL `orderbook` (FR-PRG-04, `test_rig`:
+  CANCELED passes; still NEW, another order or absent refuses; no orderbook query; the bearer stays off argv).
 - [ ] KDB-X feed lane: exactly-once write-down, account-sorted `p#` HDB, heap-guarded paged q (FR-THT-04).
 - [x] Check KDB-X Community object storage on `gs://`; record the answer in ADR-102 (yes, with `objstor` init).
 - [ ] q gateway over several HDB processes; `par.txt` over several disks.
