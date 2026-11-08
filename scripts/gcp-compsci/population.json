@@ -1,6 +1,6 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76: every private image from one tip aba349f8: 889e47be (missing-proofs, prod-hardening, rig-barrier-per-member, trade-history-tiers) plus trade-history-tiers through 0e517ea1 (ClickHouse + history-feed on history-pool FR-THT-02/03, the snapshot read model with its order view snapshot named in every render, the fresh-epoch feed reset, the smoke on the order view, admission's build-context set from build-images). No workload exception.",
-  "imageSourceCommit": "aba349f8da23d2ab8b3dedb9738426e55e73e361",
+  "note": "ADR-096 \u00a76: every private image from one tip 1ef5e86e: aba349f8 plus trade-history-tiers through dde68069 (history-feed reads the bridges' subjects, bare at one partition; G3h refuses a subject no lane reads; the fresh-epoch reset holds history-feed; a retried fresh-epoch up reuses its own empty claims; G3 waits for the restarted trade-processor). No workload exception.",
+  "imageSourceCommit": "1ef5e86e7ec89276503ee9b1ef83b875f0521414",
   "workloads": {}
 }
