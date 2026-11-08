@@ -229,12 +229,12 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     Deployment that cannot be read, or any other value, SHALL refuse G3. An absent `rig-snapshot-base` is base 0.
   - The accounting fetch SHALL fail on an HTTP error or an empty body (`curl -f`). A failed fetch SHALL fail
     `read_model`, never hash as `accounting=md5("")`, and refuse G3.
-  - The snapshot G3 SHALL refuse while ConfigMap `rig-snapshot-base` is missing or not a number.
-  - `rig.sh snapshot-base` SHALL be the only writer of `rig-snapshot-base`, and SHALL write it once. It SHALL refuse
-    while the ConfigMap exists, while the read model is not rows, while any gateway runs, while the running members
-    are not the ones a passing gate covered, or while the members disagree on `trades`. It SHALL then run the row
-    check (SQL holds sides 1..trades, minus the unprojected ranges, each once) and record `trades` only if that check
-    passes, with `create`, never `apply`.
+  - (Retired 2026-11-06 with rows mode: `rig.sh snapshot-base` and a required `rig-snapshot-base`. A recorded base
+    that is not a number still refuses G3.)
+  - The default render (no `--read-model snapshot`) SHALL be the snapshot read model at one partition, as production
+    epoch e1107 ran it (2026-11-07): `TRADE_PROJECTION_MODE=snapshot`, `ORDER_FEED_PERSIST=false`,
+    `ORDER_VIEW_SNAPSHOT_MS=5000`. `validate` SHALL refuse any render without `ORDER_VIEW_SNAPSHOT_MS` > 0, because the
+    snapshot G3 refuses accounting with no `orders` ("no order view snapshot"), as `up` did at 7:13 pm ET that night.
   - The before/after equality of `read_model` is unchanged; the accounting line takes part in it in snapshot mode.
 - **FR-PRG-21:** When trade-processor runs `TRADE_PROJECTION_MODE=snapshot`, G3 SHALL check the committed accounting
   (`/v2/projection-feed/accounting`, FR-DRS-29/30). SQL then holds snapshots, not a row per trade side, so the row
