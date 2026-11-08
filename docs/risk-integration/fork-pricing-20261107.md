@@ -1,6 +1,7 @@
 # Every class priced on TraderX's engine fork: results, November 7
 
-**Engine.** TraderX's fork `traderx/engine-fork` at `b90af35f2495637f8ff63e543b76b0d28565ab77`, cut from
+**Engine.** TraderX's fork `traderx/engine-fork`. The proof is pinned to `24173899a2fdec1ec5e6180208a9503733d65d87`
+(the engine lane's commit on top of `b90af35`; same figures and parity as `b90af35`, re-run on both), cut from
 Alex's `17ac757`. Alex permitted the fork. The commit is a WIP, and the engine lane (session "Risk engine
 fork: R1–R6 and remaining gaps") now owns the fork. It is served from a read-only clone of that commit, so
 the run reports it unmodified. It runs on local CPU (macOS arm64, shared with other sessions' builds).
