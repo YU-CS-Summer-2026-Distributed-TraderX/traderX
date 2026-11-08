@@ -879,6 +879,9 @@ public final class BlpRiskState {
 
     public long idempotencyFrontier() { return Math.max(0L, idempotencyInsertions - idempotencyRetentionSize); }
 
+    /** RI33: the account holds a slot (putAccount stored it; false only when F7 refused it). */
+    public boolean knowsAccount(int accountId) { return accountSlot(accountId, false) >= 0; }
+
     public long reservedNotional(int accountId) {
         int slot = accountSlot(accountId, false);
         return slot < 0 ? 0L : reservedNotional[slot];

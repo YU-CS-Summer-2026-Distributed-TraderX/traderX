@@ -288,6 +288,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private long[] lastSessionAck; // YU17 {appliedSeq, phase, requestId}
     private long[] lastSelfMatchGroupAck;
     private long[] lastBusinessDayAck; // YU18 {appliedSeq, outcome, requestId}
+    private long[] lastAccountAck;     // RI33 {appliedSeq, outcome, requestId}
     private long[] lastResetAck;   // ADR-073 {appliedSeq, clearedOrders, requestId, contracts, queued}
     private long nextSymbolRequestId = 1;
     // Pipelined-batch ack accounting (owner thread only; pollEgress runs on the owner thread).
@@ -884,6 +885,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
         } else if (kind == MatchingEngineClusteredService.KIND_SELF_MATCH_GROUP) {
             lastSelfMatchGroupAck = new long[] {buffer.getLong(offset), buffer.getInt(offset+8), buffer.getLong(offset+13)};
+        } else if (kind == MatchingEngineClusteredService.KIND_ACCOUNT_CONTROL) {
+            lastAccountAck = new long[] {buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13)};
         } else if (kind == MatchingEngineClusteredService.KIND_BUSINESS_DAY) {
             // YU18 (FR-OT37): own kind, own id at 13, exactly like the phase ack above.
             lastBusinessDayAck = new long[] {
@@ -2986,6 +2989,34 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
 
+            if ("account".equals(action)) {
+                // RI33 (FR-AAD-01): `"accountId":42422` (a shell's brace expansion of the body) parses
+                // as a bare JSON string, whose missing accountId read as 0, and account 0 was admitted.
+                final JsonNode id = body.path("accountId");
+                final JsonNode enabled = body.path("enabled");
+                if (!body.isObject() || !id.isIntegralNumber() || !id.canConvertToInt() || id.asInt() <= 0
+                    || !(enabled.isMissingNode() || enabled.isBoolean())) {
+                    respond(exchange, 400,
+                        "{\"error\":\"a JSON object with a positive integer accountId (optional boolean enabled) required\"}");
+                    return;
+                }
+                long[] ack;
+                try {
+                    ack = onOwner(() -> admitAccount(id.asInt(), enabled.asBoolean(true), version));
+                } catch (final java.util.concurrent.TimeoutException e) {
+                    ack = null;
+                }
+                if (ack == null) {
+                    respond(exchange, 504, "{\"applied\":false,\"error\":\"admission outcome unknown; no committed decision\"}");
+                } else if (ack[1] != 0) {
+                    respond(exchange, 422, "{\"applied\":false,\"reason\":\"ACCOUNT_TABLE_FULL\",\"sequence\":" + ack[0] + "}");
+                } else {
+                    System.out.println("risk_control operator=" + operator + " type=account version=" + version);
+                    respond(exchange, 200, "{\"applied\":true,\"version\":" + version + ",\"sequence\":" + ack[0] + "}");
+                }
+                return;
+            }
+
             // YU17 FX-rate fix: POST /risk/control/fxrate {"currency":"EUR","rate":1.0842} — USD
             // per one unit. Validated HERE, before sequencing (boundary-owns-semantics, FR-CDM16):
             // an unknown currency or non-positive rate must never become a committed log entry the
@@ -3044,36 +3075,27 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         event.orderRef = 0;
                         event.setClientOrderKey(0L);
                     }
-                    case "restriction", "security", "account" -> {
-                        final boolean enabled = switch (action) {
-                            // A restriction is expressed to the engine as the restricted flag, and
-                            // a security control as tradable = enabled && !halted -- the same two
-                            // mappings RiskControlController makes.
-                            case "restriction" -> body.path("restricted").asBoolean(false);
-                            case "security" -> body.path("enabled").asBoolean(true)
-                                && !body.path("halted").asBoolean(false);
-                            default -> body.path("enabled").asBoolean(true);
-                        };
-                        if ("account".equals(action)) {
-                            event.type = InputEvent.TYPE_ACCOUNT_CONTROL;
-                            event.accountId = body.path("accountId").asInt();
-                            event.securityId = 0;
-                        } else {
-                            // register on action=security: this route is the operator's (S2: risk-control
-                            // token or admin JWT), the same trust as /seed, and the GKE profile seeds its
-                            // catalog through it (there is no control-feed adapter there). S4 made it a
-                            // lookup, so on a fresh epoch every instrument came back 422 "unknown instrument"
-                            // (traderx-tip, 2026-10-26). Restrictions stay lookup-only.
-                            final int id = resolveSecurityId(instrument, "security".equals(action));
-                            if (id < 0) {
-                                return false;
-                            }
-                            event.type = "restriction".equals(action)
-                                ? InputEvent.TYPE_RESTRICTION_CONTROL
-                                : InputEvent.TYPE_SECURITY_CONTROL;
-                            event.accountId = 0;
-                            event.securityId = id;
+                    case "restriction", "security" -> {
+                        // A restriction is expressed to the engine as the restricted flag, and a
+                        // security control as tradable = enabled && !halted -- the same two
+                        // mappings RiskControlController makes.
+                        final boolean enabled = "restriction".equals(action)
+                            ? body.path("restricted").asBoolean(false)
+                            : body.path("enabled").asBoolean(true) && !body.path("halted").asBoolean(false);
+                        // register on action=security: this route is the operator's (S2: risk-control
+                        // token or admin JWT), the same trust as /seed, and the GKE profile seeds its
+                        // catalog through it (there is no control-feed adapter there). S4 made it a
+                        // lookup, so on a fresh epoch every instrument came back 422 "unknown instrument"
+                        // (traderx-tip, 2026-10-26). Restrictions stay lookup-only.
+                        final int id = resolveSecurityId(instrument, "security".equals(action));
+                        if (id < 0) {
+                            return false;
                         }
+                        event.type = "restriction".equals(action)
+                            ? InputEvent.TYPE_RESTRICTION_CONTROL
+                            : InputEvent.TYPE_SECURITY_CONTROL;
+                        event.accountId = 0;
+                        event.securityId = id;
                         event.setControlEnabled(enabled);
                         event.setControlVersion(version);
                     }
@@ -3096,7 +3118,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // Replica update happens only AFTER the offer returned, so the operator-visible view can
             // never claim a control that consensus did not accept. The ordering is the point: the
             // log is the record, this map is a reflection of it.
-            if (!instrument.isEmpty() && !"policy".equals(action) && !"account".equals(action)) {
+            if (!instrument.isEmpty() && !"policy".equals(action)) {
                 controlReplica.compute(instrument, (k, prev) -> new long[] {
                     "security".equals(action)
                         ? (body.path("enabled").asBoolean(true)
@@ -3166,18 +3188,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             final int accountId = body.path("accountId").asInt();
             final String[] tickers = body.path("tickers").asText("").split(",");
             final long priceTicks = Math.round(body.path("price").asDouble(150) * 1_000_000d);
-            final Boolean ok = onOwner(() -> {
+            final Integer status = onOwner(() -> {
                 long version = System.currentTimeMillis(); // monotonic across re-seeds
-                event.type = InputEvent.TYPE_ACCOUNT_CONTROL;
-                event.accountId = accountId;
-                event.securityId = 0;
-                event.setControlEnabled(true);
-                event.setControlVersion(version++);
-                offerBlocking();
+                final long[] admitted = admitAccount(accountId, true, version++);   // RI33 (FR-AAD-03)
+                if (admitted == null) {
+                    return 504;
+                }
+                if (admitted[1] != 0) {
+                    return 422;
+                }
                 for (final String ticker : tickers) {
                     final int id = resolveSecurityId(ticker.trim(), true);   // S4: the one registering path
                     if (id < 0) {
-                        return false;
+                        return 422;
                     }
                     event.type = InputEvent.TYPE_SECURITY_CONTROL;
                     event.accountId = 0;
@@ -3191,9 +3214,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     event.priceTicks = priceTicks;
                     offerBlocking();
                 }
-                return true;
+                return 200;
             });
-            respond(exchange, Boolean.TRUE.equals(ok) ? 200 : 422, "{\"seeded\":" + ok + "}");
+            respond(exchange, status, "{\"seeded\":" + (status == 200) + "}");
         } catch (final Exception e) {
             fail(exchange, e);
         }
@@ -3228,6 +3251,30 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         } catch (final Exception e) {
             fail(exchange, e);
         }
+    }
+
+    /**
+     * RI33 (FR-AAD-02): sequence one account control and wait for the members' committed decision
+     * (owner thread only). Returns {appliedSeq, outcome (0 held, 1 refused), requestId}, or null when
+     * no decision arrived within ACK_TIMEOUT_MS: the control may still commit, so null is 504, never
+     * a refusal. The request id rides the ingress inputSeq slot because priceTicks carries the version.
+     */
+    private long[] admitAccount(final int accountId, final boolean enabled, final long version) {
+        final long requestId = clientOrderKey("account-" + accountId + "-" + System.nanoTime());
+        event.type = InputEvent.TYPE_ACCOUNT_CONTROL;
+        event.accountId = accountId;
+        event.securityId = 0;
+        event.qty = 0;
+        event.limitPx = 0L;
+        event.setControlEnabled(enabled);
+        event.setControlVersion(version);
+        codec.encodeInput(orderBuffer, 0, event, requestId, 0, 0);
+        lastAccountAck = null;
+        if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES,
+                () -> lastAccountAck != null && lastAccountAck[2] == requestId)) {
+            return null;
+        }
+        return lastAccountAck;
     }
 
     /** Offer the current {@code event} with backpressure retry (owner thread only). */
