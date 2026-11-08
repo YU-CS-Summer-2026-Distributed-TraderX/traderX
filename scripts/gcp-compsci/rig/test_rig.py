@@ -40,9 +40,11 @@ kubectl(){
       n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
       v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; expired && return 8; echo "$REINDEX";;
-    *"get sts clickhouse"*) [ -n "${HIST:-}" ];;   # HIST: the history store's per-partition check rows; unset = no store
+    *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ];;   # HIST_ABSENT: no history store rendered
     *"history-feed:18095/health"*) echo '{"ready":true,"lanes":[{"pending":0},{"pending":0}]}';;
-    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7; printf '%b\n' "$HIST";;
+    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
+      t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
+      printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
@@ -160,11 +162,20 @@ class Up(unittest.TestCase):
         rc, out, calls = run('rig_up')
         self.assertEqual(rc, 0, out)
         order = [first(calls, p) for p in (r'scale deploy/cluster-gateway --replicas=0', r'clusters resize .*engine-pool',
+                                           r'clusters resize .*history-pool --num-nodes 1',
                                            r'scale statefulset/order-matcher-cluster --replicas=3', r'create configmap rig-gate',
                                            SCALE_UP, r'networkInterfaces\[0\]\.networkIP', r'web-front-end-console')]
         self.assertNotIn(None, order, out)
         self.assertEqual(order, sorted(order), out)
         self.assertIn('G4 ok: equals the shutdown baseline', out)
+        self.assertIn('ok: sts/clickhouse Ready (the history store, FR-THT-02)', out)   # FR-THT-02: part of readiness
+        self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
+
+    def test_pools_creates_the_history_pool_tainted_for_the_store(self):
+        rc, out, _ = run('DRY=1; rig_pools')
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r'would: gcloud container node-pools create history-pool .*--machine-type c4d-standard-8 '
+                              r'.*--disk-type hyperdisk-balanced .*--node-taints traderx-history=true:NoSchedule')
 
     def refused(self, gate, **env):
         rc, out, calls = run('rig_up', **env)
@@ -332,7 +343,8 @@ class Up(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('booked sides 3..5', out)
         self.assertIn('booked 3 sides', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT=three_to_five))   # base 0
-        rc, out, _ = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)))  # 4 unprojected
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)),  # 4 unprojected
+                         HIST='0\\t4\\t5\\t11\\t39\\t0')   # and never in the history store either
         self.assertEqual(rc, 0, out)
 
     # FR-PRG-22: the dispatch and the snapshot G3 fail closed. Each case has an A/B control in the gate (the guard removed,
@@ -371,10 +383,9 @@ class Up(unittest.TestCase):
         rc, out, _ = run('rig_up', HIST='0\\t3\\t5\\t9\\t35\\t0', UNPROJECTED='2-2 4-4', ACCT=acct(p1=(0, 0, 0, 0, 0)))
         self.assertEqual(rc, 0, out)                     # 2 and 4 recorded unprojected: never reached the stream
 
-    def test_a_rig_without_the_history_store_skips_it_until_production_renders_one(self):
-        rc, out, _ = run('rig_up')
-        self.assertEqual(rc, 0, out)
-        self.assertIn('G3h skipped: no history store', out)
+    def test_a_rig_without_the_history_store_is_refused(self):
+        # FR-THT-02 renders the store; a namespace without sts/clickhouse is a missing system of record, not a skip.
+        self.assertIn('no history store (sts/clickhouse)', self.refused('G3h', HIST_ABSENT='1'))
 
     def test_a_history_store_with_a_deleted_or_duplicated_row_is_refused(self):
         for rows, why in (('0\\t3\\t5\\t9\\t35\\t0\\n1\\t1\\t2\\t2\\t4\\t0', 'holds 4 sides'),           # side 4 deleted
@@ -713,7 +724,8 @@ class Down(unittest.TestCase):
                                            r'create configmap rig-shutdown-baseline',
                                            r'scale statefulset/order-matcher-cluster --replicas=0',
                                            r'resize .*loadgen-pool --num-nodes 0',
-                                           r'resize .*gateway-pool --num-nodes 0', r'resize .*default-pool --num-nodes 0',
+                                           r'resize .*gateway-pool --num-nodes 0', r'resize .*history-pool --num-nodes 0',
+                                           r'resize .*default-pool --num-nodes 0',
                                            r'instances stop traderx-client-1')]
         self.assertNotIn(None, order, out)
         self.assertEqual(order, sorted(order), out)

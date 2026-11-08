@@ -51,9 +51,9 @@ COMPONENTS = {'order-matcher': 'cluster-node', 'trade-processor': 'trade-process
               'trade-service': 'trade-service', 'account-service': 'account-service',
               'people-service': 'people-service', 'price-publisher': 'price-publisher',
               'reference-data': 'reference-data', 'web-front-end': 'web-front-end-angular',
-              'api-explorer': 'api-explorer'}
+              'api-explorer': 'api-explorer', 'history-feed': 'history-feed'}
 JAVA = ['cluster-node', 'trade-processor', 'position-service', 'execution-algo-engine', 'trade-service',
-        'account-service']
+        'account-service', 'history-feed']
 NODE = ['price-publisher', 'reference-data', 'web-front-end-angular', 'web-front-end-console']
 
 
@@ -206,7 +206,8 @@ def reference_builds(work, logs):
     def gradle(component, ctx=None):
         ctx = ctx or contexts / component
         with (logs / (component + '-compile.log')).open('w') as s:
-            r = subprocess.run(['./gradlew', '--no-daemon', '--max-workers=2', '-q', 'clean', 'bootJar'], cwd=ctx,
+            r = subprocess.run(['./gradlew', '--no-daemon', '--max-workers=2', '-q', 'clean',
+                                'jar' if component == 'history-feed' else 'bootJar'], cwd=ctx,
                                stdout=s, stderr=subprocess.STDOUT)
         if r.returncode:
             raise SystemExit(f'{component}: reference compilation failed, see {logs}')
@@ -233,7 +234,8 @@ def reference_builds(work, logs):
     jars = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
         java = [ex.submit(gradle, c) for c in ['order-matcher', 'trade-processor', 'position-service',
-                                                'execution-algo-engine', 'trade-service', 'account-service']]
+                                                'execution-algo-engine', 'trade-service', 'account-service',
+                                                'history-feed']]
         other = [ex.submit(docker_payload, 'people-service', contexts / 'people-service', 'Dockerfile.compose',
                            '/app/publish', 'build'),
                  ex.submit(docker_payload, 'web-front-end-console', contexts / 'web-front-end-console', 'Dockerfile',

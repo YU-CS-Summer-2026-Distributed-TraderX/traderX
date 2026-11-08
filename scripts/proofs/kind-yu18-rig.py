@@ -8,6 +8,11 @@ auth-secrets/fix-session-password, ADR-086 sessions in JetStream, status from th
 
     python3 scripts/proofs/kind-yu18-rig.py --tag gap18 [--partitions 4] [--gateways 1] | kubectl --context kind-<c> apply -f -
 
+--history adds the history store as production renders it (prepare.py's history_store, FR-THT-02): ClickHouse and
+history-feed (traderx/history-feed:<tag>) on trade-processor's streams, minus the GKE pool, storage class and sizes
+(kind's default class; requests a laptop's Docker holds). --history-hot-days N also renders FR-THT-03's tiered policy,
+its cold disk on an S3Mock in the namespace instead of GCS (prepare.py points it at the bucket's XML API).
+
 Images: traderx/cluster-node:<tag> (build-cluster-image.sh) and traderx/trade-processor:<tag>
 (build-service-images.sh), loaded into the kind nodes. Secrets are random per render: nothing to leak, and
 kind's dev literals are refused by FR-ERH-S5 anyway (ALLOW_DEV_SECRETS stays true for the one-off proof pods only
@@ -21,7 +26,40 @@ spec = importlib.util.spec_from_file_location('prepare', ROOT / 'scripts/gcp-com
 prep = importlib.util.module_from_spec(spec); spec.loader.exec_module(prep)
 
 
-def render(tag, partitions, gateways, ns='traderx'):
+def history(docs, tag, hot_days):
+    """FR-THT-02's render on kind: prepare.history_store itself, then only what kind cannot take swapped out."""
+    for f in ['clickhouse.yaml', 'history-feed.yaml']:
+        docs += [d for d in yaml.safe_load_all((prep.HISTORY_DIR / f).read_text()) if d]
+    prep.history_store(docs, hot_days)
+    docs[:] = [d for d in docs if not (d['kind'] == 'StorageClass' and d['metadata']['name'] == prep.HISTORY_CLASS)]
+    for d in docs:
+        pod, name = prep.podspec(d), d['metadata']['name']
+        if name == 'clickhouse' and d['kind'] == 'StatefulSet':
+            d['spec']['volumeClaimTemplates'][0]['spec'].pop('storageClassName')
+            d['spec']['volumeClaimTemplates'][0]['spec']['resources']['requests']['storage'] = '5Gi'
+            c = pod['containers'][0]; c['resources'] = {'requests': {'cpu': '500m', 'memory': '1Gi'}, 'limits': {'memory': '3Gi'}}
+            if hot_days > 0:
+                prep.set_env(c, {'HISTORY_COLD_ENDPOINT': 'http://s3mock:9090/traderx-history/traderx/'})
+        if name == 'history-feed' and d['kind'] == 'Deployment':
+            c = pod['containers'][0]; c['image'] = 'traderx/history-feed:' + tag
+            c['resources'] = {'requests': {'cpu': '250m', 'memory': '512Mi'}, 'limits': {'memory': '1Gi'}}
+    # production's alias (prepare.py renders nats-broker -> app nats)
+    docs.append({'apiVersion': 'v1', 'kind': 'Service', 'metadata': {'name': 'nats-broker'},
+                 'spec': {'selector': {'app': 'nats'}, 'ports': [{'name': 'client', 'port': 4222, 'targetPort': 4222}]}})
+    if hot_days > 0:   # S3Mock takes any key; the Secret is the one prepare.py names
+        docs.append({'apiVersion': 'v1', 'kind': 'Secret', 'metadata': {'name': 'history-cold-hmac'},
+                     'stringData': {'access-id': 'kind', 'secret': secrets.token_hex(16)}})
+        docs.append({'apiVersion': 'v1', 'kind': 'Service', 'metadata': {'name': 's3mock'},
+                     'spec': {'selector': {'app': 's3mock'}, 'ports': [{'name': 'http', 'port': 9090}]}})
+        docs.append({'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {'name': 's3mock'},
+                     'spec': {'replicas': 1, 'selector': {'matchLabels': {'app': 's3mock'}},
+                              'template': {'metadata': {'labels': {'app': 's3mock'}}, 'spec': {'containers': [
+                                  {'name': 's3mock', 'image': 'adobe/s3mock:3.12.0', 'imagePullPolicy': 'IfNotPresent',
+                                   'env': [{'name': 'initialBuckets', 'value': 'traderx-history'}, {'name': 'root', 'value': '/data'}],
+                                   'ports': [{'containerPort': 9090}]}]}}}})
+
+
+def render(tag, partitions, gateways, ns='traderx', with_history=False, hot_days=0):
     docs = []
     for f in ['statefulset.yaml', 'nats.yaml', 'eod-price-db.yaml', 'trade-processor.yaml', 'gateway.yaml']:
         docs += [d for d in yaml.safe_load_all((K / f).read_text()) if d]
@@ -66,6 +104,9 @@ def render(tag, partitions, gateways, ns='traderx'):
                 'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
                 'PROJECTION_FEED_STREAM_LAYOUT': 'partition', 'TRADE_PROJECTION_MODE': 'snapshot',
                 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000'})
+    if with_history:
+        history(docs, tag, hot_days)
+        for d in docs: d['metadata']['namespace'] = ns
     return docs
 
 
@@ -74,5 +115,8 @@ if __name__ == '__main__':
     a.add_argument('--tag', required=True)
     a.add_argument('--partitions', type=int, default=4)
     a.add_argument('--gateways', type=int, default=1)
+    a.add_argument('--history', action='store_true', help='add the history store as production renders it (FR-THT-02)')
+    a.add_argument('--history-hot-days', type=int, default=0, help='FR-THT-03 tiering, cold disk on an S3Mock')
     o = a.parse_args()
-    yaml.safe_dump_all(render(o.tag, o.partitions, o.gateways), sys.stdout, sort_keys=False)
+    yaml.safe_dump_all(render(o.tag, o.partitions, o.gateways, with_history=o.history or o.history_hot_days > 0,
+                              hot_days=o.history_hot_days), sys.stdout, sort_keys=False)

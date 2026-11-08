@@ -8,7 +8,7 @@
 #     LOADGEN=N       up also brings loadgen-pool to N nodes and LOADGEN_PODS idle load pods (default 4 per node), so
 #                     `loadgen.sh start RATE` begins the binary load in seconds (FR-PRG-32); 0..16 (default 0)
 #
-# pools   creates nats-pool, gateway-pool, the client VM and its IAP rule if missing; puts the sysctls on
+# pools   creates nats-pool, gateway-pool, history-pool, the client VM and its IAP rule if missing; puts the sysctls on
 #         engine-pool (only while it has no nodes, since GKE recreates the nodes to apply them).
 # up      nodes, then members, then the restore gate (gateways stay at 0 until it passes; a mismatch stops here),
 #         then N gateways, the internal LB, autoscaling, and a smoke order checked at the effect end.
@@ -55,10 +55,11 @@ DRY=0
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
 pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
-  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; esac; }
+  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo c4d-standard-8;; esac; }
 pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo 1;;
-  gateway-pool) echo "$GATEWAYS";; esac; }
-RIG_POOLS="default-pool engine-pool nats-pool gateway-pool"
+  gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
+# history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).
+RIG_POOLS="default-pool engine-pool nats-pool gateway-pool history-pool"
 
 et(){ TZ=America/New_York date '+%-I:%M:%S %p ET'; }
 step(){ echo; echo "== $(et)  $*"; }
@@ -136,7 +137,7 @@ autoscale_off(){
 
 # ---- pools -------------------------------------------------------------------------------------------------------
 rig_pools(){
-  step "pools: nats-pool and gateway-pool exist with the right machine type; engine-pool carries the sysctls"
+  step "pools: nats-pool, gateway-pool and history-pool exist with the right machine type; engine-pool carries the sysctls"
   local sa scopes net sub
   if [ "$DRY" = 1 ]; then sa='<engine-pool SA>'; scopes='<engine-pool scopes>'; net=default; sub=default; else
     sa=$(gc container node-pools describe engine-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.serviceAccount)')
@@ -164,6 +165,16 @@ rig_pools(){
     do_ gcloud container node-pools create gateway-pool "${common[@]}" --machine-type c4d-standard-8 \
       --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-gateway=true:NoSchedule \
       --node-labels traderx-role=gateway --system-config-from-file "$HERE/node-gateway.yaml"
+  fi
+  if [ "$DRY" = 0 ] && pool_exists history-pool; then
+    [ "$(gc container node-pools describe history-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.machineType)')" = c4d-standard-8 ] \
+      || die "history-pool exists with another machine type"
+    note "history-pool present"
+  else
+    # FR-THT-02: the store's claim is Hyperdisk Balanced (class clickhouse-hot), which C4D attaches.
+    do_ gcloud container node-pools create history-pool "${common[@]}" --machine-type c4d-standard-8 \
+      --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-history=true:NoSchedule \
+      --node-labels traderx-role=history
   fi
   if [ "$DRY" = 0 ] && pool_exists loadgen-pool; then note "loadgen-pool present"; else
     # FR-PRG-16: the binary load's own nodes, tainted so nothing else lands there; at 0 until `rig.sh loadgen N`.
@@ -194,7 +205,7 @@ rig_pools(){
 
 require_pools(){
   [ "$DRY" = 1 ] && return 0
-  for p in nats-pool gateway-pool; do pool_exists $p || die "$p is missing: run 'rig.sh pools' first"; done
+  for p in nats-pool gateway-pool history-pool; do pool_exists $p || die "$p is missing: run 'rig.sh pools' first"; done
   engine_has_sysctls || die "engine-pool has no sysctls: run 'rig.sh pools' while it is at 0"
   local v; for v in $CLIENT_VMS; do
     gc compute instances describe "$v" --zone "$ZONE" >/dev/null 2>&1 || die "$v missing: run 'rig.sh pools'"; done
@@ -469,8 +480,8 @@ print("; ".join(bad) or f"OK {got[0]} sides")
 ' "$@"; }
 g3_history(){
   local t=$1 ranges rows verdict
-  # ponytail: opt-in until FR-THT-02 renders the store into the production manifests; then its absence is refused.
-  kc get sts clickhouse -o name >/dev/null 2>&1 || { note "G3h skipped: no history store (sts/clickhouse) on $NS"; return 0; }
+  # FR-THT-02 renders the store into the production manifests: its absence is a refusal, never a skip.
+  kc get sts clickhouse -o name >/dev/null 2>&1 || die "G3h: no history store (sts/clickhouse) on $NS (FR-THT-02)"
   wait_for 600 "every history-feed lane open with nothing pending (G3h)" history_caught_up
   rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
     || die "G3h: the history store could not be read"
@@ -493,7 +504,7 @@ restore_gate(){
     note "would check: G1 each member's replay from 0 reaches its applied and reproduces its trade count"
     note "would check: G2 (check A) each member's $GATE_SHADOW_PATH book/position hashes equal its own; refuse if absent"
     note "would check: G3 (check B) read-model md5s equal those read before the members started"
-    note "would check: G3h (FR-THT-06) the history store holds sides 1..trades each once, when sts/clickhouse exists"
+    note "would check: G3h (FR-THT-06) the history store holds sides 1..trades each once; no sts/clickhouse is refused"
     note "would check: G4 the members equal the rig-shutdown-baseline ConfigMap, when one exists"
     note "would record: ConfigMap rig-gate (PASS, member pod UIDs)"
     return 0
@@ -862,7 +873,7 @@ rig_up(){
   else
     hold_gateways
     hold_members
-    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $RIG_VMS started"
+    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS, history-pool 1; $RIG_VMS started"
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
@@ -875,7 +886,9 @@ rig_up(){
       # ProgressDeadlineExceeded, and rollout status gives up on that flag at once while the pods are still scheduling.
       for d in $(kc get deploy -o name | grep -v '/cluster-gateway$'); do
         wait_for 900 "$d Ready" deploy_rolled_out "$d"
-      done; note "ok"
+      done
+      wait_for 900 "sts/clickhouse Ready (the history store, FR-THT-02)" ready_replicas sts/clickhouse 1
+      note "ok"
     fi
     nats_record ''
     local before='' es st lbl
@@ -982,7 +995,7 @@ rig_down(){
   step "every rig pool to 0; $RIG_VMS stopped"
   { [ "$DRY" = 1 ] || pool_exists loadgen-pool; } && do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool \
     --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
-  for p in gateway-pool nats-pool engine-pool default-pool; do
+  for p in gateway-pool nats-pool history-pool engine-pool default-pool; do
     do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   done
   local v; for v in $RIG_VMS; do do_ gcloud compute instances stop "$v" --zone "$ZONE" --project "$PROJECT"; done

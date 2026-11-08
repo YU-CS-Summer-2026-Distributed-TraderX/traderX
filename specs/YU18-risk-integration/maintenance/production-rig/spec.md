@@ -54,8 +54,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - The order's `orderbook` row SHALL reach CANCELED within 60 s.
   - The FIX password SHALL NOT appear in any line it prints.
 - **FR-PRG-05:** The production candidate (`prepare.py`) SHALL:
-  - place members on `engine-pool`, gateways on `gateway-pool` and NATS on `nats-pool`, each with its taint's
-    toleration, and everything else on `default-pool`;
+  - place members on `engine-pool`, gateways on `gateway-pool`, NATS on `nats-pool`, and ClickHouse with history-feed
+    on `history-pool` (trade-history-tiers FR-THT-02, 2026-11-07), each with its taint's toleration, and everything
+    else on `default-pool`;
   - run members with 7 CPU / 16Gi, generational ZGC at a 12 GB heap (`-Xms12g -Xmx12g -XX:+AlwaysPreTouch`), and a
     4 MiB Aeron `so_rcvbuf`;
   - pin `MAX_ACTIVE_BOOKS` to 1,024, so the book cap (an apply-path decision, ADR-079 §6) cannot move with the heap.
@@ -64,7 +65,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - `rig.sh pools` SHALL:
     - give `engine-pool` the bench sysctls (`vm.dirty_*`, `net.core.rmem_*`), and only while it has no nodes;
     - create `nats-pool` on c3-standard-8, so that it can attach NATS's pd-balanced claim;
-    - create `gateway-pool` on c4d-standard-8 with the static CPU manager.
+    - create `gateway-pool` on c4d-standard-8 with the static CPU manager;
+    - create `history-pool` on c4d-standard-8 (Hyperdisk Balanced for the store's claim), tainted `traderx-history`;
+      `up` brings it to 1 node and waits for `sts/clickhouse` with the support workloads; `down` takes it to 0.
 - **FR-PRG-06:** Gateways run one per node.
   - The Deployment SHALL have no replica count in the pack, a required hostname anti-affinity, and a guaranteed
     whole-CPU pod (4 CPU / 2Gi). `validate()` SHALL refuse otherwise.

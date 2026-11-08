@@ -45,8 +45,9 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   `/history/accounts/{id}/positions?asOf=`, `/history/vwap?from=&to=` (JSON) and `/history/export/{trades|orders}?day=`
   (CSV, streamed). Times are ISO-8601 instants or epoch ms, days ISO dates, UTC. Every caller value SHALL reach
   ClickHouse as a bound query parameter; a malformed value SHALL be a 400. Exactly one instance SHALL run (its lanes
-  are not fenced): one replica, `Recreate`. Its manifests (`history-feed/k8s/`) are opt-in, applied by
-  `scripts/history-feed/kind-smoke.sh`, and in no base kustomization, CompSci render or GKE manifest.
+  are not fenced): one replica, `Recreate`. Its manifests (`history-feed/k8s/`) are in no base kustomization; since 2026-11-07
+  the CompSci render includes them (trade-history-tiers FR-THT-02), and `scripts/history-feed/kind-smoke.sh` applies
+  them on kind.
 - FR-HST-07: A lane's cursor SHALL be bound to its stream's incarnation, the stream's creation time
   (`StreamInfo.createTime`, ISO-8601 at full precision), recorded in `history_cursor` (stream, table, part,
   incarnation) before the lane's first row from that incarnation. This is trade-processor's scheme and rule

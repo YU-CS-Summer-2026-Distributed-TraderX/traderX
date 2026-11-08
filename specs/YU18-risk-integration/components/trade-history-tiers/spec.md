@@ -1,7 +1,8 @@
 # Trade history tiers specification
 
 Status: proposed 2026-11-01; first slice implemented 2026-11-06, local and kind only (FR-THT-03 policy, FR-THT-05
-inventory and the recon move, FR-THT-06 gate check, the FR-THT-04 object-storage question). Nothing in production. Decision: [ADR-102](../../system/adr-102-trade-history-off-mariadb.md).
+inventory and the recon move, FR-THT-06 gate check, the FR-THT-04 object-storage question); FR-THT-02's render and
+rig steps 2026-11-07, local and kind only. Nothing in production. Decision: [ADR-102](../../system/adr-102-trade-history-off-mariadb.md).
 Dependencies: history-store FR-HST-01..07 (`history-feed`, ClickHouse 25.8), downstream-read-side (trade-processor,
 FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (licence installed by yaakov only).
 
@@ -16,6 +17,17 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
 - FR-THT-02: ClickHouse (`history-feed`) SHALL be the trade history's system of record on GKE: every trade side and
   order event exactly once (FR-HST-03), on the per-partition streams (FR-DRS-34), rendered into the production
   manifests and started by `rig.sh up`. Its health SHALL be part of the rig's readiness.
+  Implemented 2026-11-07 (local and kind): `prepare.py` `history_store` renders `history-feed/k8s/` on `history-pool`
+  (c4d-standard-8, taint `traderx-history`): ClickHouse 4 CPU / 16Gi guaranteed on a 200Gi claim of class
+  `clickhouse-hot` (Hyperdisk Balanced, Retain), history-feed 2 CPU / 4Gi, one `Recreate` replica, its feed
+  variables copied from trade-processor; a NetworkPolicy admits only history-feed and trade-processor to port 8123.
+  `--history-hot-days N` adds FR-THT-03's `tiered` policy, its cold disk on `gs://<project>-traderx-history/<ns>/`
+  (Secret `history-cold-hmac`). `validate` refuses an absent, unsized, unclaimed or surging store, a writer on other
+  streams, and hot days without the cold disk; `pin_images` refuses an image with no locked digest (ClickHouse 25.8,
+  amd64 child `sha256:4ff0d6c1…` in `public-image-lock.json`). history-feed is a private image (`build-images.py`,
+  `measure-admission.py`; admission counts 13+E private, 10 upstream, 26 slots). `rig.sh pools` creates
+  `history-pool`, `up` brings it to 1 node and waits for `sts/clickhouse` with the support workloads, `down` takes
+  it to 0. Not done: the GCS bucket and HMAC key (cloud provisioning), and a GKE bring-up.
 - FR-THT-03: ClickHouse SHALL keep the newest `HISTORY_HOT_DAYS` date partitions on local SSD and move older ones to
   a GCS-backed disk by a TTL storage policy; queries SHALL return the same rows before and after a move.
   Implemented: `HISTORY_HOT_DAYS` (0 = off) puts both tables on the `tiered` policy of
@@ -41,7 +53,7 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   Implemented as `rig.sh` G3h, after G3: per partition count, max, wrapped sums of `trade_seq` and `trade_seq²`
   (ClickHouse's UInt64 arithmetic wraps 2^64 like the closed form) and duplicates, against the closed form over
   sides 1..t minus `rig-unprojected` (no base: the store is fed from cursor 0). Waits for every lane open with
-  nothing pending. Opt-in while no `sts/clickhouse` exists; mandatory once FR-THT-02 renders the store. The sums are
+  nothing pending. Mandatory since FR-THT-02 renders the store (2026-11-07): no `sts/clickhouse` is a refusal. The sums are
   order-insensitive: the order is the stream's, held by FR-HST-03's cursor, so a set check is the exact one.
 - FR-THT-08 (proposed 2026-11-06): A fresh epoch (ADR-101) SHALL archive the history tables with the read model's
   epoch tables (`arc_<label>_trades`, `_orders`, `_history_cursor`), because trade and order refs restart at 1 and
@@ -69,6 +81,17 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   deleted plus one duplicated (count unchanged) each refused. Offline: `test_rig.py` history cases, which fail with
   the gate call removed.
 - FR-THT-04 object storage: `scripts/trade-history-tiers/kdb-objstor-check.sh` (KDB-X Community, real `gs://`).
+
+## Kind evidence (2026-11-07, traderx-tht2)
+
+`scripts/trade-history-tiers/kind-history-store.sh` on `kind-yu18-rig.py --history` (prepare.py's `history_store`,
+minus the GKE pool, class and sizes), images built at this branch, 4 trade sides crossed by
+`yu18-projection-effect-end` (PASS twice). rig.sh's own `g3_history`: PASS on the store as fed; REFUSED with side 4
+deleted ("holds 3 sides") and with side 4 twice ("1 duplicated"); PASS restored. Untiered render: no `tiered` policy
+("Unknown storage policy"), the tier's negative control. Re-applied with `--history-hot-days 1` (cold disk on an
+S3Mock): G3h PASS again after ClickHouse's restart, `trades` on `tiered`, a probe table's 5-day-old partition moved
+to `cold_object` alone, rows equal before and after, 26 objects in S3. kindnet does not enforce the NetworkPolicy:
+rendered, not proven.
 
 ## Open questions
 

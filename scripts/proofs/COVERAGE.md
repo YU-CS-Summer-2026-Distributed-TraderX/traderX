@@ -1,5 +1,14 @@
 # Proof coverage against the specs
 
+## History store in the production render on kind (2026-11-07, trade-history-tiers FR-THT-02/03/06, kind traderx-tht2)
+
+`scripts/trade-history-tiers/kind-history-store.sh` on `kind-yu18-rig.py --history[-hot-days 1]` (prepare.py's
+`history_store`): rig.sh's G3h PASS; side deleted / side doubled REFUSED; PASS restored; untiered render has no
+`tiered` policy (negative); tiered render moves an old partition to the S3 cold disk with equal rows. Offline:
+`test_prepare.HistoryStore` (render, unsized/unclaimed/absent/surging/other-streams refused, unlocked digest refused,
+tiered cold disk), `test_rig` (history-pool created/sized/zeroed, sts/clickhouse readiness, absent store refused;
+A/B: with the old skip restored the absent-store test fails).
+
 ## Snapshot-only read model on kind (2026-11-06, trade-history-tiers, kind traderx-tht)
 
 Rows mode retired (FR-THT-01). Rig: kind-yu18-rig.py's render (snapshot, P=4 partition streams), images from
