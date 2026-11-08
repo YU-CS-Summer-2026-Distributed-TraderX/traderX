@@ -62,7 +62,31 @@ The same request as November 6: the genuine book's bonds, swaps and Europeans ti
 
 ## 3. The genuine large book, every class
 
-Running at the time of this commit (the November 6 book, seed 20261106, every class now mapped); the numbers follow in the next commit.
+The November 6 book (seed 20261106, cut seq 16,706, `cutSha256` `1c89f41d…eefc8`), every class now mapped,
+`npv` + `market_risk` at 256 scenarios through `large_book.py`, engine `b90af35` from a clean clone
+(`modified=false`). Every row that holds a position prices.
+
+| | November 6 (Alex's `17ac757`) | November 7 (fork) |
+|---|---|---|
+| Priced trades | 2,864 | **11,360** |
+| Refused | 8,500 (R1–R4) | 4, all zero-quantity flat options (not instrument gaps) |
+| Engine time | 1,496 s | 5,949 s (99 min) |
+| Peak RSS (API + worker) | 2.8 GiB | 3.4 GiB |
+| VaR99 / ES97.5 | 36.18mm / 37.34mm | 73.56mm / 73.80mm |
+| VaR97.5 / ES99 | 32.89mm / 43.38mm | 54.81mm / 89.62mm |
+
+- **Mix.** 2,113 equities, 3,326 OCC options, 1,921 bonds (Treasuries and corporates), 2,594 swaps,
+  812 Europeans, 453 Bermudans, 141 Americans. That is all 7,364 position rows less the 4 flat ones, and all
+  4,000 contracts. Every trade NPV is finite; portfolio NPV 1.626bn.
+- **Correctness.** `ore_parity.py --sample 300`: 285 checked against a reference, all agree.
+  - Equities 52, exact (5.9e-16 relative).
+  - Options 84 against QuantLib FD, max 1.1e-4 relative (86.66 on a large position), inside the 3e-4 bound.
+  - Bonds 55 (35 ORE oracle, 20 spreaded corporates) 1.8e-13; swaps 71 6.2e-13; Europeans 23 2.2e-14.
+  - The 15 Bermudans and Americans in the sample have no reference (§4).
+- **Time.** At the November 6 cost of ~30 s an American, the 141 Americans alone are ~70 minutes; the
+  calibrated swaptions, not the new classes, set the run's length.
+
+Not yet re-run on `2417389`; the engine lane reports it reproduces `b90af35`'s figures, as the proof did.
 
 ## 4. Gaps not closed
 
