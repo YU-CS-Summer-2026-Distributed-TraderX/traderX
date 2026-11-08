@@ -106,6 +106,18 @@ record, replicas > 0) is left as it is. `fresh-epoch` refuses an archived epoch.
 `test_the_archive_records_itself_and_each_retry_ordering_resumes` (stopped inside the archive, after it before the
 restart, after trade-processor restarted with live rows; at 0 with no record refused; claims under archived refused).
 
+**Amendment 2026-11-08 (retention; yaakov: "Keep only the last one", all trade data is synthetic):** the archives
+were kept forever (e1101 to e1108: eight sets of three member-disk snapshots, `arc_<label>_*` in eod-price-db, and
+since FR-THT-08 in ClickHouse). Now, once a fresh epoch's archive is complete (rig-epoch `archived`, its three snapshots
+READY, `arc_<label>_trades` present), its `up` deletes every OLDER epoch's archive before trade-processor restarts,
+and `rig.sh prune-archives` does the same on its own (FR-PRG-39). The epoch just archived stays, so the last epoch is
+still replayable from its snapshots and tables; any earlier one is gone for good. Which archive is older is read from
+the `rig-epoch-<label>-history` ConfigMaps (creation time), which stay as each epoch's record. A label with no record
+or not older than the newest is refused rather than guessed, as is any listing that cannot be read. Deletes are
+`IF EXISTS` against a fresh listing and are checked by a second listing, so a retry finishes a partial delete. Tests:
+`test_rig.Retention` (7) and `test_archive_read_model_mariadb` (two more, on mariadb:11.4: only the older epoch's
+tables go and the live definitions are unchanged; a live table's key onto an archive refuses).
+
 ## Consequences
 
 - The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads
@@ -117,7 +129,8 @@ restart, after trade-processor restarted with live rows; at 0 with no record ref
 - Epoch-prefixed ids and FR-RI08's scoped history are not used; the old epoch is read from `arc_LABEL_*` and the
   snapshots, not from a live scope. A later move to managed runs still needs the work this ADR declines.
 - FR-DRS-36 cursors start unbound at 0 in the new `projection_cursor`, which needs no attestation.
-- Snapshot storage is billed until the snapshots are deleted.
+- Snapshot storage is billed until the snapshots are deleted; since 2026-11-08 only the last epoch's three are kept
+  (FR-PRG-39).
 - Tests: `test_rig.FreshEpoch` (11; every refusal fails against the rig.sh before FR-PRG-29) and
   `test_archive_read_model_mariadb` (mariadb:11.4 with the shipped schema: identical definitions, foreign keys
   included, empty live tables, a rerun that changes nothing; control: `LIKE` alone drops the foreign key).

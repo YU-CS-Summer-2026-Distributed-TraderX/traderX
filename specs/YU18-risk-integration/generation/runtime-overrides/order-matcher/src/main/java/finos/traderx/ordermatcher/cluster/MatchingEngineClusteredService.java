@@ -2663,7 +2663,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         lastLoadedNextOrderRef = nextOrderRef;
     }
 
-    private void loadSnapshot(final Image snapshotImage) {
+    /** Package-private for the restore gate's snapshot+tail shadow (ClusterRecon.tailState, FR-PRG-40). */
+    void loadSnapshot(final Image snapshotImage) {
         // FR-XOD-18. Two Aeron behaviours this loop must not inherit:
         //  - a record larger than one message (a full ADR-090 stream is 2,108 bytes) arrives as fragments, so the
         //    handler sits behind an assembler and always sees whole messages;

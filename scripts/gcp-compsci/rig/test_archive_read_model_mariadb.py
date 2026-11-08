@@ -53,7 +53,8 @@ class ArchiveReadModel(unittest.TestCase):
 
     def archive(self, label):
         with tempfile.TemporaryDirectory() as d:
-            body = (f'set -euo pipefail; EVIDENCE={d}; RIG_LIB=1 . "{RIG}"; wait_for(){{ :; }}; '
+            # reset_feed (NATS, FR-PRG-29) is test_rig's; this test is about the tables
+            body = (f'set -euo pipefail; EVIDENCE={d}; RIG_LIB=1 . "{RIG}"; wait_for(){{ :; }}; reset_feed(){{ :; }}; '
                     f'kc(){{ case "$*" in "exec deploy/eod-price-db"*) docker exec -e MARIADB_ROOT_PASSWORD=pw {self.cid} "${{@:6}}";; '
                     f'"get deploy trade-processor"*) echo 1;; *) :;; esac; }}; archive_read_model {label}')
             return subprocess.run(['bash', '-c', body], capture_output=True, text=True, timeout=300)
@@ -85,6 +86,42 @@ class ArchiveReadModel(unittest.TestCase):
         names = set(self.q("SELECT table_name FROM information_schema.tables WHERE table_schema='traderx'").stdout.split())
         self.assertNotIn('projection_accounting', names); self.assertNotIn('arc_e3_projection_accounting', names)
         self.assertIn('arc_e3_trades', names); self.assertIn('trades', names)
+
+    def prune(self, keep):   # FR-PRG-39 with no ClickHouse, keep's three READY snapshots, e1 and e2 on record
+        hist = '{"items":[' + ','.join(f'{{"metadata":{{"name":"rig-epoch-{l}-history","creationTimestamp":"2026-11-0{i}T00:00:00Z"}}}}'
+                                       for i, l in enumerate(('e1', 'e2'), 1)) + ']}'
+        with tempfile.TemporaryDirectory() as d:
+            body = (f'set -euo pipefail; EVIDENCE={d}; RIG_LIB=1 . "{RIG}"; '
+                    f'kc(){{ case "$*" in "exec deploy/eod-price-db"*) docker exec -e MARIADB_ROOT_PASSWORD=pw {self.cid} "${{@:6}}";; '
+                    f'"get configmap -o json") echo \'{hist}\';; *) :;; esac; }}; '
+                    f'gc(){{ case "$*" in *"snapshots list"*) printf "traderx-{keep}-m%s\\n" 0 1 2;; *"snapshots describe"*) printf "READY\\tx\\n";; esac; }}; '
+                    f'prune_archives {keep}')
+            return subprocess.run(['bash', '-c', body], capture_output=True, text=True, timeout=300)
+
+    def names(self):
+        return set(self.q("SELECT table_name FROM information_schema.tables WHERE table_schema='traderx'").stdout.split())
+
+    def test_prune_drops_only_the_older_epochs_archive(self):
+        before = {t: self.definition(t, t) for t in TABLES}
+        self.q("INSERT INTO accounts(id,displayname) VALUES (22214,'a') ON DUPLICATE KEY UPDATE id=id;")
+        for label in ('e1', 'e2'):
+            p = self.archive(label); self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        p = self.prune('e2'); self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertFalse({n for n in self.names() if n.startswith('arc_e1_')})
+        self.assertEqual({n for n in self.names() if n.startswith('arc_e2_')}, {f'arc_e2_{t}' for t in TABLES})
+        for t in TABLES:
+            self.assertEqual(self.definition(t, t), before[t], t)   # live tables untouched, foreign key included
+        self.assertEqual(self.q('SELECT count(*) FROM accounts WHERE id=22214').stdout.strip(), '1')
+        p = self.prune('e2'); self.assertEqual(p.returncode, 0, p.stdout + p.stderr)   # a rerun: nothing older
+        self.assertIn('nothing older than e2', p.stdout)
+
+    def test_prune_refuses_while_a_live_table_references_an_old_archive(self):
+        for label in ('e1', 'e2'):
+            p = self.archive(label); self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.q('CREATE TABLE ctl_ref (t VARCHAR(100), FOREIGN KEY (t) REFERENCES arc_e1_trades(id))')
+        p = self.prune('e2')
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr); self.assertIn('ctl_ref->arc_e1_trades', p.stderr)
+        self.assertEqual({n for n in self.names() if n.startswith('arc_e1_')}, {f'arc_e1_{t}' for t in TABLES})
 
     def test_control_like_alone_drops_the_foreign_key(self):
         self.q('CREATE TABLE ctl_positions LIKE positions')
