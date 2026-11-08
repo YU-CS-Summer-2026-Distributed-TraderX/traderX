@@ -170,5 +170,15 @@ parity with ORE.
   - spread bonds with `FixedRateBond` on a `ZeroSpreadedTermStructure`.
 
   OIS Bermudans and Americans SHALL be checked by the no-arbitrage bounds.
+- FR-RP-VARES-08 (GKE, November 8): the fork SHALL run on GKE as an HTTP image built by
+  `risk-portfolio-tools/packaging/Dockerfile.engine-http`:
+  - the batch pilot's hash-locked Linux wheels;
+  - the pinned commit's clean checkout with its `.git`, so the result's `engine.revision` is that commit and
+    `modified` is false. The build SHALL fail otherwise.
+
+  A node that runs it on CPU SHALL have `vm.max_map_count` of at least 1,048,576. At the Linux default
+  (65,530), XLA's CPU JIT fails with `LLVM compilation error: Cannot allocate memory` partway through a
+  book of calibrated swaptions, and the worker dies. A 256-scenario run of the genuine book peaked at
+  116,416 mappings. The CUDA image needs `LD_LIBRARY_PATH=/usr/local/nvidia/lib64` on GKE's driver.
 - SC-RP-VARES-02: The engine fork's `tests/test_traderx_products.py` passes. `scripts/proofs/yu18-var-es-e2e.sh`
   against the fork exits 0 with every class priced and every negative control refused.
