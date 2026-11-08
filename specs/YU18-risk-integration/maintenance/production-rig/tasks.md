@@ -59,8 +59,14 @@
 - [x] G1 above the full-history index cap defers to G2 (FR-PRG-18, 2026-10-29).
 - [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Built 2026-11-08 (FR-PRG-40):
       `prepare.py --archive-purge` renders the agent, the member's `/recon/tail-state` is the reference, G1/G2 switch to
-      it with the purge held. Offline, in-process on real members, kind proof: see the session record. Left: yaakov's
-      yes to discard the purged log (ADR-079 amendment), then one production session (build, roll the members, gate).
+      it with the purge held. Offline and in-process on real members. Kind proof 2026-11-08 11:05–11:11 am ET
+      (`rig/kind-purge.sh`, image built at a78cc592, members rendered by `prepare.archive_purge`): every member purged
+      behind its second-latest snapshot (2 passes, 11 segments deleted each, ~0.3 ms per unlink, no cluster error); the
+      replay from 0 answered an HTTP error; after a restart from disk `g12_tail` held the purge and passed (each tail
+      65,895 orders from log position 12,161,632 to applied 160,904, book hashes equal to the live digests); idle past two
+      snapshots it was INCONCLUSIVE. The proof client's orders rest and never trade (0 trades, book at 100,000 open
+      orders): trades through the tail are covered by `ThreeMemberClusterTest` only. Left: yaakov's yes to discard the
+      purged log (ADR-079 amendment), then one production session (build, roll the members, gate).
       - Purge the members' log behind a snapshot (archive purge, the bench's B2, proven on hxb at 250K/s). This bounds
         B1's growth and G2's replay time.
       - Once the log is purged, G1 and G2 cannot replay from 0. They switch to snapshot plus tail: replay from the
