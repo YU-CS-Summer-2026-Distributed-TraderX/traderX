@@ -120,6 +120,9 @@ kubectl(){
     *"web-front-end-console"*) [ -n "${SMOKE_FAIL:-}" ] && { echo "FAIL refused: 58=Invalid Logon message"; return 1; }; printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
     *"get sts order-matcher-cluster -o jsonpath={.status.replicas}"*) echo "${STS_REPLICAS:-0}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec.replicas}"*) echo "${STS_SPEC:-0}";;
+    *"containers[*].name}"*) [ -n "${CONTAINERS_FAIL:-}" ] && return 1; echo "cluster-node${PURGE:+ archive-purge}";;   # PURGE: rendered
+    *"-- touch /data/archive-purge.hold"*|*"-- rm -f /data/archive-purge.hold"*) [ -z "${HOLD_FAIL:-}" ];;
+    *tail-state*) expired || echo "${TAIL_STATE:-$TAIL_OK}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec"*) echo member-image;;
     *"get sts order-matcher-cluster -o jsonpath"*) echo 3;;
     *"get pod rig-errlog-"*phase*) echo "$ERRLOG_PHASE";;
@@ -172,6 +175,10 @@ def acct(p0=(3, 5, 9, 35, 0), p1=(2, 4, 6, 20, 0), resting=(1, 1), orders=True):
 
 
 GOOD['ACCT'] = acct()
+# FR-PRG-40: /recon/tail-state for the members in GOOD, 40 session messages replayed after the oldest retained snapshot
+TAIL = {'applied': 100, 'complete': True, 'bookHash': '11', 'positionHash': '22', 'openOrders': 2, 'positions': 3, 'digestTrades': 5,
+        'replayedMessages': 40, 'snapshotLogPosition': 4096, 'inconclusive': False}
+GOOD['TAIL_OK'] = __import__('json').dumps(TAIL)
 GOOD['ORDERS'] = '[{"id":"om-7","status":"CANCELED"}]'   # the smoke order (NEW 7), cancelled, in the order read model   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
 
 
@@ -613,6 +620,75 @@ class Up(unittest.TestCase):
         rc, out, _ = run(body)
         self.assertEqual(rc, 2, out)
         self.assertIn('one per node does not hold', out)
+
+
+class Purge(unittest.TestCase):
+    """FR-PRG-40: with the archive purge rendered the log no longer starts at 0, so G1 and G2 read /recon/tail-state (the
+    oldest retained snapshot plus a strict replay of its tail), with the purge held while they read. An empty tail is
+    INCONCLUSIVE, never ok; the gate then rests on G4. Without the purge the replay from 0 runs as before."""
+    def tail(self, **change):
+        import json
+        return json.dumps({**TAIL, **change})
+
+    def refused(self, why, **env):
+        rc, out, calls = run('rig_up', PURGE='1', **env)
+        self.assertEqual(rc, 2, out); self.assertIn('REFUSED', out); self.assertIn(why, out)
+        self.assertIsNone(first(calls, SCALE_UP), 'a gateway started after a refusal')
+        self.assertIsNone(first(calls, 'rm -f /data/archive-purge.hold'), 'the purge was released after a refusal')
+        return out, calls
+
+    def test_a_purged_log_is_gated_by_snapshot_plus_tail_with_the_purge_held(self):
+        rc, out, calls = run('rig_up', PURGE='1')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G1/G2 ok (snapshot+tail)', out)
+        self.assertIsNone(first(calls, 'reindex')); self.assertIsNone(first(calls, 'shadow-state'))
+        held = [i for i, c in enumerate(calls) if 'touch /data/archive-purge.hold' in c]
+        tails = [i for i, c in enumerate(calls) if 'tail-state' in c]
+        released = [i for i, c in enumerate(calls) if 'rm -f /data/archive-purge.hold' in c]
+        self.assertEqual((len(held), len(tails), len(released)), (3, 3, 3), out)
+        gate = first(calls, 'create configmap rig-gate')
+        self.assertLess(max(held), min(tails)); self.assertLess(gate, min(released)); self.assertLess(max(released), first(calls, SCALE_UP))
+        self.assertIn('--from-literal=tail=PASS', calls[gate])
+        for c in ('order-matcher-cluster-0', 'order-matcher-cluster-2'):
+            self.assertTrue(any(c in x and 'touch /data/archive-purge.hold' in x for x in calls), c)
+
+    def test_an_empty_tail_is_inconclusive_never_ok_and_the_gate_rests_on_g4(self):
+        empty = self.tail(replayedMessages=0, inconclusive=True)
+        rc, out, calls = run('rig_up', PURGE='1', TAIL_STATE=empty)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G1/G2 INCONCLUSIVE (not ok)', out); self.assertNotIn('G1/G2 ok', out); self.assertIn('G4 ok', out)
+        self.assertIn('--from-literal=tail=INCONCLUSIVE', calls[first(calls, 'create configmap rig-gate')])
+        self.refused('G4', TAIL_STATE=empty, BASELINE_ABSENT='1')   # nothing else to stand on
+        self.refused('G2', TAIL_STATE=self.tail(replayedMessages=0, inconclusive=True, bookHash='99'))   # a mismatch still refuses
+
+    def test_a_snapshot_plus_tail_that_differs_or_cannot_answer_is_refused(self):
+        for env, why in (({'TAIL_STATE': self.tail(bookHash='12')}, "G2: member 0's restored state differs from its snapshot+tail"),
+                         ({'TAIL_STATE': self.tail(positions=4)}, 'G2'),
+                         ({'TAIL_STATE': self.tail(applied=99)}, "G1: member 0's snapshot+tail gives applied 99"),
+                         ({'TAIL_STATE': self.tail(digestTrades=4)}, 'trades 4'),
+                         ({'TAIL_STATE': self.tail(complete=False)}, 'G1'),
+                         ({'TAIL_STATE': '{"error":"RECOVERY_ARCHIVE_DISCONTINUITY: term=3"}'}, 'G1: member 0 has no /recon/tail-state answer'),
+                         ({'TAIL_STATE': '{"bookHash":"11","positionHash":"22"}'}, 'no /recon/tail-state answer'),   # no verdict field
+                         ({'HOLD_FAIL': '1'}, 'failed (the archive purge hold)'),
+                         ({'CONTAINERS_FAIL': '1'}, "the members' containers cannot be read")):
+            out, calls = self.refused(why, **env)
+            self.assertIsNone(first(calls, 'reindex'), why)
+
+    def test_each_tail_read_carries_a_token_minted_for_it(self):
+        rc, out, calls = run('rig_up', PURGE='1', TOKEN_SINGLE_USE='1')
+        self.assertEqual(rc, 0, out)
+
+    def test_without_the_purge_rendered_the_replay_from_0_still_runs(self):   # control
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, 'reindex')); self.assertIsNotNone(first(calls, 'shadow-state'))
+        self.assertIsNone(first(calls, 'tail-state')); self.assertIsNone(first(calls, 'archive-purge.hold'))
+        self.assertNotIn('--from-literal=tail=', calls[first(calls, 'create configmap rig-gate')])
+
+    def test_a_fresh_epoch_with_the_purge_rendered_has_nothing_to_replay(self):
+        rc, out, calls = run('rig_up', PURGE='1', **FreshEpoch.EMPTY)
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(first(calls, 'tail-state')); self.assertIsNone(first(calls, 'archive-purge.hold'))
 
 
 class FreshEpoch(unittest.TestCase):

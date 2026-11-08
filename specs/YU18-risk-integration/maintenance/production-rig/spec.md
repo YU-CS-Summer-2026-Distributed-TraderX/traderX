@@ -45,8 +45,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   | Check | Holds when |
   |---|---|
   | G0 | all three members report the same applied, engineApplied, trades, order hash and position hash; applied > 0; and engineApplied = applied, or -1 (restored from the snapshot into an idle cluster, no engine event since) |
-  | G1 | each member's `/recon/full-history/reindex` reports `replayedAppliedSeq` = applied and `indexedTrades` = trades |
-  | G2 | each member's `/recon/shadow-state` is `complete` at the same applied and equals its `/health?digest=1` on bookHash, positionHash, openOrders, positions and digestTrades |
+  | G1 | each member's `/recon/full-history/reindex` reports `replayedAppliedSeq` = applied and `indexedTrades` = trades; with the archive purge rendered (FR-PRG-40), its `/recon/tail-state` is `complete` at applied with `digestTrades` = trades |
+  | G2 | each member's `/recon/shadow-state` is `complete` at the same applied and equals its `/health?digest=1` on bookHash, positionHash, openOrders, positions and digestTrades; with the archive purge rendered, its `/recon/tail-state` does, and an empty tail is INCONCLUSIVE (FR-PRG-40) |
   | G3 | the read model's trades, positions and orderbook md5s equal those read before the members started; its NEW / PARTIALLY_FILLED rows equal the members' openOrders; and its engine trade sides (`<n>-B` / `<n>-S`) are exactly 1..trades, each number once. A managed projection scope (`e1-<epoch>-` ids) is refused, not guessed |
   | G4 | when `rig-shutdown-baseline` exists, the members' applied, trades and hashes equal it (not engineApplied, which a restore resets to -1) |
 - **FR-PRG-04:** The smoke order SHALL go through a gateway over FIX from `web-front-end-console`.
@@ -128,6 +128,32 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-40:** Production MAY purge each member's Aeron archive behind its second-latest snapshot (ADR-079 §3/§6, the
+  bench's B2, proven on hxb at 250K/s for 45 min). `prepare.py --archive-purge` SHALL render `ArchivePurgeMain` (in the
+  member image) as container `archive-purge` beside each member: the member's image, `/data` and `/dev/shm`, its
+  `CLUSTER_HOSTNAMES`, `ARCHIVE_PURGE_DISCARD_HISTORY=true` (the purged log is synthetic and not offloaded; ADR-079
+  amendment 2026-11-08), `ARCHIVE_PURGE_HOLD_FILE=/data/archive-purge.hold`, its own small JVM, requests = limits, and
+  the pod's default container left on the member. `validate()` SHALL refuse an agent on another image, without that
+  hold file, not Guaranteed, or that neither discards nor offloads history by name. The default render has none.
+  - Once the log is purged, a replay from 0 refuses by design (`RECOVERY_ARCHIVE_*`). When the members' pod carries
+    `archive-purge`, G1 and G2 SHALL read each member's `/recon/tail-state` instead: a shadow restored with the member's
+    own `loadSnapshot` from the oldest snapshot it still retains (its recording present and its position covered by the
+    log), then a strict, contiguous replay of the log after it, reported in `/recon/shadow-state`'s terms plus
+    `snapshotLogPosition`, `replayedMessages` (the tail's session messages) and `inconclusive`. G1 holds when it is
+    `complete` at the member's applied with `digestTrades` = trades; G2 when it equals `/health?digest=1` on bookHash,
+    positionHash, openOrders, positions and digestTrades. G1's full-history index and G2's replay from 0 are not run.
+  - A tail with no session message after that snapshot (a quiet log: snapshots kept firing after the last order) SHALL
+    be INCONCLUSIVE, never ok: printed as such and recorded as `tail=INCONCLUSIVE` in `rig-gate`. It does not refuse the
+    bring-up by itself; the gate then rests on G0, G3, G3h and G4, and G4's baseline is already required outside a
+    provisioned epoch. A mismatch, an incomplete or missing answer refuses whether the tail is empty or not.
+  - The gate SHALL hold every member's purge (the hold file) before it reads a tail, wait out a pass already under way,
+    and release it only after the gate passes; a refused gate leaves it held, which keeps log rather than losing it.
+    A container listing that cannot be read SHALL refuse, never stand in for "not purged".
+  - Test-account rows in the live read model SHALL still be cleared only with a fresh epoch (FR-PRG-38, FR-PRG-39): a
+    deletion in place would need its trade sides recorded with `rig.sh unprojected`, or G3 refuses.
+  - Consequence: a member whose disk is lost or wiped alone cannot rejoin a purged cluster from empty (its election
+    replays the leader's log from 0, which the archive refuses; `ArchivePurgeTest` check 6). Recover it from a copy of a
+    peer's disk, or take a fresh epoch, which wipes all three together.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
@@ -440,5 +466,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 | older archives deleted, the newest kept | 39 | `test_rig.Retention.test_every_older_epoch_goes_and_the_newest_stays`, `test_archive_read_model_mariadb.test_prune_drops_only_the_older_epochs_archive` | e1101 and e1107's SQL and ClickHouse arc tables and snapshots deleted, e1108's and a non-member snapshot kept, no live table named; on mariadb:11.4 the live definitions are unchanged; a rerun deletes nothing |
 | a label whose age is not on record | 39 | `test_rig.Retention.test_a_label_whose_age_is_not_on_record_is_refused`, `…nothing_older_goes_until…`, `…a_live_tables_key…` | a snapshot set with no history record, a newer or equal record, a malformed arc name, any unreadable listing, an incomplete newest archive, a live key onto an archive (also on mariadb:11.4): each REFUSED with nothing deleted |
 | a retry after a partial delete | 39 | `test_rig.Retention.test_a_retry_after_a_partial_delete_finishes_it` | stopped at the snapshot, ClickHouse or SQL delete: the retry deletes only what is left and ends with only e1108's archive |
+| the purge agent rendered | 40 | `test_prepare.ArchivePurge` | beside each member on its image, `/data` and `/dev/shm`, discard and hold file named, Guaranteed, default container the member; none by default; each of five broken agents refused |
+| snapshot+tail reference on real members | 40 | `ThreeMemberClusterTest.aPurgedLogIsReproducedFromTheOldestRetainedSnapshotPlusItsTail` | after a real purge and a restart from disk: the replay from 0 refuses; each member's tail-state equals its live digest, replays exactly the 2,400 orders after the oldest retained snapshot and moved the state past it; two idle snapshots later the tail is empty and inconclusive. With the snapshot restore removed the test fails (applied 2,400 vs 6,404) |
+| G1/G2 on a purged log | 40 | `test_rig.Purge` | purge held before any tail read and released after `rig-gate` (tail=PASS); an empty tail INCONCLUSIVE, never ok, and refused without a G4 baseline; a differing hash, applied, trades or positions, an incomplete or error answer, a failed hold, an unreadable container list: each REFUSED with the purge still held; without the purge the replay from 0 still runs. Treating an empty tail as ok fails 1, dropping the hold fails 2 |
 | fresh epoch `up` and `prune-archives` | 39 | `test_rig.Retention.test_a_fresh_epoch_up_prunes…`, `…test_prune_archives_on_its_own` | archived → prune → trade-processor restart → provisioned; a refusal leaves archived and the retry prunes first; standalone needs a completed epoch; `--dry-run` deletes nothing |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

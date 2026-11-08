@@ -185,6 +185,14 @@ proven on the rig: 30 segments, 4 GB, back in under a minute per member). Enabli
 deployment's decision. Its inputs would be an `archive-offload` Secret (URI + HMAC, never inline) and
 c4d-standard-16 members.
 
+**Amendment 2026-11-08 (FR-PRG-40), PROPOSED until yaakov's yes: wired into the production render, behind
+`prepare.py --archive-purge`, with history discarded.** All production trade data is synthetic and only the last epoch's archive is kept (FR-PRG-39), so the
+purged log is not offloaded: the agent runs with `ARCHIVE_PURGE_DISCARD_HISTORY=true`, which needs no bucket, no HMAC
+Secret and no 2.5-CPU sidecar (0.1 CPU / 256Mi, as on hxb; members stay on c4d-standard-8). What that gives up: a past
+EOD cut can no longer be re-created by replay, a full-history replay refuses, and a member whose disk is lost cannot
+rejoin from empty. The restore gate's replay from 0 is replaced by the oldest retained snapshot plus its tail
+(`/recon/tail-state`). Discarding instead of offloading, and applying it to production, are yaakov's calls.
+
 **Refuse, don't OOM: `MAX_ACTIVE_BOOKS` (built 2026-10-26, yaakov's decision).** Book allocation was
 unbounded by memory, so an overflow of this class killed every member at once. Now a NEW order on a
 security with no book yet is **refused** with `BOOK_CAPACITY` (appended to `RiskReason`) once the member

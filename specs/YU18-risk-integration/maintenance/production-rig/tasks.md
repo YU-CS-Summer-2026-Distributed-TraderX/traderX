@@ -57,8 +57,10 @@
       position limit; the policy itself stays as it is. Kind run done:
       every accepted order traded (members' trade sides rose by exactly the accepted count).
 - [x] G1 above the full-history index cap defers to G2 (FR-PRG-18, 2026-10-29).
-- [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Not tonight. Estimate about
-      1 day, plus a kind proof and one production cycle.
+- [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Built 2026-11-08 (FR-PRG-40):
+      `prepare.py --archive-purge` renders the agent, the member's `/recon/tail-state` is the reference, G1/G2 switch to
+      it with the purge held. Offline, in-process on real members, kind proof: see the session record. Left: yaakov's
+      yes to discard the purged log (ADR-079 amendment), then one production session (build, roll the members, gate).
       - Purge the members' log behind a snapshot (archive purge, the bench's B2, proven on hxb at 250K/s). This bounds
         B1's growth and G2's replay time.
       - Once the log is purged, G1 and G2 cannot replay from 0. They switch to snapshot plus tail: replay from the

@@ -754,6 +754,48 @@ class SnapshotReadModel(unittest.TestCase):
                                (nats_store,'max_file_store')):
             with self.assertRaisesRegex(AssertionError,message): module.validate(broken(change))
 
+class ArchivePurge(unittest.TestCase):
+    """FR-PRG-40: --archive-purge puts ArchivePurgeMain beside each member, on the member image and its /data and /dev/shm,
+    held by the restore gate's file, history discarded by name; the default render has none."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        for name,purge in (('plain',False),('purge',True)):
+            module.prepare(Path(cls.temp.name)/name,'test-candidate','10.93.0.10',purge=purge)
+        cls.plain,cls.docs=(list(yaml.safe_load_all((Path(cls.temp.name)/n/'candidate.yaml').read_text())) for n in ('plain','purge'))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def sts(self,docs): return next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+
+    def test_the_agent_runs_beside_each_member(self):
+        self.assertEqual([c['name'] for c in module.podspec(self.sts(self.plain))['containers']],['cluster-node'])
+        sts=self.sts(self.docs); member,agent=module.podspec(sts)['containers']
+        self.assertEqual(agent['name'],'archive-purge'); self.assertEqual(agent['image'],member['image'])
+        self.assertEqual(agent['command'][-3:],['finos.traderx.ordermatcher.cluster.ArchivePurgeMain','/data/cluster','/dev/shm/aeron-cluster'])
+        env={e['name']:e.get('value') for e in agent['env']}
+        self.assertEqual((env['ARCHIVE_PURGE_DISCARD_HISTORY'],env['ARCHIVE_PURGE_HOLD_FILE']),('true','/data/archive-purge.hold'))
+        self.assertEqual(env['CLUSTER_HOSTNAMES'],{e['name']:e.get('value') for e in member['env']}['CLUSTER_HOSTNAMES'])
+        self.assertIn('--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED',env['JAVA_TOOL_OPTIONS'])
+        self.assertEqual({m['name']:m['mountPath'] for m in agent['volumeMounts']},{'data':'/data','shm':'/dev/shm'})
+        self.assertEqual(agent['resources']['requests'],agent['resources']['limits'])
+        self.assertEqual(sts['spec']['template']['metadata']['annotations']['kubectl.kubernetes.io/default-container'],'cluster-node')
+
+    def test_an_agent_the_gate_cannot_hold_or_that_loses_history_unnamed_is_refused(self):
+        def agent(docs): return module.podspec(self.sts(docs))['containers'][1]
+        def unheld(docs): agent(docs)['env']=[e for e in agent(docs)['env'] if e['name']!='ARCHIVE_PURGE_HOLD_FILE']
+        def unnamed(docs): agent(docs)['env']=[e for e in agent(docs)['env'] if e['name']!='ARCHIVE_PURGE_DISCARD_HISTORY']
+        def both(docs): agent(docs)['env'].append({'name':'ARCHIVE_PURGE_OFFLOAD_URI','value':'gs://b/p'})
+        def other_image(docs): agent(docs)['image']=module.REGISTRY+'cluster-node:another-build'
+        def burstable(docs): agent(docs)['resources']['limits']['cpu']='1'
+        module.validate(copy.deepcopy(self.docs))   # control
+        for change in (unheld,unnamed,both,other_image,burstable):
+            docs=copy.deepcopy(self.docs); change(docs)
+            with self.assertRaisesRegex(AssertionError,'FR-PRG-40',msg=change.__name__):
+                module.validate(docs)
+
+
 class HistoryStore(unittest.TestCase):
     """FR-THT-02 (ADR-102): ClickHouse and history-feed in the production render, on their own pool, sized and retained."""
     @classmethod

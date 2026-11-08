@@ -217,6 +217,36 @@ def without_bridges(docs):
         c['env'] = [e for e in c.get('env', []) if e['name'] != 'TRADE_BRIDGE_NATS_URL']
 
 
+# FR-PRG-40 (ADR-079 §3/§6, the bench's B2): ArchivePurgeMain beside each member, purging its archive behind the
+# second-latest snapshot. It ships in the member image; it runs as its own container on the same /data and /dev/shm.
+# History is discarded, never offloaded: this render takes the deployment decision ADR-079 left open, and only behind
+# --archive-purge. The restore gate holds it through ARCHIVE_PURGE_HOLD_FILE while it reads the archive (rig.sh).
+# 100m/256Mi requests = limits so the pod stays Guaranteed beside the member's whole CPUs (0.1 CPU held 250K/s on hxb).
+ARCHIVE_PURGE_HOLD_FILE = '/data/archive-purge.hold'
+ARCHIVE_PURGE_JVM = '-Xmx128m -XX:+UseSerialGC --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED'
+
+
+def archive_purge(docs):
+    sts = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'order-matcher-cluster')
+    pod = podspec(sts)
+    member = pod['containers'][0]
+    env = {e['name']: e.get('value') for e in member['env']}
+    keep = ('CLUSTER_HOSTNAMES', 'CLUSTER_READY_MAX_LAG', 'HEALTH_PORT')
+    pod['containers'] = [c for c in pod['containers'] if c['name'] != 'archive-purge'] + [{
+        'name': 'archive-purge', 'image': member['image'],
+        'command': ['java', '-cp', '/opt/app/classes:/opt/app/lib/*', 'finos.traderx.ordermatcher.cluster.ArchivePurgeMain',
+                    env['CLUSTER_BASE_DIR'] + '/cluster', env['CLUSTER_AERON_DIR']],
+        'env': [e for e in member['env'] if e['name'] in keep] + [
+            {'name': 'CLUSTER_MEMBER_ID', 'valueFrom': {'fieldRef': {'fieldPath': 'metadata.name'}}},
+            {'name': 'ARCHIVE_PURGE_DISCARD_HISTORY', 'value': 'true'},
+            {'name': 'ARCHIVE_PURGE_HOLD_FILE', 'value': ARCHIVE_PURGE_HOLD_FILE},
+            {'name': 'JAVA_TOOL_OPTIONS', 'value': ARCHIVE_PURGE_JVM}],
+        'resources': {'requests': {'cpu': '100m', 'memory': '256Mi'}, 'limits': {'cpu': '100m', 'memory': '256Mi'}},
+        'volumeMounts': [m for m in member['volumeMounts'] if m['name'] in ('data', 'shm')]}]
+    # every exec and log without -c reaches the member, not the agent
+    sts['spec']['template']['metadata'].setdefault('annotations', {})['kubectl.kubernetes.io/default-container'] = member['name']
+
+
 # ADR-097 (FR-PRG-20): production's read model with persistence ON at high rates. The capture stream TRADERX_FEED is the
 # system of record (every trade side and order update, durable on the NATS PVC); trades are booked in memory and SQL
 # takes a snapshot every 5 s (positions, settlement counts, each account's blotter window, the cursor and the exactly-
@@ -677,6 +707,14 @@ def validate(docs, declared=None):
             require('-XX:+UseZGC' in jvm and '-XX:+ZGenerational' in jvm and xmx
                     and limit.endswith('Gi') and int(xmx.group(1)) + 3 <= int(limit[:-2]),
                     'member is not on generational ZGC, or its heap leaves no room for direct memory and /dev/shm (FR-PRG-05)')
+            purge = next((x for x in pod['containers'] if x['name'] == 'archive-purge'), None)
+            if purge:   # FR-PRG-40: the gate holds it by this file, and history goes only by name
+                penv = {e['name']: e.get('value') for e in purge.get('env', [])}
+                require(penv.get('ARCHIVE_PURGE_HOLD_FILE') == ARCHIVE_PURGE_HOLD_FILE and purge['image'] == c['image']
+                        and purge.get('resources', {}).get('requests') == purge.get('resources', {}).get('limits')
+                        and (penv.get('ARCHIVE_PURGE_DISCARD_HISTORY') == 'true') != bool(penv.get('ARCHIVE_PURGE_OFFLOAD_URI')),
+                        'archive-purge is not on the member image, not held by the gate\'s file, not Guaranteed, or '
+                        'neither discards nor offloads history by name (FR-PRG-40)')
             require(books is not None and books.isdigit()
                     and int(xmx.group(1)) * 1024 >= int(books) * BOOK_MB_ZGC * 3 // 2,
                     'MAX_ACTIVE_BOOKS not pinned, or the heap cannot hold that many books under ZGC with headroom: '
@@ -691,7 +729,7 @@ def validate(docs, declared=None):
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
             fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None,
-            history_hot_days=0):
+            history_hot_days=0, purge=False):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -848,6 +886,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     if read_model == 'snapshot':
         snapshot_read_model(docs, partitions or READ_MODEL_PARTITIONS)
     history_store(docs, history_hot_days)
+    if purge:
+        archive_purge(docs)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
@@ -930,6 +970,8 @@ if __name__=='__main__':
                         ' default, which since FR-THT-01 is also snapshot (one partition, unsized): production passes snapshot')
     p.add_argument('--history-hot-days',type=int,default=0,
                    help='FR-THT-03: date partitions kept on ClickHouse\'s disk; older ones move to GCS (needs Secret history-cold-hmac); 0 = off')
+    p.add_argument('--archive-purge',action='store_true',
+                   help="purge each member's archive behind its second-latest snapshot, history discarded (FR-PRG-40)")
     p.add_argument('--partitions',type=int,help=f'read-model partitions with --read-model snapshot (default {READ_MODEL_PARTITIONS})')
     args=p.parse_args()
     import ipaddress
@@ -937,4 +979,4 @@ if __name__=='__main__':
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
             args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members,args.read_model,args.partitions,
-            args.history_hot_days)
+            args.history_hot_days,args.archive_purge)

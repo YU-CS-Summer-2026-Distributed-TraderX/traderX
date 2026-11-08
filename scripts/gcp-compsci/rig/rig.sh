@@ -513,6 +513,51 @@ g3_history(){
   note "G3h ok: the history store holds trade sides 1..$t${ranges:+ except $ranges}, each once"
 }
 
+# ---- G1 and G2 on a purged log (FR-PRG-40) ---------------------------------------------------------------------------
+# With the archive purge rendered (container archive-purge beside each member, prepare.py --archive-purge) the log no
+# longer starts at 0: the replay from 0 refuses by design. G1 and G2 then read /recon/tail-state, a shadow restored from
+# the OLDEST snapshot the member retains and replayed strictly through the log after it; the member itself restored from
+# its latest. G1: the shadow's applied and trades equal the member's. G2: its book, positions and trades equal the
+# member's /health?digest=1. A tail with no session message is INCONCLUSIVE: the shadow is then that snapshot alone, so
+# agreement proves nothing about the restore. It is never reported ok and is recorded in rig-gate; the gate then rests on
+# G0, G3, G3h and G4, whose baseline is required outside a provisioned epoch. A mismatch refuses either way. The purge is
+# held (ARCHIVE_PURGE_HOLD_FILE) while the archive is read, so a pass cannot purge the snapshot being restored, and is
+# released when the gate passes; a refused gate leaves it held, which keeps the log rather than losing it.
+TAIL_PATH=/recon/tail-state
+PURGE_HOLD=/data/archive-purge.hold
+purge_rendered(){ local c
+  c=$(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[*].name}') \
+    || die "G1: the members' containers cannot be read: is the archive purge rendered?"
+  [[ " $c " == *" archive-purge "* ]]; }
+purge_hold(){ # purge_hold set|release: the hold file on every member's /data, which the agent beside it reads
+  local i cmd=(touch "$PURGE_HOLD"); [ "$1" = set ] || cmd=(rm -f "$PURGE_HOLD")
+  for i in 0 1 2; do
+    kc exec "order-matcher-cluster-$i" -c cluster-node -- "${cmd[@]}" || die "member $i: '${cmd[*]}' failed (the archive purge hold)"
+  done; }
+g12_tail(){ # g12_tail <applied> <trades>: sets TAIL to PASS or INCONCLUSIVE, or refuses
+  local a=$1 t=$2 i token tail digest empty=0 keys='{bookHash,positionHash,openOrders,positions,digestTrades}'
+  purge_hold set
+  sleep 5   # a pass already under way when the hold appeared ends inside its poll
+  for i in 0 1 2; do
+    token=$(admin_token); [ -n "$token" ] || die "G1: could not mint an admin token in trade-processor"
+    tail=$(kc exec -i "order-matcher-cluster-$i" -c cluster-node -- sh -c "read -r t; wget -qO- \
+      --header=\"Authorization: Bearer \$t\" http://localhost:8080$TAIL_PATH" <<<"$token" 2>/dev/null || true)
+    jq -e '.bookHash and .positionHash and (.inconclusive | type == "boolean")' <<<"$tail" >/dev/null 2>&1 \
+      || die "G1: member $i has no $TAIL_PATH answer (a build before FR-PRG-40, or the purged archive refused): ${tail:0:300}"
+    digest=$(kc exec "order-matcher-cluster-$i" -c cluster-node -- wget -qO- 'localhost:8080/health?digest=1')
+    echo "member$i tail $tail digest $digest" >> "$EVIDENCE/gate-tail.txt"
+    [ "$(jq -r .complete <<<"$tail")" = true ] && [ "$(jq -r .applied <<<"$tail")" = "$a" ] && [ "$(jq -r .digestTrades <<<"$tail")" = "$t" ] \
+      || die "G1: member $i's snapshot+tail gives applied $(jq -r .applied <<<"$tail"), trades $(jq -r .digestTrades <<<"$tail"); the restored state applied $a trades $t"
+    [ "$(jq -c "$keys" <<<"$tail")" = "$(jq -c "$keys" <<<"$digest")" ] \
+      || die "G2: member $i's restored state differs from its snapshot+tail: $EVIDENCE/gate-tail.txt"
+    [ "$(jq -r .inconclusive <<<"$tail")" = false ] || empty=1
+  done
+  if [ "$empty" = 1 ]; then TAIL=INCONCLUSIVE
+    note "G1/G2 INCONCLUSIVE (not ok): a member's log holds no order after its oldest retained snapshot, so the snapshot+tail only re-read that snapshot; the gate rests on G0, G3, G3h and G4"
+  else TAIL=PASS
+    note "G1/G2 ok (snapshot+tail): each member's oldest retained snapshot plus its log tail reaches applied $a with $t trades and its restored book and positions"
+  fi; }
+
 # ---- the restore gate (FR-PRG-03) --------------------------------------------------------------------------------
 # Applied alone proves nothing: a snapshot load that skipped a record still ends at the full log's applied. The
 # reference never comes from a snapshot: (A) a replay from log position 0, (B) the read model, which the members do
@@ -524,6 +569,7 @@ restore_gate(){
     note "would check: G0 all three members agree on applied, engineApplied, trades, order and position hashes"
     note "would check: G1 each member's replay from 0 reaches its applied and reproduces its trade count"
     note "would check: G2 (check A) each member's $GATE_SHADOW_PATH book/position hashes equal its own; refuse if absent"
+    note "would check, with the archive purge rendered: G1/G2 from $TAIL_PATH (oldest retained snapshot + tail), purge held; an empty tail INCONCLUSIVE"
     note "would check: G3 (check B) read-model md5s equal those read before the members started"
     note "would check: G3h (FR-THT-06) the history store holds sides 1..trades each once; no sts/clickhouse is refused"
     note "would check: G4 the members equal the rig-shutdown-baseline ConfigMap, when one exists"
@@ -543,7 +589,12 @@ restore_gate(){
     fresh=1; note "G0 ok: fresh epoch ${es#* }: all three empty (applied $a, trades 0); G1 and G2 have nothing to replay"
   fi
   local digest='' open_rows shadow='' cap g1_deferred=0
-  if [ "$fresh" = 0 ]; then
+  TAIL=''
+  if [ "$fresh" = 0 ] && purge_rendered; then
+  [ "$a" -gt 0 ] && { [ "$e" = "$a" ] || [ "$e" = -1 ]; } || die "G0: applied $a, engineApplied $e"
+  note "G0 ok: applied $a, trades $t, hashes $oh $ph on all three"
+  g12_tail "$a" "$t"
+  elif [ "$fresh" = 0 ]; then
   # engineApplied is the engine's blpSeq: equal to applied once an engine event has applied, and -1 on a member
   # restored from its snapshot into an idle cluster, which has applied no engine event since (ClusterNodeMain /health).
   [ "$a" -gt 0 ] && { [ "$e" = "$a" ] || [ "$e" = -1 ]; } || die "G0: applied $a, engineApplied $e"
@@ -621,10 +672,11 @@ restore_gate(){
   else
     die "G4: rig-shutdown-baseline could not be read: $(head -c 300 "$EVIDENCE/g4-baseline.err")"
   fi
-  kc create configmap rig-gate --from-literal=status=PASS --from-literal=at="$(date -u +%FT%TZ)" \
+  kc create configmap rig-gate --from-literal=status=PASS --from-literal=at="$(date -u +%FT%TZ)" ${TAIL:+--from-literal=tail="$TAIL"} \
     --from-literal=members="$(kc get pods -l app=order-matcher-cluster -o jsonpath='{range .items[*]}{.metadata.uid} {end}')" \
     --dry-run=client -o yaml | kc apply -f - >/dev/null
-  note "gate PASS recorded in ConfigMap rig-gate"
+  note "gate PASS recorded in ConfigMap rig-gate${TAIL:+ (G1/G2 snapshot+tail: $TAIL)}"
+  [ -z "$TAIL" ] || { purge_hold release; note "archive purge released"; }
   if [ "$fresh" = 1 ]; then set_epoch "${es#* }" consumed; note "epoch ${es#* } consumed: from now on G4 needs its baseline"; fi
 }
 
