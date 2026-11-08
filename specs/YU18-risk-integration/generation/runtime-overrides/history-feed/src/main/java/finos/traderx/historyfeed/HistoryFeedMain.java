@@ -57,14 +57,14 @@ public final class HistoryFeedMain {
       for (int p = 0; p < partitions; p++) {
         // A connection per lane: one connection's reader thread is a ceiling near 1M msgs/s of JSON.
         Connection nc = Nats.connect(new Options.Builder().server(natsUrl).bufferSize(1 << 20).maxReconnects(-1).build());
-        FeedLane lane = new FeedLane(nc, store, streamFor(stream, layout, p, partitions), feed, p, batch, flushMs, fetch);
+        FeedLane lane = new FeedLane(nc, store, streamFor(stream, layout, p, partitions), feed, p, partitions, batch, flushMs, fetch);
         lanes.add(lane);
         Thread t = new Thread(lane, lane.durable);
         t.setDaemon(true);
         t.start();
       }
     }
-    serve(port, store, lanes);
+    serve(port, store, lanes, Nats.connect(new Options.Builder().server(natsUrl).maxReconnects(-1).build()));
     System.out.printf("history-feed: %d lanes on %s (%s, P=%d) -> %s; http :%d%n", lanes.size(), stream, layout,
         partitions, env("CLICKHOUSE_URL", "http://clickhouse:8123"), port);
   }
@@ -74,13 +74,54 @@ public final class HistoryFeedMain {
     return "partition".equalsIgnoreCase(layout) && partitionCount > 1 ? base + "_P" + partition : base;
   }
 
+  /** Same rule as trade-processor's JetStreamFeed.subject and the bridges' BridgePartitions: bare at one partition. */
+  static String subjectFor(String feed, int partition, int partitionCount) {
+    return partitionCount <= 1 ? "/" + feed : "/" + feed + "." + partition;
+  }
+
+  /**
+   * FR-THT-02: the stream's trade and order subjects that hold messages and that no lane reads, with their counts. "Nothing
+   * pending" is true of a lane whose filter matches nothing (production 2026-11-07: lanes on /trades.0 while the members
+   * published /trades, 0 rows), so a non-empty answer means the store misses messages, whatever the lanes say.
+   */
+  static Map<String, Long> unowned(Map<String, Long> subjects, java.util.Set<String> owned) {
+    Map<String, Long> out = new java.util.TreeMap<>();
+    subjects.forEach((s, n) -> {
+      if (n > 0 && s.matches("/(trades|orders)(\\..*)?") && !owned.contains(s)) out.put(s, n);
+    });
+    return out;
+  }
+
+  /** {@link #unowned} over every stream the lanes read; a stream that cannot be read is reported, never read as empty. */
+  static String unownedJson(Connection nc, List<FeedLane> lanes) {
+    Map<String, Long> all = new java.util.TreeMap<>();
+    java.util.Set<String> owned = new java.util.HashSet<>();
+    lanes.forEach(l -> owned.add(l.subject));
+    try {
+      for (String st : new java.util.TreeSet<>(lanes.stream().map(l -> l.stream).toList())) {
+        var subjects = nc.jetStreamManagement().getStreamInfo(st, io.nats.client.api.StreamInfoOptions.allSubjects())
+            .getStreamState().getSubjects();
+        Map<String, Long> counts = new HashMap<>();
+        if (subjects != null) subjects.forEach(s -> counts.put(s.getName(), s.getCount()));
+        all.putAll(unowned(counts, owned));
+      }
+    } catch (Exception e) {
+      return "null,\"unownedError\":\"" + e.toString().replace("\\", "/").replace("\"", "'") + "\"";
+    }
+    StringBuilder sb = new StringBuilder("{");
+    all.forEach((s, n) -> sb.append(sb.length() > 1 ? "," : "").append('"').append(s).append("\":").append(n));
+    return sb.append('}').toString();
+  }
+
   static String env(String k, String d) { String v = System.getenv(k); return v == null || v.isBlank() ? d : v; }
 
-  static void serve(int port, ClickHouseStore store, List<FeedLane> lanes) throws Exception {
+  static void serve(int port, ClickHouseStore store, List<FeedLane> lanes, Connection admin) throws Exception {
     HttpServer s = HttpServer.create(new InetSocketAddress(port), 64);
     s.setExecutor(Executors.newFixedThreadPool(8));
     s.createContext("/health", x -> {
-      StringBuilder sb = new StringBuilder("{\"ready\":").append(lanes.stream().allMatch(l -> l.ready)).append(",\"lanes\":[");
+      // ready stays the lanes' (it is the pod's readiness probe, and an unready pod would hide this body from the gate).
+      StringBuilder sb = new StringBuilder("{\"ready\":").append(lanes.stream().allMatch(l -> l.ready))
+          .append(",\"unowned\":").append(unownedJson(admin, lanes)).append(",\"lanes\":[");
       for (int i = 0; i < lanes.size(); i++) {
         FeedLane l = lanes.get(i);
         if (i > 0) sb.append(',');

@@ -42,9 +42,10 @@ final class FeedLane implements Runnable {
   volatile boolean ready;
   private volatile JetStreamSubscription sub;
 
-  FeedLane(Connection nc, ClickHouseStore store, String stream, String feed, int part, int batchRows, int flushMs, int fetch) {
+  FeedLane(Connection nc, ClickHouseStore store, String stream, String feed, int part, int partitions, int batchRows,
+           int flushMs, int fetch) {
     this.nc = nc; this.store = store; this.stream = stream; this.table = feed; this.part = part;
-    this.subject = "/" + feed + "." + part; this.durable = "history-" + feed + "-p" + part;
+    this.subject = HistoryFeedMain.subjectFor(feed, part, partitions); this.durable = "history-" + feed + "-p" + part;
     this.batchRows = batchRows; this.flushMs = flushMs; this.fetch = fetch;
   }
 

@@ -71,6 +71,12 @@ class RowsTest {
     assertEquals("TRADERX_FEED_P3", HistoryFeedMain.streamFor("TRADERX_FEED", "partition", 3, 4));
     assertEquals("TRADERX_FEED", HistoryFeedMain.streamFor("TRADERX_FEED", "partition", 0, 1));
     assertEquals("TRADERX_FEED", HistoryFeedMain.streamFor("TRADERX_FEED", "one", 3, 4));
+    // FR-THT-02: the bridges' subject rule (bare at one partition); production 2026-11-07 read /trades.0 and stored nothing
+    assertEquals("/trades", HistoryFeedMain.subjectFor("trades", 0, 1));
+    assertEquals("/orders.3", HistoryFeedMain.subjectFor("orders", 3, 4));
+    assertEquals(Map.of("/trades", 6L, "/orders", 4416L), HistoryFeedMain.unowned(
+        Map.of("/trades", 6L, "/orders", 4416L, "/other", 9L), java.util.Set.of("/trades.0", "/orders.0")));
+    assertEquals(Map.of(), HistoryFeedMain.unowned(Map.of("/trades", 6L, "/orders", 0L), java.util.Set.of("/trades", "/orders")));
     assertEquals("2025-10-30 00:00:00.123", HistoryFeedMain.time(Map.of("t", "1761782400123"), "t"));
     assertEquals("2025-10-30 00:00:00.123", HistoryFeedMain.time(Map.of("t", "2025-10-30T00:00:00.123Z"), "t"));
     assertThrows(RuntimeException.class, () -> HistoryFeedMain.time(Map.of("t", "1; DROP TABLE trades"), "t"));

@@ -46,12 +46,15 @@ kubectl(){
         | split(":") | {name: .[0], state: {messages: (.[1] | tonumber)}}]}]}';;
     *"nc localhost 4222"*) echo 'INFO {"server_id":"x"}'; echo 'MSG r 1 40'; echo '{"type":"stream_delete_response","success":true}';;
     *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ];;   # HIST_ABSENT: no history store rendered
-    *"history-feed:18095/health"*) echo '{"ready":true,"lanes":[{"pending":0},{"pending":0}]}';;
+    *"get deploy history-feed"*) [ -n "${HIST_ABSENT:-}" ] || echo 1;;
+    *"history-feed:18095/health"*) echo "$HIST_HEALTH";;
     *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
       t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
       printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
-    *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
+    *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22   # ACCT_FAIL_N: refused (exit 7) the first N reads
+      n=$(( $(cat "$EVIDENCE/.acct" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.acct"
+      [ "$n" -gt "${ACCT_FAIL_N:-0}" ] || return 7; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
     *shadow-state*) expired || echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
@@ -127,7 +130,7 @@ def nats_pods(*pods):   # (uid, phase, restarts, last reason)
         for u, ph, r, why in pods]})
 
 
-GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
+GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'HIST_HEALTH': '{"ready":true,"unowned":{},"lanes":[{"pending":0},{"pending":0}]}', 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
@@ -428,6 +431,15 @@ class Up(unittest.TestCase):
                           ('0\\t3\\t6\\t10\\t46\\t0\\n1\\t2\\t4\\t6\\t20\\t0', 'above the members trades')):  # a side never booked
             self.assertIn(why, self.refused('G3h', HIST=rows))
 
+    # FR-THT-02 (production 2026-11-07, e1107b): history-feed's lanes filtered /trades.0 and /orders.0 while the members
+    # published /trades and /orders; every lane was open with nothing pending and the store held 0 of 6 sides.
+    def test_a_stream_subject_no_lane_reads_is_refused(self):
+        lanes = '"lanes":[{"pending":0},{"pending":0}]'
+        for health, why in (('{"ready":true,"unowned":{"/orders":4416,"/trades":6},' + lanes + '}', 'no history-feed lane reads {"/orders":4416,"/trades":6}'),
+                            ('{"ready":true,' + lanes + '}', 'reports no unread-subject check'),
+                            ('{"ready":true,"unowned":null,"unownedError":"timeout",' + lanes + '}', 'NATS unreadable: timeout')):
+            self.assertIn(why, self.refused('G3h', HIST=self.HIST, HIST_HEALTH=health))
+
     def test_an_unreadable_history_store_is_refused(self):
         self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
 
@@ -637,7 +649,23 @@ class FreshEpoch(unittest.TestCase):
         self.refused('is provisioned (empty) but a shutdown baseline exists', **{**env, 'BASELINE': '0 -1 0 0 0 0'})
 
     def test_a_provisioned_epoch_with_a_claim_left_is_refused(self):
-        self.refused('the wipe is incomplete', **{**self.EMPTY, 'CLAIMS': 'persistentvolumeclaim/data-order-matcher-cluster-1'})
+        self.refused('provisioned but 1 of 3 member claims exist', **{**self.EMPTY, 'CLAIMS': 'persistentvolumeclaim/data-order-matcher-cluster-1'})
+
+    # Production 2026-11-07: an up refused after the members started left provisioned with their three (empty) claims,
+    # deleted by hand twice. The retry reads their error logs and lets G0 decide; members holding anything are refused.
+    CLAIMS3 = ' '.join(f'persistentvolumeclaim/data-order-matcher-cluster-{i}' for i in range(3))
+
+    def test_a_provisioned_epoch_retried_on_its_own_empty_claims_passes(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'CLAIMS': self.CLAIMS3})
+        self.assertEqual(rc, 0, out)
+        self.assertIn('its own three claims from an earlier start', out); self.assertIn('G0 ok: fresh epoch e2', out)
+        self.assertIsNotNone(first(calls, 'rig-errlog-2'), 'G-pre skipped the claims it found')
+        self.assertIsNone(first(calls, r'delete pvc'))
+        self.refused('provisioned (empty) but the members hold', **{**self.EMPTY, 'CLAIMS': self.CLAIMS3, 'M': '100 100 5 11 22 7'})
+
+    def test_a_wiped_epoch_with_a_claim_left_is_refused_before_the_archive(self):
+        out, calls = self.refused('is wiped but a member claim exists', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'CLAIMS': self.CLAIMS3})
+        self.assertIsNone(first(calls, 'RENAME TABLE')); self.assertIsNone(first(calls, 'state=provisioned'))
 
     def test_a_provisioned_epoch_with_open_rows_is_refused(self):
         self.refused('G3', **{**self.EMPTY, 'ACCT': acct(p0=(0, 0, 0, 0, 0), p1=(0, 0, 0, 0, 0), resting=(1, 1))})
@@ -669,6 +697,30 @@ class FreshEpoch(unittest.TestCase):
                                            r'scale deploy/trade-processor --replicas=1', r'rig-epoch .*state=provisioned')]
         self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
         self.assertIsNone(first(calls, 'STREAM.DELETE.OTHER'))
+
+    # FR-PRG-29 (production 2026-11-07 11:01 pm ET): rollout status returned before trade-processor listened, and G3's
+    # read of the accounting got connection refused. The archive waits until the accounting answers.
+    def test_a_wiped_epoch_waits_for_the_restarted_trade_processor_to_answer(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'ACCT_FAIL_N': '3'})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: trade-processor's accounting answers", out)
+        up, members = first(calls, r'scale deploy/trade-processor --replicas=1'), first(calls, r'replicas=3')
+        reads = [i for i, c in enumerate(calls) if 'projection-feed/accounting' in c and up < i < members]
+        self.assertGreaterEqual(len(reads), 4, out)   # three refused, then the one that answered, before any member
+
+    # FR-THT-02 (production 2026-11-07 11:28 pm ET): a history-feed started before the reset kept its lanes on the deleted
+    # stream and G3h timed out. It is held at 0 across the reset and started after trade-processor answers.
+    def test_a_wiped_epoch_holds_history_feed_until_the_streams_are_recreated(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'FEED': 'TRADERX_FEED:0', 'ACCT_FAIL_N': '2'})
+        self.assertEqual(rc, 0, out)
+        answered = [i for i, c in enumerate(calls) if 'projection-feed/accounting' in c][2]
+        steps = [first(calls, p) for p in (r'scale deploy/history-feed --replicas=0', r'STREAM.DELETE.TRADERX_FEED',
+                                           r'scale deploy/trade-processor --replicas=1')]
+        steps += [answered, first(calls, r'scale deploy/history-feed --replicas=1'), first(calls, r'replicas=3')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        _, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'HIST_ABSENT': '1'})   # no store (G3h refuses later)
+        self.assertIsNotNone(first(calls, r'scale deploy/trade-processor --replicas=1'), out)
+        self.assertIsNone(first(calls, 'scale deploy/history-feed'))
 
     def test_a_capture_stream_still_holding_messages_or_unreadable_is_refused(self):
         for env, why in (({'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:3'}, 'TRADERX_FEED_P1 still holds 3 messages'),

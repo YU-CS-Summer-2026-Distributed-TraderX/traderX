@@ -390,8 +390,14 @@ past_restore_errors(){
   [ "$(kc get sts order-matcher-cluster -o jsonpath='{.status.replicas}')" = 0 ] || die "G-pre: members are running"
   local es; es=$(epoch_state) || die "G-pre: ConfigMap rig-epoch cannot be read"
   if [ "${es%% *}" = provisioned ]; then
-    claims_gone || die "G-pre: epoch ${es#* } is provisioned but a member claim exists: the wipe is incomplete"
-    note "G-pre: fresh epoch ${es#* }: no member claim, so no past error log to read"; return 0
+    # FR-PRG-29: up turns wiped into provisioned only with no member claim, so claims under provisioned are this epoch's
+    # own, from an up refused after the members started (production 2026-11-07). They are read like any other, and G0
+    # still refuses unless the members are empty; no hand deletion.
+    local n; n=$(kc get pvc -o name) || die "G-pre: the claims cannot be listed"
+    n=$(grep -c '/data-order-matcher-cluster-' <<<"$n" || true)
+    [ "$n" = 0 ] && { note "G-pre: fresh epoch ${es#* }: no member claim, so no past error log to read"; return 0; }
+    [ "$n" = 3 ] || die "G-pre: epoch ${es#* } is provisioned but $n of 3 member claims exist"
+    note "G-pre: fresh epoch ${es#* }: its own three claims from an earlier start; G0 must find them empty"
   fi
   local image i phase
   image=$(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}')
@@ -489,6 +495,13 @@ g3_history(){
   # FR-THT-02 renders the store into the production manifests: its absence is a refusal, never a skip.
   kc get sts clickhouse -o name >/dev/null 2>&1 || die "G3h: no history store (sts/clickhouse) on $NS (FR-THT-02)"
   wait_for 600 "every history-feed lane open with nothing pending (G3h)" history_caught_up
+  # Nothing pending is also true of a lane whose filter matches nothing (production 2026-11-07: lanes on /trades.0 while
+  # the members published /trades; 0 rows). history-feed names the stream subjects no lane reads; any is a refusal.
+  local health unowned
+  health=$(history_health) || die "G3h: history-feed's health could not be read"
+  unowned=$(jq -ce '.unowned | objects' <<<"$health") \
+    || die "G3h: history-feed reports no unread-subject check (an image before it, or NATS unreadable: $(jq -r '.unownedError // "none"' <<<"$health"))"
+  [ "$unowned" = '{}' ] || die "G3h: no history-feed lane reads $unowned on the capture stream: the store misses those messages (FR-THT-02)"
   rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
     || die "G3h: the history store could not be read"
   printf '%s\n' "$rows" > "$EVIDENCE/gate-history.tsv"
@@ -734,10 +747,18 @@ reset_feed(){
 }
 
 archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*, the live tables recreated empty
-  local label=$1 t renames='' have reps present
+  local label=$1 t renames='' have reps hreps present
   step "read model: the old epoch's tables into arc_${label}_*, recreated empty (trade-processor stopped meanwhile)"
   [ "$DRY" = 1 ] && { note "would rename: $EPOCH_TABLES"; return 0; }
   reps=$(kc get deploy trade-processor -o jsonpath='{.spec.replicas}') || die "read-model archive: trade-processor cannot be read"
+  # FR-THT-02: history-feed binds its lanes to the capture stream's incarnation at start, so it is stopped across the
+  # reset and started after trade-processor recreates the streams (production 2026-11-07 11:28 pm ET: one started
+  # before the reset kept reading the deleted stream, and G3h timed out). Empty when no history store is rendered.
+  hreps=$(kc get deploy history-feed --ignore-not-found -o jsonpath='{.spec.replicas}') || die "read-model archive: history-feed cannot be read"
+  if [ -n "$hreps" ]; then
+    kc scale deploy/history-feed --replicas=0 >/dev/null || die "read-model archive: history-feed cannot be stopped"
+    wait_for 300 "history-feed stopped" no_pods history-feed
+  fi
   kc scale deploy/trade-processor --replicas=0 >/dev/null || die "read-model archive: trade-processor cannot be stopped"
   wait_for 300 "trade-processor stopped" no_pods trade-processor
   have=$(sql "select count(*) from information_schema.tables where table_schema=database() and table_name='arc_${label}_trades'") \
@@ -784,6 +805,13 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
   reset_feed   # with trade-processor, the members and the gateways at 0
   kc scale deploy/trade-processor --replicas="${reps:-1}" >/dev/null || die "read-model archive: trade-processor cannot be restarted"
   kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
+  # FR-PRG-29: Ready is not listening on a render without trade-processor's readiness probe (production 2026-11-07
+  # 11:01 pm ET: G3's accounting read got connection refused 10 s before it listened), so wait for what G3 reads.
+  wait_for 300 "trade-processor's accounting answers (/v2/projection-feed/accounting)" accounting
+  if [ -n "$hreps" ]; then   # the accounting answering means the streams exist again, at their new incarnation
+    kc scale deploy/history-feed --replicas="$hreps" >/dev/null || die "read-model archive: history-feed cannot be restarted"
+    wait_for 300 "history-feed Ready on the new streams" deploy_rolled_out deploy/history-feed
+  fi
 }
 
 # ---- gateways, LB, autoscale -------------------------------------------------------------------------------------
@@ -928,6 +956,7 @@ rig_up(){
     if [ "$DRY" = 1 ]; then es=none; else es=$(epoch_state) || die "ConfigMap rig-epoch cannot be read"; fi
     read -r st lbl <<<"$es"
     if [ "$st" = wiped ]; then
+      [ "$DRY" = 1 ] || claims_gone || die "epoch $lbl is wiped but a member claim exists: finish rig.sh fresh-epoch $lbl first"
       [ "$DRY" = 1 ] || wait_for 300 "the read model answers" sql_ready
       archive_read_model "$lbl"
       [ "$DRY" = 1 ] || set_epoch "$lbl" provisioned

@@ -210,7 +210,8 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   starting at "new", recreated at the last delivered sequence after a gap. Under the partition layout it opens one ordered consumer per
   `TRADERX_FEED_P<p>` on that stream's `/orders.<p>` (FR-FFR-13). `core` subscribes the same
   two subjects without the stream.
-- `history-feed` (ADR-098, FR-HST-02/03) reads `/trades.<p>` and `/orders.<p>` from the same stream(s) as
+- `history-feed` (ADR-098, FR-HST-02/03) reads `/trades.<p>` and `/orders.<p>` (bare `/trades`, `/orders` at one
+  partition, as the bridges publish) from the same stream(s) as
   trade-processor (same `PROJECTION_FEED_*` settings) with its own durable pull consumers `history-<feed>-p<p>`,
   recreated at the history store's max(seq) + 1 at every start and after a consumer-sequence gap, only on the
   stream incarnation (creation time) its rows came from (FR-HST-07). It never creates a stream. Opt-in; not in any base manifest.

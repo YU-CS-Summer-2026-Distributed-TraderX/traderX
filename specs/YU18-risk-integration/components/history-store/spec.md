@@ -16,7 +16,12 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   as their numeric parts (the epoch prefix is the run's, not the row's).
 - FR-HST-02: The feed SHALL run one lane per (feed, partition) on a durable pull consumer, `history-<feed>-p<p>`
   on the partition's stream (`<stream>_P<p>` with `PROJECTION_FEED_STREAM_LAYOUT=partition`, the single stream
-  otherwise, the same naming as trade-processor's `JetStreamFeed.streamFor`), AckPolicy.All, ackWait 60 s. It SHALL
+  otherwise, the same naming as trade-processor's `JetStreamFeed.streamFor`), AckPolicy.All, ackWait 60 s. Its filter
+  SHALL be the bridges' subject (`JetStreamFeed.subject`, `BridgePartitions`): bare `/<feed>` at one partition,
+  `/<feed>.<p>` otherwise (production e1107b, 2026-11-07: lanes on `/trades.0` over a P=1 stream of `/trades` stored
+  nothing). `/health` SHALL report `unowned`, every `/trades*` or `/orders*` subject the lanes' streams hold with
+  messages that no lane filters, with its count (`null` plus `unownedError` when a stream cannot be read). `ready`
+  stays the lanes' own, because it is the pod's readiness probe and an unready pod hides the body from the gate. It SHALL
   buffer up to `HISTORY_BATCH_ROWS` rows (100,000) or `HISTORY_FLUSH_MS` (500 ms), write the buffer in one atomic
   store write, and ack the last message only after that write is durable. A buffer SHALL NOT cross a UTC day: one
   INSERT is atomic only within one date partition. The bake-off prototype (`scripts/history-store-bakeoff`) uses
