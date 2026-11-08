@@ -1,6 +1,6 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76, for the 2026-11-07 combined production session (fresh epoch): every private image from one tip 889e47be, the merge of missing-proofs (suspect 17, order bridge honours publishNats), prod-hardening (FR-XOC-06 FIX failover resubmit, FR-PRG-29 --dry-run), rig-barrier-per-member (FR-PRG-02) and trade-history-tiers (FR-THT-01 option A, rows mode retired) onto 60544a6e's line. No workload exception.",
-  "imageSourceCommit": "889e47be0fd491fd81e611a069f4849e695f861a",
+  "note": "ADR-096 \u00a76: every private image from one tip aba349f8: 889e47be (missing-proofs, prod-hardening, rig-barrier-per-member, trade-history-tiers) plus trade-history-tiers through 0e517ea1 (ClickHouse + history-feed on history-pool FR-THT-02/03, the snapshot read model with its order view snapshot named in every render, the fresh-epoch feed reset, the smoke on the order view, admission's build-context set from build-images). No workload exception.",
+  "imageSourceCommit": "aba349f8da23d2ab8b3dedb9738426e55e73e361",
   "workloads": {}
 }
