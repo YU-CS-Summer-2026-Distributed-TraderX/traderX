@@ -51,7 +51,9 @@ kubectl(){
       t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
       printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
-    *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
+    *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22   # ACCT_FAIL_N: refused (exit 7) the first N reads
+      n=$(( $(cat "$EVIDENCE/.acct" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.acct"
+      [ "$n" -gt "${ACCT_FAIL_N:-0}" ] || return 7; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
     *shadow-state*) expired || echo "${SHADOW:-}";;
     *"health?digest=1"*) echo "$DIGEST";;
@@ -669,6 +671,16 @@ class FreshEpoch(unittest.TestCase):
                                            r'scale deploy/trade-processor --replicas=1', r'rig-epoch .*state=provisioned')]
         self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
         self.assertIsNone(first(calls, 'STREAM.DELETE.OTHER'))
+
+    # FR-PRG-29 (production 2026-11-07 11:01 pm ET): rollout status returned before trade-processor listened, and G3's
+    # read of the accounting got connection refused. The archive waits until the accounting answers.
+    def test_a_wiped_epoch_waits_for_the_restarted_trade_processor_to_answer(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'ACCT_FAIL_N': '3'})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: trade-processor's accounting answers", out)
+        up, members = first(calls, r'scale deploy/trade-processor --replicas=1'), first(calls, r'replicas=3')
+        reads = [i for i, c in enumerate(calls) if 'projection-feed/accounting' in c and up < i < members]
+        self.assertGreaterEqual(len(reads), 4, out)   # three refused, then the one that answered, before any member
 
     def test_a_capture_stream_still_holding_messages_or_unreadable_is_refused(self):
         for env, why in (({'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:3'}, 'TRADERX_FEED_P1 still holds 3 messages'),

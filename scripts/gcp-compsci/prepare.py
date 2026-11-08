@@ -133,6 +133,10 @@ def configure_private_runtime(docs):
                 # snapshot's open orders; the smoke reads the view through /accounts/{id}/orders).
                 set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'TRADE_PROJECTION_MODE': 'snapshot',
                             'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000'})
+                # FR-PRG-29: Ready means G3's read answers. Without a probe, rollout status returned while it still
+                # refused connections (production 2026-11-07); the accounting needs its NATS streams and SQL too.
+                c['readinessProbe'] = {'httpGet': {'path': '/v2/projection-feed/accounting', 'port': 18091},
+                                       'periodSeconds': 5, 'timeoutSeconds': 10, 'failureThreshold': 3}
             if name == 'cluster-gateway':
                 # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
                 # misses is re-read from TRADERX_FEED rather than lost.

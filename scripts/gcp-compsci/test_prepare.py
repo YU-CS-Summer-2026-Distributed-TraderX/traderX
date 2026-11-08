@@ -52,6 +52,9 @@ class Rendering(unittest.TestCase):
                                                  'PROJECTION_FEED_PARTITIONS','PROJECTION_FEED_STREAM_LAYOUT')},
                          {'TRADE_PROJECTION_MODE':'snapshot','ORDER_FEED_PERSIST':'false','ORDER_VIEW_SNAPSHOT_MS':'5000',
                           'PROJECTION_FEED_PARTITIONS':None,'PROJECTION_FEED_STREAM_LAYOUT':None})
+        # FR-PRG-29: Ready means listening on G3's read (rollout status returned before it, production 2026-11-07)
+        self.assertEqual(module.podspec(tp)['containers'][0]['readinessProbe']['httpGet'],
+                         {'path':'/v2/projection-feed/accounting','port':18091})
         for value in (None,'0'):
             docs=copy.deepcopy(self.docs)
             c=module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor'))['containers'][0]
@@ -711,6 +714,8 @@ class SnapshotReadModel(unittest.TestCase):
                                             'TRADE_PROJECTION_MODE','ORDER_FEED_PERSIST','ORDER_VIEW_SNAPSHOT_MS')},
                          {'PROJECTION_FEED_MODE':'jetstream','PROJECTION_FEED_PARTITIONS':'6','PROJECTION_FEED_STREAM_LAYOUT':'partition',
                           'TRADE_PROJECTION_MODE':'snapshot','ORDER_FEED_PERSIST':'false','ORDER_VIEW_SNAPSHOT_MS':'5000'})
+        self.assertEqual(module.podspec(self.doc(self.docs,'Deployment','trade-processor'))['containers'][0]['readinessProbe']['httpGet']['path'],
+                         '/v2/projection-feed/accounting')
         self.assertEqual(int(tp['PROJECTION_FEED_STREAM_MAX_BYTES']),module.stream_retention_bytes())
         self.assertIn('-XX:+ZGenerational',tp['JAVA_TOOL_OPTIONS'].split())
         nats=module.podspec(self.doc(self.docs,'Deployment','nats'))['containers'][0]

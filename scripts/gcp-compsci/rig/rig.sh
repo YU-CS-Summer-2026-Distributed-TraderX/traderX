@@ -784,6 +784,9 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
   reset_feed   # with trade-processor, the members and the gateways at 0
   kc scale deploy/trade-processor --replicas="${reps:-1}" >/dev/null || die "read-model archive: trade-processor cannot be restarted"
   kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
+  # FR-PRG-29: Ready is not listening on a render without trade-processor's readiness probe (production 2026-11-07
+  # 11:01 pm ET: G3's accounting read got connection refused 10 s before it listened), so wait for what G3 reads.
+  wait_for 300 "trade-processor's accounting answers (/v2/projection-feed/accounting)" accounting
 }
 
 # ---- gateways, LB, autoscale -------------------------------------------------------------------------------------

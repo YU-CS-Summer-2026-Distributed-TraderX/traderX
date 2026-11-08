@@ -56,6 +56,15 @@ consumers (trade-processor's `tp-*` durables, which it recreates; the gateways' 
 history-feed's durables are recreated too, but its cursor is bound to the stream's incarnation (FR-HST-07), so a
 non-empty history store refuses the new stream until FR-THT-08 archives it with the epoch.
 
+**Amendment 2026-11-07, 11:01 pm ET (production):** the stream reset worked (`TRADERX_FEED (0 messages) deleted`), then
+G3 raced the restarted trade-processor: the rendered Deployment had no readiness probe, so `rollout status` returned
+before it listened, and G3's accounting read got connection refused (curl exit 7). The re-run skipped the archive, the epoch
+already provisioned. The archive now waits for the accounting to answer, and prepare.py renders a readiness
+probe on `/v2/projection-feed/accounting` (it reads the capture streams and SQL, which G3 needs too). Tests:
+`test_rig.FreshEpoch.test_a_wiped_epoch_waits_for_the_restarted_trade_processor_to_answer` (three refused reads, then
+an answer, all before any member starts; refuses rc 2 against the rig.sh without the wait) and `test_prepare` (both
+renders carry the probe; KeyError against the prepare.py before it).
+
 ## Consequences
 
 - The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads
