@@ -127,9 +127,9 @@ def configure_private_runtime(docs):
                 c['env'].append({'name': 'GATEWAY_DRAIN_DELAY_MS', 'value': GATEWAY_DRAIN_DELAY_MS})
             if name == 'trade-processor':
                 # FR-DRS-25: the projection pulls a durable JetStream consumer, so sides booked while it is
-                # down are replayed on restart instead of lost. Row projection: SQL keeps every trade.
-                c['env'] = [e for e in c.get('env', []) if e['name'] != 'PROJECTION_FEED_MODE']
-                c['env'].append({'name': 'PROJECTION_FEED_MODE', 'value': 'jetstream'})
+                # down are replayed on restart instead of lost. FR-THT-01: the snapshot read model, named, never a
+                # default: 889e47be cut production from rows to snapshot silently when the default flipped (2026-11-07).
+                set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'TRADE_PROJECTION_MODE': 'snapshot'})
             if name == 'cluster-gateway':
                 # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
                 # misses is re-read from TRADERX_FEED rather than lost.
@@ -430,8 +430,10 @@ def validate_read_model(docs, require):
         d = next((d for d in docs if d['kind'] == kind and d['metadata']['name'] == name), None)
         return {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])} if d else {}
     tp, members = env('trade-processor'), env('order-matcher-cluster', 'StatefulSet')
-    if tp.get('TRADE_PROJECTION_MODE') != 'snapshot':
-        return
+    require(tp.get('TRADE_PROJECTION_MODE') == 'snapshot',
+            'trade-processor must name TRADE_PROJECTION_MODE=snapshot: a default changes the read model unseen (FR-THT-01)')
+    if tp.get('PROJECTION_FEED_STREAM_LAYOUT') != 'partition' and tp.get('PROJECTION_FEED_PARTITIONS') is None:
+        return   # the unsized profile (--read-model rows): one stream, FR-PRG-20's sizing does not apply
     require(tp.get('PROJECTION_FEED_MODE') == 'jetstream', 'the trade store reads the stream: PROJECTION_FEED_MODE=jetstream (FR-PRG-20)')
     require(tp.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition',
             'one capture stream holds ~50K orders/s; the profile is sized for one stream per partition (FR-DRS-32, ADR-097)')

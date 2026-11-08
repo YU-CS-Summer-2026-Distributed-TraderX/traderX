@@ -48,6 +48,14 @@ The new epoch keeps the legacy id scheme (no run descriptor), and the old one is
 is the gate that passed on the old epoch's last bring-up (G2's strict replay of every member, G3 over the projected
 sides minus the recorded gaps) plus the archived disks and tables, kept as they were.
 
+**Amendment 2026-11-07 (production):** the epoch also restarts its capture streams. The archived read model's cursor
+restarts at 0; a stream that kept its old sequence (TRADERX_FEED since 2026-10-28, 0 messages from first_seq
+371203273) is a retention gap to the snapshot store, which refuses it. `up`'s archive therefore deletes every empty
+capture stream with the trade store stopped and refuses one still holding messages; deleting a stream removes its
+consumers (trade-processor's `tp-*` durables, which it recreates; the gateways' fill feed is ephemeral).
+history-feed's durables are recreated too, but its cursor is bound to the stream's incarnation (FR-HST-07), so a
+non-empty history store refuses the new stream until FR-THT-08 archives it with the epoch.
+
 ## Consequences
 
 - The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads

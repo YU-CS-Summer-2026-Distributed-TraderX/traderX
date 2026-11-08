@@ -702,6 +702,31 @@ rig_fresh_epoch(){
   note "epoch $label: claims wiped; rig.sh up archives the read model, then starts the members empty"
 }
 
+# FR-PRG-29 (production 2026-11-07): the fresh epoch's read model starts at cursor 0, so its capture streams must start at
+# seq 1. The old TRADERX_FEED (since 2026-10-28) held 0 messages from first_seq 371203273 (all aged out), and the snapshot
+# trade store rightly refused with RETENTION_GAP. Read from NATS's monitor, deleted by one JetStream API request over the
+# client protocol (busybox nc in the nats pod: no other image). Deleting a stream deletes its consumers: trade-processor
+# recreates the stream and its tp-* durables on start, and the gateways' fill feed is an ordered (ephemeral) consumer.
+feed_streams(){ # "<stream> <messages>" per capture stream, TRADERX_FEED or TRADERX_FEED_P<p>; fails when NATS cannot be read
+  local j; j=$(kc exec deploy/nats -c nats -- wget -qO- 'http://localhost:8222/jsz?accounts=true&streams=true') || return 1
+  jq -e 'has("streams")' <<<"$j" >/dev/null || return 1   # a JetStream report, not an error page
+  jq -r '.account_details[]?.stream_detail[]? | select(.name | test("^TRADERX_FEED(_P[0-9]+)?$")) | "\(.name) \(.state.messages)"' <<<"$j"; }
+nats_api(){ # nats_api <subject>: one JetStream API request, its JSON reply
+  kc exec deploy/nats -c nats -- sh -c '(printf "CONNECT {\"verbose\":false}\r\nSUB r 1\r\nPUB %s r 0\r\n\r\n" "$1"; sleep 2) | nc localhost 4222' sh "$1" \
+    | grep -o '^{.*}'; }
+reset_feed(){
+  local streams s n
+  streams=$(feed_streams) || die "fresh epoch: the capture streams cannot be listed"
+  while read -r s n; do
+    [ -z "$s" ] || [ "$n" = 0 ] || die "fresh epoch: $s still holds $n messages of the old epoch; it must be empty (aged out, or reconciled and purged) before the epoch restarts it at seq 1"
+  done <<<"$streams"
+  while read -r s n; do
+    [ -n "$s" ] || continue
+    nats_api "\$JS.API.STREAM.DELETE.$s" | jq -e '.success == true' >/dev/null || die "fresh epoch: $s could not be deleted"
+    note "capture stream $s (0 messages) deleted; trade-processor recreates it at seq 1"
+  done <<<"$streams"
+}
+
 archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*, the live tables recreated empty
   local label=$1 t renames='' have reps present
   step "read model: the old epoch's tables into arc_${label}_*, recreated empty (trade-processor stopped meanwhile)"
@@ -750,6 +775,7 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
     [ "$(sql "select count(*) from $t")" = 0 ] || die "read-model archive: $t is not empty after the archive"
   done
   note "archived: arc_${label}_trades holds $(sql "select count(*) from arc_${label}_trades") rows; live tables empty"
+  reset_feed   # with trade-processor, the members and the gateways at 0
   kc scale deploy/trade-processor --replicas="${reps:-1}" >/dev/null || die "read-model archive: trade-processor cannot be restarted"
   kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
 }

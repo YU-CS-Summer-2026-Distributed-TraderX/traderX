@@ -7,7 +7,9 @@
 `tiered` policy (negative); tiered render moves an old partition to the S3 cold disk with equal rows. Offline:
 `test_prepare.HistoryStore` (render, unsized/unclaimed/absent/surging/other-streams refused, unlocked digest refused,
 tiered cold disk), `test_rig` (history-pool created/sized/zeroed, sts/clickhouse readiness, absent store refused;
-A/B: with the old skip restored the absent-store test fails).
+A/B: with the old skip restored the absent-store test fails). FR-PRG-29 amendment: `test_rig` fresh-epoch capture
+stream reset (empty streams deleted with the trade store stopped, a non-empty or unreadable one refused; A/B), the
+helpers exercised against a real NATS 2.14 container; `test_prepare` refuses a render without TRADE_PROJECTION_MODE.
 
 ## Snapshot-only read model on kind (2026-11-06, trade-history-tiers, kind traderx-tht)
 

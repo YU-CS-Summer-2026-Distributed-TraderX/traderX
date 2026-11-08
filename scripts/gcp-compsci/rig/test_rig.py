@@ -40,6 +40,10 @@ kubectl(){
       n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
       v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; expired && return 8; echo "$REINDEX";;
+    *"8222/jsz"*) [ -n "${FEED_FAIL:-}" ] && return 1   # FEED: "<stream>:<messages> ..." on NATS, unset = none
+      jq -cn --arg f "${FEED:-}" '{streams: 1, account_details: [{stream_detail: [$f | splits(" ") | select(. != "")
+        | split(":") | {name: .[0], state: {messages: (.[1] | tonumber)}}]}]}';;
+    *"nc localhost 4222"*) echo 'INFO {"server_id":"x"}'; echo 'MSG r 1 40'; echo '{"type":"stream_delete_response","success":true}';;
     *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ];;   # HIST_ABSENT: no history store rendered
     *"history-feed:18095/health"*) echo '{"ready":true,"lanes":[{"pending":0},{"pending":0}]}';;
     *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
@@ -623,6 +627,25 @@ class FreshEpoch(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIsNotNone(first(calls, r'RENAME TABLE trades TO arc_e2_trades, positions TO arc_e2_positions, orderbook TO arc_e2_orderbook, projection_cursor TO arc_e2_projection_cursor"'), out)
         self.assertIsNone(first(calls, 'LIKE arc_e2_projection_accounting'))
+
+    # FR-PRG-29 (production 2026-11-07): the old epoch's capture streams aged out to 0 messages at first_seq 371203273;
+    # the fresh read model's cursor 0 then met a RETENTION_GAP. An empty stream is deleted (trade-processor recreates
+    # it at seq 1) while the trade store is stopped; one still holding the old epoch's messages is refused.
+    def test_a_wiped_epoch_restarts_its_empty_capture_streams_at_seq_1(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:0 OTHER:5'})
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'scale deploy/trade-processor --replicas=0', r'select count\(\*\) from trades',
+                                           r'STREAM.DELETE.TRADERX_FEED_P0', r'STREAM.DELETE.TRADERX_FEED_P1',
+                                           r'scale deploy/trade-processor --replicas=1', r'rig-epoch .*state=provisioned')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        self.assertIsNone(first(calls, 'STREAM.DELETE.OTHER'))
+
+    def test_a_capture_stream_still_holding_messages_or_unreadable_is_refused(self):
+        for env, why in (({'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:3'}, 'TRADERX_FEED_P1 still holds 3 messages'),
+                         ({'FEED_FAIL': '1'}, 'capture streams cannot be listed')):
+            out, calls = self.refused(why, **{**self.EMPTY, 'EPOCH': 'wiped e2', **env})
+            self.assertIsNone(first(calls, 'STREAM.DELETE'), why)
+            self.assertIsNone(first(calls, 'state=provisioned'), why)
 
     def test_a_table_left_with_rows_after_the_archive_is_refused(self):
         out, calls = self.refused('not empty after the archive', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'LIVE_ROWS': '3'})

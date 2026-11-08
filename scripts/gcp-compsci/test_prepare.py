@@ -33,6 +33,16 @@ class Rendering(unittest.TestCase):
         self.assertEqual(engine['spec']['template']['spec']['nodeSelector'],
                          {'cloud.google.com/gke-nodepool':'engine-pool'})
 
+    def test_every_render_names_the_snapshot_read_model(self):
+        # Production 2026-11-07: this render left TRADE_PROJECTION_MODE unset, so 889e47be moved production from rows to
+        # snapshot by flipping trade-processor's default. The mode is named in the render, and its absence refused.
+        tp=next(d for d in self.docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor')
+        self.assertIn({'name':'TRADE_PROJECTION_MODE','value':'snapshot'},module.podspec(tp)['containers'][0]['env'])
+        docs=copy.deepcopy(self.docs)
+        c=module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor'))['containers'][0]
+        c['env']=[e for e in c['env'] if e['name']!='TRADE_PROJECTION_MODE']
+        with self.assertRaisesRegex(AssertionError,'TRADE_PROJECTION_MODE=snapshot'): module.validate(docs)
+
     def test_member_archive_storageclass_is_rendered(self):
         # Members claim a retained volume of this class; a render without it leaves them Pending.
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')
@@ -335,7 +345,7 @@ class Rendering(unittest.TestCase):
         tp=next(d for d in self.docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
         self.assertEqual(env['PROJECTION_FEED_MODE'],'jetstream')
-        self.assertNotIn('TRADE_PROJECTION_MODE',env)   # unset: trade-processor's only mode, snapshot (FR-THT-01), unsized
+        self.assertEqual(env['TRADE_PROJECTION_MODE'],'snapshot')   # named, never trade-processor's default (FR-THT-01)
         docs=copy.deepcopy(self.docs)
         tp=next(d for d in docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_MODE')['value']='core'
