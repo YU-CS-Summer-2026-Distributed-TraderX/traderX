@@ -1,0 +1,21 @@
+# TraderX's engine fork as an HTTP service (FR-RP-VARES-08): the same hash-locked Linux wheels as the
+# batch pilot (Dockerfile), the fork's clean checkout with its .git, so engine.run.identity reports the
+# real revision and modified=false, served by uvicorn. Context: requirements-linux-amd64.lock and
+# engine-src/ (git clone --depth 1 of the pinned commit, core.autocrlf=false), and a .gcloudignore that keeps .git.
+# The node needs vm.max_map_count >= 1048576: at 65530 XLA's CPU JIT dies mid-book ("Cannot allocate memory").
+FROM python:3.14.6-slim-bookworm@sha256:4c92ffcde4dd6f1ff72a24518f49fd4990b27134987dfa31a733badde66df9f8
+RUN test "$(uname -m)" = x86_64 && apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* && git config --system safe.directory /opt/engine
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 \
+    JAX_PLATFORMS=cpu JAX_ENABLE_X64=true XDG_CACHE_HOME=/tmp/cache PYTHONPATH=/opt/engine \
+    JAX_RISK_JOB_QUEUE=/tmp/q/jobs.sqlite3 JAX_RISK_WORKER_LOCK=/tmp/q/worker.lock
+COPY requirements-linux-amd64.lock /opt/requirements.lock
+RUN python -m pip install --require-hashes --only-binary=:all: -r /opt/requirements.lock
+COPY engine-src /opt/engine
+WORKDIR /opt/engine
+RUN test -z "$(git status --porcelain --untracked-files=no)" \
+    && python -c "from engine.run.identity import engine_identity as e; i=e(); print(i); assert i.revision and i.modified is False"
+USER 10001:10001
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+CMD ["sh", "-c", "mkdir -p /tmp/q && exec python -m uvicorn engine.api.app:app --host 0.0.0.0 --port 8080"]

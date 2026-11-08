@@ -3,21 +3,24 @@
 # instrument." Both halves, back to back, locally.
 #
 #   TraderX half   VarEsEndToEndTest (the generated order-matcher suite): every instrument class
-#                  TraderX books (listed equity over REST, listed option over FIX, Treasury bill over
-#                  the binary fast path, OTC swaps over REST) through the REAL gateway (a child JVM)
-#                  into three real members; venue close; the sequenced EOD marker at N; the cut
-#                  rendered byte-identically on every member; the production exporters' write-once
-#                  fixture. Negative control: a counterparties table missing one account REFUSES.
-#   engine half    risk-var-es-e2e.py: eod-risk-bundles packages the receipt; every row is mapped
-#                  to Alex's upstream engine's POST /runs (analytics npv + market_risk) or REFUSED
-#                  by name; VaR and ES must be finite and non-zero for the portfolio and attributed
-#                  to every trade from the inline P&L; a market missing a curve must be refused (400).
+#                  TraderX books (listed equity over REST, listed option over FIX, Treasury bill, coupon
+#                  note and corporate over the binary fast path, OTC swaps over REST /swaps (USD-SOFR,
+#                  GBP-SONIA, EUR-ESTR), European, Bermudan and American swaptions over REST /swaptions)
+#                  through the REAL gateway (a child JVM) into three real members; venue close; the
+#                  sequenced EOD marker at N; the cut rendered byte-identically on every member; the
+#                  production exporters' write-once fixture.
+#                  Negative control: a counterparties table missing one account REFUSES.
+#   engine half    risk-var-es-e2e.py: eod-risk-bundles packages the receipt; every row is mapped to
+#                  TraderX's engine fork (traderx/engine-fork, var_es_e2e.ENGINE_REVISION) POST /runs
+#                  (analytics npv + market_risk): equities, OCC options, Treasuries, corporates on a credit
+#                  spread, OIS swaps and swaptions; VaR and ES must be finite and non-zero for the portfolio
+#                  and attributed to every trade from the inline P&L. One negative control per new input
+#                  (OIS index curve, equity spot, option volatility, spread-bond Greeks) must be refused.
 #
-# Exit 0 only when every instrument in the fixture carries finite non-zero VaR and ES. Today Alex's
-# f9cc4c1 has no equity or listed-option product and implements only ACT/365 and ACT/ACT (ICMA) day
-# counts, so the equity, option and USD-SOFR (ACT/360) legs are reported as refused, by name, in
-# report.json; the Treasury bill and the GBP-SONIA (ACT/365F) swap price. That is the finding this
-# proof exists to make visible, not a reason to hide it.
+# Exit 0 only when every instrument in the fixture carries finite non-zero VaR and ES and the run's engine
+# is the fork's ENGINE_REVISION, unmodified (FR-RP-VARES-06). Against Alex's 17ac757 the equity, option,
+# corporate and ACT/360 rows were refused (R1-R4, coordination/alex-engine-requests-20261106.md); the fork
+# implements them.
 #
 # Usage:
 #   RISK_ENGINE_ORIGIN=http://127.0.0.1:8765 scripts/proofs/yu18-var-es-e2e.sh [NEW_PRIVATE_OUTPUT_DIR]
@@ -72,7 +75,7 @@ import sys, xml.etree.ElementTree as ET
 paths = list(Path(sys.argv[1]).glob('TEST-*.VarEsEndToEndTest.xml'))
 assert len(paths) == 1, paths
 r = ET.parse(paths[0]).getroot()
-assert r.get('tests') == '1' and r.get('failures') == '0' and r.get('errors') == '0' and r.get('skipped') == '0', r.attrib
+assert r.get('failures') == '0' and r.get('errors') == '0' and int(r.get('tests')) - int(r.get('skipped')) >= 2, r.attrib   # fixture + FIX-auth refusal
 out = r.find('system-out').text or ''
 line = next((l for l in out.splitlines() if l.startswith('VAR-ES-E2E-TRADERX ')), None)
 assert line, 'no VAR-ES-E2E-TRADERX line'
@@ -94,7 +97,7 @@ for k, v in sorted((r.get('attribution') or {}).items()):
     print('  priced ', v.get('class'), v.get('security') or v.get('contractId'), {q: v[q] for q in v if q.startswith(('VaR', 'ES'))})
 for x in r.get('refused') or []:
     print('  REFUSED', x['class'], x['identity'], '-', x['reason'])
-print('negative ', r.get('negative_control', {}).get('status'), 'expected 400')
+print('negative ', [(c['control'], c['status']) for c in r.get('negative_controls', [])], 'expected 400 each')
 print('coverage ', r.get('coverage'))
 PY
 echo

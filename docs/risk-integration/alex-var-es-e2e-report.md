@@ -1,5 +1,9 @@
 # VaR and ES end to end on each instrument: what prices today, what does not
 
+> **Superseded November 6 for engine `17ac757`:** the proof now also books a coupon note, a corporate and all three
+> swaption styles; everything TraderX could fix prices. The remaining gaps and their exact inputs, expected and actual
+> values are in [`coordination/alex-engine-requests-20261106.md`](../../coordination/alex-engine-requests-20261106.md).
+
 **Date:** 2026-10-26
 **From:** Yaakov / TraderX
 **Engine measured:** your upstream `f9cc4c16fa843859729a9fb0956dd8cdfd2fa09b`, unmodified, run locally (`uvicorn engine.api.app:app`, CPU)

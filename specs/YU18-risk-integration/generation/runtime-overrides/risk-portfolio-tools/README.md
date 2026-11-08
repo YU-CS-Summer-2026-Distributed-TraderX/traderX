@@ -73,3 +73,12 @@ Delivered evidence: 17 source tests passed. The golden completed through the rea
 Unit suite uses real localhost transport with honest service doubles and closes every server. Native proof reuses clean pinned schema/validation/pricing, compares the four-position golden against explicit independently enumerated cashflows and coupon elapsed days, and tests five engine refusals. HTTP proof archives only a committed engine revision into its private evidence directory, starts a separate CPU API/worker/queue/cache, submits four positions and stops its owned process group in `finally`. It never restarts a retained rig or modifies Alex's checkout. Dependency installation is not performed.
 
 The golden reference covers regular flat-curve bills and notes, signed dirty PV, zero bill accrual, signed note accrual, clean-dirty relation and cancellation of opposite positions. It does not validate general interpolation, irregular schedules, simulations, Greeks, credit, FX or market-risk aggregation. Synthetic price agreement is narrow numerical evidence; `financial_validation=false` stays in manifests/receipts.
+
+## VaR/ES on every class, and large books (November 6)
+
+`var_es_e2e.py` is the engine half of `scripts/proofs/yu18-var-es-e2e.sh` (FR-RP-VARES-01..04, 06), against TraderX's engine fork (`traderx/engine-fork`).
+`ore_parity.py` spot-checks a run's t=0 NPVs against ORE/QuantLib in the engine's own environment
+(FR-RP-VARES-05, 07). `book_gen.py` writes a seeded booking plan; `VarEsEndToEndTest.largeBookThroughTheRealIngress`
+books it through the real gateway (`TRADERX_LARGE_BOOK_PLAN`, `TRADERX_LARGE_BOOK_OUTPUT`); `large_book.py`
+prices the resulting fixture as one run and measures it (FR-RP-BOOK-01..04). Runbook and numbers:
+`docs/risk-integration/full-pricing-and-large-books-20261106.md`.
