@@ -72,7 +72,7 @@ FIX_HOST=127.0.0.1 FIX_PORT="${FIXP}" FIX_PASSWORD="${PW}" TICKER="${T}" TICKER2
 
 step "5. effect end"
 for i in $(seq 1 30); do [[ "$(sql "SELECT status FROM orderbook WHERE security='${T}' AND accountid=${ACCT_F}")" == FILLED ]] && break; sleep 1; done
-st="$(sql "SELECT status FROM orderbook WHERE security='${T}' AND accountid=${ACCT_F}")"; nt="$(sql "SELECT COUNT(*) FROM trades WHERE security='${T}'")"
+st="$(sql "SELECT status FROM orderbook WHERE security='${T}' AND accountid=${ACCT_F}")"; nt="$(hist "SELECT count() FROM trades WHERE security='${T}'")"
 [[ "${st}" == FILLED && "${nt}" == 4 ]] || fail "SQL: FIX Sell '${st}', ${nt} trade rows on ${T} (want FILLED, 4 = two crosses x two sides)"
 SENT1="$(gmetric sent)"; GAP1="$(gmetric gap)"
 [[ $(( SENT1 - SENT0 )) == 2 && "${GAP1}" == "${GAP0}" ]] || fail "FR-FFR-08: reports sent ${SENT0} -> ${SENT1} (want +2), gap ${GAP0} -> ${GAP1} (want +0)"

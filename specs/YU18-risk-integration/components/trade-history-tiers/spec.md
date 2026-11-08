@@ -2,18 +2,21 @@
 
 Status: proposed 2026-11-01; first slice implemented 2026-11-06, local and kind only (FR-THT-03 policy, FR-THT-05
 inventory and the recon move, FR-THT-06 gate check, the FR-THT-04 object-storage question); FR-THT-02's render and
-rig steps 2026-11-07, local and kind only. Nothing in production. Decision: [ADR-102](../../system/adr-102-trade-history-off-mariadb.md).
+rig steps 2026-11-07, local and kind only; the cutover (FR-THT-01 revised, FR-THT-09) 2026-11-08, kind only. Nothing in production. Decision: [ADR-102](../../system/adr-102-trade-history-off-mariadb.md).
 Dependencies: history-store FR-HST-01..07 (`history-feed`, ClickHouse 25.8), downstream-read-side (trade-processor,
 FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (licence installed by yaakov only).
 
 ## Requirements
 
 - FR-THT-01: MariaDB SHALL hold current state only (positions, open orders, accounts, reference data, EOD prices,
-  and each account's blotter window with the settlement counts, ADR-097's snapshot store). trade-processor SHALL run
-  the snapshot read model only: every trade side applied to `positions` exactly once, no SQL `trades` row per side
-  (rows mode retired: implemented 2026-11-06; the trade feed refuses any other mode). Nothing SHALL read SQL `trades` as history (decided 2026-11-06,
-  option A: the window is current state; moving it to ClickHouse would put history-feed lag and availability on the
-  blotter for no growth bound the window does not already have).
+  the settlement counts) and trade **exceptions**: no booked trade side SHALL be written to SQL `trades` (ADR-102
+  cutover, decided by yaakov 2026-11-08, superseding option A of 2026-11-06, under which the table kept each account's
+  blotter window). SQL `trades` holds only a side booking refused (`Rejected`) and an operator-forced settlement
+  (`Settled`). trade-processor SHALL run the snapshot read model only: every trade side applied to `positions` exactly
+  once (rows mode retired 2026-11-06; the trade feed refuses any other mode). Implemented 2026-11-08 (kind):
+  `TradeView` keeps no blotter ring and its cut carries only the refused sides; `TradeSnapshotStore` writes them
+  `INSERT IGNORE` and never deletes; `TRADE_PROJECTION_BLOTTER_DEPTH` is removed. The settlement sweep still runs and
+  finds nothing new to settle (pre-cutover `Processing` rows only).
   Production cutover (found 2026-11-07): the CompSci render without `--read-model snapshot` never set
   `TRADE_PROJECTION_MODE`, so production ran trade-processor's default: rows until 9a2b5b90, snapshot from it. The
   889e47be build was production's first on the snapshot read model, unannounced. Since 2026-11-07 every render names
@@ -50,7 +53,11 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
 - FR-THT-05: Every reader of SQL `trades` SHALL read the history store instead before `trades` stops being written:
   blotter and trade history, recon (FR-DRS-33), the restore gate's fingerprint (FR-PRG-27), EOD, and every proof
   that counts SQL trades. The inventory SHALL be a test that fails while any reader remains.
-  Implemented: `scripts/trade-history-tiers/sql-trades-readers.sh` over tracked files; no argument = the drop gate
+  Implemented: `scripts/trade-history-tiers/sql-trades-readers.sh` over tracked files (`KEEP:` and, since the
+  2026-11-08 cutover, `HISTORICAL:` lines are not counted: KEEP reads or writes exception rows or the schema,
+  HISTORICAL is a dated one-off evidence script bound to a cluster that no longer exists). It matches SQL text only:
+  JPA lookups (`TradeRepository.findById`) are invisible to it, and the 2026-11-08 cutover found three by hand
+  (TCA, forced settlement, the rows-mode recon); no argument = the drop gate
   (exit 1 while any reader remains, 58 on 2026-11-06), `--inventory` = the tree equals
   `sql-trades-readers.txt` exactly (a new reader or a stale entry fails), `--selftest`. Moved: the FR-DRS-33
   order/fill recon (`order-fill-recon.clickhouse.sql`), which on the history store works in snapshot mode and at
@@ -73,6 +80,18 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   its `history_cursor` is emptied because the retry deletes the stream incarnation it binds (2026-11-08, e1108:
   without the move history-feed refused `STREAM_RESET` on the old epoch's cursor, and the tables were renamed by
   hand).
+- FR-THT-09: The blotter SHALL read the history store (ADR-102 cutover, 2026-11-08). position-service's
+  `GET /trades/{acct}`, `/trades/` and `/v2/projections/{scope}/accounts/{a}/trades` SHALL return the active
+  scope's newest history rows (`BLOTTER_LIMIT`, 100; the unfiltered list the newest date partition only), each with
+  its exact trade id and source order id (FR-HST-01's `id_prefix`, `order_epoch`), its state by trade-processor's T+N
+  rule (`SETTLEMENT_T_PLUS_DAYS`, which `validate` requires equal on both), and an SQL exception row (FR-THT-01) in
+  place of the history row with the same id. Another scope SHALL answer the SQL rows it holds. `clickhouse-clients`
+  SHALL admit position-service. A forced settlement of a side with no SQL row SHALL read it from the store, check the
+  caller's entitlement on its account, and record a `Settled` exception row; an id the store does not hold is 404.
+  Implemented 2026-11-08: `TradeRepository` (position-service, `TradeRepositoryTest`), `HistoryStore` and
+  `SettlementService.forceSettle` / `SettlementController` (trade-processor, `SettlementServiceTest`), prepare.py
+  `HISTORY_CLIENTS` and `validate_history_store` (`test_prepare`). Proven on kind `traderx-cut`
+  (`kind-cutover-check.sh`, yu18-projection-effect-end, a live forced settlement); not on GKE or production.
 - FR-THT-07: Either store SHALL be rebuildable from the capture streams from its cursor 0, with the result equal to
   the store it replaces (count and hash, FR-THT-06).
 

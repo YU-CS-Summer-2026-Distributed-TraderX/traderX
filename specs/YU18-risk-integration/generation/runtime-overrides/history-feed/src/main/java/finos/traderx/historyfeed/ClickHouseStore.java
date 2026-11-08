@@ -38,7 +38,12 @@ final class ClickHouseStore {
   void createTables(int hotDays) throws Exception {
     exec("CREATE TABLE IF NOT EXISTS trades (ts DateTime64(3), seq UInt64, part UInt16, trade_seq UInt64,"
         + " side FixedString(1), account UInt32, security LowCardinality(String), qty UInt32, px Float64,"
-        + " order_ref UInt64, cseq UInt64)" + SETTINGS);
+        + " order_ref UInt64, cseq UInt64, id_prefix LowCardinality(String), order_epoch LowCardinality(String))" + SETTINGS);
+    // ADR-102 cutover (2026-11-08): a store created before the id columns gets them; older rows read "".
+    exec("ALTER TABLE trades ADD COLUMN IF NOT EXISTS id_prefix LowCardinality(String)");
+    exec("ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_epoch LowCardinality(String)");
+    // trade-processor's forced settlement looks a side up by trade_seq (not in the sort key); it rises with ts.
+    exec("ALTER TABLE trades ADD INDEX IF NOT EXISTS trade_seq_mm trade_seq TYPE minmax GRANULARITY 1");
     exec("CREATE TABLE IF NOT EXISTS orders (ts DateTime64(3), seq UInt64, part UInt16, order_ref UInt64,"
         + " account UInt32, security LowCardinality(String), side FixedString(1), qty UInt32, remaining UInt32,"
         + " limit_px Float64, status LowCardinality(String), last_px Float64, last_qty UInt32, created DateTime64(3),"
@@ -82,7 +87,8 @@ final class ClickHouseStore {
       if (b.trades) {
         sb.append(b.key[r]).append('\t').append((char) b.side[r]).append('\t').append(b.acct[r]).append('\t')
           .append(b.sec[r]).append('\t').append(b.qty[r]).append('\t').append(b.px[r]).append('\t')
-          .append(b.ref[r]).append('\t').append(b.cseq[r]).append('\n');
+          .append(b.ref[r]).append('\t').append(b.cseq[r]).append('\t').append(b.idPrefix[r]).append('\t')
+          .append(b.orderEpoch[r]).append('\n');
       } else {
         sb.append(b.key[r]).append('\t').append(b.acct[r]).append('\t').append(b.sec[r]).append('\t')
           .append((char) b.side[r]).append('\t').append(b.qty[r]).append('\t').append(b.remaining[r]).append('\t')
@@ -96,9 +102,9 @@ final class ClickHouseStore {
 
   // Millisecond epochs on the wire, converted server-side: TSV has no portable integer form of DateTime64.
   static final String INSERT_TRADES = "INSERT INTO trades SELECT fromUnixTimestamp64Milli(ts), seq, part, trade_seq,"
-      + " side, account, security, qty, px, order_ref, cseq FROM input('ts Int64, seq UInt64, part UInt16,"
-      + " trade_seq UInt64, side FixedString(1), account UInt32, security String, qty UInt32, px Float64,"
-      + " order_ref UInt64, cseq UInt64') FORMAT TabSeparated";
+      + " side, account, security, qty, px, order_ref, cseq, id_prefix, order_epoch FROM input('ts Int64, seq UInt64,"
+      + " part UInt16, trade_seq UInt64, side FixedString(1), account UInt32, security String, qty UInt32, px Float64,"
+      + " order_ref UInt64, cseq UInt64, id_prefix String, order_epoch String') FORMAT TabSeparated";
   static final String INSERT_ORDERS = "INSERT INTO orders SELECT fromUnixTimestamp64Milli(ts), seq, part, order_ref,"
       + " account, security, side, qty, remaining, limit_px, status, last_px, last_qty,"
       + " fromUnixTimestamp64Milli(created), cseq, ordinal, client_key FROM input('ts Int64, seq UInt64, part UInt16,"

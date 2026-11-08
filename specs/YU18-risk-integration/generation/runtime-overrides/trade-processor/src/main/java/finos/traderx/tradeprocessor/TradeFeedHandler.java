@@ -23,8 +23,8 @@ import org.springframework.beans.factory.annotation.Value;
 /**
  * The trade store (ADR-097, the only projection since FR-THT-01 retired rows mode on 2026-11-06): one
  * {@link JetStreamFeed} pull thread per OWNED partition replays the capture stream from the committed cursor into
- * an in-memory {@link TradeView}, and a snapshot thread writes positions, each changed account's blotter window
- * and the cursor to SQL every snapshot-ms. Trade history lives in the history store (history-feed), not SQL.
+ * an in-memory {@link TradeView}, and a snapshot thread writes positions, the sides booking refused and the cursor
+ * to SQL every snapshot-ms. Trades live in the history store (history-feed, ADR-102 cutover), not SQL.
  */
 public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements DisposableBean {
   static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TradeFeedHandler.class);
@@ -50,7 +50,6 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   @Value("${traderx.feed.fetch-wait-ms:200}") long fetchWaitMillis = 200;
   @Value("${traderx.trade-projection.mode:snapshot}") String projectionMode = "snapshot";
   @Value("${traderx.trade-projection.snapshot-ms:5000}") long snapshotMillis = 5000;
-  @Value("${traderx.trade-projection.blotter-depth:100}") int blotterDepth = 100;
   private final Map<Integer, TradeView> views = new ConcurrentHashMap<>();
   private final AtomicLong snapshots = new AtomicLong();
   private final AtomicLong snapshotRows = new AtomicLong();
@@ -110,7 +109,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   }
 
   /**
-   * Snapshot mode: per owned partition, load the last snapshot (positions, blotter windows, cursor),
+   * Snapshot mode: per owned partition, load the last snapshot (positions, cursor),
    * replay the stream from the cursor, and snapshot every {@link #snapshotMillis}. The consumer is
    * ephemeral: the cursor row IS the acknowledgement, so a crash before a snapshot replays from the
    * last one and books nothing twice (TradeView ignores seq <= cursor).
@@ -119,17 +118,14 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     final String scope = runRegistry == null ? RunRegistry.UNKNOWN : runRegistry.activeScope();
     snapshotScope = scope;
     List<Position> allPositions = snapshotStore.loadPositions(scope);
-    List<Trade> allTrades = snapshotStore.loadBlotters(scope);
     List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
     for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
       final int partition = p;
-      TradeView view = new TradeView(blotterDepth);
+      TradeView view = new TradeView();
       TradeSnapshotStore.Cursor cursor = snapshotStore.loadCursor(scope, p);
       List<Position> mine = new ArrayList<>();
       for (Position pos : allPositions) { if (Math.floorMod(pos.getAccountId(), partitionCount) == p) { mine.add(pos); } }
-      List<Trade> myTrades = new ArrayList<>();
-      for (Trade t : allTrades) { if (Math.floorMod(t.getAccountId(), partitionCount) == p) { myTrades.add(t); } }
-      view.load(mine, myTrades, cursor == null ? 0 : cursor.streamSeq(), cursor == null ? 0 : cursor.consensusSeq());
+      view.load(mine, cursor == null ? 0 : cursor.streamSeq(), cursor == null ? 0 : cursor.consensusSeq());
       view.loadDays(snapshotStore.loadDays(scope, p));
       view.loadAccounting(snapshotStore.loadAccounting(scope, p));
       try { requireRetained(p, view.streamSeq()); } catch (JetStreamFeed.Unbound u) { unbound.add(u.getMessage()); continue; }
@@ -142,8 +138,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       snap.setDaemon(true);
       snap.start();
       feedThreads.add(snap);
-      log.info("trade store: partition {} loaded {} positions, {} blotter rows, cursor stream_seq={}",
-          p, mine.size(), myTrades.size(), view.streamSeq());
+      log.info("trade store: partition {} loaded {} positions, cursor stream_seq={}", p, mine.size(), view.streamSeq());
     }
     if (!unbound.isEmpty()) { throw new IllegalStateException(String.join("\n", unbound)); }
   }
@@ -214,8 +209,8 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       } catch (Exception x) {
         snapshotFailures.incrementAndGet();
         view.remark(cut);
-        log.error("trade store: snapshot of partition {} failed ({} positions, {} accounts); kept for the next one",
-            partition, cut.positions().size(), cut.blotters().size(), x);
+        log.error("trade store: snapshot of partition {} failed ({} positions, {} rejected); kept for the next one",
+            partition, cut.positions().size(), cut.rejected().size(), x);
       }
     }
   }

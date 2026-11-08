@@ -3,8 +3,6 @@ package finos.traderx.tradeprocessor.service;
 import finos.traderx.tradeprocessor.TradeView;
 import finos.traderx.tradeprocessor.model.Position;
 import finos.traderx.tradeprocessor.model.Trade;
-import finos.traderx.tradeprocessor.model.TradeSide;
-import finos.traderx.tradeprocessor.model.TradeState;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -22,9 +20,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * YU18 trade store (docs/engineering/downstream-at-400k.md §7): the SQL side of {@link TradeView}.
- * One transaction per snapshot: the changed positions (multi-row upsert), each changed account's
- * blotter window (insert the window's rows, delete the account's rows outside it), the stream
- * cursor, and the scope's counters. The cursor row is what makes a restart exact: the view reloads
+ * One transaction per snapshot: the changed positions (multi-row upsert), the sides booking refused
+ * since the last one (SQL {@code trades} holds only those exceptions since the ADR-102 cutover, 2026-11-08:
+ * booked trades are the history store's), the stream cursor, and the scope's counters. The cursor row is what makes a restart exact: the view reloads
  * the snapshot and replays the stream from {@code stream_seq + 1}.
  *
  * <p>Plain JDBC on purpose: these are bulk statements on a timer, not entities.
@@ -170,35 +168,6 @@ public final class TradeSnapshotStore {
     return out;
   }
 
-  /** The blotter windows, oldest first, so {@link TradeView#load} re-fills each ring in order. */
-  public List<Trade> loadBlotters(String scope) {
-    return jdbc.query("SELECT id, accountid, security, side, state, quantity, price, updated, created, settlementdate, "
-        + "rejectionreason, sourceorderid, projectionscope, clusterepoch, eventidscheme, rundescriptorhash, consensussequence "
-        + "FROM trades WHERE projectionscope=? ORDER BY consensussequence, created, id",
-        (rs, i) -> {
-          Trade t = new Trade();
-          t.setId(rs.getString(1));
-          t.setAccountId(rs.getInt(2));
-          t.setSecurity(rs.getString(3));
-          t.setSide(rs.getString(4) == null ? null : TradeSide.valueOf(rs.getString(4)));
-          t.setState(rs.getString(5) == null ? null : TradeState.valueOf(rs.getString(5)));
-          t.setQuantity(rs.getInt(6));
-          t.setPrice(rs.getBigDecimal(7));
-          t.setUpdated(rs.getTimestamp(8));
-          t.setCreated(rs.getTimestamp(9));
-          t.setSettlementDate(rs.getTimestamp(10));
-          t.setRejectionReason(rs.getString(11));
-          t.setSourceOrderId(rs.getString(12));
-          t.setProjectionScope(rs.getString(13));
-          t.setClusterEpoch(rs.getString(14));
-          t.setEventIdScheme(rs.getString(15));
-          t.setRunDescriptorHash(rs.getString(16));
-          long seq = rs.getLong(17);
-          t.setConsensusSequence(rs.wasNull() ? null : seq);
-          return t;
-        }, scope);
-  }
-
   /** Write one cut atomically. Returns the number of SQL rows written. */
   public int write(String scope, int partition, TradeView.Cut cut) {
     return transactions.execute(status -> {
@@ -223,29 +192,20 @@ public final class TradeSnapshotStore {
             + "averagecostbasis=VALUES(averagecostbasis)", args);
         rows += args.size();
       }
-      for (Map.Entry<Integer, List<Trade>> e : cut.blotters().entrySet()) {
-        List<Trade> window = e.getValue();
-        if (window.isEmpty()) { continue; }
-        List<Object[]> args = new ArrayList<>(window.size());
-        StringBuilder ids = new StringBuilder();
-        List<Object> delArgs = new ArrayList<>();
-        delArgs.add(window.get(0).getProjectionScope());
-        delArgs.add(e.getKey());
-        for (Trade t : window) {
+      if (!cut.rejected().isEmpty()) {
+        List<Object[]> args = new ArrayList<>(cut.rejected().size());
+        for (Trade t : cut.rejected()) {
           args.add(new Object[] {t.getId(), t.getAccountId(), t.getSecurity(), t.getSide() == null ? null : t.getSide().name(),
-              t.getState() == null ? null : t.getState().name(), t.getQuantity(), t.getPrice(),
+              t.getState().name(), t.getQuantity(), t.getPrice(),
               t.getUpdated() == null ? null : new Timestamp(t.getUpdated().getTime()),
               t.getCreated() == null ? null : new Timestamp(t.getCreated().getTime()),
-              t.getSettlementDate() == null ? null : new Timestamp(t.getSettlementDate().getTime()),
               t.getRejectionReason(), t.getSourceOrderId(), t.getProjectionScope(), t.getClusterEpoch(),
               t.getEventIdScheme(), t.getRunDescriptorHash(), t.getConsensusSequence()});
-          ids.append(ids.length() == 0 ? "?" : ",?");
-          delArgs.add(t.getId());
         }
+        // INSERT IGNORE: a replay after a failed snapshot re-books the same id.
         jdbc.batchUpdate("INSERT IGNORE INTO trades(id,accountid,security,side,state,quantity,price,updated,created,"
-            + "settlementdate,rejectionreason,sourceorderid,projectionscope,clusterepoch,eventidscheme,rundescriptorhash,"
-            + "consensussequence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args);
-        jdbc.update("DELETE FROM trades WHERE projectionscope=? AND accountid=? AND id NOT IN (" + ids + ")", delArgs.toArray());
+            + "rejectionreason,sourceorderid,projectionscope,clusterepoch,eventidscheme,rundescriptorhash,"
+            + "consensussequence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args);
         rows += args.size();
       }
       if (!cut.days().isEmpty()) {

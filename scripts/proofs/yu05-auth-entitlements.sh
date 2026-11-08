@@ -48,13 +48,14 @@ check() { # check <label> <actual> <expected> <why>
   fi
 }
 
-# Trade ids for two DIFFERENT accounts, read from the projection so this runs on any rig. Both the
+# Trade ids for two DIFFERENT accounts, read from the history store (the trade system of record since the ADR-102
+# cutover; SQL holds no booked side) so this runs on any rig. Both the
 # id and its owning account come from the same row, so the own/foreign relationship is a fact about
 # the data rather than an assumption about a fixture.
 OWN_ACCT="${OWN_ACCT:-22214}"
-OWN=${OWN_TRADE:-$(dbq "SELECT id FROM trades WHERE accountid=${OWN_ACCT} LIMIT 1;" | tr -d '\r')}
-FOREIGN_ACCT="${FOREIGN_ACCT:-$(dbq "SELECT accountid FROM trades WHERE accountid<>${OWN_ACCT} LIMIT 1;" | tr -d '\r')}"
-FOREIGN=${FOREIGN_TRADE:-$(dbq "SELECT id FROM trades WHERE accountid=${FOREIGN_ACCT} LIMIT 1;" | tr -d '\r')}
+OWN=${OWN_TRADE:-$(hist "SELECT concat(id_prefix, toString(trade_seq), '-', side) FROM trades WHERE account=${OWN_ACCT} LIMIT 1")}
+FOREIGN_ACCT="${FOREIGN_ACCT:-$(hist "SELECT account FROM trades WHERE account<>${OWN_ACCT} LIMIT 1")}"
+FOREIGN=${FOREIGN_TRADE:-$(hist "SELECT concat(id_prefix, toString(trade_seq), '-', side) FROM trades WHERE account=${FOREIGN_ACCT} LIMIT 1")}
 
 if [ -z "$OWN" ] || [ -z "$FOREIGN" ]; then
   echo "   ✘ no trades in the projection for two distinct accounts — nothing to entitle against."

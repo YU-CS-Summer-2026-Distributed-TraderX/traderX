@@ -11,7 +11,10 @@ auth-secrets/fix-session-password, ADR-086 sessions in JetStream, status from th
 --history adds the history store as production renders it (prepare.py's history_store, FR-THT-02): ClickHouse and
 history-feed (traderx/history-feed:<tag>) on trade-processor's streams, minus the GKE pool, storage class and sizes
 (kind's default class; requests a laptop's Docker holds). --history-hot-days N also renders FR-THT-03's tiered policy,
-its cold disk on an S3Mock in the namespace instead of GCS (prepare.py points it at the bucket's XML API).
+its cold disk on an S3Mock in the namespace instead of GCS (prepare.py points it at the bucket's XML API). Since the
+ADR-102 cutover (2026-11-08) the blotter reads the store, so --history also renders position-service
+(traderx/position-service:<tag>). --eod adds the rest of the EOD chain: price-publisher (its marks) and risk-extract
+(the engine's cut, traderx/cluster-node:<tag>), credentials from the render's own Secrets.
 
 Images: traderx/cluster-node:<tag> (build-cluster-image.sh) and traderx/trade-processor:<tag>
 (build-service-images.sh), loaded into the kind nodes. Secrets are random per render: nothing to leak, and
@@ -84,10 +87,15 @@ def history(docs, tag, hot_days, registry='', pool='', cold_bucket='', ns='trade
 
 
 def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_history=False, hot_days=0,
-           history_pool='', cold_bucket=''):
+           history_pool='', cold_bucket='', with_eod=False):
     docs = []
     for f in ['statefulset.yaml', 'nats.yaml', 'eod-price-db.yaml', 'trade-processor.yaml', 'gateway.yaml']:
         docs += [d for d in yaml.safe_load_all((K / f).read_text()) if d]
+    chain = {'position-service'} if with_history else set()
+    if with_eod: chain.add('price-publisher')
+    docs += [d for d in yaml.safe_load_all((K / 'eod-chain.yaml').read_text()) if d and d['metadata']['name'] in chain]
+    if with_eod:
+        docs += [d for d in yaml.safe_load_all((K / 'risk-extract.yaml').read_text()) if d]
     init = ROOT / 'generated/code/target-generated/kubernetes-runtime/manifests/base/database-init-configmap.yaml'
     docs += [d for d in yaml.safe_load_all(init.read_text()) if d]
     docs = [d for d in docs if d['kind'] != 'Secret']
@@ -102,7 +110,8 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
         if not pod:
             continue
         for c in pod.get('containers', []) + pod.get('initContainers', []):
-            if c['image'].startswith(('traderx/cluster-node:', 'traderx/trade-processor:')):
+            if c['image'].startswith(('traderx/cluster-node:', 'traderx/trade-processor:', 'traderx/position-service:',
+                                      'traderx/price-publisher:')):
                 c['image'] = c['image'].split(':')[0] + ':' + tag
                 if registry:   # GKE: traderx/<name> -> <registry>/<name>
                     c['image'] = registry.rstrip('/') + '/' + c['image'].split('/', 1)[1]
@@ -121,6 +130,15 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
             c['env'] += [{'name': 'FIX_SESSION_PASSWORD', 'valueFrom': {'secretKeyRef': {'name': 'auth-secrets', 'key': 'fix-session-password'}}},
                          {'name': 'FIX_SESSION_AUTH', 'value': 'CLIENT1:$(FIX_SESSION_PASSWORD):*'},
                          {'name': 'RISK_CONTROL_TOKEN', 'valueFrom': {'secretKeyRef': {'name': 'auth-secrets', 'key': 'risk-control-token'}}}]
+        secret = lambda n, k: {'valueFrom': {'secretKeyRef': {'name': n, 'key': k}}}
+        if name == 'price-publisher' and d['kind'] == 'Deployment':   # the rig's operator token, not the dev literal
+            c = pod['containers'][0]
+            c['env'] = [e for e in c['env'] if e['name'] != 'RISK_CONTROL_TOKEN'] + [{'name': 'RISK_CONTROL_TOKEN', **secret('auth-secrets', 'risk-control-token')}]
+        if name == 'risk-extract' and d['kind'] == 'Deployment':      # the rig's random database credentials
+            c = pod['containers'][0]
+            c['env'] = [e for e in c['env'] if e['name'] not in ('RISK_EXTRACT_JDBC_USER', 'RISK_EXTRACT_JDBC_PASSWORD')] + [
+                {'name': 'RISK_EXTRACT_JDBC_USER', **secret('mariadb-credentials', 'username')},
+                {'name': 'RISK_EXTRACT_JDBC_PASSWORD', **secret('mariadb-credentials', 'password')}]
     # production's database credentials and JetStream projection (not the gateway: its half adds the TLS socket,
     # which needs Secret fix-tls; the fill feed is set below instead)
     prep.configure_private_runtime([d for d in docs if d['metadata']['name'] in ('trade-processor', 'eod-price-db')])
@@ -165,6 +183,7 @@ if __name__ == '__main__':
     a.add_argument('--history-hot-days', type=int, default=0, help='FR-THT-03 tiering (kind: an S3Mock; GKE: --cold-bucket)')
     a.add_argument('--history-pool', default='', help='GKE: the store and its writer on this pool (production: history-pool)')
     a.add_argument('--cold-bucket', default='', help='GKE: the GCS bucket of the cold disk, prefix <ns>/')
+    a.add_argument('--eod', action='store_true', help='add price-publisher and risk-extract (the EOD extract)')
     o = a.parse_args()
     if o.registry and (o.history or o.history_hot_days) and not o.history_pool:
         a.error('--history on GKE needs --history-pool')
@@ -172,4 +191,4 @@ if __name__ == '__main__':
         a.error('--history-hot-days on GKE needs --cold-bucket')
     yaml.safe_dump_all(render(o.tag, o.partitions, o.gateways, o.ns, o.registry, o.pool,
                               with_history=o.history or o.history_hot_days > 0, hot_days=o.history_hot_days,
-                              history_pool=o.history_pool, cold_bucket=o.cold_bucket), sys.stdout, sort_keys=False)
+                              history_pool=o.history_pool, cold_bucket=o.cold_bucket, with_eod=o.eod), sys.stdout, sort_keys=False)

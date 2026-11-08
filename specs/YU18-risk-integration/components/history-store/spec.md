@@ -13,7 +13,10 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   `account`, `security`, `qty`, `px`, `order_ref`, `cseq` (consensus sequence) and `ts` (the envelope `date`);
   orders keep `order_ref`, `account`, `security`, `side`, `qty`, `remaining`, `limit_px`, `status`, `last_px`,
   `last_qty`, `created`, `cseq`, `ordinal` (output ordinal), `client_key` and `ts` (`updatedAt`). Ids are stored
-  as their numeric parts (the epoch prefix is the run's, not the row's).
+  as their numeric parts; since the ADR-102 cutover (2026-11-08) trades also keep `id_prefix` (the trade id's
+  `e1-<epoch>-` or "") and `order_epoch` (the source order id's epoch), LowCardinality, so the blotter (FR-THT-09)
+  rebuilds the exact ids; a store created before them gets them by `ADD COLUMN IF NOT EXISTS` (older rows read ""),
+  and a minmax index on `trade_seq` serves the forced settlement's lookup by trade id.
 - FR-HST-02: The feed SHALL run one lane per (feed, partition) on a durable pull consumer, `history-<feed>-p<p>`
   on the partition's stream (`<stream>_P<p>` with `PROJECTION_FEED_STREAM_LAYOUT=partition`, the single stream
   otherwise, the same naming as trade-processor's `JetStreamFeed.streamFor`), AckPolicy.All, ackWait 60 s. Its filter

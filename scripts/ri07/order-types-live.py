@@ -113,8 +113,21 @@ def bbo(ticker):
         raise QueryFailed(f"/bbo unreadable: {e}: {out.stdout[:120]!r}") from e
 
 
+def hist(q, ncols):
+    """The history store (ClickHouse trades, the trade system of record since the ADR-102 cutover); same contract as sql."""
+    out = subprocess.run(K + ["exec", "sts/clickhouse", "-c", "clickhouse", "--", "clickhouse-client", "-q", q],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        raise QueryFailed(f"history exit {out.returncode}: {out.stderr.strip()[:300]} (query: {q[:120]})")
+    rows = [line.split("\t") for line in out.stdout.splitlines() if line]
+    bad = [r for r in rows if len(r) != ncols]
+    if bad:
+        raise QueryFailed(f"history returned {len(bad[0])} field(s), expected {ncols}: {bad[0][:5]} (query: {q[:120]})")
+    return rows
+
+
 def trades(ticker):
-    return sql(f"SELECT accountid,side,quantity,price FROM trades WHERE security='{ticker}' ORDER BY id;", 4)
+    return hist(f"SELECT account, if(side='B','Buy','Sell'), qty, px FROM trades WHERE security='{ticker}' ORDER BY seq", 4)
 
 
 def case(name, spec, ok, observed, known_gap=None):

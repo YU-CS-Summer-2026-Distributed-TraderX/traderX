@@ -790,7 +790,7 @@ class HistoryStore(unittest.TestCase):
         self.assertEqual((env['PROJECTION_FEED_PARTITIONS'],env['PROJECTION_FEED_STREAM_LAYOUT'],env['HISTORY_HOT_DAYS']),('6','partition','0'))
         self.assertEqual(module.podspec(writer)['containers'][0]['image'],module.REGISTRY+'history-feed:test-candidate')
         ingress=self.doc(self.docs,'NetworkPolicy','clickhouse-clients')['spec']['ingress'][0]['from']
-        self.assertEqual({f['podSelector']['matchLabels']['app'] for f in ingress},{'history-feed','trade-processor'})
+        self.assertEqual({f['podSelector']['matchLabels']['app'] for f in ingress},{'history-feed','trade-processor','position-service'})
 
     def test_an_unsized_or_unclaimed_or_absent_store_is_refused(self):
         def pod(docs,kind,name): return module.podspec(self.doc(docs,kind,name))['containers'][0]
@@ -800,10 +800,14 @@ class HistoryStore(unittest.TestCase):
         def absent(docs): docs.remove(self.doc(docs,'StatefulSet','clickhouse'))
         def surging(docs): self.doc(docs,'Deployment','history-feed')['spec']['strategy']={'type':'RollingUpdate'}
         def elsewhere(docs): module.set_env(pod(docs,'Deployment','history-feed'),{'PROJECTION_FEED_PARTITIONS':'4'})
+        # ADR-102 cutover: the blotter reads the store, with trade-processor's settlement rule
+        def blotter_shut_out(docs): self.doc(docs,'NetworkPolicy','clickhouse-clients')['spec']['ingress'][0]['from'].pop()
+        def other_settlement(docs): module.set_env(pod(docs,'Deployment','position-service'),{'SETTLEMENT_T_PLUS_DAYS':'3'})
         module.validate(self.docs)
         for change,message in ((unsized,'clickhouse is not sized'),(burstable,'history-feed is not sized'),
                                (unclaimed,'no sized claim'),(absent,'not rendered'),(surging,'one Recreate replica'),
-                               (elsewhere,"trade-processor's streams")):
+                               (elsewhere,"trade-processor's streams"),(blotter_shut_out,"does not admit \\['position-service'\\]"),
+                               (other_settlement,"SETTLEMENT_T_PLUS_DAYS differs")):
             with self.assertRaisesRegex(AssertionError,message): module.validate(self.broken(change))
 
     def test_the_store_runs_only_the_locked_amd64_digest(self):

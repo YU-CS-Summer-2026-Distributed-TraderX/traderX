@@ -80,6 +80,23 @@ class SettlementServiceTest {
         assertEquals(1,s.sweptCount());assertEquals(2,count("Settled"));
         assertTrue(jdbc.queryForObject("SELECT SETTLEMENTDATE FROM TRADES WHERE ID='rejected'",Timestamp.class).before(future));
     }
+    /** ADR-102 cutover: a booked side has no SQL row; force reads it from the history store and records it Settled. */
+    @Test void forceOfABookedSideRecordsItFromTheHistoryStore() {
+        jdbc.execute("ALTER TABLE TRADES ADD COLUMN ACCOUNTID INT"); jdbc.execute("ALTER TABLE TRADES ADD COLUMN SECURITY VARCHAR(50)");
+        jdbc.execute("ALTER TABLE TRADES ADD COLUMN SIDE VARCHAR(10)"); jdbc.execute("ALTER TABLE TRADES ADD COLUMN QUANTITY INT");
+        jdbc.execute("ALTER TABLE TRADES ADD COLUMN CREATED DATETIME"); jdbc.execute("ALTER TABLE TRADES ADD COLUMN SOURCEORDERID VARCHAR(50)");
+        jdbc.execute("CREATE TABLE PROJECTION_ACTIVE(SINGLETON_ID INT, PROJECTION_SCOPE VARCHAR(50))");
+        jdbc.update("INSERT INTO PROJECTION_ACTIVE VALUES(1,'run-ep7')");
+        var s=service(2,1);
+        s.history=new HistoryStore("http://unused") { @Override public Side side(String id) {
+            return "e1-ep7-12-S".equals(id) ? new Side(7,"IBM","Sell",5,"187.25","ep7-4411",946684800000L) : null; } };
+        assertEquals(SettlementService.ForceResult.NOT_FOUND,s.forceSettle("e1-ep7-13-S"));
+        assertEquals(SettlementService.ForceResult.SETTLED,s.forceSettle("e1-ep7-12-S"));
+        assertEquals(SettlementService.ForceResult.ALREADY_SETTLED,s.forceSettle("e1-ep7-12-S"));
+        assertEquals("[e1-ep7-12-S, Settled, 7, IBM, Sell, 5, 187.250000, ep7-4411, run-ep7]",jdbc.queryForList("SELECT ID,STATE,ACCOUNTID,SECURITY,SIDE,"
+            +"QUANTITY,PRICE,SOURCEORDERID,PROJECTIONSCOPE FROM TRADES WHERE ID='e1-ep7-12-S'").get(0).values().toString());
+        assertEquals(1,s.sweptCount());
+    }
     @Test void forceRollbackDoesNotAdvanceCounter() {
         row("one","Processing",future);
         JdbcTemplate faulty=new JdbcTemplate(ds) {

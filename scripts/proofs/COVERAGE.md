@@ -1404,7 +1404,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-16` | LIVE |  |  | needs a forced ingest 429; not forced |
 | YU18 | `FR-DRS-17` | LIVE | yu18-bridge-receipts |  | FR-DRS-17 only in its no-rejection form |
 | YU18 | `FR-DRS-18` | LIVE |  |  | /recon/catchup-events needs a managed run (FR-APR) |
-| YU18 | `FR-DRS-19` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
+| YU18 | `FR-DRS-19` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25). 2026-11-08 (ADR-102 cutover): the Rejected side is an SQL exception row. TradeViewTest + TradeSnapshotStoreConcurrencyIT; kind traderx-cut: a bond cross with no reference-data gives 2 Rejected rows with the reason, 2 history rows, no position, the blotter shows Rejected |
 | YU18 | `FR-DRS-20` | LIVE |  | yu18-snapshot-read-model | 2026-11-06 kind: PASS; settlement total and per-partition sides equal the committed accounting, settlesOn = trade date + T+1 business days (Fri -> Mon) |
 | YU18 | `FR-DRS-21` | LIVE |  |  | snapshot-mode only; the production render is rows (FR-DRS-25) |
 | YU18 | `FR-DRS-22` | LIVE | yu05-recon |  | recon grace |
@@ -1797,14 +1797,15 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GFS-16` | LIVE |  |  | added 2026-11-06: yu18-fix-resume resumes after a release, not a dead gateway. FixSessionPersistenceIT |
 | YU18 | `FR-GFS-17` | LIVE |  |  | added 2026-11-06: reset against a stored later day not driven. FixSessionPersistenceIT |
 | YU18 | `FR-GFS-18` | CI |  |  | added 2026-11-06: group commit ordering. FixBarrierLossTest, FixFenceProbeTest |
-| YU18 | `FR-HST-01` | LIVE |  |  | added 2026-11-06: history store not in any proof rig. RowsTest |
+| YU18 | `FR-HST-01` | LIVE |  |  | added 2026-11-06. RowsTest (id_prefix/order_epoch 2026-11-08); the 4 history-feed ITs on the new columns; kind traderx-cut 2026-11-08 (kind-history-store G3h PASS with delete/duplicate controls, blotter ids rebuilt from the columns) |
 | YU18 | `FR-HST-02` | CI + local (docker) |  |  | added 2026-11-06: lane/batch mechanics. 2026-11-07: HistoryFeedSubjectsIT (P=1 bare subjects stored; a mismatched feed stores 0 and /health names the unread subjects; fails with the old always-suffixed rule); RowsTest pins subjectFor and unowned |
 | YU18 | `FR-HST-03` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
 | YU18 | `FR-HST-04` | CI |  |  | added 2026-11-06: ClickHouse write shape |
 | YU18 | `FR-HST-05` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
 | YU18 | `FR-HST-06` | LIVE |  |  | added 2026-11-06: no live proof |
 | YU18 | `FR-HST-07` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedIncarnationIT |
-| YU18 | `FR-THT-01` | LIVE |  |  | added 2026-11-06: in flight (trade-history-tiers) |
+| YU18 | `FR-THT-01` | LIVE | yu18-projection-effect-end |  | revised 2026-11-08 (ADR-102 cutover): no booked side in SQL trades, exceptions only. kind traderx-cut: 0 SQL rows for the cross, kind-cutover-check 0 booked rows; A/B: the pre-cutover trade-processor (gap18-s17b) fails the proof ("SQL trades holds 2 row(s)"). TradeViewTest, TradeSnapshotStoreConcurrencyIT. Not on GKE/production |
+| YU18 | `FR-THT-09` | LIVE | yu18-projection-effect-end |  | added 2026-11-08: kind traderx-cut, blotter ids = the store's (effect-end step 3, kind-cutover-check over every account), extract = history store = SQL positions, live forced settlement and TCA on booked ids (200 / 403 foreign / 404 unknown), yu05-auth-entitlements PASS. TradeRepositoryTest, SettlementServiceTest, HistoryStoreTest, test_prepare (NetworkPolicy, T+N parity). Not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

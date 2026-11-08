@@ -38,7 +38,8 @@ place() { # place <acct> <sym> <side> <qty> <px>
 }
 cross() { place "${ACCT_B}" "$1" Sell "$2" "$3"; place "${ACCT_A}" "$1" Buy "$2" "$3"; }
 pos() { sql "SELECT COALESCE(SUM(quantity),0) FROM positions WHERE security='$1' AND accountid=$2"; }
-rows() { sql "SELECT COUNT(*) FROM trades WHERE security='$1'${2:+ AND $2}"; }
+# booked sides are the history store's (ADR-102 cutover); a predicate (state='Rejected') reads SQL's exception rows
+rows() { if [[ -n "${2:-}" ]]; then sql "SELECT COUNT(*) FROM trades WHERE security='$1' AND $2"; else hist "SELECT count() FROM trades WHERE security='$1'"; fi; }
 
 step "1. FR-CDM07: the seed universe as the YU16 data model states it"
 python3 - "${RD}" <<'PY' || fail "reference-data's /instruments disagrees with the YU16 data model (above)"
@@ -76,7 +77,7 @@ T0="$(trades_all)"; R0="$(rows SPY)"; PA0="$(pos SPY "${ACCT_A}")"; PB0="$(pos S
 cross SPY 5 100
 moved_by "${T0}" 2 || fail "members' trades ${T0} -> $(trades_all), want +2 each"
 for i in $(seq 1 30); do [[ "$(rows SPY)" == $(( R0 + 2 )) && "$(pos SPY "${ACCT_A}")" == $(( PA0 + 5 )) ]] && break; sleep 1; done
-[[ "$(rows SPY)" == $(( R0 + 2 )) ]] || fail "SQL SPY trade rows ${R0} -> $(rows SPY), want +2"
+[[ "$(rows SPY)" == $(( R0 + 2 )) ]] || fail "history SPY trade rows ${R0} -> $(rows SPY), want +2"
 [[ "$(pos SPY "${ACCT_A}")" == $(( PA0 + 5 )) && "$(pos SPY "${ACCT_B}")" == $(( PB0 - 5 )) ]] || fail "SPY positions A ${PA0}->$(pos SPY "${ACCT_A}") B ${PB0}->$(pos SPY "${ACCT_B}"), want +5/-5"
 python3 - "${PS}" "${ACCT_A}" <<'PY' || fail "position-service's SPY row is not shaped like an equity row (above)"
 import json, sys, urllib.request

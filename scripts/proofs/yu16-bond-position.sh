@@ -108,11 +108,13 @@ done
 sleep 6
 echo "[ok] both sides accepted; the cross is booked on the cluster"
 
-step "3. the fill reached SQL with the fraction intact"
-TRADE_ROWS="$(sql "SELECT COUNT(*) FROM trades WHERE security='${UST}';")"
+step "3. the fill reached the history store with the fraction intact"
+# Since the ADR-102 cutover every booked side is the history store's; SQL keeps only a Rejected side.
+hist() { ${K} exec sts/clickhouse -c clickhouse -- clickhouse-client -q "$1" 2>/dev/null; }   # the history store (ADR-102 cutover)
+TRADE_ROWS="$(hist "SELECT count() FROM trades WHERE security='${UST}'")"
 [[ "${TRADE_ROWS}" =~ ^[0-9]+$ ]] || fail "trade count unreadable ('${TRADE_ROWS}')"
 [[ "${TRADE_ROWS}" -ge 2 ]] || fail "expected both sides of the cross in SQL, found ${TRADE_ROWS} row(s)"
-STORED_PRICE="$(sql "SELECT DISTINCT price FROM trades WHERE security='${UST}' LIMIT 1;")"
+STORED_PRICE="$(hist "SELECT DISTINCT px FROM trades WHERE security='${UST}' LIMIT 1")"
 [[ -n "${STORED_PRICE}" ]] || fail "no stored price for ${UST}"
 # The 100x guard, stated as a property: a fraction is < 2, a percentage is ~99.7. Both are
 # plausible-looking numbers, which is why this is asserted rather than read.

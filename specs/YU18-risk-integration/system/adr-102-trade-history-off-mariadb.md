@@ -1,6 +1,9 @@
 # ADR-102: Trade history leaves MariaDB for time-series tiers (ClickHouse system of record, KDB-X analytics)
 
-Status: proposed 2026-11-01; first slice implemented 2026-11-06 (local and kind; findings at the end); FR-THT-02 (the store in the CompSci render, history-pool, mandatory G3h) 2026-11-07, kind only. Nothing in the demo build changes (yaakov:
+Status: proposed 2026-11-01; first slice implemented 2026-11-06 (local and kind; findings at the end); FR-THT-02 (the store in the CompSci render, history-pool, mandatory G3h) 2026-11-07, kind only. **Cutover
+2026-11-08 (kind only, not in production):** ClickHouse is the trade system of record and booked trades are no longer
+written to MariaDB; the blotter reads the store (FR-THT-09). Decided by yaakov 2026-11-08 (relayed by the EOD
+integration coordinator), superseding the 2026-11-06 option A below. Nothing in the demo build changes (yaakov:
 "adding it now would ... ruin an already stable system"). Pack: [trade history tiers](../components/trade-history-tiers/spec.md).
 Relates to ADR-097 (snapshot read model), ADR-098 (history store, ClickHouse feed), FR-DRS-34 (per-partition streams),
 and the bake-off in `docs/engineering/history-store-bakeoff.md`.
@@ -70,3 +73,45 @@ kept.
   committed cursor and ADR-101's fresh epoch are the recovery paths.
 - **One epoch per store**: refs restart at a fresh epoch (ADR-101), so the history tables must be archived with the
   epoch (FR-THT-08: `rig.sh` `archive_read_model`, 2026-11-08).
+
+## Cutover, 2026-11-08 (kind)
+
+Decided by yaakov (2026-11-08, through the EOD integration coordinator): ClickHouse becomes the trade system of record
+and trades stop being written to MariaDB. This supersedes option A (the blotter window stays in SQL). It accepts the
+cost option A avoided: the blotter now depends on history-feed's lag and the store's availability.
+
+- **trade-processor** books every side in memory as before and writes positions, the per-date settlement counts, the
+  cursor and the accounting. It writes no booked side to SQL `trades`; `TradeView` keeps no blotter ring and
+  `TRADE_PROJECTION_BLOTTER_DEPTH` is gone. SQL `trades` keeps only **exceptions**, which the stream cannot show: a side
+  booking refused (`Rejected`, the bond fail-closed rule, FR-DRS-19) and an operator-forced settlement (`Settled`).
+- **The blotter** (position-service `GET /trades/{acct}`, `/trades/`, `/v2/projections/{scope}/accounts/{a}/trades`)
+  reads the store, newest first (`BLOTTER_LIMIT`, 100), and puts an SQL exception row in place of the history row with
+  the same id. A booked side's state is trade-processor's own T+N rule (`SETTLEMENT_T_PLUS_DAYS`, equal on both
+  services by `validate`). The unfiltered list reads the newest date partition only. A scope other than the active one
+  answers its SQL rows as before (an old epoch's history is in `arc_<label>_*`, FR-THT-08).
+- **Ids**: the store keeps each id's prefix and the source order's epoch (`id_prefix`, `order_epoch`,
+  LowCardinality, one value per epoch), so the blotter returns the exact trade and source-order ids. Rows written
+  before the columns read "" (a legacy id, which production's `legacy-unknown` scope uses anyway).
+- **By-id endpoints** (forced settlement from the console blotter and admin panel; TCA `GET /tca/report/{id}`):
+  trade-processor's JPA lookups found these, which the SQL-literal inventory cannot see. With no SQL row,
+  `HistoryStore.trade` reads the side from the store (by `trade_seq`, side and prefix; a minmax index on `trade_seq`
+  skips the other granules). The entitlement is checked on that account. A forced settlement then records a
+  `Settled` exception row. The recon is unaffected: in snapshot mode it reads the stream ledger, not SQL.
+- **Gates**: G3 is unchanged. It fingerprints SQL tables, and `trades` now holds only exception rows, which do not
+  move while the members start. G3h is unchanged (it already counts the store).
+- **Not done**: SQL `trades` is not dropped (exceptions live there). Pre-cutover window rows stay until a fresh epoch
+  archives them: a `Processing` one is never an exception (ignored), a swept `Settled` one says what the rule says.
+  Proofs not runnable on kind keep their marks in `sql-trades-readers.txt`.
+
+Proof (kind `traderx-cut`, 2026-11-08, images built from the integration tip 0a7c53f1 plus this change): yu18-projection-effect-end
+(history rows, 0 SQL rows, positions equal to the history rows' signed sums, blotter ids equal to the store's), with
+its NEGATIVE arm (a cross during a trade-processor outage replays, 6 of 6); kind-history-store (G3h with
+delete/duplicate controls); yu18-extract-off-projection (the EOD extract); kind-cutover-check (extract = history store
+= SQL positions on every traded (account, security); every account's blotter = its newest history rows); a forced
+settlement of a booked side (200, Settled row, the blotter shows Settled; an unknown id 404); TCA and forced
+settlement on booked ids (own 200, foreign 403 for a scoped token, unknown 404); yu05-auth-entitlements PASS on the
+store's ids; a bond cross with no reference data (2 `Rejected` exception rows with the reason, 2 history rows, no
+position, the blotter shows Rejected). kind-cutover-check also shows the engine's extract keeps a side
+trade-processor rejected (the read model's fail-closed rule; positions = history less Rejected sides). The yu18 kind
+suite (run-yu18-kind.sh, 8 proofs) passes, and every negative control fails. A/B: the pre-cutover trade-processor image
+(`gap18-s17b`) on the same rig fails yu18-projection-effect-end ("SQL trades holds 2 row(s)").

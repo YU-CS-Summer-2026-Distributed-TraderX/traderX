@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # FR-THT-05: every file that reads or writes the SQL `trades` table, against the recorded inventory.
-#   sql-trades-readers.sh              the cut gate: lists what still touches SQL trades beyond the blotter window (lines
-#                                      not marked KEEP:); exit 1 while anything does
+#   sql-trades-readers.sh              the cut gate: lists what still touches SQL trades beyond its exception rows and
+#                                      schema (lines not marked KEEP: or HISTORICAL:); exit 1 while anything does
 #   sql-trades-readers.sh --inventory  exit 0 only when the tree matches sql-trades-readers.txt exactly: a new reader,
 #                                      or a moved one still listed, fails (CI-safe while the move is under way)
 #   sql-trades-readers.sh --selftest   both modes on a planted tree, both ways
 # Scope: the YU18 state's operative sources, scripts and the console. ClickHouse (history-feed, the bake-off) and q
-# (anything named *kdb*) also say `from trades` and are not SQL; Markdown is prose.
+# (anything named *kdb*) also say `from trades` and are not SQL, nor is a line calling `hist` (the proofs' ClickHouse
+# reader, ADR-102 cutover); Markdown is prose.
 set -euo pipefail
 ROOT=${THT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 LIST=$ROOT/scripts/trade-history-tiers/sql-trades-readers.txt
 # Tracked files only: the inventory describes the committed tree, not a peer's work in progress.
 found(){ git -C "$ROOT" ls-files -z -- specs/YU18-risk-integration scripts web-front-end-console \
   | grep -zv -e '/history-feed/' -e '/history-store-bakeoff/' -e 'kdb' -e '/node_modules/' -e '^scripts/trade-history-tiers/' -e '\.md$' \
-  | (cd "$ROOT" && xargs -0 rg -l -i -e '\b(from|join|into|update|table)\s+`?trades\b' 2>/dev/null || true) | sort; }
+  | (cd "$ROOT" && xargs -0 rg -l -i -P -e '^(?!.*\bhist\b).*\b(from|join|into|update|table)\s+`?trades\b' 2>/dev/null || true) | sort; }
 recorded(){ sed -e 's/[[:space:]]*#.*//' -e '/^[[:space:]]*$/d' "$LIST" | sort; }
-# FR-THT-01 option A: the window's own readers and writers stay on SQL.
-kept(){ grep -E '#[[:space:]]*KEEP:' "$LIST" | sed 's/[[:space:]]*#.*//' | sort; }
+# FR-THT-01 (cutover 2026-11-08): readers and writers of the exception rows (Rejected, forced Settled) and the schema
+# stay on SQL (KEEP:); dated one-off evidence scripts bound to a deleted cluster are not rerun (HISTORICAL:).
+kept(){ grep -E '#[[:space:]]*(KEEP|HISTORICAL):' "$LIST" | sed 's/[[:space:]]*#.*//' | sort; }
 
 case ${1:-} in
   --inventory)

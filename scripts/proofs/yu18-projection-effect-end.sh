@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # yu18-projection-effect-end.sh — ADR-080 / FR-DRS-02 on whatever feed mode the tier runs: one
-# authenticated cross, followed to the SQL effect end, and the projection's own completeness report.
+# authenticated cross, followed to the effect end, and the projection's own completeness report.
 #
 #   1. a fresh ticker, seeded by the operator; a resting SELL from B and a crossing BUY from A
 #   2. every member books exactly the two trade sides (members agree on `trades`)
-#   3. SQL `trades` holds both sides at the cross price, and `positions` for A and B on the ticker
-#      equal the signed sum of those trade rows (an independent recomputation, not the row itself)
+#   3. the history store (ClickHouse `trades`, the trade system of record since the ADR-102 cutover) holds both
+#      sides at the cross price; SQL `trades` holds none of them; SQL `positions` for A and B on the ticker equal the
+#      signed sum of the history rows (an independent recomputation, not the row itself); and each account's blotter
+#      (position-service GET /trades/<acct>) shows its side with the history store's own id
 #   4. GET /v2/projection-feed reports backlog 0, dropped 0, missingTradeSides 0, and its applied
 #      count moved by at least the two sides
 #
@@ -34,9 +36,12 @@ place() { # place <acct> <side> <px> -> body; fails unless accepted
   [[ "${c}" == 200 && "$(body)" != *'"kind":2'* ]] || fail "$2 $1 @$3 not accepted: ${c} $(body)"
 }
 cross() { place "${ACCT_B}" Sell "${PX}"; place "${ACCT_A}" Buy $((PX + 1)); }
-sql_sides() { sql "SELECT COUNT(*) FROM trades WHERE security='${T}'"; }
+sql_sides() { hist "SELECT count() FROM trades WHERE security='${T}'"; }
 pos() { sql "SELECT COALESCE(SUM(quantity),0) FROM positions WHERE security='${T}' AND accountid=$1"; }
-signed_sum() { sql "SELECT COALESCE(SUM(CASE WHEN side='Buy' THEN quantity ELSE -quantity END),0) FROM trades WHERE security='${T}' AND accountid=$1"; }
+signed_sum() { hist "SELECT sum(if(side='B', toInt64(qty), -toInt64(qty))) FROM trades WHERE security='${T}' AND account=$1"; }
+blotter() { # blotter <acct> -> "<id> <side> <qty> <price> <state>" per row of the account's on the ticker
+  "${K[@]}" exec deploy/trade-processor -- curl -s -m 30 "http://position-service:18090/trades/$1" \
+    | jget "'\\n'.join('%s %s %s %g %s' % (t['id'], t['side'], t['quantity'], t['price'], t['state']) for t in d if t['security']=='${T}')"; }
 wait_sides() { local want="$1" i n; for i in $(seq 1 60); do n="$(sql_sides)"; [[ "${n}" == "${want}" ]] && return 0; sleep 1; done; echo "${n}"; return 1; }
 
 step "0. preflight"
@@ -54,9 +59,9 @@ read -r -a t0 <<<"${T0}"; read -r -a t1 <<<"${T1}"
 for ((m=0; m<MEMBERS; m++)); do [[ $(( t1[m] - t0[m] )) == 2 ]] || fail "member ${m} trades ${t0[m]} -> ${t1[m]} (want +2; another writer on the rig makes this inconclusive)"; done
 ok "members' trades ${T0} -> ${T1}"
 
-step "3. SQL effect end: two trade rows, positions = signed sum of the rows"
-n="$(wait_sides 2)" || fail "SQL trades for ${T}: ${n}, want 2"
-px="$(sql "SELECT GROUP_CONCAT(DISTINCT price) FROM trades WHERE security='${T}'")"
+step "3. effect end: two history rows, none in SQL trades, positions = signed sum of the rows, the blotter shows them"
+n="$(wait_sides 2)" || fail "history store trades for ${T}: ${n}, want 2"
+px="$(hist "SELECT arrayStringConcat(groupUniqArray(toString(px)), ',') FROM trades WHERE security='${T}'")"
 [[ "${px%%.*}" == "${PX}" ]] || fail "cross booked at ${px}, want ${PX} (the resting price)"
 for i in $(seq 1 20); do [[ "$(pos "${ACCT_A}")" == 5 && "$(pos "${ACCT_B}")" == -5 ]] && break; sleep 1; done
 for a in "${ACCT_A}" "${ACCT_B}"; do
@@ -64,7 +69,15 @@ for a in "${ACCT_A}" "${ACCT_B}"; do
   [[ "${p}" == "${s}" ]] || fail "account ${a}: positions ${p} != signed sum of its ${T} trades ${s}"
 done
 [[ "$(pos "${ACCT_A}")" == 5 && "$(pos "${ACCT_B}")" == -5 ]] || fail "positions A=$(pos "${ACCT_A}") B=$(pos "${ACCT_B}"), want +5/-5"
-ok "2 rows @${px}; positions ${ACCT_A}=+5 ${ACCT_B}=-5, each equal to its own trades' signed sum"
+s="$(sql "SELECT COUNT(*) FROM trades WHERE security='${T}'")"
+[[ "${s}" == 0 ]] || fail "SQL trades holds ${s} row(s) for ${T}: booked sides are the history store's alone (ADR-102 cutover)"
+for a in "${ACCT_A}" "${ACCT_B}"; do
+  want="$(hist "SELECT concat(id_prefix, toString(trade_seq), '-', side, ' ', if(side='B','Buy','Sell'), ' ', toString(qty)) FROM trades WHERE security='${T}' AND account=${a}")"
+  got="$(blotter "${a}")"
+  [[ -n "${want}" && "$(cut -d' ' -f1-3 <<<"${got}")" == "${want}" && "$(cut -d' ' -f4 <<<"${got}")" == "${PX}" ]] \
+    || fail "account ${a}'s blotter on ${T}: '${got}', want '${want} ${PX} ...' (the history store's row)"
+done
+ok "2 history rows @${px}, 0 in SQL trades; positions ${ACCT_A}=+5 ${ACCT_B}=-5, each equal to its own trades' signed sum; blotters: $(blotter "${ACCT_A}" | cut -d' ' -f1,5) / $(blotter "${ACCT_B}" | cut -d' ' -f1,5)"
 
 step "4. the projection reports itself complete"
 for i in $(seq 1 20); do F1="$(feed)"; [[ "$(jget 'd["trades"]["backlog"]' <<<"${F1}")" == 0 ]] && break; sleep 1; done
@@ -86,15 +99,15 @@ if [[ "${NEGATIVE:-0}" == 1 ]]; then
   _lib_yu18_cleanup; PF_PIDS=(); pf GW "${GATEWAY_TARGET:-svc/order-matcher}" "${GATEWAY_PORT:-18110}"; pf TP "${TPDEP}" 18091
   cross
   sleep 10; F2="$(feed)"; n="$(sql_sides)"; miss="$(jget 'd["trades"]["missingTradeSides"]' <<<"${F2}")"
-  echo "    after the outage: SQL sides on ${T}=${n} (engine booked 6); feed: ${F2}"
+  echo "    after the outage: history sides on ${T}=${n} (engine booked 6); feed: ${F2}"
   if [[ "${n}" == 6 ]]; then
     for i in $(seq 1 20); do [[ "$(pos "${ACCT_A}")" == 15 && "$(pos "${ACCT_B}")" == -15 ]] && break; sleep 1; done
     for a in "${ACCT_A}" "${ACCT_B}"; do
       [[ "$(pos "${a}")" == "$(signed_sum "${a}")" ]] || fail "account ${a}: positions $(pos "${a}") != signed sum of its ${T} trades $(signed_sum "${a}")"
     done
     [[ "$(pos "${ACCT_A}")" == 15 && "$(pos "${ACCT_B}")" == -15 ]] || fail "after the replay positions A=$(pos "${ACCT_A}") B=$(pos "${ACCT_B}"), want +15/-15"
-    [[ "${miss:-0}" == 0 ]] || fail "all 6 sides reached SQL but missingTradeSides=${miss}: a replay counted as a loss"
-    ok "the outage pair was replayed into SQL (mode ${MODE}): 6 of 6 sides, positions +15/-15 = the rows' signed sums, missingTradeSides 0"
+    [[ "${miss:-0}" == 0 ]] || fail "all 6 sides reached the store but missingTradeSides=${miss}: a replay counted as a loss"
+    ok "the outage pair was replayed (mode ${MODE}): 6 of 6 sides in the history store, positions +15/-15 = the rows' signed sums, missingTradeSides 0"
   elif [[ "${n}" == 4 && "${miss:-0}" -ge 2 ]]; then ok "the outage pair is lost on the ${MODE} feed and COUNTED: missingTradeSides=${miss}"
   else fail "SQL has ${n} of 6 sides and missingTradeSides=${miss:-?}: trade sides never reached the projection and it does not say so (FR-DRS-02)"; fi
 fi

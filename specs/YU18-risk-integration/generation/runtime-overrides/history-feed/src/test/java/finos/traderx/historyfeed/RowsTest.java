@@ -35,6 +35,8 @@ class RowsTest {
     assertEquals(22016, b.acct[0]);
     assertEquals(4411, b.ref[0]);
     assertEquals(77, b.cseq[0]);
+    assertEquals("e1-ep7-", b.idPrefix[0], "the blotter rebuilds e1-ep7-981-S from it (ADR-102 cutover)");
+    assertEquals("ep7", b.orderEpoch[0], "and ep7-4411 from this");
   }
 
   @Test void order_event_keeps_status_fill_and_the_unsigned_client_key() {
@@ -58,6 +60,7 @@ class RowsTest {
     Rows b = new Rows(true, 1);
     new Rows.Parser().parse(TRADE.replace("e1-ep7-981-S", "981-B").getBytes(StandardCharsets.UTF_8), b, 1);
     assertEquals(981, b.key[0]);
+    assertEquals("", b.idPrefix[0]);
     assertEquals('B', b.side[0]);
   }
 

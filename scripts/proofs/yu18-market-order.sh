@@ -32,7 +32,7 @@ order() { # order <acct> <side> <qty> [limit] -> sets C and R (body)
 }
 ref() { jget 'd.get("orderRef")' <<<"${R}"; }
 status_of() { sql "SELECT status FROM orderbook WHERE security='${T}' AND orderid LIKE '%-$1'"; }
-sides() { sql "SELECT COUNT(*) FROM trades WHERE security='${T}'"; }
+sides() { hist "SELECT count() FROM trades WHERE security='${T}'"; }
 pos() { sql "SELECT COALESCE(SUM(quantity),0) FROM positions WHERE security='${T}' AND accountid=$1"; }
 settle() { local want="$1" i; for i in $(seq 1 30); do [[ "$(sides)" == "${want}" ]] && return 0; sleep 1; done; return 1; }
 same_trades() { sleep 4; [[ "$(trades_all)" == "$1" ]]; }
@@ -60,8 +60,8 @@ T0="$(trades_all)"
 order "${ACCT_A}" Buy 8; [[ "${C}" == 200 && "${R}" != *'"kind":2'* ]] || fail "the market Buy against a resting Sell was refused (FR-LOB04: validated at the opposite best)"
 MKT="$(ref)"
 settle 2 || fail "SQL trades on ${T}: $(sides), want 2"
-px="$(sql "SELECT GROUP_CONCAT(DISTINCT price) FROM trades WHERE security='${T}'")"; [[ "${px%%.*}" == "${PX}" ]] || fail "filled at ${px}, want ${PX} (the resting price)"
-q="$(sql "SELECT GROUP_CONCAT(DISTINCT quantity) FROM trades WHERE security='${T}'")"; [[ "${q}" == 5 ]] || fail "trade quantities ${q}, want 5 (the depth)"
+px="$(hist "SELECT arrayStringConcat(groupUniqArray(toString(px)), ',') FROM trades WHERE security='${T}'")"; [[ "${px%%.*}" == "${PX}" ]] || fail "filled at ${px}, want ${PX} (the resting price)"
+q="$(hist "SELECT arrayStringConcat(groupUniqArray(toString(qty)), ',') FROM trades WHERE security='${T}'")"; [[ "${q}" == 5 ]] || fail "trade quantities ${q}, want 5 (the depth)"
 for i in $(seq 1 20); do [[ "$(pos "${ACCT_A}")" == 5 ]] && break; sleep 1; done
 [[ "$(pos "${ACCT_A}")" == 5 && "$(pos "${ACCT_B}")" == -5 ]] || fail "positions A=$(pos "${ACCT_A}") B=$(pos "${ACCT_B}"), want +5/-5"
 for i in $(seq 1 20); do s="$(status_of "${MKT}")"; [[ -n "${s}" && "${s}" != NEW && "${s}" != PARTIALLY_FILLED ]] && break; sleep 1; done
