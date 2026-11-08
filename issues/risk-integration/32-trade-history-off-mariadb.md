@@ -22,7 +22,9 @@ stops being written. Production steps only through admission and a yaakov-confir
 FR-THT-02 (yaakov: "Yes, start it"): prepare.py renders ClickHouse + history-feed on `history-pool`, the ClickHouse
 digest is locked, history-feed joins the private build and admission counts, rig.sh creates/sizes/zeroes the pool and
 G3h is mandatory. Kind traderx-tht2: G3h PASS, deleted and duplicated side REFUSED, FR-THT-03 move to an S3 cold disk
-with equal rows. Not yet: GCS bucket + HMAC key, production build/admission, GKE bring-up. Cost while up: history-pool
+with equal rows. GKE, same evening, disposable namespace pa-proof-tht on tht-* pools: the same PASS and refusals, the
+cold partition on real GCS; torn down to zero (about $0.45). Not yet: a production bucket + HMAC key, production
+build/admission, production bring-up. Cost while up: history-pool
 1 × c4d-standard-8 (≈ $0.38/h on-demand, the rate recorded in docs/deployment/traderx-demo-rollout-20261026.md); the
 200Gi claim and the node's 100 GB boot disk are storage, not priced here. FR-THT-08 still open: a fresh epoch over a
 non-empty store is refused by G3h.

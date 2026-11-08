@@ -1,5 +1,11 @@
 # Proof coverage against the specs
 
+## History store on GKE (2026-11-07, FR-THT-02/03/06, traderx-demo namespace pa-proof-tht, torn down)
+
+`kind-history-store.sh` on the disposable GKE rig (prepare.py's history sizes on c4d Hyperdisk, cold disk on GCS):
+G3h PASS, deleted/doubled side REFUSED, PASS restored, untiered has no policy, tiered moves the old partition to GCS
+with equal rows. Isolation from namespace traderx proven by every pod's TCP/UDP peers before trading.
+
 ## History store in the production render on kind (2026-11-07, trade-history-tiers FR-THT-02/03/06, kind traderx-tht2)
 
 `scripts/trade-history-tiers/kind-history-store.sh` on `kind-yu18-rig.py --history[-hot-days 1]` (prepare.py's

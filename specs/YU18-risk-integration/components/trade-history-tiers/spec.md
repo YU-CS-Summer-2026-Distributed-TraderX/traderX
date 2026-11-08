@@ -97,6 +97,24 @@ S3Mock): G3h PASS again after ClickHouse's restart, `trades` on `tiered`, a prob
 to `cold_object` alone, rows equal before and after, 26 objects in S3. kindnet does not enforce the NetworkPolicy:
 rendered, not proven.
 
+## GKE evidence (2026-11-07, traderx-demo, disposable namespace pa-proof-tht; yaakov: "Yes, run on GKE")
+
+Pools beside production's (untouched, all at 0): `tht-pool` 1× e2-standard-8 (trading tier, `kind-yu18-rig.py
+--registry --pool`), `tht-history-pool` 1× c4d-standard-8 (prepare.py's history shape: ClickHouse 4 CPU / 16Gi on a
+200Gi Hyperdisk Balanced claim, history-feed 2 CPU / 4Gi), `tht-system-pool` 1× e2-standard-2 untainted (with
+production's default-pool at 0, kube-dns and konnectivity had no node: pods could not resolve names, and logs, exec and
+port-forward failed with "No agent available"). Images `tht-1a8ce4f7` (amd64), ClickHouse by its locked digest.
+Isolation before any trade: no live object in the namespace names `.traderx.svc`, and every TCP and UDP peer of every
+pod (members' Aeron included) is a pod or Service of `pa-proof-tht` (0 of 29 `traderx` IPs). 4 sides crossed
+(`yu18-projection-effect-end` PASS twice). `kind-history-store.sh`, untiered: G3h PASS; side deleted and side doubled
+REFUSED; PASS restored; no `tiered` policy. Tiered (`--history-hot-days 1`, cold disk on
+`gs://project-compsci-484414-tht-objstor-test/pa-proof-tht/` through a bucket-scoped service account's HMAC key in
+Secret `history-cold-hmac`): G3h PASS again, `trades` on `tiered`, a probe partition 5 days old moved to `cold_object`
+alone with equal rows, 26 objects on GCS. Teardown: namespace, its 5 volumes and their disks, the StorageClass, the three
+pools, the HMAC key, the bucket binding, the service account and the prefix deleted; `gcloud compute instances list`
+shows no tht instance. Not proven: the NetworkPolicy (traderx-demo enforces none: no Dataplane V2, network policy off).
+Gap found: account 42422's first admission answered 200 but reached no member; a resend applied (not diagnosed).
+
 ## Open questions
 
 - Resolved 2026-11-06, by a real read: KDB-X Community includes object storage. A `par.txt` naming a `gs://`
