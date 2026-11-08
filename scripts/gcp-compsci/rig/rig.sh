@@ -19,7 +19,9 @@
 # archive-members LABEL  members stopped: GCE snapshots traderx-LABEL-m{0,1,2} of the three member disks (FR-PRG-29).
 # fresh-epoch LABEL      members stopped and those snapshots READY: the old gate records into rig-epoch-LABEL-history,
 #         the member claims (and their disks) deleted. The next `up` archives the read model into arc_LABEL_* and starts
-#         the members empty; its gate accepts an empty epoch and no baseline only then (ADR-101).
+#         the members empty; its gate accepts an empty epoch and no baseline only then (ADR-101). That `up`, once the
+#         archive is complete, deletes every OLDER epoch's archive: only the last one is kept (FR-PRG-39).
+# prune-archives         the same deletion on its own, for rig-epoch's label; --dry-run lists what would go.
 #
 # Idempotent: every step checks the live state first. Fail-closed: any check that does not hold stops the run with
 # REFUSED and a non-zero exit, and nothing after it runs. --dry-run prints the plan and contacts nothing.
@@ -856,6 +858,79 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
   reset_feed   # with trade-processor, the members and the gateways at 0
 }
 
+# ---- retention: only the last epoch's archive is kept (FR-PRG-39, ADR-101 amendment 2026-11-08) ------------------
+# yaakov 2026-11-08: "Keep only the last one" (all trade data is synthetic). Once epoch L's archive is complete (its
+# three READY member-disk snapshots and arc_L_trades), every OLDER epoch's archive is deleted: its arc_<label>_* tables
+# in eod-price-db and in ClickHouse, and its snapshots traderx-<label>-m<i>. "Older" is the creation time of the
+# rig-epoch-<label>-history ConfigMap fresh-epoch writes, kept as the record. A label found in any of the three places
+# without that record, or whose record is not older than L's, is refused, never guessed (an archive-members run for the
+# next epoch makes snapshots before its record exists). Live tables have no arc_ prefix and are never named. Every
+# delete is IF EXISTS against a fresh listing, and the listing is re-read after, so a retry finishes what one began.
+ARC_NAME='^arc_([a-z][a-z0-9]{0,15})_[a-z_]+$'
+SNAP_NAME='^traderx-([a-z][a-z0-9]{0,15})-m[0-9]+$'
+history_times(){ # "<label> <creationTimestamp>" per rig-epoch-<label>-history; fails when the ConfigMaps cannot be read
+  local j; j=$(kc get configmap -o json) || return 1
+  jq -r '.items[] | .metadata | select(.name | test("^rig-epoch-[a-z][a-z0-9]{0,15}-history$"))
+    | "\(.name | ltrimstr("rig-epoch-") | rtrimstr("-history")) \(.creationTimestamp)"' <<<"$j"; }
+sql_arc_tables(){ sql "select table_name from information_schema.tables where table_schema=database() and left(table_name,4)='arc_' order by table_name"; }
+ch_arc_tables(){ [ -z "$(kc get sts clickhouse --ignore-not-found -o name)" ] && return 0   # no store rendered: none
+  chq "SELECT name FROM system.tables WHERE database = currentDatabase() AND startsWith(name, 'arc_') ORDER BY name"; }
+member_snapshots(){ gc compute snapshots list --filter='name~^traderx-' --format='value(name)'; }
+label_of(){ [[ $1 =~ $2 ]] && echo "${BASH_REMATCH[1]}"; }
+# old_archives <newest>: "<kind> <name>" of every older epoch's archive object (kind sql, ch or snap); refuses on doubt
+old_archives(){
+  local keep=$1 times t s c n l bad='' kept
+  times=$(history_times) || die "retention: the rig-epoch-*-history ConfigMaps cannot be listed"
+  t=$(awk -v l="$keep" '$1 == l {print $2}' <<<"$times")
+  [ -n "$t" ] || die "retention: no rig-epoch-$keep-history: cannot tell which archives are older than $keep"
+  s=$(sql_arc_tables) || die "retention: eod-price-db's archived tables cannot be listed"
+  c=$(ch_arc_tables) || die "retention: ClickHouse's archived tables cannot be listed"
+  n=$(member_snapshots) || die "retention: the member-disk snapshots cannot be listed"
+  grep -qx "arc_${keep}_trades" <<<"$s" || die "retention: epoch $keep's read model is not archived (no arc_${keep}_trades); nothing older is deleted"
+  kept=$(grep -cE "^traderx-$keep-m[0-2]$" <<<"$n" || true)
+  [ "$kept" = 3 ] && snapshot_ready "traderx-$keep-m0" && snapshot_ready "traderx-$keep-m1" && snapshot_ready "traderx-$keep-m2" \
+    || die "retention: epoch $keep's three member-disk snapshots are not all READY; nothing older is deleted"
+  while read -r k name; do
+    [ -n "$name" ] || continue
+    if [ "$k" = snap ]; then l=$(label_of "$name" "$SNAP_NAME") || continue   # not a member snapshot: not ours
+    else l=$(label_of "$name" "$ARC_NAME") || { bad="$bad $name (not arc_<label>_<table>)"; continue; }; fi
+    [ "$l" = "$keep" ] && continue
+    t=$(awk -v l="$l" -v k="$keep" '$1 == l {lt=$2} $1 == k {kt=$2} END {if (lt == "") print "none"; else if (lt < kt) print "older"; else print "newer"}' <<<"$times")
+    case $t in older) echo "$k $name";; none) bad="$bad $name (no rig-epoch-$l-history)";; *) bad="$bad $name (not older than $keep)";; esac
+  done < <(sed 's/^/sql /' <<<"$s"; sed 's/^/ch /' <<<"$c"; sed 's/^/snap /' <<<"$n")
+  [ -z "$bad" ] || die "retention: refusing to guess which archive is newest:$bad"
+}
+prune_archives(){ # prune_archives <newest>: every older epoch's archive deleted; the newest and the live tables kept
+  local keep=$1 old t sqlt='' inlist='' refs
+  step "retention (FR-PRG-39): every epoch archive older than $keep deleted; $keep's kept"
+  old=$(old_archives "$keep") || exit $?
+  if [ -z "$old" ]; then note "nothing older than $keep"; return 0; fi
+  printf '%s\n' "$old" > "$EVIDENCE/retention-plan.txt"
+  note "older epochs: $(awk '{print $2}' <<<"$old" | sed -E 's/^arc_([a-z0-9]+)_.*/\1/; s/^traderx-([a-z0-9]+)-m.*/\1/' | sort -u | tr '\n' ' ')($(wc -l <<<"$old" | tr -d ' ') objects: $EVIDENCE/retention-plan.txt)"
+  [ "$DRY" = 1 ] && { sed 's/^/   would delete: /' "$EVIDENCE/retention-plan.txt"; return 0; }
+  for t in $(awk '$1 == "sql" {print $2}' <<<"$old"); do sqlt="$sqlt, $t"; inlist="$inlist,'$t'"; done
+  if [ -n "$sqlt" ]; then
+    # A live table's foreign key onto an archive would dangle after the drop (none does in the shipped schema: the
+    # archive re-adds each key onto its live referent). Checks are off for the drop only, for keys among the archives.
+    refs=$(sql "select concat(table_name,'->',referenced_table_name) from information_schema.referential_constraints where constraint_schema=database() and referenced_table_name in (${inlist#,}) and table_name not in (${inlist#,})") \
+      || die "retention: the foreign keys onto the old archives cannot be read"
+    [ -z "$refs" ] || die "retention: a table outside the old archives references them: $(tr '\n' ' ' <<<"$refs")"
+    note "+ eod-price-db: DROP TABLE IF EXISTS ${sqlt#, }"
+    sql "SET foreign_key_checks=0; DROP TABLE IF EXISTS ${sqlt#, }; SET foreign_key_checks=1; select 1" | grep -qx 1 \
+      || die "retention: eod-price-db's old archives could not be dropped (rerun retries)"
+  fi
+  for t in $(awk '$1 == "ch" {print $2}' <<<"$old"); do
+    note "+ ClickHouse: DROP TABLE IF EXISTS $t SYNC"
+    chq "DROP TABLE IF EXISTS $t SYNC" >/dev/null || die "retention: ClickHouse $t could not be dropped (rerun retries)"
+  done
+  t=$(awk '$1 == "snap" {print $2}' <<<"$old" | tr '\n' ' ')
+  [ -z "${t// }" ] || do_ gcloud compute snapshots delete $t --project "$PROJECT" --quiet \
+    || die "retention: snapshots $t could not all be deleted (rerun retries)"
+  old=$(old_archives "$keep") || exit $?
+  [ -z "$old" ] || die "retention: still present after the delete: $(tr '\n' ' ' <<<"$old")"
+  note "ok: only epoch $keep's archive is left"
+}
+
 restart_read_model(){ # FR-PRG-29: after the archive (rig-epoch archived), trade-processor then history-feed back up
   step "read model: trade-processor, then history-feed, restarted on the new streams"
   [ "$DRY" = 1 ] && { note "would restart: trade-processor, history-feed at their recorded counts"; return 0; }
@@ -1019,6 +1094,7 @@ rig_up(){
         archive_read_model "$lbl"
         [ "$DRY" = 1 ] || set_epoch "$lbl" archived
       else note "epoch $lbl already archived: the archive is skipped (its live tables are the new epoch's)"; fi
+      if [ "$DRY" = 1 ]; then note "would delete every epoch archive older than $lbl (FR-PRG-39)"; else prune_archives "$lbl"; fi
       restart_read_model
       [ "$DRY" = 1 ] || set_epoch "$lbl" provisioned
     fi
@@ -1171,6 +1247,18 @@ rig_unprojected(){
 
 
 
+# FR-PRG-39 on its own: `rig.sh prune-archives [--dry-run]`. The newest archive is rig-epoch's label, once its archive
+# is complete; --dry-run reads the live state and prints what would go, deleting nothing.
+rig_prune_archives(){
+  local es st lbl
+  preflight; mkdir -p "$EVIDENCE"
+  es=$(epoch_state) || die "prune-archives: ConfigMap rig-epoch cannot be read"
+  read -r st lbl <<<"$es"
+  case $st in archived|provisioned|consumed|initialized) ;;
+    *) die "prune-archives: rig-epoch is '$es': no completed fresh-epoch archive to keep, so none older to delete";; esac
+  prune_archives "$lbl"
+}
+
 rig_status(){
   preflight
   for p in $RIG_POOLS; do note "$p: $(pool_size $p) instance(s)"; done
@@ -1205,9 +1293,10 @@ main(){
     unprojected) rig_unprojected "${1:-}";;
     archive-members) rig_archive_members "${1:-}";;
     fresh-epoch) rig_fresh_epoch "${1:-}";;
+    prune-archives) rig_prune_archives;;
     member-disk) rig_member_disk "${1:-}";;
     loadgen) rig_loadgen "${1:-}";;
-    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off LOADGEN=N $0 pools|up|down|status|unprojected A-B|archive-members LABEL|fresh-epoch LABEL|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
+    *) echo "usage: GATEWAYS=N AUTOSCALE=on|off LOADGEN=N $0 pools|up|down|status|unprojected A-B|archive-members LABEL|fresh-epoch LABEL|prune-archives|member-disk SIZE|loadgen N [--dry-run]" >&2; exit 64;;
   esac
 }
 [ "${RIG_LIB:-0}" = 1 ] || main "$@"

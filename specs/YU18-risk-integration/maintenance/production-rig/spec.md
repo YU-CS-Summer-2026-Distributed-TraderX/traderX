@@ -128,6 +128,24 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   passwords only in that Secret and a mode-0600 file outside the checkout, and print none. Growing `--count` SHALL add
   CompIDs and keep every existing password; shrinking SHALL be refused. The default render SHALL
   carry no test client.
+- **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
+  data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
+  `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
+  archive before it restarts trade-processor: its `arc_<label>_*` tables in eod-price-db and in ClickHouse, and its
+  snapshots `traderx-<label>-m<i>`. `rig.sh prune-archives` SHALL do the same for rig-epoch's label (state archived,
+  provisioned, consumed or initialized), and `--dry-run` SHALL read the live state and print what would go, deleting
+  nothing.
+  - "Older" SHALL be the creation time of the label's `rig-epoch-<label>-history` ConfigMap, which fresh-epoch writes
+    and which is kept as the epoch's record. A label found in any of the three places with no such record, or one not
+    strictly older than L's, and any `arc_` table not of the form `arc_<label>_<table>`, SHALL be refused before
+    anything is deleted (an `archive-members` run for the next epoch makes its snapshots before its record exists).
+  - It SHALL refuse, deleting nothing, when any listing cannot be read, when L's archive is not complete, or when a
+    table outside the old archives holds a foreign key onto one of them. Snapshots not named `traderx-<label>-m<i>`
+    (e.g. a database snapshot) are not epoch archives and SHALL be left alone; live tables have no `arc_` prefix and
+    SHALL never be named.
+  - Every delete SHALL be `IF EXISTS` against a fresh listing and the listing SHALL be read again after it, refusing
+    while anything older remains, so a retry after a partial delete finishes it, and an `up` refused there stays
+    `archived` and prunes again on its retry.
 - **FR-PRG-38:** `rig/test-data-cleanup.sh` SHALL clear the load test accounts (FIX 9900002–9900008, binary
   9900010–9900017) from the read model. `plan` SHALL change nothing and list, per archived epoch and for the live epoch,
   each account table's rows on those accounts, their directory rows, Secret `fix-test-clients` and the member-disk
@@ -137,7 +155,11 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   epoch (FR-PRG-29), which archives the live rows where `apply` can then clear them. `--accounts` SHALL delete the
   accounts' `accounts`/`accountusers` rows only once no table, live or archived, holds a row of theirs; `--secret`
   deletes Secret `fix-test-clients` (renders without `--fix-test-clients` from then on). Disk snapshots SHALL be listed,
-  never deleted (ADR-101). Running it on production needs yaakov's yes.
+  never deleted here. Running it on production needs yaakov's yes.
+  Amended 2026-11-08 (FR-PRG-39): every archive but the last is now deleted whole at the next fresh epoch, so `apply`
+  matters only for the one archive kept, and only until the following fresh epoch deletes it. What is left: `apply
+  <last label>` when the test rows must go sooner, and `--accounts` / `--secret` when the test loads are retired. The
+  live epoch's rows still go only with a fresh epoch.
 - **FR-PRG-37:** `prepare.py` SHALL render the read-model database claim `eod-price-db-data` at 50Gi. 10Gi filled on
   2026-11-04 after the 18.5M-order scale-out rehearsal and an epoch archive: the schema-migrate init container's
   temporary mariadbd failed with InnoDB error 28 and `rig.sh up` refused at eod-price-db Ready. The live claim was
@@ -202,6 +224,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   started) and SHALL be read like any other, with G0 refusing unless the members are empty, and 1 or 2 claims SHALL
   refuse (2026-11-07: twice deleted by hand). The gate SHALL accept empty members and no shutdown baseline only while
   `rig-epoch` is provisioned, and mark it consumed on PASS; a missing baseline otherwise SHALL refuse.
+  Amended 2026-11-08: the archive is kept until the next fresh epoch's archive is complete, then deleted (FR-PRG-39);
+  only the last epoch stays replayable from its snapshots and `arc_<label>_*` tables.
 - **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
   does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom
   (c3-standard-8: 32 GiB, GKE allocatable ~28.3 GiB, budget 26 GiB). `GOMEMLIMIT` SHALL hold the Go heap at or under
@@ -413,4 +437,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 | load clients scaled | 11 | `test_prepare.FixTestClients.test_a_throughput_run_scales…`, `…test_the_provisioner_grows_without_rotating` | 200 CompIDs over the same 7 accounts, CLIENT2–8 unchanged; 7 → 20 keeps the first seven passwords; 5 refused |
 | load clients rendered | 11 | `test_prepare.FixTestClients` | CLIENT2–8 each on its account, Secret-backed and ordered before the auth list; none in the default render |
 | unbound or literal load client | 11 | same | `*` account, literal password, password after the list, non-Secret password: each refused; dropping the check fails the test |
+| older archives deleted, the newest kept | 39 | `test_rig.Retention.test_every_older_epoch_goes_and_the_newest_stays`, `test_archive_read_model_mariadb.test_prune_drops_only_the_older_epochs_archive` | e1101 and e1107's SQL and ClickHouse arc tables and snapshots deleted, e1108's and a non-member snapshot kept, no live table named; on mariadb:11.4 the live definitions are unchanged; a rerun deletes nothing |
+| a label whose age is not on record | 39 | `test_rig.Retention.test_a_label_whose_age_is_not_on_record_is_refused`, `…nothing_older_goes_until…`, `…a_live_tables_key…` | a snapshot set with no history record, a newer or equal record, a malformed arc name, any unreadable listing, an incomplete newest archive, a live key onto an archive (also on mariadb:11.4): each REFUSED with nothing deleted |
+| a retry after a partial delete | 39 | `test_rig.Retention.test_a_retry_after_a_partial_delete_finishes_it` | stopped at the snapshot, ClickHouse or SQL delete: the retry deletes only what is left and ends with only e1108's archive |
+| fresh epoch `up` and `prune-archives` | 39 | `test_rig.Retention.test_a_fresh_epoch_up_prunes…`, `…test_prune_archives_on_its_own` | archived → prune → trade-processor restart → provisioned; a refusal leaves archived and the retry prunes first; standalone needs a completed epoch; `--dry-run` deletes nothing |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

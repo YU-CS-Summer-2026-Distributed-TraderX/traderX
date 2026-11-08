@@ -47,7 +47,8 @@
       without `--fix-test-clients`, and delete Secret `fix-test-clients`.
       Procedure and script ready, not run (FR-PRG-38, 2026-11-06): the rehearsal's rows are now in archived epochs
       (`arc_<label>_*`, FR-PRG-29), so after the next fresh epoch: `rig/test-data-cleanup.sh plan`, then on yaakov's
-      yes `apply <every archived label>`. Add `--accounts --secret` only when the test loads are retired: the load
+      yes `apply <every archived label>`. Since FR-PRG-39 the older epochs' rows go with their whole archive, so only
+      the last label is left to `apply`, and only if it should go before the next fresh epoch deletes it. Add `--accounts --secret` only when the test loads are retired: the load
       clients trade on those directory rows and log on with that Secret.
 - [x] Binary load for the throughput run (FR-PRG-16, 2026-10-29): `rig/binary-load.mjs` + `binary-load.sh`, offline
       against a scripted gateway. `rig.sh pools` creates `loadgen-pool`,
@@ -75,6 +76,9 @@
 - [x] The read-model fingerprint is an in-DB aggregate, never a dump (FR-PRG-27).
 - [x] A fresh epoch archives the member disks and the read model, then resets; the gate accepts it only while provisioned (FR-PRG-29, ADR-101).
 - [x] A fresh epoch loads accounts and reference data before its first order (FR-PRG-30).
+- [x] Only the last epoch's archive is kept: a fresh epoch's `up` deletes every older one, `rig.sh prune-archives` on
+      its own (FR-PRG-39, ADR-101 amendment 2026-11-08). Offline and on mariadb:11.4.
+- [ ] First run on production: e1101–e1107 would go and e1108 stay (yaakov's yes needed; plan in the session record).
 - [x] initialize-reference-data.mjs completes on a live rig: its last line named a variable 790c245d removed (FR-PRG-30).
 - [x] Every `up` opens the US Eastern business day, so DAY orders are admitted (FR-PRG-31).
 - [x] `LOADGEN=N` brings idle load pods up with the rig; `loadgen.sh start RATE` loads them in seconds (FR-PRG-32).
