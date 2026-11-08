@@ -1,9 +1,9 @@
 # Every class priced on TraderX's engine fork: results, November 7
 
-**Engine.** TraderX's fork `traderx/engine-fork`. The proof is pinned to `1b505e300a8bc2d10f123e274b4542625d417c5a`,
-the engine lane's final commit, cut from Alex's `17ac757`. Its engine code equals `2417389` (only tests and
-docs were added after it), and the proof gives the same figures and parity on `b90af35`, `2417389` and
-`1b505e3`. Alex permitted the fork. The engine lane (session "Risk engine fork: R1–R6 and remaining gaps")
+**Engine.** TraderX's fork `traderx/engine-fork`. The proof is pinned to `a5bd7c387b77bb64647bf184186ee152a9076225`,
+the engine lane's final commit, cut from Alex's `17ac757`. It is `1b505e3` with nine upstream files' CRLF line
+endings restored; its engine code equals `2417389` (only tests and docs were added after it), and the proof
+gives the same figures and parity on `b90af35`, `2417389`, `1b505e3` and `a5bd7c3`. Alex permitted the fork. The engine lane (session "Risk engine fork: R1–R6 and remaining gaps")
 owns the fork; its full suite on `1b505e3` is 4,335 passed, 18 skipped, 1 failed (`test_sharding`'s
 four-device run, which fails the same way on clean `17ac757`: FP8 is refused on CPU). It is served from a read-only clone of that commit, so
 the run reports it unmodified. It runs on local CPU (macOS arm64, shared with other sessions' builds).
@@ -88,7 +88,7 @@ The November 6 book (seed 20261106, cut seq 16,706, `cutSha256` `1c89f41d…eefc
 - **Time.** At the November 6 cost of ~30 s an American, the 141 Americans alone are ~70 minutes; the
   calibrated swaptions, not the new classes, set the run's length.
 
-Not re-run on `1b505e3`. Between `b90af35` and it the lane changed pricing code (overnight fixings, mid-life swaptions, ACT/360 term swaps, the exposure cube). The proof's 17 trades reproduce on `1b505e3`; this book's figures on it are unverified.
+Not re-run on `a5bd7c3`. Between `b90af35` and it the lane changed pricing code (overnight fixings, mid-life swaptions, ACT/360 term swaps, the exposure cube). The proof's 17 trades reproduce on `1b505e3`; this book's figures on it are unverified.
 
 ## 4. Gaps not closed
 
@@ -105,7 +105,7 @@ Not re-run on `1b505e3`. Between `b90af35` and it the lane changed pricing code 
 ## Reproduce
 
 ```bash
-S=<scratch>; git clone --no-checkout ~/dev/lmax/jax-risk-traderx $S/snap && git -C $S/snap checkout 1b505e3
+S=<scratch>; git clone --no-checkout ~/dev/lmax/jax-risk-traderx $S/snap && git -C $S/snap checkout a5bd7c3
 (cd $S/snap && PYTHONPATH=$S/snap JAX_RISK_JOB_QUEUE=$S/q/jobs.sqlite3 <engine venv>/bin/python -m uvicorn engine.api.app:app --port 8766)
 RISK_ENGINE_ORIGIN=http://127.0.0.1:8766 scripts/proofs/yu18-var-es-e2e.sh "$(mktemp -d /private/tmp/var-es.XXXXXX)/out"
 <engine venv>/bin/python -I specs/YU18-risk-integration/generation/runtime-overrides/risk-portfolio-tools/ore_parity.py \

@@ -136,7 +136,7 @@ fork is branch `traderx/engine-fork` of his repository, in the worktree `~/dev/l
 from his `17ac757`. It is committed locally and never pushed; his `main` is untouched. R1-R6 of
 `coordination/alex-engine-requests-20261106.md` are implemented there instead of requested. Each comes
 with an engine test whose expected value is ORE/QuantLib's, not the engine's
-(`tests/test_traderx_products.py`). `var_es_e2e.ENGINE_REVISION` names the fork commit (`1b505e3`, the engine lane's final November 7 commit; TraderX moves the pin). A run whose
+(`tests/test_traderx_products.py`). `var_es_e2e.ENGINE_REVISION` names the fork commit (`a5bd7c3`, the engine lane's final November 7 commit; TraderX moves the pin). A run whose
 `engine.revision` is any other commit, or is marked modified, fails the proof.
 Consequence: rebasing onto a later upstream is TraderX's work, and the fork's products are ours to keep in
 parity with ORE.
