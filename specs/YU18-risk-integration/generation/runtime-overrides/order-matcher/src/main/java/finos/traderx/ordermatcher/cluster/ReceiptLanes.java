@@ -2,12 +2,17 @@ package finos.traderx.ordermatcher.cluster;
 
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
+import io.nats.client.JetStreamApiException;
+import io.nats.client.JetStreamManagement;
 import io.nats.client.Message;
 import io.nats.client.Nats;
 import io.nats.client.Options;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
@@ -31,9 +36,26 @@ import java.util.function.ToIntFunction;
  * line naming the partition. With a {@code key} (the trade bridge: its trade id) each message's reply
  * subject is {@code <inbox>.<key>}, so a 429 names the exact message and the lane logs the rejected ids
  * in batches - the same ids the projection's recon reports MISSING.
+ *
+ * <p>Failover catch-up (FR-DRS-37): only the leader publishes, so a record the dying leader applied but did not
+ * get stored - in its queue, on the wire, or committed only once the new leader's term began - was sent by no
+ * one. Every member therefore offers every record, tagged with its role when applied. A lane keeps the records
+ * applied while following (bounded: the last {@code capacityPerLane}) and, when its member becomes leader, reads
+ * the last message the stream stored on its subject and publishes the kept records after it before anything new.
+ * Records are in apply order on every member, so the stream stays in apply order and each record is stored once.
  */
-final class ReceiptLanes<R> {
+final class ReceiptLanes<R extends ReceiptLanes.Record> {
     interface Encoder<R> { byte[] encode(StringBuilder sb, R r); }
+
+    /** A bridged record; {@code leader} is the member's role when the record was applied. */
+    abstract static class Record { boolean leader; }
+
+    /** Where a record sits against the stream's last stored message (the cut), in apply order. */
+    interface Catchup<R> {
+        /** For the stored message's bytes: r -> negative (at or before the cut), 0 (the cut), positive (after
+         *  it). Null when the message carries no position this bridge can compare - nothing is replayed. */
+        java.util.function.ToIntFunction<R> cut(byte[] lastStored);
+    }
 
     private final String name;
     private final String url;
@@ -49,17 +71,25 @@ final class ReceiptLanes<R> {
     private final Thread[] threads;
     private final Connection[] connections;
     private final int[] replyPrefix;
+    private final Catchup<R> catchup;
+    private final int retain;
+    private final AtomicLong replayed = new AtomicLong();
+    private volatile boolean leader = true; // a caller that never sets a role keeps leader-only publishing
     private volatile boolean running = true;
 
     @SuppressWarnings("unchecked")
     ReceiptLanes(final String name, final String url, final String[] subjects, final int capacityPerLane,
                  final Encoder<R> encoder, final ToIntFunction<R> account) {
-        this(name, url, subjects, capacityPerLane, encoder, account, null);
+        this(name, url, subjects, capacityPerLane, encoder, account, null, null);
     }
 
+    @SuppressWarnings("unchecked")
     ReceiptLanes(final String name, final String url, final String[] subjects, final int capacityPerLane,
-                 final Encoder<R> encoder, final ToIntFunction<R> account, final Function<R, String> key) {
+                 final Encoder<R> encoder, final ToIntFunction<R> account, final Function<R, String> key,
+                 final Catchup<R> catchup) {
         this.key = key;
+        this.catchup = catchup;
+        this.retain = capacityPerLane;
         this.rejectedIds = new StringBuilder[subjects.length];
         this.rejectedFlushedAt = new long[subjects.length];
         for (int i = 0; i < subjects.length; i++) { rejectedIds[i] = new StringBuilder(); }
@@ -82,8 +112,13 @@ final class ReceiptLanes<R> {
 
     int lanes() { return subjects.length; }
 
-    /** Apply thread: queue the record on its account's lane. False = that lane is full (caller counts). */
+    /** Apply thread: the member's role, from onStart and every onRoleChange. */
+    void role(final boolean isLeader) { leader = isLeader; }
+
+    /** Apply thread: queue the record on its account's lane, tagged with the role it was applied in.
+     *  False = that lane is full (caller counts). */
     boolean offer(final R r) {
+        r.leader = leader;
         return queues[BridgePartitions.index(account.applyAsInt(r), subjects.length)].offer(r);
     }
 
@@ -128,24 +163,114 @@ final class ReceiptLanes<R> {
         final String subject = subjects[lane];
         final OneToOneConcurrentArrayQueue<R> q = queues[lane];
         final StringBuilder sb = new StringBuilder(512);
+        final ArrayDeque<R> kept = new ArrayDeque<>();
+        long evicted = 0;
+        boolean leading = false;
+        java.util.function.ToIntFunction<R> cut = null; // non-null until a record past the cut is published
         while (running) {
             final R r = q.poll();
             if (r == null) {
+                if (!leading && leader) { // promoted with nothing new applied yet: publish what is kept now
+                    leading = true;
+                    cut = promote(lane, nc, inbox, sb, kept, evicted);
+                    evicted = 0;
+                }
                 flushRejectedIds(lane, false);
                 try { Thread.sleep(1); } catch (final InterruptedException e) { return; }
                 continue;
             }
-            try {
-                nc.publish(subject, key == null ? inbox : inbox + "." + key.apply(r), encoder.encode(sb, r));
-                published.incrementAndGet(lane);
-            } catch (final Exception e) {
-                final long n = failed.incrementAndGet(lane);
-                if (n == 1 || n % 10_000 == 0) {
-                    System.out.println("WARN " + name + "-nats-bridge partition " + lane + " (" + subject
-                        + ") publish failed: failed=" + n + " " + e);
+            if (!r.leader) {
+                leading = false;
+                if (catchup != null) {
+                    if (kept.size() == retain) { kept.pollFirst(); evicted++; }
+                    kept.addLast(r);
                 }
+                continue;
+            }
+            if (!leading) {
+                leading = true;
+                cut = promote(lane, nc, inbox, sb, kept, evicted);
+                evicted = 0;
+            }
+            if (cut != null) {
+                final int c = cut.applyAsInt(r);
+                if (c <= 0) { if (c == 0) { cut = null; } continue; } // stored by the previous leader
+                cut = null;
+            }
+            publish(lane, nc, inbox, sb, r);
+        }
+    }
+
+    private void publish(final int lane, final Connection nc, final String inbox, final StringBuilder sb, final R r) {
+        try {
+            nc.publish(subjects[lane], key == null ? inbox : inbox + "." + key.apply(r), encoder.encode(sb, r));
+            published.incrementAndGet(lane);
+        } catch (final Exception e) {
+            final long n = failed.incrementAndGet(lane);
+            if (n == 1 || n % 10_000 == 0) {
+                System.out.println("WARN " + name + "-nats-bridge partition " + lane + " (" + subjects[lane]
+                    + ") publish failed: failed=" + n + " " + e);
             }
         }
+    }
+
+    /**
+     * The lane's member became leader: publish the kept records the stream does not hold, in order, and return
+     * the cut still to apply to the records queued after them (null = publish everything from here).
+     */
+    private java.util.function.ToIntFunction<R> promote(final int lane, final Connection nc, final String inbox,
+                                                         final StringBuilder sb, final ArrayDeque<R> kept,
+                                                         final long evicted) {
+        if (catchup == null) { kept.clear(); return null; }
+        final String subject = subjects[lane];
+        byte[] last = null;
+        String outcome = null;
+        for (int attempt = 0; attempt < 10 && outcome == null && running; attempt++) {
+            try {
+                final JetStreamManagement jsm = nc.jetStreamManagement();
+                final List<String> streams = jsm.getStreamNames(subject);
+                if (streams.isEmpty()) {
+                    outcome = "no stream captures the subject";
+                } else {
+                    try {
+                        last = jsm.getLastMessage(streams.get(0), subject).getData();
+                        outcome = "after the stream's last";
+                    } catch (final JetStreamApiException e) {
+                        if (e.getApiErrorCode() != 10037) { throw e; } // 10037: no message found
+                        outcome = "subject empty";
+                    }
+                }
+            } catch (final Exception e) {
+                try { Thread.sleep(500); } catch (final InterruptedException ie) { return null; }
+            }
+        }
+        java.util.function.ToIntFunction<R> cut = null;
+        final boolean comparable = last == null ? "subject empty".equals(outcome) : (cut = catchup.cut(last)) != null;
+        if (!comparable) {
+            System.out.println((kept.isEmpty() ? "INFO " : "ALERT ") + name + "-nats-bridge partition " + lane + " (" + subject + ") promoted:"
+                + " no catch-up (" + (outcome == null ? "stream unreachable" : last == null ? outcome
+                : "last message carries no position") + "); " + kept.size() + " record(s) applied while following"
+                + " are not republished");
+            kept.clear();
+            return null;
+        }
+        long sent = 0, skipped = 0;
+        // Evicted records were unpublished if the oldest kept one is already past the cut (or there is no cut).
+        boolean gap = evicted > 0 && (cut == null || (!kept.isEmpty() && cut.applyAsInt(kept.peekFirst()) > 0));
+        for (R r; (r = kept.pollFirst()) != null; ) {
+            if (cut != null) {
+                final int c = cut.applyAsInt(r);
+                if (c <= 0) { skipped++; if (c == 0) { cut = null; } continue; }
+                cut = null;
+            }
+            publish(lane, nc, inbox, sb, r);
+            sent++;
+        }
+        replayed.addAndGet(sent);
+        System.out.println((gap ? "ALERT " : "INFO ") + name + "-nats-bridge partition " + lane + " (" + subject
+            + ") promoted: republished " + sent + " record(s) " + outcome + ", skipped " + skipped + " already stored"
+            + (gap ? "; " + evicted + " older record(s) were evicted unpublished - the stream is missing them" : ""));
+        return cut;
     }
 
     /** A stream reply: PubAck JSON, or a 429 status (also an "error" JSON body) when ingest dropped it. */
@@ -184,6 +309,18 @@ final class ReceiptLanes<R> {
             + ") NATS-rejected ids: " + ids);
     }
 
+    /** A top-level-unique JSON field's raw value (a string without its quotes, or a number), or null. */
+    static String field(final byte[] json, final String name) {
+        final String s = new String(json, StandardCharsets.UTF_8);
+        int i = s.indexOf("\"" + name + "\":");
+        if (i < 0) { return null; }
+        i += name.length() + 3;
+        if (i < s.length() && s.charAt(i) == '"') { final int end = s.indexOf('"', i + 1); return end < 0 ? null : s.substring(i + 1, end); }
+        int end = i;
+        while (end < s.length() && (Character.isDigit(s.charAt(end)) || s.charAt(end) == '-')) { end++; }
+        return end == i ? null : s.substring(i, end);
+    }
+
     private static boolean isError(final byte[] data) {
         if (data == null || data.length == 0) { return false; }
         return new String(data, StandardCharsets.UTF_8).contains("\"error\"");
@@ -194,11 +331,14 @@ final class ReceiptLanes<R> {
     long acked() { return sum(acked); }
     long failed() { return sum(failed); }
     long rejected(final int lane) { return rejected.get(lane); }
+    /** Records published at a promotion that the previous leader applied but the stream did not hold. */
+    long replayed() { return replayed.get(); }
 
     /** {"published":..,"acked":..,"rejected":..,"failed":..,"rejectedByPartition":[..]} for /health. */
     String json() {
         final StringBuilder b = new StringBuilder("{\"published\":").append(published()).append(",\"acked\":").append(acked())
-            .append(",\"rejected\":").append(rejected()).append(",\"failed\":").append(failed()).append(",\"rejectedByPartition\":[");
+            .append(",\"rejected\":").append(rejected()).append(",\"failed\":").append(failed())
+            .append(",\"replayed\":").append(replayed()).append(",\"rejectedByPartition\":[");
         for (int i = 0; i < subjects.length; i++) { b.append(i == 0 ? "" : ",").append(rejected.get(i)); }
         return b.append("]}").toString();
     }

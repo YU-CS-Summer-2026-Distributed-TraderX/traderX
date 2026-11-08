@@ -17,7 +17,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Why leader-side and not the gateway egress: Aeron Cluster egress is best-effort (drops under
  * load, by design) and only reaches the submitting session, so it would miss the resting side and
  * lose trades. The apply stream is the complete, ordered, deterministic source of every booked
- * trade; only the leader publishes (role check at the call site) so followers never duplicate.
+ * trade; only the leader publishes so followers never duplicate. Every member offers every trade, tagged with
+ * its role (FR-DRS-37): a follower keeps its trades, and a promoted member publishes the ones the stream does not
+ * hold - those the dying leader applied but never got stored - before anything new.
  *
  * <p>Delivery is best-effort: queue overflow or an unavailable consumer can lose publication.
  * Stable descriptor-derived IDs make identical replay idempotent in trade-processor, but do not
@@ -27,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class TradeNatsPublisher {
 
     /** ponytail: one small holder per booked trade; pool if the bridge must sustain the 134k flood. */
-    private static final class Rec {
+    private static final class Rec extends ReceiptLanes.Record {
         long tradeSeq;
         long consensusSequence;
         int accountId;
@@ -84,7 +86,31 @@ final class TradeNatsPublisher {
         this.subject = subject;
         this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor!=null ? descriptor.epoch() : epoch == null || epoch.isBlank() ? "0" : epoch;
-        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf);
+        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf, this::cut);
+    }
+
+    /** Apply thread: the member's role (FR-DRS-37). Every member offers every trade; a follower's are kept for
+     *  the catch-up it publishes if it becomes leader. */
+    void role(final boolean leader) {
+        lanes.role(leader);
+    }
+
+    /** FR-DRS-37: a stored trade side's position is its tradeSeq (one per side, in apply order). An id this
+     *  bridge would not have written (another epoch or id scheme) means none of ours is stored yet. */
+    java.util.function.ToIntFunction<Rec> cut(final byte[] lastStored) {
+        final String id = ReceiptLanes.field(lastStored, "id");
+        if (id == null || id.length() < 3 || (!id.endsWith("-B") && !id.endsWith("-S"))) { return null; }
+        final long seq;
+        try {
+            seq = Long.parseLong(id.substring(id.lastIndexOf('-', id.length() - 3) + 1, id.length() - 2));
+        } catch (final NumberFormatException e) {
+            return null;
+        }
+        final Rec probe = new Rec();
+        probe.tradeSeq = seq;
+        probe.side = id.endsWith("-B") ? (byte) 0 : (byte) 1;
+        if (seq <= 0 || !idOf(probe).equals(id)) { return r -> 1; }
+        return r -> Long.compare(r.tradeSeq, seq);
     }
 
     void start() {
@@ -187,6 +213,11 @@ final class TradeNatsPublisher {
 
     long published() {
         return lanes.published();
+    }
+
+    /** Published at a promotion: applied under the previous leader, missing from the stream. */
+    long replayed() {
+        return lanes.replayed();
     }
 
     /** Lost before NATS: the lane's queue was full, or the publish call failed. */

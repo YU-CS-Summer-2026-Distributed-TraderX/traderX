@@ -40,6 +40,9 @@
 - [x] A saved cursor is bound to its stream's creation time; a recreated stream is refused at a restart, and a running
       feed never resubscribes across streams (FR-DRS-36, codeX review 2026-10-30 §6). `StreamIdentityIT`,
       `StreamRecreateIT` on NATS 2.10 and 2.14.
+- [x] A promoted member publishes the trades and orders its predecessor applied but the stream does not hold, after
+      the subject's last stored message, exactly once and in order (FR-DRS-37; production e1108 sides 16169..16172).
+      `ThreeMemberClusterTest#tradesInFlightAtALeaderKillReachTheStreamExactlyOnce`, `ReceiptLanesIT`.
 
 ## Still open
 

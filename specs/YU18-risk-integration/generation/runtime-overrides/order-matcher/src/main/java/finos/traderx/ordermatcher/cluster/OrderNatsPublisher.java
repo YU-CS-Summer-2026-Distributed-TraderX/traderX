@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Leader-side order-lifecycle → NATS bridge (cluster-egress → NATS, YU13). The order-state sibling
- * of {@link TradeNatsPublisher}: same leader-only, best-effort, off-consensus tap on the output
+ * of {@link TradeNatsPublisher}: same leader-published (with the FR-DRS-37 catch-up), off-consensus tap on the output
  * ring, publishing what the deterministic engine already produces (ADR-048). It forwards the
  * KIND_ORDER_* lifecycle events the crossing book already emits per match/cancel/replace — no new
  * engine emission — onto {@code /orders}, where the read model persists the {@code orderbook}
@@ -31,7 +31,7 @@ final class OrderNatsPublisher {
 
     /** ponytail: one small holder per lifecycle event; pool if the bridge must sustain a flood.
      *  Package-private so the encode() seam is unit-testable without a NATS server. */
-    static final class Rec {
+    static final class Rec extends ReceiptLanes.Record {
         long orderRef;
         long consensusSequence;
         int outputOrdinal;
@@ -92,7 +92,26 @@ final class OrderNatsPublisher {
         this.subject = subject;
         this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor==null ? epoch : descriptor.epoch();
-        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId);
+        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId, null, this::cut);
+    }
+
+    /** Apply thread: the member's role (FR-DRS-37); see TradeNatsPublisher#role. */
+    void role(final boolean leader) {
+        lanes.role(leader);
+    }
+
+    /** FR-DRS-37: a stored order event's position is (consensusSequence, outputOrdinal), total in apply order.
+     *  Only managed ids carry it; a legacy message has no position, so nothing is replayed. Another epoch's
+     *  message means none of ours is stored yet. */
+    java.util.function.ToIntFunction<Rec> cut(final byte[] lastStored) {
+        if (descriptor == null || !descriptor.managedIds()) { return null; }
+        final String seq = ReceiptLanes.field(lastStored, "consensusSequence");
+        final String ordinal = ReceiptLanes.field(lastStored, "outputOrdinal");
+        if (!descriptor.epoch().equals(ReceiptLanes.field(lastStored, "clusterEpoch"))) { return r -> 1; }
+        if (seq == null || ordinal == null) { return null; }
+        final long s = Long.parseLong(seq);
+        final int o = Integer.parseInt(ordinal);
+        return r -> r.consensusSequence != s ? Long.compare(r.consensusSequence, s) : Integer.compare(r.outputOrdinal, o);
     }
 
     void start() {
