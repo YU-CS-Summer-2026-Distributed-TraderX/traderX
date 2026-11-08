@@ -65,8 +65,9 @@
       replay from 0 answered an HTTP error; after a restart from disk `g12_tail` held the purge and passed (each tail
       65,895 orders from log position 12,161,632 to applied 160,904, book hashes equal to the live digests); idle past two
       snapshots it was INCONCLUSIVE. The proof client's orders rest and never trade (0 trades, book at 100,000 open
-      orders): trades through the tail are covered by `ThreeMemberClusterTest` only. Left: yaakov's yes to discard the
-      purged log (ADR-079 amendment), then one production session (build, roll the members, gate).
+      orders): trades through the tail are covered by `ThreeMemberClusterTest` only. Design accepted (yaakov 2026-11-08,
+      "Yes, both": discard the purged log; an empty tail does not refuse). Left: one production session (build, roll
+      the members, gate), with its own yes.
       - Purge the members' log behind a snapshot (archive purge, the bench's B2, proven on hxb at 250K/s). This bounds
         B1's growth and G2's replay time.
       - Once the log is purged, G1 and G2 cannot replay from 0. They switch to snapshot plus tail: replay from the

@@ -145,7 +145,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - A tail with no session message after that snapshot (a quiet log: snapshots kept firing after the last order) SHALL
     be INCONCLUSIVE, never ok: printed as such and recorded as `tail=INCONCLUSIVE` in `rig-gate`. It does not refuse the
     bring-up by itself; the gate then rests on G0, G3, G3h and G4, and G4's baseline is already required outside a
-    provisioned epoch. A mismatch, an incomplete or missing answer refuses whether the tail is empty or not.
+    provisioned epoch. A mismatch, an incomplete or missing answer refuses whether the tail is empty or not. (yaakov
+    2026-11-08, "Yes, both": discard the purged log; an empty tail does not refuse. Refusing would make any bring-up
+    after about two snapshot intervals idle impossible.)
   - The gate SHALL hold every member's purge (the hold file) before it reads a tail, wait out a pass already under way,
     and release it only after the gate passes; a refused gate leaves it held, which keeps log rather than losing it.
     A container listing that cannot be read SHALL refuse, never stand in for "not purged".
