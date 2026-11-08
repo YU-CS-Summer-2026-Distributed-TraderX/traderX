@@ -630,8 +630,11 @@ restore_gate(){
 rig_shutdown_baseline_ok(){ [[ $1 =~ ^[0-9]+\ -?[0-9]+\ [0-9]+\ [^\ ]+\ [^\ ]+\ [0-9]+$ ]]; }
 
 # ---- a fresh epoch (FR-PRG-29, ADR-101): archive the member disks, wipe them, archive the read model ---------------
-# ConfigMap rig-epoch {label, state}: wiped (claims deleted; the read model not yet archived) -> provisioned (the read
-# model archived into arc_<label>_*; the members start empty) -> consumed (a restore gate passed on the empty epoch).
+# ConfigMap rig-epoch {label, state}: wiped (claims deleted; the read model not yet archived) -> archived (the read
+# model and history store in arc_<label>_*, the capture streams deleted; trade-processor and history-feed not yet
+# restarted) -> provisioned (both answering; the members start empty) -> consumed (a restore gate passed on the empty
+# epoch). archived exists so a retry skips the archive: the restarted trade-processor writes its seq-0 cursors into the
+# live tables, and an archive re-run would refuse them as not empty (production 2026-11-08, e1108).
 # The gates accept an empty epoch, and a missing shutdown baseline, only while it is provisioned.
 EPOCH_TABLES="trades positions orderbook order_view_snapshot projection_accounting projection_cursor projection_trade_days projection_recon"
 epoch_label_ok(){ [[ $1 =~ ^[a-z][a-z0-9]{0,15}$ ]]; }
@@ -692,6 +695,7 @@ rig_fresh_epoch(){
   read -r st lbl <<<"$es"
   case $st in
     none|consumed|initialized) ;;
+    archived) die "fresh-epoch: epoch $lbl is archived and not yet provisioned; finish it with rig.sh up first";;
     wiped) [ "$lbl" = "$label" ] || die "fresh-epoch: epoch $lbl is wiped and not yet provisioned; finish it first"
       note "resuming epoch $label (claims already being wiped)";;
     *) die "fresh-epoch: epoch $lbl is $st; it must pass a restore gate (consumed) first";;
@@ -760,9 +764,14 @@ hold(){ # hold <deploy>: record its replica count on it, once (a retry keeps the
   fi
   kc scale "deploy/$1" --replicas=0 >/dev/null || die "read-model archive: $1 cannot be stopped"
   wait_for 300 "$1 stopped (restarts at $r)" no_pods "$1"; }
-release(){ # release <deploy>: back to its recorded count, the record removed
-  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") && [[ $r =~ ^[1-9][0-9]*$ ]] \
-    || die "read-model archive: $1 has no recorded replica count to restart at"
+release(){ # release <deploy>: back to its recorded count, the record removed; with none, an earlier retry released it
+  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model restart: $1 cannot be read"
+  if [ -z "$r" ]; then
+    r=$(kc get deploy "$1" -o jsonpath='{.spec.replicas}') && [[ $r =~ ^[1-9][0-9]*$ ]] \
+      || die "read-model restart: $1 is at ${r:-no} replicas with none recorded: scale it to its rendered count, then rerun"
+    note "$1 already restarted ($r replicas)"; return 0
+  fi
+  [[ $r =~ ^[1-9][0-9]*$ ]] || die "read-model restart: $1's recorded replica count '$r' is not a count"
   kc scale "deploy/$1" --replicas="$r" >/dev/null || die "read-model archive: $1 cannot be restarted"
   kc annotate deploy "$1" "$HELD-" >/dev/null || die "read-model archive: $1's replica record cannot be removed"; }
 
@@ -845,6 +854,12 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
   done
   note "archived: arc_${label}_trades holds $(sql "select count(*) from arc_${label}_trades") rows; live tables empty"
   reset_feed   # with trade-processor, the members and the gateways at 0
+}
+
+restart_read_model(){ # FR-PRG-29: after the archive (rig-epoch archived), trade-processor then history-feed back up
+  step "read model: trade-processor, then history-feed, restarted on the new streams"
+  [ "$DRY" = 1 ] && { note "would restart: trade-processor, history-feed at their recorded counts"; return 0; }
+  local hf; hf=$(kc get deploy history-feed --ignore-not-found -o name) || die "read-model restart: history-feed cannot be read"
   release trade-processor
   kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
   # FR-PRG-29: Ready is not listening on a render without trade-processor's readiness probe (production 2026-11-07
@@ -997,10 +1012,14 @@ rig_up(){
     local before='' es st lbl
     if [ "$DRY" = 1 ]; then es=none; else es=$(epoch_state) || die "ConfigMap rig-epoch cannot be read"; fi
     read -r st lbl <<<"$es"
-    if [ "$st" = wiped ]; then
-      [ "$DRY" = 1 ] || claims_gone || die "epoch $lbl is wiped but a member claim exists: finish rig.sh fresh-epoch $lbl first"
-      [ "$DRY" = 1 ] || wait_for 300 "the read model answers" sql_ready
-      archive_read_model "$lbl"
+    if [ "$st" = wiped ] || [ "$st" = archived ]; then
+      [ "$DRY" = 1 ] || claims_gone || die "epoch $lbl is $st but a member claim exists: finish rig.sh fresh-epoch $lbl first"
+      if [ "$st" = wiped ]; then
+        [ "$DRY" = 1 ] || wait_for 300 "the read model answers" sql_ready
+        archive_read_model "$lbl"
+        [ "$DRY" = 1 ] || set_epoch "$lbl" archived
+      else note "epoch $lbl already archived: the archive is skipped (its live tables are the new epoch's)"; fi
+      restart_read_model
       [ "$DRY" = 1 ] || set_epoch "$lbl" provisioned
     fi
     if [ "$DRY" = 0 ]; then

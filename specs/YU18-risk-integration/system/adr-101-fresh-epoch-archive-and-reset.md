@@ -97,6 +97,15 @@ renames nothing and empties only the cursor, a non-empty live table refused, non
 recorded counts restored over a live 0, a 0 with no record refused before any rename or delete). Both new cases fail
 against the rig.sh before it.
 
+Later the same day, a retry after trade-processor was restored refused `projection_cursor is not empty after the
+archive`: the running trade-processor had written its seq-0 cursors (`legacy-unknown`, `order-view:legacy-unknown`) for
+the new empty stream, and the archive re-ran its emptiness check. rig-epoch was set to provisioned by hand. The archive
+now records itself: wiped -> **archived** (tables moved and checked, streams deleted) -> provisioned (trade-processor
+and history-feed answering). `up` on archived skips the archive and only restarts; a Deployment already released (no
+record, replicas > 0) is left as it is. `fresh-epoch` refuses an archived epoch. Test:
+`test_the_archive_records_itself_and_each_retry_ordering_resumes` (stopped inside the archive, after it before the
+restart, after trade-processor restarted with live rows; at 0 with no record refused; claims under archived refused).
+
 ## Consequences
 
 - The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads

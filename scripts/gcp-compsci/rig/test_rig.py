@@ -774,6 +774,36 @@ class FreshEpoch(unittest.TestCase):
             out, calls = self.refused(f'{d} is at 0 replicas with none recorded', **wiped, **env)
             self.assertIsNone(first(calls, 'STREAM.DELETE'), d); self.assertIsNone(first(calls, 'RENAME TABLE'), d)
 
+    # FR-PRG-29 (production 2026-11-08, e1108): a retry after trade-processor restarted re-ran the archive, whose emptiness
+    # check refused the seq-0 cursors the running trade-processor had written. The archive records itself (archived,
+    # between wiped and provisioned) and a retry from archived only restarts. One case per point a refusal can stop at.
+    def test_the_archive_records_itself_and_each_retry_ordering_resumes(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'FEED': 'TRADERX_FEED:0'})
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'STREAM.DELETE.TRADERX_FEED', r'rig-epoch .*state=archived', r'scale deploy/trade-processor --replicas=1',
+                                           r'scale deploy/history-feed --replicas=1', r'rig-epoch .*state=provisioned', r'replicas=3')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        restart = {'TP_SPEC': '0', 'HELD_trade_processor': '1', 'HF_SPEC': '0', 'HELD_history_feed': '1'}
+        # 1. stopped inside the archive (wiped; both held, the tables already moved): the archive re-runs on empty tables
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', **restart, 'ARC_EXISTS': '1', 'CH_ARC': '1'})
+        self.assertEqual(rc, 0, out)
+        self.assertLess(first(calls, r'state=archived'), first(calls, r'scale deploy/trade-processor --replicas=1'))
+        # 2. stopped after the archive, before the restart (archived; both still held): no archive, both restarted
+        # 3. stopped after trade-processor restarted and wrote its cursors (archived; live rows): no archive, no re-check
+        for n, env in ((2, restart), (3, {'LIVE_ROWS': '2', 'HELD_history_feed': '1', 'HF_SPEC': '0'})):
+            rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'archived e2', **env})
+            self.assertEqual(rc, 0, f'ordering {n}: {out}')
+            for never in ('RENAME TABLE', 'STREAM.DELETE', 'scale deploy/trade-processor --replicas=0', r'select count\(\*\) from projection_cursor', 'state=archived'):
+                self.assertIsNone(first(calls, never), f'ordering {n}: {never}')
+            self.assertIn('already archived', out)
+            self.assertIsNotNone(first(calls, r'scale deploy/history-feed --replicas=1'), f'ordering {n}')
+            self.assertLess(first(calls, r'scale deploy/history-feed --replicas=1'), first(calls, r'state=provisioned'))
+        self.assertIsNone(first(calls, r'scale deploy/trade-processor'), 'ordering 3 rescaled a running trade-processor')
+        out, _ = self.refused('trade-processor is at 0 replicas with none recorded', **{**self.EMPTY, 'EPOCH': 'archived e2', 'TP_SPEC': '0'})
+        self.refused('epoch e2 is archived and not yet provisioned', 'rig_fresh_epoch e3', EPOCH='archived e2')
+        out, calls = self.refused('is archived but a member claim exists', **{**self.EMPTY, 'EPOCH': 'archived e2', 'CLAIMS': self.CLAIMS3})
+        self.assertIsNone(first(calls, 'state=provisioned'))
+
     def test_a_capture_stream_still_holding_messages_or_unreadable_is_refused(self):
         for env, why in (({'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:3'}, 'TRADERX_FEED_P1 still holds 3 messages'),
                          ({'FEED_FAIL': '1'}, 'capture streams cannot be listed')):
