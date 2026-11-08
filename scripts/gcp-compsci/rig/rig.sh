@@ -8,7 +8,7 @@
 #     LOADGEN=N       up also brings loadgen-pool to N nodes and LOADGEN_PODS idle load pods (default 4 per node), so
 #                     `loadgen.sh start RATE` begins the binary load in seconds (FR-PRG-32); 0..16 (default 0)
 #
-# pools   creates nats-pool, gateway-pool, the client VM and its IAP rule if missing; puts the sysctls on
+# pools   creates nats-pool, gateway-pool, history-pool, the client VM and its IAP rule if missing; puts the sysctls on
 #         engine-pool (only while it has no nodes, since GKE recreates the nodes to apply them).
 # up      nodes, then members, then the restore gate (gateways stay at 0 until it passes; a mismatch stops here),
 #         then N gateways, the internal LB, autoscaling, and a smoke order checked at the effect end.
@@ -52,13 +52,15 @@ RIG_VMS="$CLIENT_VMS${KDB_VM:+ $KDB_VM}"
 GATE_SHADOW_PATH=${GATE_SHADOW_PATH:-/recon/shadow-state}
 EVIDENCE=${EVIDENCE:-$PWD/rig-evidence/$(date +%Y%m%d-%H%M%S)}
 DRY=0
+SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke reads back
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
 pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
-  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; esac; }
+  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo c4d-standard-8;; esac; }
 pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo 1;;
-  gateway-pool) echo "$GATEWAYS";; esac; }
-RIG_POOLS="default-pool engine-pool nats-pool gateway-pool"
+  gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
+# history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).
+RIG_POOLS="default-pool engine-pool nats-pool gateway-pool history-pool"
 
 et(){ TZ=America/New_York date '+%-I:%M:%S %p ET'; }
 step(){ echo; echo "== $(et)  $*"; }
@@ -136,7 +138,7 @@ autoscale_off(){
 
 # ---- pools -------------------------------------------------------------------------------------------------------
 rig_pools(){
-  step "pools: nats-pool and gateway-pool exist with the right machine type; engine-pool carries the sysctls"
+  step "pools: nats-pool, gateway-pool and history-pool exist with the right machine type; engine-pool carries the sysctls"
   local sa scopes net sub
   if [ "$DRY" = 1 ]; then sa='<engine-pool SA>'; scopes='<engine-pool scopes>'; net=default; sub=default; else
     sa=$(gc container node-pools describe engine-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.serviceAccount)')
@@ -164,6 +166,16 @@ rig_pools(){
     do_ gcloud container node-pools create gateway-pool "${common[@]}" --machine-type c4d-standard-8 \
       --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-gateway=true:NoSchedule \
       --node-labels traderx-role=gateway --system-config-from-file "$HERE/node-gateway.yaml"
+  fi
+  if [ "$DRY" = 0 ] && pool_exists history-pool; then
+    [ "$(gc container node-pools describe history-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.machineType)')" = c4d-standard-8 ] \
+      || die "history-pool exists with another machine type"
+    note "history-pool present"
+  else
+    # FR-THT-02: the store's claim is Hyperdisk Balanced (class clickhouse-hot), which C4D attaches.
+    do_ gcloud container node-pools create history-pool "${common[@]}" --machine-type c4d-standard-8 \
+      --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-history=true:NoSchedule \
+      --node-labels traderx-role=history
   fi
   if [ "$DRY" = 0 ] && pool_exists loadgen-pool; then note "loadgen-pool present"; else
     # FR-PRG-16: the binary load's own nodes, tainted so nothing else lands there; at 0 until `rig.sh loadgen N`.
@@ -194,7 +206,7 @@ rig_pools(){
 
 require_pools(){
   [ "$DRY" = 1 ] && return 0
-  for p in nats-pool gateway-pool; do pool_exists $p || die "$p is missing: run 'rig.sh pools' first"; done
+  for p in nats-pool gateway-pool history-pool; do pool_exists $p || die "$p is missing: run 'rig.sh pools' first"; done
   engine_has_sysctls || die "engine-pool has no sysctls: run 'rig.sh pools' while it is at 0"
   local v; for v in $CLIENT_VMS; do
     gc compute instances describe "$v" --zone "$ZONE" >/dev/null 2>&1 || die "$v missing: run 'rig.sh pools'"; done
@@ -230,7 +242,12 @@ members_gated(){
 }
 
 # ---- read-model and member fingerprints ------------------------------------------------------------------------------
-row_status_is(){ [ "$(sql "select status from orderbook where orderid like '%-$1'")" = "$2" ]; }
+# order_status_is <account> <ref> <status> (bearer $ORDER_TOKEN, passed on stdin, never on argv): trade-processor's order read model, the one FIX status
+# requests read (FR-FIX04): the memory order view in snapshot mode (ORDER_FEED_PERSIST=false never writes SQL
+# orderbook, production 2026-11-07), the orderbook rows otherwise. One effect end for either render.
+order_status_is(){ kc exec -i deploy/trade-processor -- sh -c 'read -r t; curl -sf -m10 -H "Authorization: Bearer $t" \
+    "localhost:18091/accounts/$1/orders?status=all"' sh "$1" <<<"$ORDER_TOKEN" \
+  | jq -e --arg r "-$2" --arg s "$3" 'any(.[]; (.id | endswith($r)) and .status == $s)' >/dev/null; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
 md5of(){ python3 -c 'import hashlib,sys; print(hashlib.md5(sys.stdin.buffer.read()).hexdigest()[:16])'; }
 # FR-PRG-19: a query that fails is not an empty table. sql() discards stderr, so an empty answer is a failure.
@@ -469,8 +486,8 @@ print("; ".join(bad) or f"OK {got[0]} sides")
 ' "$@"; }
 g3_history(){
   local t=$1 ranges rows verdict
-  # ponytail: opt-in until FR-THT-02 renders the store into the production manifests; then its absence is refused.
-  kc get sts clickhouse -o name >/dev/null 2>&1 || { note "G3h skipped: no history store (sts/clickhouse) on $NS"; return 0; }
+  # FR-THT-02 renders the store into the production manifests: its absence is a refusal, never a skip.
+  kc get sts clickhouse -o name >/dev/null 2>&1 || die "G3h: no history store (sts/clickhouse) on $NS (FR-THT-02)"
   wait_for 600 "every history-feed lane open with nothing pending (G3h)" history_caught_up
   rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
     || die "G3h: the history store could not be read"
@@ -493,7 +510,7 @@ restore_gate(){
     note "would check: G1 each member's replay from 0 reaches its applied and reproduces its trade count"
     note "would check: G2 (check A) each member's $GATE_SHADOW_PATH book/position hashes equal its own; refuse if absent"
     note "would check: G3 (check B) read-model md5s equal those read before the members started"
-    note "would check: G3h (FR-THT-06) the history store holds sides 1..trades each once, when sts/clickhouse exists"
+    note "would check: G3h (FR-THT-06) the history store holds sides 1..trades each once; no sts/clickhouse is refused"
     note "would check: G4 the members equal the rig-shutdown-baseline ConfigMap, when one exists"
     note "would record: ConfigMap rig-gate (PASS, member pod UIDs)"
     return 0
@@ -691,6 +708,31 @@ rig_fresh_epoch(){
   note "epoch $label: claims wiped; rig.sh up archives the read model, then starts the members empty"
 }
 
+# FR-PRG-29 (production 2026-11-07): the fresh epoch's read model starts at cursor 0, so its capture streams must start at
+# seq 1. The old TRADERX_FEED (since 2026-10-28) held 0 messages from first_seq 371203273 (all aged out), and the snapshot
+# trade store rightly refused with RETENTION_GAP. Read from NATS's monitor, deleted by one JetStream API request over the
+# client protocol (busybox nc in the nats pod: no other image). Deleting a stream deletes its consumers: trade-processor
+# recreates the stream and its tp-* durables on start, and the gateways' fill feed is an ordered (ephemeral) consumer.
+feed_streams(){ # "<stream> <messages>" per capture stream, TRADERX_FEED or TRADERX_FEED_P<p>; fails when NATS cannot be read
+  local j; j=$(kc exec deploy/nats -c nats -- wget -qO- 'http://localhost:8222/jsz?accounts=true&streams=true') || return 1
+  jq -e 'has("streams")' <<<"$j" >/dev/null || return 1   # a JetStream report, not an error page
+  jq -r '.account_details[]?.stream_detail[]? | select(.name | test("^TRADERX_FEED(_P[0-9]+)?$")) | "\(.name) \(.state.messages)"' <<<"$j"; }
+nats_api(){ # nats_api <subject>: one JetStream API request, its JSON reply
+  kc exec deploy/nats -c nats -- sh -c '(printf "CONNECT {\"verbose\":false}\r\nSUB r 1\r\nPUB %s r 0\r\n\r\n" "$1"; sleep 2) | nc localhost 4222' sh "$1" \
+    | grep -o '^{.*}'; }
+reset_feed(){
+  local streams s n
+  streams=$(feed_streams) || die "fresh epoch: the capture streams cannot be listed"
+  while read -r s n; do
+    [ -z "$s" ] || [ "$n" = 0 ] || die "fresh epoch: $s still holds $n messages of the old epoch; it must be empty (aged out, or reconciled and purged) before the epoch restarts it at seq 1"
+  done <<<"$streams"
+  while read -r s n; do
+    [ -n "$s" ] || continue
+    nats_api "\$JS.API.STREAM.DELETE.$s" | jq -e '.success == true' >/dev/null || die "fresh epoch: $s could not be deleted"
+    note "capture stream $s (0 messages) deleted; trade-processor recreates it at seq 1"
+  done <<<"$streams"
+}
+
 archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*, the live tables recreated empty
   local label=$1 t renames='' have reps present
   step "read model: the old epoch's tables into arc_${label}_*, recreated empty (trade-processor stopped meanwhile)"
@@ -739,6 +781,7 @@ archive_read_model(){ # FR-PRG-29: the old epoch's read model into arc_<label>_*
     [ "$(sql "select count(*) from $t")" = 0 ] || die "read-model archive: $t is not empty after the archive"
   done
   note "archived: arc_${label}_trades holds $(sql "select count(*) from arc_${label}_trades") rows; live tables empty"
+  reset_feed   # with trade-processor, the members and the gateways at 0
   kc scale deploy/trade-processor --replicas="${reps:-1}" >/dev/null || die "read-model archive: trade-processor cannot be restarted"
   kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
 }
@@ -784,9 +827,9 @@ autoscale_on(){
 members_bridged(){ kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' \
   | tr ' ' '\n' | grep -qx TRADE_BRIDGE_NATS_URL; }
 smoke(){
-  step "smoke: a FIX order and its cancel through a gateway, then its row in the read model"
+  step "smoke: a FIX order and its cancel through a gateway, then its state in the order read model"
   if [ "$DRY" = 1 ]; then note "would run: fix-smoke.mjs in web-front-end-console (resting buy inside the collar, cancel)"
-    note "would check: the order's orderbook row reaches CANCELED"; return 0; fi
+    note "would check: the order reaches CANCELED in trade-processor's order read model"; return 0; fi
   local out ref
   if ! out=$(kc exec -i deploy/web-front-end-console -c console -- node - < "$HERE/fix-smoke.mjs" 2>&1); then
     echo "$out" > "$EVIDENCE/smoke.txt"; die "smoke: the FIX script failed: $EVIDENCE/smoke.txt"; fi
@@ -794,7 +837,8 @@ smoke(){
   grep -q '^NEW ' <<<"$out" && grep -q '^CANCELED ' <<<"$out" || die "smoke: no New + Canceled pair: $EVIDENCE/smoke.txt"
   ref=$(awk '/^NEW /{print $2}' <<<"$out")
   if members_bridged; then
-    wait_for 60 "orderbook row for order $ref CANCELED (the read model, FR-PRG-04)" row_status_is "$ref" CANCELED
+    ORDER_TOKEN=$(admin_token); [ -n "$ORDER_TOKEN" ] || die "smoke: no admin token for the order read model"
+    wait_for 60 "order $ref CANCELED in the order read model (FR-PRG-04)" order_status_is "$SMOKE_ACCOUNT" "$ref" CANCELED
   else   # FR-PRG-14: members rendered without bridges never feed the read model; the FIX answers are the effect end
     note "smoke: members run without bridges (FR-PRG-14): order $ref New and Canceled over FIX; no read-model row expected"
   fi
@@ -862,7 +906,7 @@ rig_up(){
   else
     hold_gateways
     hold_members
-    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS; $RIG_VMS started"
+    step "nodes: default-pool $DEFAULT_NODES, engine-pool 3, nats-pool 1, gateway-pool $GATEWAYS, history-pool 1; $RIG_VMS started"
     for p in $RIG_POOLS; do
       do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes "$(pool_nodes $p)" --zone "$ZONE" --project "$PROJECT" --quiet --async
     done
@@ -875,7 +919,9 @@ rig_up(){
       # ProgressDeadlineExceeded, and rollout status gives up on that flag at once while the pods are still scheduling.
       for d in $(kc get deploy -o name | grep -v '/cluster-gateway$'); do
         wait_for 900 "$d Ready" deploy_rolled_out "$d"
-      done; note "ok"
+      done
+      wait_for 900 "sts/clickhouse Ready (the history store, FR-THT-02)" ready_replicas sts/clickhouse 1
+      note "ok"
     fi
     nats_record ''
     local before='' es st lbl
@@ -982,7 +1028,7 @@ rig_down(){
   step "every rig pool to 0; $RIG_VMS stopped"
   { [ "$DRY" = 1 ] || pool_exists loadgen-pool; } && do_ gcloud container clusters resize "$CLUSTER" --node-pool loadgen-pool \
     --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
-  for p in gateway-pool nats-pool engine-pool default-pool; do
+  for p in gateway-pool nats-pool history-pool engine-pool default-pool; do
     do_ gcloud container clusters resize "$CLUSTER" --node-pool "$p" --num-nodes 0 --zone "$ZONE" --project "$PROJECT" --quiet --async
   done
   local v; for v in $RIG_VMS; do do_ gcloud compute instances stop "$v" --zone "$ZONE" --project "$PROJECT"; done

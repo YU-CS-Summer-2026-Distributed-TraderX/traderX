@@ -18,7 +18,7 @@
 # Restarts trade-processor (kind only). Usage: CTX=<kind ctx> NS=<ns> [ACCT_A=22214 ACCT_B=42422] [NEGATIVE=1] bash ...
 here="$(cd "$(dirname "$0")" && pwd)"
 . "${here}/lib-yu18.sh"
-[[ "${CTX}" == kind-* ]] || fail "kind only: step 3 stops trade-processor"
+disposable_rig || fail "disposable rig only (kind, or a labelled pa-proof-* namespace): step 3 stops trade-processor"
 ACCT_A="${ACCT_A:-22214}"; ACCT_B="${ACCT_B:-42422}"
 T="$(mint_ticker)"; PX=50
 pf GW "${GATEWAY_TARGET:-svc/order-matcher}" "${GATEWAY_PORT:-18110}"

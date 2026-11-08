@@ -112,7 +112,7 @@ class Admit(unittest.TestCase):
 
     def test_the_declared_two_commit_plan_passes(self):
         self.admit.check_population(self.plan())
-        self.assertEqual(self.admit.PRIVATE_IMAGES, 13)
+        self.assertEqual(self.admit.PRIVATE_IMAGES, 14)   # 13 + the declared exception
 
     def test_neither_commit(self):
         self.refuses('neither declared commit', **{'trade-service': {'sourceCommit': OTHER}})

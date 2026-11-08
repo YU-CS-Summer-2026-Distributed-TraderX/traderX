@@ -51,11 +51,15 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   | G4 | when `rig-shutdown-baseline` exists, the members' applied, trades and hashes equal it (not engineApplied, which a restore resets to -1) |
 - **FR-PRG-04:** The smoke order SHALL go through a gateway over FIX from `web-front-end-console`.
   - It is a resting Buy 1 two percent under the mark (inside the collar), acked New, then cancelled.
-  - The order's `orderbook` row SHALL reach CANCELED within 60 s.
+  - The order SHALL read CANCELED within 60 s in trade-processor's order read model (`GET /accounts/{id}/orders?status=all`,
+    the one FIX status requests read, FR-FIX04): the memory order view in snapshot mode, the `orderbook` rows otherwise.
+    Amended 2026-11-07: with `ORDER_FEED_PERSIST=false` SQL `orderbook` is never written, and production's `up` refused
+    after a clean New/Canceled. Members without bridges (FR-PRG-14) end at the FIX answers.
   - The FIX password SHALL NOT appear in any line it prints.
 - **FR-PRG-05:** The production candidate (`prepare.py`) SHALL:
-  - place members on `engine-pool`, gateways on `gateway-pool` and NATS on `nats-pool`, each with its taint's
-    toleration, and everything else on `default-pool`;
+  - place members on `engine-pool`, gateways on `gateway-pool`, NATS on `nats-pool`, and ClickHouse with history-feed
+    on `history-pool` (trade-history-tiers FR-THT-02, 2026-11-07), each with its taint's toleration, and everything
+    else on `default-pool`;
   - run members with 7 CPU / 16Gi, generational ZGC at a 12 GB heap (`-Xms12g -Xmx12g -XX:+AlwaysPreTouch`), and a
     4 MiB Aeron `so_rcvbuf`;
   - pin `MAX_ACTIVE_BOOKS` to 1,024, so the book cap (an apply-path decision, ADR-079 §6) cannot move with the heap.
@@ -64,7 +68,13 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - `rig.sh pools` SHALL:
     - give `engine-pool` the bench sysctls (`vm.dirty_*`, `net.core.rmem_*`), and only while it has no nodes;
     - create `nats-pool` on c3-standard-8, so that it can attach NATS's pd-balanced claim;
-    - create `gateway-pool` on c4d-standard-8 with the static CPU manager.
+    - create `gateway-pool` on c4d-standard-8 with the static CPU manager;
+    - create `history-pool` on c4d-standard-8 (Hyperdisk Balanced for the store's claim), tainted `traderx-history`;
+      `up` brings it to 1 node and waits for `sts/clickhouse` with the support workloads; `down` takes it to 0.
+  - `system-pool` (2026-11-07, created by the operator, not by `rig.sh`): one untainted e2-standard-2 kept at 0, so
+    kube-dns and konnectivity-agent have a node when `default-pool` is at 0. A side rig SHALL resize it to 1 before it
+    applies anything and to 0 at its teardown; it SHALL NOT create an untainted pool of its own. It is not in
+    `RIG_POOLS`: `rig.sh` neither sizes nor zeroes it (docs/deployment/compsci-gke.md "Node plan").
 - **FR-PRG-06:** Gateways run one per node.
   - The Deployment SHALL have no replica count in the pack, a required hostname anti-affinity, and a guaranteed
     whole-CPU pod (4 CPU / 2Gi). `validate()` SHALL refuse otherwise.
@@ -170,7 +180,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   `rig-epoch-LABEL-history`, and wait until every member claim and disk is gone. The next `up` SHALL move the epoch
   tables into `arc_LABEL_*` in one RENAME, with trade-processor stopped, and recreate them empty with identical
   definitions, foreign keys included; only the epoch tables the database has, since a persistent volume never runs a
-  table's later first-boot SQL. The gate SHALL accept empty members and no shutdown baseline only while
+  table's later first-boot SQL. With trade-processor, the members and the gateways still stopped, it SHALL refuse
+  unless every capture stream (`TRADERX_FEED`, `TRADERX_FEED_P<p>`) holds 0 messages, then delete them, so
+  trade-processor recreates them at seq 1 for the new epoch's cursor 0 (2026-11-07: the old stream, aged out to 0
+  messages at first_seq 371203273, made the snapshot store refuse with RETENTION_GAP and G3 fail). The gate SHALL accept empty members and no shutdown baseline only while
   `rig-epoch` is provisioned, and mark it consumed on PASS; a missing baseline otherwise SHALL refuse.
 - **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
   does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom

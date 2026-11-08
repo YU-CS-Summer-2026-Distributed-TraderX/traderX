@@ -26,6 +26,13 @@ DB_CONTAINER="${DB_CONTAINER:-mariadb}"
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok()   { echo "[ok] $*"; }
 step() { echo; echo "=== $* ==="; }
+# disposable_rig: a kind context, or a pa-proof-* namespace labelled traderx-proof=disposable (kind-yu18-rig.py
+# --ns renders both). The label is read from the cluster, so a production namespace cannot pass by its name alone.
+disposable_rig() {
+  [[ "${CTX}" == kind-* ]] && return 0
+  [[ "${NS}" == pa-proof-* ]] || return 1
+  [[ "$(kubectl --context "${CTX}" get ns "${NS}" -o jsonpath='{.metadata.labels.traderx-proof}' 2>/dev/null)" == disposable ]]
+}
 
 # --- port-forwards, owned by the proof and torn down on exit ------------------------------------
 PF_PIDS=()

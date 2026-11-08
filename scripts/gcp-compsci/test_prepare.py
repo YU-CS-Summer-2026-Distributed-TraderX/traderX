@@ -33,13 +33,23 @@ class Rendering(unittest.TestCase):
         self.assertEqual(engine['spec']['template']['spec']['nodeSelector'],
                          {'cloud.google.com/gke-nodepool':'engine-pool'})
 
+    def test_every_render_names_the_snapshot_read_model(self):
+        # Production 2026-11-07: this render left TRADE_PROJECTION_MODE unset, so 889e47be moved production from rows to
+        # snapshot by flipping trade-processor's default. The mode is named in the render, and its absence refused.
+        tp=next(d for d in self.docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor')
+        self.assertIn({'name':'TRADE_PROJECTION_MODE','value':'snapshot'},module.podspec(tp)['containers'][0]['env'])
+        docs=copy.deepcopy(self.docs)
+        c=module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor'))['containers'][0]
+        c['env']=[e for e in c['env'] if e['name']!='TRADE_PROJECTION_MODE']
+        with self.assertRaisesRegex(AssertionError,'TRADE_PROJECTION_MODE=snapshot'): module.validate(docs)
+
     def test_member_archive_storageclass_is_rendered(self):
         # Members claim a retained volume of this class; a render without it leaves them Pending.
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')
         claimed={t['spec']['storageClassName'] for t in engine['spec']['volumeClaimTemplates']}
         self.assertEqual(claimed,{'order-matcher-archive'})
         sc=[d for d in self.docs if d['kind']=='StorageClass']
-        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive'])
+        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive','clickhouse-hot'])   # + FR-THT-02's
         self.assertNotIn('namespace',sc[0]['metadata'])
         self.assertEqual(sc[0]['provisioner'],'pd.csi.storage.gke.io')
 
@@ -335,7 +345,7 @@ class Rendering(unittest.TestCase):
         tp=next(d for d in self.docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
         self.assertEqual(env['PROJECTION_FEED_MODE'],'jetstream')
-        self.assertNotIn('TRADE_PROJECTION_MODE',env)   # unset: trade-processor's only mode, snapshot (FR-THT-01), unsized
+        self.assertEqual(env['TRADE_PROJECTION_MODE'],'snapshot')   # named, never trade-processor's default (FR-THT-01)
         docs=copy.deepcopy(self.docs)
         tp=next(d for d in docs if d['metadata']['name']=='trade-processor' and module.podspec(d))
         next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_MODE')['value']='core'
@@ -594,7 +604,7 @@ class Population(unittest.TestCase):
         self.assertEqual(self.images(self.docs,'cluster-gateway'),{module.REGISTRY+'cluster-node:test-candidate'})
         private={c['image'] for d in self.docs for pod in [module.podspec(d)] if pod
                  for c in pod.get('containers',[])+pod.get('initContainers',[]) if c['image'].startswith(module.REGISTRY)}
-        self.assertEqual(len(private),13)
+        self.assertEqual(len(private),14)   # history-feed since FR-THT-02
 
     def test_older_members_get_a_gateway_that_refuses_sequenced_binary(self):
         # ADR-096 §6: a sequenced binary NEW (ADR-090) must never reach members built before it.
@@ -723,5 +733,86 @@ class SnapshotReadModel(unittest.TestCase):
                                (tp_env('PROJECTION_FEED_STREAM_LAYOUT','one'),'one capture stream'),
                                (nats_store,'max_file_store')):
             with self.assertRaisesRegex(AssertionError,message): module.validate(broken(change))
+
+class HistoryStore(unittest.TestCase):
+    """FR-THT-02 (ADR-102): ClickHouse and history-feed in the production render, on their own pool, sized and retained."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10',read_model='snapshot',partitions=6)
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+        module.prepare(Path(cls.temp.name)/'tiered','test-candidate','10.93.0.10',read_model='snapshot',partitions=6,
+                       history_hot_days=2)
+        cls.tiered=list(yaml.safe_load_all((Path(cls.temp.name)/'tiered/candidate.yaml').read_text()))
+        cls.plan=json.loads((Path(cls.temp.name)/'tiered/plan.json').read_text())
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def doc(self,docs,kind,name):
+        return next(d for d in docs if d['kind']==kind and d['metadata']['name']==name)
+
+    def broken(self,change,docs=None):
+        docs=copy.deepcopy(docs or self.docs); change(docs); return docs
+
+    def test_the_store_and_its_writer_are_rendered_on_their_own_pool(self):
+        store,writer=self.doc(self.docs,'StatefulSet','clickhouse'),self.doc(self.docs,'Deployment','history-feed')
+        for d in (store,writer):
+            pod=module.podspec(d)
+            self.assertEqual(pod['nodeSelector'],{'cloud.google.com/gke-nodepool':'history-pool'})
+            self.assertIn({'key':'traderx-history','operator':'Equal','value':'true','effect':'NoSchedule'},pod['tolerations'])
+            res=pod['containers'][0]['resources']; self.assertEqual(res['requests'],res['limits'])
+        claim=store['spec']['volumeClaimTemplates'][0]['spec']
+        self.assertEqual((claim['storageClassName'],claim['resources']['requests']['storage']),('clickhouse-hot','200Gi'))
+        sc=self.doc(self.docs,'StorageClass','clickhouse-hot')
+        self.assertEqual((sc['parameters']['type'],sc['reclaimPolicy']),('hyperdisk-balanced','Retain'))
+        env={e['name']:e.get('value') for e in module.podspec(writer)['containers'][0]['env']}
+        self.assertEqual((env['PROJECTION_FEED_PARTITIONS'],env['PROJECTION_FEED_STREAM_LAYOUT'],env['HISTORY_HOT_DAYS']),('6','partition','0'))
+        self.assertEqual(module.podspec(writer)['containers'][0]['image'],module.REGISTRY+'history-feed:test-candidate')
+        ingress=self.doc(self.docs,'NetworkPolicy','clickhouse-clients')['spec']['ingress'][0]['from']
+        self.assertEqual({f['podSelector']['matchLabels']['app'] for f in ingress},{'history-feed','trade-processor'})
+
+    def test_an_unsized_or_unclaimed_or_absent_store_is_refused(self):
+        def pod(docs,kind,name): return module.podspec(self.doc(docs,kind,name))['containers'][0]
+        def unsized(docs): pod(docs,'StatefulSet','clickhouse').pop('resources')
+        def burstable(docs): pod(docs,'Deployment','history-feed')['resources']['limits']['memory']='8Gi'
+        def unclaimed(docs): self.doc(docs,'StatefulSet','clickhouse')['spec']['volumeClaimTemplates'][0]['spec'].pop('storageClassName')
+        def absent(docs): docs.remove(self.doc(docs,'StatefulSet','clickhouse'))
+        def surging(docs): self.doc(docs,'Deployment','history-feed')['spec']['strategy']={'type':'RollingUpdate'}
+        def elsewhere(docs): module.set_env(pod(docs,'Deployment','history-feed'),{'PROJECTION_FEED_PARTITIONS':'4'})
+        module.validate(self.docs)
+        for change,message in ((unsized,'clickhouse is not sized'),(burstable,'history-feed is not sized'),
+                               (unclaimed,'no sized claim'),(absent,'not rendered'),(surging,'one Recreate replica'),
+                               (elsewhere,"trade-processor's streams")):
+            with self.assertRaisesRegex(AssertionError,message): module.validate(self.broken(change))
+
+    def test_the_store_runs_only_the_locked_amd64_digest(self):
+        published={'images':{}}
+        for d in self.docs:
+            for c in (module.podspec(d) or {}).get('containers',[])+(module.podspec(d) or {}).get('initContainers',[]):
+                if c['image'].startswith(module.REGISTRY):
+                    name=c['image'][len(module.REGISTRY):].split(':')[0]; ref=module.REGISTRY+name+'@sha256:'+'b'*64
+                    published['images'][name]={'reference':ref,'registryMetadata':{'image_summary':{'fully_qualified_digest':ref}}}
+        lock=json.loads(Path(__file__).with_name('public-image-lock.json').read_text())
+        docs=copy.deepcopy(self.docs); module.pin_images(docs,published,lock)
+        self.assertEqual(module.podspec(self.doc(docs,'StatefulSet','clickhouse'))['containers'][0]['image'],
+                         'clickhouse/clickhouse-server@sha256:4ff0d6c199a9ebb906af75ae406496e8a96edd0187afdc16d51c0fb77ffca588')
+        lock.pop('clickhouse/clickhouse-server:25.8')
+        with self.assertRaisesRegex(AssertionError,'clickhouse/clickhouse-server:25.8 has no locked digest'):
+            module.pin_images(copy.deepcopy(self.docs),published,lock)
+
+    def test_hot_days_put_the_cold_volume_on_gcs(self):
+        c=module.podspec(self.doc(self.tiered,'StatefulSet','clickhouse'))['containers'][0]
+        env={e['name']:e for e in c['env']}
+        self.assertEqual(env['HISTORY_COLD_ENDPOINT']['value'],
+                         f'https://storage.googleapis.com/{module.PROJECT}-traderx-history/{module.NAMESPACE}/')
+        self.assertEqual(env['HISTORY_COLD_SECRET']['valueFrom']['secretKeyRef'],{'name':'history-cold-hmac','key':'secret'})
+        self.assertIn({'name':'tiered','mountPath':module.HISTORY_COLD_TIERED,'subPath':'tiered.xml'},c['volumeMounts'])
+        self.assertIn('<tiered>',self.doc(self.tiered,'ConfigMap','clickhouse-tiered')['data']['tiered.xml'])
+        self.assertEqual(self.plan['requiredSecretKeys']['history-cold-hmac'],['access-id','secret'])
+        def untiered(docs):
+            m=module.podspec(self.doc(docs,'StatefulSet','clickhouse'))['containers'][0]['volumeMounts']
+            m[:]=[x for x in m if x['name']!='tiered']
+        with self.assertRaisesRegex(AssertionError,'without the tiered policy'): module.validate(self.broken(untiered,self.tiered))
 
 if __name__=='__main__': unittest.main()

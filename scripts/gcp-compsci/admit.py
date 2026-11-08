@@ -32,7 +32,8 @@ REVIEWED_IMAGE_COMMIT=POPULATION['imageSourceCommit']
 EXCEPTIONS=population.exceptions(POPULATION)
 # The admitted CompSci population, defined once (prepare-admission.py and admission-controls.py read it).
 # Promtail (c8c8ac31) is the ninth upstream image and the 24th container slot; each exception adds an image, not a slot.
-PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 12+len(EXCEPTIONS), 9, 24
+# FR-THT-02 adds history-feed (private) and ClickHouse (upstream), one slot each.
+PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 13+len(EXCEPTIONS), 10, 26
 TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
           'project':'project-compsci-484414','location':'us-east1-b',
           'cluster':'traderx-demo','namespace':'traderx'}

@@ -18,7 +18,7 @@ call(){ echo "$*" >> "$LOG"; }
 sleep(){ :; }
 preflight(){ :; }; require_pools(){ :; }
 pool_ready(){ true; }; sql_ready(){ true; }; ready_replicas(){ true; }; deploy_rolled_out(){ true; }; no_pods(){ true; }; ilb_has_ip(){ true; }; hpa_exists(){ false; }
-pool_autoscaling(){ false; }; row_status_is(){ true; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
+pool_autoscaling(){ false; }; no_rig_instances(){ true; }; vm_status_is(){ true; }
 snapshots_past(){ true; }
 initialize(){ call "initialize $1"; [ "${INIT_FAIL:-}" != "$1" ]; }
 admin_token(){ local n; n=$(( $(cat "$EVIDENCE/.tok" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.tok"; echo "tok$n"; }
@@ -40,9 +40,16 @@ kubectl(){
       n="$*"; n=${n##*spec.nodeName=}; n=${n%% *}; [ "$n" = "${POD_LIST_FAIL:-}" ] && { echo "API unavailable" >&2; return 1; }
       v="GW_ON_$n"; [ -z "${!v:-}" ] || echo "pod/${!v}";;
     *reindex*) [ -n "${REINDEX_FAIL:-}" ] && return 8; expired && return 8; echo "$REINDEX";;
-    *"get sts clickhouse"*) [ -n "${HIST:-}" ];;   # HIST: the history store's per-partition check rows; unset = no store
+    *"orders?status=all"*) cat > "$EVIDENCE/.order-stdin"; echo "$ORDERS";;   # the order read model
+    *"8222/jsz"*) [ -n "${FEED_FAIL:-}" ] && return 1   # FEED: "<stream>:<messages> ..." on NATS, unset = none
+      jq -cn --arg f "${FEED:-}" '{streams: 1, account_details: [{stream_detail: [$f | splits(" ") | select(. != "")
+        | split(":") | {name: .[0], state: {messages: (.[1] | tonumber)}}]}]}';;
+    *"nc localhost 4222"*) echo 'INFO {"server_id":"x"}'; echo 'MSG r 1 40'; echo '{"type":"stream_delete_response","success":true}';;
+    *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ];;   # HIST_ABSENT: no history store rendered
     *"history-feed:18095/health"*) echo '{"ready":true,"lanes":[{"pending":0},{"pending":0}]}';;
-    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7; printf '%b\n' "$HIST";;
+    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
+      t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
+      printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22; echo "$ACCT";;
     *"get configmap rig-snapshot-base"*) echo "${SNAP_BASE:-}";;
@@ -137,7 +144,8 @@ def acct(p0=(3, 5, 9, 35, 0), p1=(2, 4, 6, 20, 0), resting=(1, 1), orders=True):
     return json.dumps({'scope': 'legacy-unknown', 'partitions': 2, 'trades': t, **({'orders': o} if orders else {})})
 
 
-GOOD['ACCT'] = acct()   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
+GOOD['ACCT'] = acct()
+GOOD['ORDERS'] = '[{"id":"om-7","status":"CANCELED"}]'   # the smoke order (NEW 7), cancelled, in the order read model   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
 
 
 def run(body, **env):
@@ -160,11 +168,33 @@ class Up(unittest.TestCase):
         rc, out, calls = run('rig_up')
         self.assertEqual(rc, 0, out)
         order = [first(calls, p) for p in (r'scale deploy/cluster-gateway --replicas=0', r'clusters resize .*engine-pool',
+                                           r'clusters resize .*history-pool --num-nodes 1',
                                            r'scale statefulset/order-matcher-cluster --replicas=3', r'create configmap rig-gate',
                                            SCALE_UP, r'networkInterfaces\[0\]\.networkIP', r'web-front-end-console')]
         self.assertNotIn(None, order, out)
         self.assertEqual(order, sorted(order), out)
         self.assertIn('G4 ok: equals the shutdown baseline', out)
+        self.assertIn('ok: sts/clickhouse Ready (the history store, FR-THT-02)', out)   # FR-THT-02: part of readiness
+        self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
+
+    # FR-PRG-04 (production 2026-11-07): ORDER_FEED_PERSIST=false never writes SQL orderbook, so the smoke waited for a row
+    # that cannot exist and refused after a clean New/Canceled. The effect end is trade-processor's order read model.
+    def test_the_smoke_reads_the_cancel_from_the_order_read_model(self):
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('ok: order 7 CANCELED in the order read model (FR-PRG-04)', out)
+        self.assertIsNone(first(calls, r'from orderbook where orderid'))
+        self.assertTrue(any('orders?status=all' in c and 'tok' not in c for c in calls))   # the bearer never on argv
+        for orders, why in (('[{"id":"om-7","status":"NEW"}]', 'still open'), ('[{"id":"om-17","status":"CANCELED"}]', 'another order'),
+                            ('[]', 'absent')):
+            rc, out, _ = run('wait_for(){ "${@:3}" >/dev/null 2>&1 || die "timed out waiting for: $2"; note "ok: $2"; }; rig_up', ORDERS=orders)
+            self.assertEqual(rc, 2, why); self.assertIn('order 7 CANCELED in the order read model', out, why)
+
+    def test_pools_creates_the_history_pool_tainted_for_the_store(self):
+        rc, out, _ = run('DRY=1; rig_pools')
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r'would: gcloud container node-pools create history-pool .*--machine-type c4d-standard-8 '
+                              r'.*--disk-type hyperdisk-balanced .*--node-taints traderx-history=true:NoSchedule')
 
     def refused(self, gate, **env):
         rc, out, calls = run('rig_up', **env)
@@ -229,7 +259,7 @@ class Up(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('members run without bridges (FR-PRG-14)', out)
         rc, out, _ = run('rig_up')   # with bridges the read-model row is still required
-        self.assertIn('CANCELED (the read model, FR-PRG-04)', out)
+        self.assertIn('CANCELED in the order read model (FR-PRG-04)', out)
 
     def test_a_failed_smoke_script_is_refused_with_its_output_kept(self):
         # Production 2026-10-29: the script exited 1 under set -e with no REFUSED line and no evidence.
@@ -332,7 +362,8 @@ class Up(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('booked sides 3..5', out)
         self.assertIn('booked 3 sides', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT=three_to_five))   # base 0
-        rc, out, _ = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)))  # 4 unprojected
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', UNPROJECTED='4-4', ACCT=acct(p1=(1, 2, 2, 4, 0)),  # 4 unprojected
+                         HIST='0\\t4\\t5\\t11\\t39\\t0')   # and never in the history store either
         self.assertEqual(rc, 0, out)
 
     # FR-PRG-22: the dispatch and the snapshot G3 fail closed. Each case has an A/B control in the gate (the guard removed,
@@ -371,10 +402,9 @@ class Up(unittest.TestCase):
         rc, out, _ = run('rig_up', HIST='0\\t3\\t5\\t9\\t35\\t0', UNPROJECTED='2-2 4-4', ACCT=acct(p1=(0, 0, 0, 0, 0)))
         self.assertEqual(rc, 0, out)                     # 2 and 4 recorded unprojected: never reached the stream
 
-    def test_a_rig_without_the_history_store_skips_it_until_production_renders_one(self):
-        rc, out, _ = run('rig_up')
-        self.assertEqual(rc, 0, out)
-        self.assertIn('G3h skipped: no history store', out)
+    def test_a_rig_without_the_history_store_is_refused(self):
+        # FR-THT-02 renders the store; a namespace without sts/clickhouse is a missing system of record, not a skip.
+        self.assertIn('no history store (sts/clickhouse)', self.refused('G3h', HIST_ABSENT='1'))
 
     def test_a_history_store_with_a_deleted_or_duplicated_row_is_refused(self):
         for rows, why in (('0\\t3\\t5\\t9\\t35\\t0\\n1\\t1\\t2\\t2\\t4\\t0', 'holds 4 sides'),           # side 4 deleted
@@ -613,6 +643,25 @@ class FreshEpoch(unittest.TestCase):
         self.assertIsNotNone(first(calls, r'RENAME TABLE trades TO arc_e2_trades, positions TO arc_e2_positions, orderbook TO arc_e2_orderbook, projection_cursor TO arc_e2_projection_cursor"'), out)
         self.assertIsNone(first(calls, 'LIKE arc_e2_projection_accounting'))
 
+    # FR-PRG-29 (production 2026-11-07): the old epoch's capture streams aged out to 0 messages at first_seq 371203273;
+    # the fresh read model's cursor 0 then met a RETENTION_GAP. An empty stream is deleted (trade-processor recreates
+    # it at seq 1) while the trade store is stopped; one still holding the old epoch's messages is refused.
+    def test_a_wiped_epoch_restarts_its_empty_capture_streams_at_seq_1(self):
+        rc, out, calls = run('rig_up', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:0 OTHER:5'})
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'scale deploy/trade-processor --replicas=0', r'select count\(\*\) from trades',
+                                           r'STREAM.DELETE.TRADERX_FEED_P0', r'STREAM.DELETE.TRADERX_FEED_P1',
+                                           r'scale deploy/trade-processor --replicas=1', r'rig-epoch .*state=provisioned')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        self.assertIsNone(first(calls, 'STREAM.DELETE.OTHER'))
+
+    def test_a_capture_stream_still_holding_messages_or_unreadable_is_refused(self):
+        for env, why in (({'FEED': 'TRADERX_FEED_P0:0 TRADERX_FEED_P1:3'}, 'TRADERX_FEED_P1 still holds 3 messages'),
+                         ({'FEED_FAIL': '1'}, 'capture streams cannot be listed')):
+            out, calls = self.refused(why, **{**self.EMPTY, 'EPOCH': 'wiped e2', **env})
+            self.assertIsNone(first(calls, 'STREAM.DELETE'), why)
+            self.assertIsNone(first(calls, 'state=provisioned'), why)
+
     def test_a_table_left_with_rows_after_the_archive_is_refused(self):
         out, calls = self.refused('not empty after the archive', **{**self.EMPTY, 'EPOCH': 'wiped e2', 'LIVE_ROWS': '3'})
         self.assertIsNone(first(calls, 'state=provisioned'))
@@ -713,7 +762,8 @@ class Down(unittest.TestCase):
                                            r'create configmap rig-shutdown-baseline',
                                            r'scale statefulset/order-matcher-cluster --replicas=0',
                                            r'resize .*loadgen-pool --num-nodes 0',
-                                           r'resize .*gateway-pool --num-nodes 0', r'resize .*default-pool --num-nodes 0',
+                                           r'resize .*gateway-pool --num-nodes 0', r'resize .*history-pool --num-nodes 0',
+                                           r'resize .*default-pool --num-nodes 0',
                                            r'instances stop traderx-client-1')]
         self.assertNotIn(None, order, out)
         self.assertEqual(order, sorted(order), out)

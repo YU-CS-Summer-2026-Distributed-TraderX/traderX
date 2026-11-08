@@ -1,6 +1,6 @@
 # ADR-102: Trade history leaves MariaDB for time-series tiers (ClickHouse system of record, KDB-X analytics)
 
-Status: proposed 2026-11-01; first slice implemented 2026-11-06 (local and kind; findings at the end). Nothing in the demo build changes (yaakov:
+Status: proposed 2026-11-01; first slice implemented 2026-11-06 (local and kind; findings at the end); FR-THT-02 (the store in the CompSci render, history-pool, mandatory G3h) 2026-11-07, kind only. Nothing in the demo build changes (yaakov:
 "adding it now would ... ruin an already stable system"). Pack: [trade history tiers](../components/trade-history-tiers/spec.md).
 Relates to ADR-097 (snapshot read model), ADR-098 (history store, ClickHouse feed), FR-DRS-34 (per-partition streams),
 and the bake-off in `docs/engineering/history-store-bakeoff.md`.

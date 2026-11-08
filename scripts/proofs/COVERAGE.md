@@ -1,5 +1,22 @@
 # Proof coverage against the specs
 
+## History store on GKE (2026-11-07, FR-THT-02/03/06, traderx-demo namespace pa-proof-tht, torn down)
+
+`kind-history-store.sh` on the disposable GKE rig (prepare.py's history sizes on c4d Hyperdisk, cold disk on GCS):
+G3h PASS, deleted/doubled side REFUSED, PASS restored, untiered has no policy, tiered moves the old partition to GCS
+with equal rows. Isolation from namespace traderx proven by every pod's TCP/UDP peers before trading.
+
+## History store in the production render on kind (2026-11-07, trade-history-tiers FR-THT-02/03/06, kind traderx-tht2)
+
+`scripts/trade-history-tiers/kind-history-store.sh` on `kind-yu18-rig.py --history[-hot-days 1]` (prepare.py's
+`history_store`): rig.sh's G3h PASS; side deleted / side doubled REFUSED; PASS restored; untiered render has no
+`tiered` policy (negative); tiered render moves an old partition to the S3 cold disk with equal rows. Offline:
+`test_prepare.HistoryStore` (render, unsized/unclaimed/absent/surging/other-streams refused, unlocked digest refused,
+tiered cold disk), `test_rig` (history-pool created/sized/zeroed, sts/clickhouse readiness, absent store refused;
+A/B: with the old skip restored the absent-store test fails). FR-PRG-29 amendment: `test_rig` fresh-epoch capture
+stream reset (empty streams deleted with the trade store stopped, a non-empty or unreadable one refused; A/B), the
+helpers exercised against a real NATS 2.14 container; `test_prepare` refuses a render without TRADE_PROJECTION_MODE.
+
 ## Snapshot-only read model on kind (2026-11-06, trade-history-tiers, kind traderx-tht)
 
 Rows mode retired (FR-THT-01). Rig: kind-yu18-rig.py's render (snapshot, P=4 partition streams), images from

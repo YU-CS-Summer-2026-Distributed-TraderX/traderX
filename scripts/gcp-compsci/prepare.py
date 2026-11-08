@@ -67,7 +67,9 @@ SUPPORT_BUDGETS = {
 # and taint; gateways run one per node, so the gateway count is the node count.
 RIG_POOLS = {'order-matcher-cluster': ('engine-pool', 'traderx-engine'),
              'cluster-gateway': ('gateway-pool', 'traderx-gateway'),
-             'nats': ('nats-pool', 'traderx-nats')}
+             'nats': ('nats-pool', 'traderx-nats'),
+             'clickhouse': ('history-pool', 'traderx-history'),
+             'history-feed': ('history-pool', 'traderx-history')}
 # Generational ZGC as on the bench, but at production's 12 GB heap, not the bench's 6 GB: with MAX_ACTIVE_BOOKS unset the
 # book cap is derived from the heap (ADR-079 §6), and every touched book costs ~7 MB under ZGC. The cap is pinned to the
 # 1,024 production has today (12 GB G1), so no heap change can move an apply-path decision (BOOK_CAPACITY).
@@ -125,9 +127,9 @@ def configure_private_runtime(docs):
                 c['env'].append({'name': 'GATEWAY_DRAIN_DELAY_MS', 'value': GATEWAY_DRAIN_DELAY_MS})
             if name == 'trade-processor':
                 # FR-DRS-25: the projection pulls a durable JetStream consumer, so sides booked while it is
-                # down are replayed on restart instead of lost. Row projection: SQL keeps every trade.
-                c['env'] = [e for e in c.get('env', []) if e['name'] != 'PROJECTION_FEED_MODE']
-                c['env'].append({'name': 'PROJECTION_FEED_MODE', 'value': 'jetstream'})
+                # down are replayed on restart instead of lost. FR-THT-01: the snapshot read model, named, never a
+                # default: 889e47be cut production from rows to snapshot silently when the default flipped (2026-11-07).
+                set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'TRADE_PROJECTION_MODE': 'snapshot'})
             if name == 'cluster-gateway':
                 # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
                 # misses is re-read from TRADERX_FEED rather than lost.
@@ -299,6 +301,92 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
                                          'name': READ_MODEL_DB_SNAPSHOT}}})
 
 
+# FR-THT-02 (ADR-102): the trade history's system of record, ClickHouse fed by history-feed, alone on history-pool
+# (c4d-standard-8, 8 vCPU / 32 GB). ClickHouse kept 1M rows/s on 3.8 cores in the bake-off (ADR-098); the read model is
+# sized for 125K orders/s, ~310K rows/s. Disk: ~131 GiB per full-rate hour (ADR-098), so ~41 GiB/h at 125K/s, and
+# 200Gi holds ~4.9 h of it before FR-THT-03 moves old days to GCS. Hyperdisk Balanced: C4D attaches no PD.
+HISTORY_DIR = ROOT / 'specs/YU18-risk-integration/generation/runtime-overrides/history-feed/k8s'
+HISTORY_STORE = {'cpu': '4', 'memory': '16Gi', 'disk': '200Gi'}
+HISTORY_FEED = {'cpu': '2', 'memory': '4Gi'}
+HISTORY_CLASS = 'clickhouse-hot'
+HISTORY_FEED_ENV = {'PROJECTION_FEED_STREAM': 'TRADERX_FEED', 'PROJECTION_FEED_PARTITIONS': '1',
+                    'PROJECTION_FEED_STREAM_LAYOUT': 'one'}   # both services' defaults
+# FR-THT-03 on GKE: GCS through its XML API with an HMAC key (Secret history-cold-hmac), one prefix per namespace.
+HISTORY_COLD_BUCKET = f'{PROJECT}-traderx-history'
+HISTORY_COLD_TIERED = '/etc/clickhouse-server/config.d/tiered.xml'
+
+
+def history_store(docs, hot_days=0):
+    """FR-THT-02: ClickHouse and history-feed sized and guaranteed, the store on its own retained class, history-feed
+    on exactly trade-processor's streams. FR-THT-03 with hot_days > 0: the `tiered` policy, cold volume on GCS."""
+    tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
+    feed = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])}
+    for doc in docs:
+        name, pod = doc['metadata']['name'], podspec(doc)
+        if doc['kind'] == 'StatefulSet' and name == 'clickhouse':
+            c = pod['containers'][0]
+            c['resources'] = {'requests': {'cpu': HISTORY_STORE['cpu'], 'memory': HISTORY_STORE['memory']},
+                              'limits': {'cpu': HISTORY_STORE['cpu'], 'memory': HISTORY_STORE['memory']}}
+            claim = doc['spec']['volumeClaimTemplates'][0]['spec']
+            claim['storageClassName'] = HISTORY_CLASS
+            claim['resources']['requests']['storage'] = HISTORY_STORE['disk']
+            if hot_days > 0:
+                set_env(c, {'HISTORY_COLD_ENDPOINT': f'https://storage.googleapis.com/{HISTORY_COLD_BUCKET}/{NAMESPACE}/'})
+                secret_env(c, 'HISTORY_COLD_KEY_ID', 'history-cold-hmac', 'access-id')
+                secret_env(c, 'HISTORY_COLD_SECRET', 'history-cold-hmac', 'secret')
+                c.setdefault('volumeMounts', []).append({'name': 'tiered', 'mountPath': HISTORY_COLD_TIERED, 'subPath': 'tiered.xml'})
+                pod.setdefault('volumes', []).append({'name': 'tiered', 'configMap': {'name': 'clickhouse-tiered'}})
+        elif doc['kind'] == 'Deployment' and name == 'history-feed':
+            c = pod['containers'][0]
+            c['resources'] = {'requests': {'cpu': HISTORY_FEED['cpu'], 'memory': HISTORY_FEED['memory']},
+                              'limits': {'cpu': HISTORY_FEED['cpu'], 'memory': HISTORY_FEED['memory']}}
+            set_env(c, {k: feed.get(k) or v for k, v in HISTORY_FEED_ENV.items()} | {'HISTORY_HOT_DAYS': str(hot_days)})
+    if hot_days > 0:
+        docs.append({'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'clickhouse-tiered', 'namespace': NAMESPACE},
+                     'data': {'tiered.xml': (HISTORY_DIR / 'clickhouse-tiered.xml').read_text()}})
+    docs.append({'apiVersion': 'storage.k8s.io/v1', 'kind': 'StorageClass', 'metadata': {'name': HISTORY_CLASS},
+                 'provisioner': 'pd.csi.storage.gke.io',
+                 'parameters': {'type': 'hyperdisk-balanced', 'csi.storage.k8s.io/fstype': 'ext4'},
+                 'volumeBindingMode': 'WaitForFirstConsumer', 'reclaimPolicy': 'Retain', 'allowVolumeExpansion': True})
+    # The store has no user setup (in-cluster only): only its writer, and trade-processor (the rig's G3h reads
+    # through it), reach the port.
+    docs.append({'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+                 'metadata': {'name': 'clickhouse-clients', 'namespace': NAMESPACE},
+                 'spec': {'podSelector': {'matchLabels': {'app': 'clickhouse'}}, 'policyTypes': ['Ingress'],
+                          'ingress': [{'from': [{'podSelector': {'matchLabels': {'app': a}}} for a in ('history-feed', 'trade-processor')],
+                                       'ports': [{'port': 8123}]}]}})
+
+
+def validate_history_store(docs, require):
+    """FR-THT-02: the store and its writer rendered, sized, retained, and on trade-processor's streams."""
+    store = next((d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'clickhouse'), None)
+    writer = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'history-feed'), None)
+    require(store and writer, 'the history store (sts/clickhouse) and its writer (deploy/history-feed) are not rendered (FR-THT-02)')
+    for doc in (store, writer):
+        res = podspec(doc)['containers'][0].get('resources', {})
+        require(res.get('requests') and res.get('requests') == res.get('limits')
+                and all(res['requests'].get(k) for k in ('cpu', 'memory')),
+                f'{doc["metadata"]["name"]} is not sized: guaranteed cpu and memory, requests equal to limits (FR-THT-02)')
+    claim = store['spec']['volumeClaimTemplates'][0]['spec']
+    classes = {d['metadata']['name']: d for d in docs if d['kind'] == 'StorageClass'}
+    require(claim.get('storageClassName') in classes and claim['resources']['requests'].get('storage')
+            and classes[claim['storageClassName']].get('reclaimPolicy') == 'Retain',
+            'the history store has no sized claim on a rendered, retained storage class (FR-THT-02)')
+    require(writer['spec'].get('replicas') == 1 and writer['spec'].get('strategy', {}).get('type') == 'Recreate',
+            'history-feed must be one Recreate replica: its lanes are not fenced against a second writer (ADR-098)')
+    tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
+    env = lambda d: {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])}
+    want = {k: env(tp).get(k) or v for k, v in HISTORY_FEED_ENV.items()}
+    require({k: env(writer).get(k) or v for k, v in HISTORY_FEED_ENV.items()} == want,
+            "history-feed does not read trade-processor's streams and partitions (ADR-098 §2)")
+    if int(env(writer).get('HISTORY_HOT_DAYS') or 0) > 0:
+        c = podspec(store)['containers'][0]
+        names = {e['name'] for e in c.get('env', [])}
+        require({'HISTORY_COLD_ENDPOINT', 'HISTORY_COLD_KEY_ID', 'HISTORY_COLD_SECRET'} <= names
+                and any(m['mountPath'] == HISTORY_COLD_TIERED for m in c.get('volumeMounts', [])),
+                'HISTORY_HOT_DAYS > 0 without the tiered policy and its cold disk on ClickHouse (FR-THT-03)')
+
+
 # FR-PRG-28: NATS's memory, as the pod and NATS itself each see it. NATS runs alone on nats-pool's c3-standard-8: 32 GiB,
 # GKE allocatable ~28.3 GiB (its reservation: 25% of the first 4 GiB, 20% of the next 4, 10% of the next 8, 6% above,
 # plus 100 MiB eviction), less ~2 GiB kept for the node's DaemonSets.
@@ -342,8 +430,10 @@ def validate_read_model(docs, require):
         d = next((d for d in docs if d['kind'] == kind and d['metadata']['name'] == name), None)
         return {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])} if d else {}
     tp, members = env('trade-processor'), env('order-matcher-cluster', 'StatefulSet')
-    if tp.get('TRADE_PROJECTION_MODE') != 'snapshot':
-        return
+    require(tp.get('TRADE_PROJECTION_MODE') == 'snapshot',
+            'trade-processor must name TRADE_PROJECTION_MODE=snapshot: a default changes the read model unseen (FR-THT-01)')
+    if tp.get('PROJECTION_FEED_STREAM_LAYOUT') != 'partition' and tp.get('PROJECTION_FEED_PARTITIONS') is None:
+        return   # the unsized profile (--read-model rows): one stream, FR-PRG-20's sizing does not apply
     require(tp.get('PROJECTION_FEED_MODE') == 'jetstream', 'the trade store reads the stream: PROJECTION_FEED_MODE=jetstream (FR-PRG-20)')
     require(tp.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition',
             'one capture stream holds ~50K orders/s; the profile is sized for one stream per partition (FR-DRS-32, ADR-097)')
@@ -403,6 +493,7 @@ def pin_images(docs, published, public):
                 assert target == item['registryMetadata']['image_summary']['fully_qualified_digest'], 'registry digest mismatch'
                 used.add(name)
             else:
+                assert ref in public, f'public image {ref} has no locked digest in public-image-lock.json'
                 item = public[ref]; target = item['reference']
                 digest = target.split('@',1)[-1]
                 assert any(m['digest']==digest and m.get('platform',{})=={'architecture':'amd64','os':'linux'}
@@ -587,10 +678,12 @@ def validate(docs, declared=None):
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
     validate_nats_memory(docs, require)
     validate_read_model(docs, require)
+    validate_history_store(docs, require)
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
-            fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None):
+            fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None,
+            history_hot_days=0):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -633,6 +726,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
                  'promtail-daemonset']:
         include(base / f'{name}.yaml')
     include(ROOT / 'specs/YU17-otc-rates/generation/kubernetes/frontend-gke/console.yaml')
+    for name in ['clickhouse.yaml', 'history-feed.yaml']:   # FR-THT-02
+        include(HISTORY_DIR / name)
     schema = read(base / 'database-init-configmap.yaml')
     inputs.append({'path':rel(base/'database-init-configmap.yaml'),
                    'sha256':hashlib.sha256((base/'database-init-configmap.yaml').read_bytes()).hexdigest()})
@@ -744,6 +839,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
         throughput_members(docs)
     if read_model == 'snapshot':
         snapshot_read_model(docs, partitions or READ_MODEL_PARTITIONS)
+    history_store(docs, history_hot_days)
     apply_population(docs, declared, tag)
     assert bool(published_path) == bool(public_path), 'both private and public image locks required'
     if published_path:
@@ -824,10 +920,13 @@ if __name__=='__main__':
     p.add_argument('--read-model',choices=['rows','snapshot'],default='rows',
                    help='snapshot = the read model sized for high rates (FR-PRG-20). rows leaves trade-processor on its own'
                         ' default, which since FR-THT-01 is also snapshot (one partition, unsized): production passes snapshot')
+    p.add_argument('--history-hot-days',type=int,default=0,
+                   help='FR-THT-03: date partitions kept on ClickHouse\'s disk; older ones move to GCS (needs Secret history-cold-hmac); 0 = off')
     p.add_argument('--partitions',type=int,help=f'read-model partitions with --read-model snapshot (default {READ_MODEL_PARTITIONS})')
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
-            args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members,args.read_model,args.partitions)
+            args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members,args.read_model,args.partitions,
+            args.history_hot_days)

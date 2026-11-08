@@ -886,5 +886,58 @@
         }
       ]
     }
+  },
+  "clickhouse/clickhouse-server:25.8": {
+    "reference": "clickhouse/clickhouse-server@sha256:4ff0d6c199a9ebb906af75ae406496e8a96edd0187afdc16d51c0fb77ffca588",
+    "manifest": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "manifests": [
+        {
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "digest": "sha256:4ff0d6c199a9ebb906af75ae406496e8a96edd0187afdc16d51c0fb77ffca588",
+          "size": 2374,
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "digest": "sha256:61dee53a0b34659b6b16048fa7f937dcd7b19696e0331a5b24e8f60760bf1fa6",
+          "size": 2374,
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        },
+        {
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "digest": "sha256:5a6763da72d69fef3d80d8b256599cfc7ed4b10b8d8d40b5e5e32624b128c35b",
+          "size": 1112,
+          "annotations": {
+            "vnd.docker.reference.digest": "sha256:4ff0d6c199a9ebb906af75ae406496e8a96edd0187afdc16d51c0fb77ffca588",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          }
+        },
+        {
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "digest": "sha256:9fa0856f5c492b46f7d066ebca6f3b5c9d35e73445c090b7cbd272778d5e705f",
+          "size": 1112,
+          "annotations": {
+            "vnd.docker.reference.digest": "sha256:61dee53a0b34659b6b16048fa7f937dcd7b19696e0331a5b24e8f60760bf1fa6",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "platform": {
+            "architecture": "unknown",
+            "os": "unknown"
+          }
+        }
+      ]
+    }
   }
 }

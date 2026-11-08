@@ -39,7 +39,8 @@ below the rate.
 5. **The queries go through the service**, never straight to ClickHouse: the four paths the bake-off measured, plus
    the per-day CSV export. Every caller value is a ClickHouse bound parameter.
 6. **Opt-in manifests** (`history-feed/k8s/`): applied by `scripts/history-feed/kind-smoke.sh` on kind. Neither the
-   base kustomization, the CompSci render nor GKE includes them.
+   base kustomization, the CompSci render nor GKE includes them. Amended 2026-11-07 (ADR-102, FR-THT-02): the CompSci
+   render includes them, sized on their own `history-pool`; still not in the base kustomization.
 
 ## Consequences
 

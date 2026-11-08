@@ -1,5 +1,6 @@
-# The history store (FR-HST-04, FR-HST-06): one ClickHouse on its own volume. Opt-in: applied by
-# scripts/history-feed/kind-smoke.sh, not part of the base kustomization.
+# The history store (FR-HST-04, FR-HST-06): one ClickHouse on its own volume. Not in the base kustomization: the
+# CompSci render (prepare.py history_store, FR-THT-02) sizes it, puts it on history-pool and its own storage class;
+# scripts/history-feed/kind-smoke.sh and kind-yu18-rig.py --history apply it on kind.
 apiVersion: v1
 kind: Service
 metadata:

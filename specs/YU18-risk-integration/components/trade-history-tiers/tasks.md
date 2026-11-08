@@ -1,6 +1,8 @@
 # Trade history tiers tasks
 
-- [ ] Render `history-feed` + ClickHouse for GKE; `rig.sh up`/`down` and readiness include them (FR-THT-02).
+- [x] Render `history-feed` + ClickHouse for GKE; `rig.sh up`/`down` and readiness include them (FR-THT-02).
+  2026-11-07, local and kind (`kind-history-store.sh` PASS on both renders, G3h controls refused). Left: the GCS
+  bucket + HMAC key, a production build and admission with history-feed, and the GKE bring-up (yaakov's yes).
 - [x] ClickHouse storage policy: hot SSD days, older partitions on a GCS disk; same rows before and after (FR-THT-03, SC-THT-03).
   Local 2026-11-06 (`HistoryTierIT`, S3-protocol disk). GKE: a GCS bucket + HMAC key and the manifests, with FR-THT-02.
 - [ ] Production run writing both SQL `trades` and ClickHouse; per-partition count and hash equal.
@@ -20,13 +22,23 @@
   (2026-11-06): WINDOW 16 (own fresh trades; verify on kind), ACCOUNTING 2 (high-water guard -> `projection_accounting`),
   RI06 16 (projection recovery / managed runs), ROWS 16 (rows-mode writer and features, deleted with it).
 - [x] Restore gate checks the history store per partition (FR-THT-06, SC-THT-04 with delete/duplicate mutations): G3h,
-  real-ClickHouse check script + offline gate tests. Opt-in until FR-THT-02.
+  real-ClickHouse check script + offline gate tests. Mandatory since FR-THT-02 (2026-11-07).
 - [x] Retire rows mode (FR-THT-01, 2026-11-06): trade-processor's trade feed is jetstream + snapshot only (the
   default; anything else refuses to start, FeedBarrierTest), the core and jetstream-rows feed paths, run transitions
   and RI06 recovery are gone, `POST /tradeservice/order` answers 410, the rig's rows G3 and `snapshot-base` are gone
   (an absent base is 0). Kept: settlement on the window (YU05's sweep, current state) and the unreachable row writer
   for YU05/YU16's inherited tests (`ponytail:` note in TradeService). Inventory 40: KEEP 13, WINDOW 22, ROWS-PROOF 4,
   ROWS 1.
+- [x] Production findings 2026-11-07 (coordinator): every render names `TRADE_PROJECTION_MODE=snapshot`
+  (`test_prepare`, refused when absent); a fresh epoch's `up` deletes its empty capture streams and refuses a
+  non-empty one (`test_rig`, A/B; `feed_streams`/`nats_api` exercised on a real NATS 2.14). FR-PRG-29, ADR-101.
+  The smoke reads its cancel from trade-processor's order read model, not SQL `orderbook` (FR-PRG-04, `test_rig`:
+  CANCELED passes; still NEW, another order or absent refuses; no orderbook query; the bearer stays off argv).
+- [x] FR-THT-02/03 on GKE (yaakov: "Yes, run on GKE", 2026-11-07; spec "GKE evidence"): a disposable namespace `pa-proof-tht` beside
+  production on its own pools (`tht-pool` e2-standard-8, `tht-history-pool` c4d-standard-8). `kind-yu18-rig.py
+  --registry/--pool/--ns` (missing-proofs' disposable-rig patch, `.traderx.svc` rewritten) plus `--history-pool` and
+  `--cold-bucket`: production's history sizes and Hyperdisk class (as `tht-clickhouse-hot`, reclaim Delete), the
+  locked digests, the cold disk on `gs://<bucket>/<ns>/`.
 - [ ] KDB-X feed lane: exactly-once write-down, account-sorted `p#` HDB, heap-guarded paged q (FR-THT-04).
 - [x] Check KDB-X Community object storage on `gs://`; record the answer in ADR-102 (yes, with `objstor` init).
 - [ ] q gateway over several HDB processes; `par.txt` over several disks.

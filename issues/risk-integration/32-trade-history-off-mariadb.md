@@ -1,6 +1,7 @@
 # RI32 — Move trade history off MariaDB into time-series tiers (after the conference)
 
-Updated: 2026-11-06. Status: open, first slice landed locally (see "State, 2026-11-06"); nothing in production. Owner: yaakov + coordinator. Spec: `specs/YU18-risk-integration/components/trade-history-tiers/`
+Updated: 2026-11-07. Status: open, first slice landed locally (see "State, 2026-11-06"), FR-THT-02's render and rig
+steps on kind 2026-11-07; nothing in production. Owner: yaakov + coordinator. Spec: `specs/YU18-risk-integration/components/trade-history-tiers/`
 (FR-THT-01..07), decision ADR-102.
 
 Problem: every trade side is a MariaDB row. That append-only table is the read model's write ceiling (89.7M sides
@@ -15,6 +16,18 @@ Acceptance: the spec's SC-THT-01..04: 400K orders/s with MariaDB writing current
 queryable in under 1 s cold per account in both stores; a GCS-moved partition answers identically; the restore gate
 checks the history store and refuses a deleted or duplicated row. Every SQL `trades` reader moved before the table
 stops being written. Production steps only through admission and a yaakov-confirmed bring-up.
+
+## State, 2026-11-07
+
+FR-THT-02 (yaakov: "Yes, start it"): prepare.py renders ClickHouse + history-feed on `history-pool`, the ClickHouse
+digest is locked, history-feed joins the private build and admission counts, rig.sh creates/sizes/zeroes the pool and
+G3h is mandatory. Kind traderx-tht2: G3h PASS, deleted and duplicated side REFUSED, FR-THT-03 move to an S3 cold disk
+with equal rows. GKE, same evening, disposable namespace pa-proof-tht on tht-* pools: the same PASS and refusals, the
+cold partition on real GCS; torn down to zero (about $0.45). Not yet: a production bucket + HMAC key, production
+build/admission, production bring-up. Cost while up: history-pool
+1 × c4d-standard-8 (≈ $0.38/h on-demand, the rate recorded in docs/deployment/traderx-demo-rollout-20261026.md); the
+200Gi claim and the node's 100 GB boot disk are storage, not priced here. FR-THT-08 still open: a fresh epoch over a
+non-empty store is refused by G3h.
 
 ## State, 2026-11-06
 

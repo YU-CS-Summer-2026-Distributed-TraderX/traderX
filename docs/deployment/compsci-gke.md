@@ -122,8 +122,8 @@ No autoscaling, spot nodes, performance tuning or full-HA gateway claim.
 The member NetworkPolicy (ADR-079 §4) is enforced only on a cluster created with Dataplane V2
 (`gcloud container clusters create ... --enable-dataplane-v2`); it cannot be enabled on an
 existing cluster, and on a cluster without it the policy is applied and inert, as measured on
-the hxb rig (EOD-RISK.md). Whether `traderx-demo` was created with it has not been verified
-from this checkout. Create the next production cluster with the flag, and after the members
+the hxb rig (EOD-RISK.md). `traderx-demo` was not (read 2026-11-07: no datapath provider set, network policy
+disabled), so every NetworkPolicy on it, ClickHouse's `clickhouse-clients` included, is applied and inert. Create the next production cluster with the flag, and after the members
 are Running run `scripts/proofs/yu18-networkpolicy-enforced.sh` (positive and negative control
 through the real Aeron ingress); until it passes, `CLUSTER_CLIENT_SECRET` is the only control
 that closes the ingress.
@@ -146,6 +146,22 @@ gcloud container node-pools create engine-pool \
 The operator created the pool; all four nodes were API-verified Ready on October 11.
 Nominal resources are 28 vCPUs / 109 GiB across four nodes. The engine pool remains
 tainted and the member manifest requires separate hostnames.
+
+`system-pool` (created 2026-11-07 on yaakov's "set one up"): one untainted `e2-standard-2`, pd-standard 30 GB,
+service account `traderx-gke-nodes`, scope cloud-platform, workload metadata `GKE_METADATA`, label
+`traderx.dev/pool=system`, kept at **0 nodes**. It exists because every other pool is tainted: with `default-pool` at 0,
+kube-dns and konnectivity-agent have no node, so pods cannot resolve names and `kubectl logs`, `exec` and `port-forward`
+fail with "No agent available" (found by the trade-history-tiers GKE proof, 2026-11-07). A side rig beside production
+(a disposable namespace on its own pools) resizes it to 1 before it applies anything:
+
+```bash
+gcloud container clusters resize traderx-demo --node-pool system-pool --num-nodes 1 \
+  --zone us-east1-b --project project-compsci-484414 --quiet
+```
+
+and back to `--num-nodes 0` at its teardown, and before Shabbos in any case. It is not in `rig.sh`'s `RIG_POOLS`, so
+`rig.sh up` does not size it and `rig.sh down` leaves it alone: check it separately when proving zero. System pods that
+moved onto it stay there until it is back at 0, when they return to `default-pool` (or go Pending if that is at 0 too).
 
 The renderer declares initial CPU/memory envelopes for the eleven previously
 unbounded support workloads. These are cold-demo startup budgets, not production

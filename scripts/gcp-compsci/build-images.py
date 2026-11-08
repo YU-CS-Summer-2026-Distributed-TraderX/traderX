@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = 'us-east1-docker.pkg.dev/project-compsci-484414/traderx-demo'
 COMPONENTS = ['order-matcher', 'trade-processor', 'position-service',
               'execution-algo-engine', 'trade-service', 'account-service',
-              'people-service', 'price-publisher', 'reference-data', 'web-front-end', 'api-explorer']
+              'people-service', 'price-publisher', 'reference-data', 'web-front-end', 'api-explorer',
+              'history-feed']   # FR-THT-02
 
 
 def run(command, **kwargs):
@@ -50,7 +51,9 @@ def build(output, tag, exception=None):
             if component == 'web-front-end': context = context / 'angular'
             print(f'[build] {component}', flush=True)
             if (context / 'gradlew').exists():
-                run(['./gradlew', '--no-daemon', '--max-workers=2', '-q', 'clean', 'bootJar'], cwd=context)
+                # history-feed is a plain runnable jar, not Spring Boot
+                run(['./gradlew', '--no-daemon', '--max-workers=2', '-q', 'clean',
+                     'jar' if component == 'history-feed' else 'bootJar'], cwd=context)
             dockerfile = ('Dockerfile.cluster' if component == 'order-matcher' else
                           'Dockerfile' if (context / 'Dockerfile').exists() else 'Dockerfile.compose')
             reference = f'{REGISTRY}/{name}:{tag}'
