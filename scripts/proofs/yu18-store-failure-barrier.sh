@@ -31,9 +31,9 @@ trap 'restore; _lib_yu18_cleanup' EXIT
 trades_all() { local m s=""; for ((m=0; m<MEMBERS; m++)); do s+="$(mget "${m}" /health | jget 'd.get("trades")') "; done; echo "${s% }"; }
 place() { local c; c="$(code -X POST "${GW}/orders" "${J[@]}" -d "{\"accountId\":$1,\"ticker\":\"${T}\",\"side\":\"$2\",\"quantity\":1,\"limitPrice\":${PX}}")"
   [[ "${c}" == 200 && "$(body)" != *REJECTED* ]] || fail "$2 $1 not accepted: ${c} $(body)"; }
-sides() { sql "SELECT COUNT(*) FROM trades WHERE security='${T}'"; }
+sides() { hist "SELECT count() FROM trades WHERE security='${T}'"; }
 pos() { sql "SELECT COALESCE(SUM(quantity),0) FROM positions WHERE security='${T}' AND accountid=$1"; }
-signed_sum() { sql "SELECT COALESCE(SUM(CASE WHEN side='Buy' THEN quantity ELSE -quantity END),0) FROM trades WHERE security='${T}' AND accountid=$1"; }
+signed_sum() { hist "SELECT sum(if(side='B', toInt64(qty), -toInt64(qty))) FROM trades WHERE security='${T}' AND account=$1"; }
 feed() { curl -s -m 10 "${TP}/v2/projection-feed"; }
 
 step "0. seed ${T} @${PX}"
@@ -55,8 +55,8 @@ for ((i=0; i<N; i++)); do place "${ACCT_B}" Sell; place "${ACCT_A}" Buy; done
 for i in $(seq 1 30); do T1="$(trades_all)"; read -r -a a <<<"${T0}"; read -r -a b <<<"${T1}"; [[ $(( b[0] - a[0] )) -ge $((2 * N)) ]] && break; sleep 1; done
 for ((m=0; m<MEMBERS; m++)); do [[ $(( b[m] - a[m] )) == $((2 * N)) ]] || fail "member ${m} trades ${a[m]} -> ${b[m]}, want +$((2 * N)) (another writer makes this inconclusive)"; done
 sleep 5
-[[ "$(pos "${ACCT_A}")" == 0 && "$(sides)" == 0 ]] || fail "SQL moved while the store is read only (position $(pos "${ACCT_A}"), rows $(sides)): the outage did not stop writes"
-ok "members booked $((2 * N)) sides; SQL position and rows still 0 while down"
+[[ "$(pos "${ACCT_A}")" == 0 ]] || fail "SQL moved while the store is read only (position $(pos "${ACCT_A}")): the outage did not stop writes"
+ok "members booked $((2 * N)) sides; SQL position still 0 while down (the history store, not on MariaDB, holds $(sides))"
 
 step "3. the store returns: every side lands exactly once"
 restore

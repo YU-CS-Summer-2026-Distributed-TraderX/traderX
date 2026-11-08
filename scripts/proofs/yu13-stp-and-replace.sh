@@ -120,7 +120,8 @@ SQL_DB="${SQL_DB:-eod-price-db}"
 SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
 sql() { ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
-rows() { sql "SELECT COUNT(*) FROM trades WHERE security='${TICKER}';"; }
+hist() { ${K} exec sts/clickhouse -c clickhouse -- clickhouse-client -q "$1" 2>/dev/null; }   # the history store (ADR-102 cutover)
+rows() { hist "SELECT count() FROM trades WHERE security='${TICKER}'"; }
 
 members() { ${K} get pods -l app=order-matcher-cluster -o name | sed 's|pod/||' | sort; }
 

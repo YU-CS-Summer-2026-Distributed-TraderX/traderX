@@ -15,7 +15,6 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -36,7 +35,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * (traderx-dsq, 2026-10-27): 8 deadlocks in a minute between partitions' blotter-window writes, which own
  * disjoint accounts. It reproduces here under REPEATABLE READ and under READ COMMITTED alike; the fix is one
  * lock row for every partition's snapshot. Two writers on interleaved accounts (partition = account mod 2),
- * on the SHIPPED schema.
+ * on the SHIPPED schema. Since the ADR-102 cutover (2026-11-08) a snapshot writes positions and only the refused
+ * (Rejected) sides to SQL {@code trades}; the lock still serializes them.
  */
 @Tag("integration")
 @Testcontainers
@@ -45,7 +45,7 @@ class TradeSnapshotStoreConcurrencyIT {
       "mariadb@sha256:f2f5e00999bd335343e09091e27e39c9386eb1822efcd0e0bac40b0003fa47e3")
       .withCommand("--lower-case-table-names=1");
   private static final Path CONFIGMAP = Path.of("../kubernetes-runtime/manifests/base/database-init-configmap.yaml");
-  private static final int ACCOUNTS = 40, ROUNDS = 150, WINDOW = 5;
+  private static final int ACCOUNTS = 40, ROUNDS = 150;
 
   @BeforeAll static void schema() throws Exception {
     execute(sql("001-initialSchema.sql"));
@@ -78,32 +78,30 @@ class TradeSnapshotStoreConcurrencyIT {
     start.countDown();
     for (Thread t : writers) { t.join(); }
     assertThat(failures).as("snapshot writes that failed (deadlock or lock wait)").isEmpty();
-    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trades WHERE accountid BETWEEN 1 AND ?", Integer.class, ACCOUNTS))
-        .as("each account holds exactly its last window").isEqualTo(ACCOUNTS * WINDOW);   // the shipped schema seeds other accounts' rows
+    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trades WHERE accountid BETWEEN 1 AND ? AND state='Rejected'", Integer.class, ACCOUNTS))
+        .as("every refused side, once").isEqualTo(ACCOUNTS * ROUNDS);   // the shipped schema seeds other accounts' rows
+    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM positions WHERE accountid BETWEEN 1 AND ? AND quantity=?", Integer.class, ACCOUNTS, ROUNDS - 1))
+        .as("each position at its last round").isEqualTo(ACCOUNTS);
   }
 
-  /** One snapshot of a partition: every one of its accounts moved, each window replaced by new fills. */
+  /** One snapshot of a partition: every one of its accounts moved, and one side of each refused. */
   private static TradeView.Cut cut(int partition, int round) {
     List<Position> positions = new ArrayList<>();
-    Map<Integer, List<Trade>> blotters = new HashMap<>();
+    List<Trade> rejected = new ArrayList<>();
     for (int a = 1; a <= ACCOUNTS; a++) {
       if (a % 2 != partition) { continue; }
       Position p = new Position();
       p.setProjectionScope(RunRegistry.UNKNOWN); p.setAccountId(a); p.setSecurity("AAPL");
       p.setQuantity(round); p.setAverageCostBasis(new BigDecimal("10.000000")); p.setUpdated(new Date());
       positions.add(p);
-      List<Trade> window = new ArrayList<>();
-      for (int i = 0; i < WINDOW; i++) {
-        Trade t = new Trade();
-        t.setId(a + "-" + round + "-" + i + "-B"); t.setAccountId(a); t.setSecurity("AAPL"); t.setSide(TradeSide.Buy);
-        t.setState(TradeState.Processing); t.setQuantity(1); t.setPrice(new BigDecimal("10.000000"));
-        t.setCreated(new Date()); t.setUpdated(new Date()); t.setSettlementDate(new Date());
-        t.setProjectionScope(RunRegistry.UNKNOWN);
-        window.add(t);
-      }
-      blotters.put(a, window);
+      Trade t = new Trade();
+      t.setId(a + "-" + round + "-B"); t.setAccountId(a); t.setSecurity("UST-20280630"); t.setSide(TradeSide.Buy);
+      t.setState(TradeState.Rejected); t.setRejectionReason("Bond reference metadata is unavailable");
+      t.setQuantity(1); t.setPrice(new BigDecimal("10.000000")); t.setCreated(new Date()); t.setUpdated(new Date());
+      t.setProjectionScope(RunRegistry.UNKNOWN);
+      rejected.add(t);
     }
-    return new TradeView.Cut(positions, blotters, Map.of(), round + 1L, round + 1L, 0, TradeView.Accounting.EMPTY);
+    return new TradeView.Cut(positions, rejected, Map.of(), round + 1L, round + 1L, 0, TradeView.Accounting.EMPTY);
   }
 
   private static void execute(String sql) throws Exception {

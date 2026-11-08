@@ -65,7 +65,8 @@ SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
 sql() { vlog "      SQL: $1"; ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- sh -c 'mariadb -u"${MARIADB_USER:-traderx}" -p"${MARIADB_PASSWORD:-traderx}" traderx -sN -e "$1"' sh "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
-rows() { sql "SELECT COUNT(*) FROM trades WHERE security='${TICKER}';"; }
+hist() { ${K} exec sts/clickhouse -c clickhouse -- clickhouse-client -q "$1" 2>/dev/null; }   # the history store (ADR-102 cutover)
+rows() { hist "SELECT count() FROM trades WHERE security='${TICKER}'"; }
 
 order() { # order <account> <side> <clientOrderId> -> "<http> <body>"
   local out body
@@ -151,7 +152,7 @@ echo "[ok] fresh key booked orderRef ${REF2} and added 2 rows (total ${AFTER_NEW
 echo "[ok] so step 3's suppression was the KEY, not an inert book"
 
 step "5. the SQL rows"
-sql "SELECT id, accountid, security, side, quantity, price FROM trades WHERE security='${TICKER}' ORDER BY id;" | sed 's/^/  /'
+hist "SELECT concat(id_prefix, toString(trade_seq), '-', side), account, security, side, qty, px FROM trades WHERE security='${TICKER}' ORDER BY seq FORMAT TSV" | sed 's/^/  /'
 
 echo
 echo "=== PASS — a resent client order id is answered with the original booking, asserted in SQL ==="

@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -33,6 +34,8 @@ public class SettlementService {
     private final long budgetNanos;
     private final Timer batchTimer;
     private final LongAdder sweptCount = new LongAdder();
+    // ADR-102 cutover: booked sides have no SQL row; a forced settlement reads the side from the history store.
+    @Autowired(required = false) HistoryStore history;
 
     public SettlementService(JdbcTemplate jdbc, ProjectionWriteLock lock,
             PlatformTransactionManager manager, MeterRegistry meters,
@@ -92,13 +95,17 @@ public class SettlementService {
                 + "WHERE STATE='Processing' AND SETTLEMENTDATE<=? AND ID IN (" + placeholders + ")", args);
     }
 
-    /** Preserve the operator override: any existing non-Settled state can settle immediately. */
+    /**
+     * Preserve the operator override: any existing non-Settled state can settle immediately. Since the ADR-102
+     * cutover a booked side has no SQL row: it is read from the history store and recorded as a Settled exception
+     * row in the active scope, which the blotter shows in place of the history row.
+     */
     public ForceResult forceSettle(String tradeId) {
         return forceTransactions.execute(status -> {
             lock.acquire();
             List<String> states = jdbc.queryForList(
                     "SELECT STATE FROM TRADES WHERE ID=? FOR UPDATE", String.class, tradeId);
-            if (states.isEmpty()) return ForceResult.NOT_FOUND;
+            if (states.isEmpty()) return recordForced(tradeId) ? ForceResult.SETTLED : ForceResult.NOT_FOUND;
             if ("Settled".equals(states.getFirst())) return ForceResult.ALREADY_SETTLED;
             Timestamp now = new Timestamp(System.currentTimeMillis());
             int changed = jdbc.update("UPDATE TRADES SET STATE='Settled', SETTLEMENTDATE=?, UPDATED=? WHERE ID=?",
@@ -114,6 +121,25 @@ public class SettlementService {
             });
             return ForceResult.SETTLED;
         });
+    }
+
+    private boolean recordForced(String tradeId) {
+        HistoryStore.Side s = history == null ? null : history.side(tradeId);
+        if (s == null) return false;
+        List<String> scope = jdbc.queryForList("SELECT projection_scope FROM projection_active WHERE singleton_id=1", String.class);
+        if (scope.isEmpty()) return false;
+        Timestamp now = new Timestamp(System.currentTimeMillis());
+        jdbc.update("INSERT INTO TRADES(ID,ACCOUNTID,SECURITY,SIDE,STATE,QUANTITY,PRICE,CREATED,UPDATED,SETTLEMENTDATE,"
+                + "SOURCEORDERID,PROJECTIONSCOPE) VALUES (?,?,?,?,'Settled',?,?,?,?,?,?,?)", tradeId, s.account(), s.security(),
+                s.side(), s.quantity(), new java.math.BigDecimal(s.price()), new Timestamp(s.createdMillis()), now, now,
+                s.sourceOrderId(), scope.get(0));
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() {
+                sweptCount.increment();
+                log.info("Settlement forced by operator override (history side): id={}", tradeId);
+            }
+        });
+        return true;
     }
 
     public long sweptCount() { return sweptCount.sum(); }

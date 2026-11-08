@@ -52,6 +52,14 @@
 - [ ] KDB-X feed lane: exactly-once write-down, account-sorted `p#` HDB, heap-guarded paged q (FR-THT-04).
 - [x] Check KDB-X Community object storage on `gs://`; record the answer in ADR-102 (yes, with `objstor` init).
 - [ ] q gateway over several HDB processes; `par.txt` over several disks.
+- [x] ADR-102 cutover (2026-11-08, kind): no booked side in SQL trades (FR-THT-01 revised; exceptions only: Rejected,
+  forced Settled); the blotter on the history store with exact ids and the T+N state (FR-THT-09); forced settlement
+  of a booked side from the store; prepare.py admits position-service to ClickHouse and pins T+N parity;
+  kind-yu18-rig.py `--history` renders position-service, `--eod` price-publisher and risk-extract; readers repointed
+  to the store (`hist` in lib-yu18.sh): yu18-projection-effect-end, -market-order, -store-failure-barrier,
+  -fix-fill-feed, -legacy-trade-bearer, -cdm-instruments, yu13-stp-and-replace, yu16-bond-position,
+  ri07/order-types-live. Proof: kind traderx-cut (ADR-102 "Cutover"). Not on GKE or production: needs the
+  trade-processor, position-service and history-feed images rolled out (a production write).
 - [ ] 1.5B trade sides scale proof (SC-THT-01, SC-THT-02); rebuild-from-cursor-0 proof (FR-THT-07).
 - [x] FR-THT-08: the fresh-epoch archive moves the history tables too (`archive_read_model`, 2026-11-08; with it,
   a retried archive restarts trade-processor and history-feed at their recorded counts, FR-PRG-29). `test_rig`

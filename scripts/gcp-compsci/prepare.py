@@ -321,6 +321,7 @@ HISTORY_FEED_ENV = {'PROJECTION_FEED_STREAM': 'TRADERX_FEED', 'PROJECTION_FEED_P
 # FR-THT-03 on GKE: GCS through its XML API with an HMAC key (Secret history-cold-hmac), one prefix per namespace.
 HISTORY_COLD_BUCKET = f'{PROJECT}-traderx-history'
 HISTORY_COLD_TIERED = '/etc/clickhouse-server/config.d/tiered.xml'
+HISTORY_CLIENTS = ('history-feed', 'trade-processor', 'position-service')
 
 
 def history_store(docs, hot_days=0):
@@ -348,6 +349,9 @@ def history_store(docs, hot_days=0):
             c['resources'] = {'requests': {'cpu': HISTORY_FEED['cpu'], 'memory': HISTORY_FEED['memory']},
                               'limits': {'cpu': HISTORY_FEED['cpu'], 'memory': HISTORY_FEED['memory']}}
             set_env(c, {k: feed.get(k) or v for k, v in HISTORY_FEED_ENV.items()} | {'HISTORY_HOT_DAYS': str(hot_days)})
+        elif doc['kind'] == 'Deployment' and name == 'position-service' and feed.get('SETTLEMENT_T_PLUS_DAYS'):
+            # ADR-102 cutover: the blotter derives a history row's state with trade-processor's own T+N.
+            set_env(pod['containers'][0], {'SETTLEMENT_T_PLUS_DAYS': feed['SETTLEMENT_T_PLUS_DAYS']})
     if hot_days > 0:
         docs.append({'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'clickhouse-tiered', 'namespace': NAMESPACE},
                      'data': {'tiered.xml': (HISTORY_DIR / 'clickhouse-tiered.xml').read_text()}})
@@ -355,12 +359,12 @@ def history_store(docs, hot_days=0):
                  'provisioner': 'pd.csi.storage.gke.io',
                  'parameters': {'type': 'hyperdisk-balanced', 'csi.storage.k8s.io/fstype': 'ext4'},
                  'volumeBindingMode': 'WaitForFirstConsumer', 'reclaimPolicy': 'Retain', 'allowVolumeExpansion': True})
-    # The store has no user setup (in-cluster only): only its writer, and trade-processor (the rig's G3h reads
-    # through it), reach the port.
+    # The store has no user setup (in-cluster only): only its writer, trade-processor (the rig's G3h reads through it;
+    # a forced settlement reads a side) and position-service (the blotter, ADR-102 cutover) reach the port.
     docs.append({'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
                  'metadata': {'name': 'clickhouse-clients', 'namespace': NAMESPACE},
                  'spec': {'podSelector': {'matchLabels': {'app': 'clickhouse'}}, 'policyTypes': ['Ingress'],
-                          'ingress': [{'from': [{'podSelector': {'matchLabels': {'app': a}}} for a in ('history-feed', 'trade-processor')],
+                          'ingress': [{'from': [{'podSelector': {'matchLabels': {'app': a}}} for a in HISTORY_CLIENTS],
                                        'ports': [{'port': 8123}]}]}})
 
 
@@ -386,6 +390,13 @@ def validate_history_store(docs, require):
     want = {k: env(tp).get(k) or v for k, v in HISTORY_FEED_ENV.items()}
     require({k: env(writer).get(k) or v for k, v in HISTORY_FEED_ENV.items()} == want,
             "history-feed does not read trade-processor's streams and partitions (ADR-098 §2)")
+    # ADR-102 cutover: the blotter reads the store, with trade-processor's settlement rule.
+    pol = next((d for d in docs if d['kind'] == 'NetworkPolicy' and d['metadata']['name'] == 'clickhouse-clients'), None)
+    admitted = {f['podSelector']['matchLabels']['app'] for f in (pol or {}).get('spec', {}).get('ingress', [{}])[0].get('from', [])}
+    require(set(HISTORY_CLIENTS) <= admitted, f'clickhouse-clients does not admit {sorted(set(HISTORY_CLIENTS) - admitted)} (ADR-102)')
+    ps = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'position-service'), None)
+    require(ps is None or (env(ps).get('SETTLEMENT_T_PLUS_DAYS') or '1') == (env(tp).get('SETTLEMENT_T_PLUS_DAYS') or '1'),
+            "position-service's SETTLEMENT_T_PLUS_DAYS differs from trade-processor's: the blotter would show another settlement (ADR-102)")
     if int(env(writer).get('HISTORY_HOT_DAYS') or 0) > 0:
         c = podspec(store)['containers'][0]
         names = {e['name'] for e in c.get('env', [])}

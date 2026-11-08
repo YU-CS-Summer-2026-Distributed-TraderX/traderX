@@ -8,7 +8,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -20,9 +19,10 @@ import java.util.function.BiFunction;
 /**
  * YU18 downstream redesign, the trade store (docs/engineering/downstream-at-400k.md §7): the trade
  * projection kept in MEMORY and written to SQL as periodic SNAPSHOTS, so the database sees a bounded
- * rate (dirty positions plus each dirty account's blotter window, every few seconds) instead of one
- * row per trade side. The replayable stream is the system of record for the trades themselves; SQL
- * keeps what its readers need: every position, and the last {@code blotterDepth} fills per account.
+ * rate (dirty positions, every few seconds) instead of one row per trade side. The trades themselves are
+ * the history store's (ADR-102 cutover, 2026-11-08: ClickHouse is their system of record, the blotter reads
+ * it); SQL keeps every position and, as exceptions, the sides booking refused ({@code Rejected}), which the
+ * stream cannot show.
  *
  * <p>Exact across a restart: a snapshot and its stream cursor are written in one transaction, so a
  * restart loads the snapshot and replays the stream from the cursor. A fill is applied with the SAME
@@ -31,10 +31,10 @@ import java.util.function.BiFunction;
  * <p>ponytail: one lock around apply and cut; the cut copies only what changed since the last one.
  */
 public final class TradeView {
-  /** What one snapshot writes: the changed positions, the changed accounts' windows, and the cursor. */
-  public record Cut(List<Position> positions, Map<Integer, List<Trade>> blotters, Map<LocalDate, Long> days,
+  /** What one snapshot writes: the changed positions, the sides refused since the last cut, and the cursor. */
+  public record Cut(List<Position> positions, List<Trade> rejected, Map<LocalDate, Long> days,
                     long streamSeq, long consensusSeq, long applied, Accounting accounting) {
-    public boolean isEmpty() { return positions.isEmpty() && blotters.isEmpty(); }
+    public boolean isEmpty() { return positions.isEmpty() && rejected.isEmpty(); }
   }
 
   /**
@@ -48,11 +48,9 @@ public final class TradeView {
     public static final Accounting EMPTY = new Accounting(0, 0, 0, 0, 0, "");
   }
 
-  private final int blotterDepth;
   private final Map<String, Position> positions = new HashMap<>();
-  private final Map<Integer, ArrayDeque<Trade>> blotter = new HashMap<>();
+  private final List<Trade> rejected = new ArrayList<>();
   private final Set<String> dirtyPositions = new HashSet<>();
-  private final Set<Integer> dirtyAccounts = new HashSet<>();
   // Settlement on the ledger: booked sides per UTC trade date. A side settles when its trade date
   // plus T+N business days has passed, so these counts ARE the settlement state of the partition.
   private final Map<LocalDate, Long> sidesByDay = new HashMap<>();
@@ -63,24 +61,14 @@ public final class TradeView {
   private long appliedTotal;
   private Accounting acct = Accounting.EMPTY;
 
-  public TradeView(int blotterDepth) {
-    this.blotterDepth = Math.max(1, blotterDepth);
-  }
-
   static String key(String scope, Integer account, String security) {
     return scope + "|" + account + "|" + security;
   }
 
-  /** Restore from the last snapshot: its positions, its blotter rows (oldest first) and its cursor. */
-  public synchronized void load(List<Position> snapshotPositions, List<Trade> snapshotTrades,
-                                long cursorStreamSeq, long cursorConsensusSeq) {
+  /** Restore from the last snapshot: its positions and its cursor. */
+  public synchronized void load(List<Position> snapshotPositions, long cursorStreamSeq, long cursorConsensusSeq) {
     for (Position p : snapshotPositions) {
       positions.put(key(p.getProjectionScope(), p.getAccountId(), p.getSecurity()), p);
-    }
-    for (Trade t : snapshotTrades) {
-      ArrayDeque<Trade> ring = blotter.computeIfAbsent(t.getAccountId(), k -> new ArrayDeque<>());
-      ring.addLast(t);
-      while (ring.size() > blotterDepth) { ring.pollFirst(); }
     }
     streamSeq = cursorStreamSeq;
     consensusSeq = cursorConsensusSeq;
@@ -101,7 +89,7 @@ public final class TradeView {
   }
 
   /** Book one trade side at stream position {@code seq}; {@code booker} mutates the position and
-   *  returns the trade row the window keeps. A seq at or below the cursor is a replay and is ignored. */
+   *  returns the trade row (kept only when Rejected). A seq at or below the cursor is a replay and is ignored. */
   public synchronized boolean apply(TradeOrder order, long seq, BiFunction<TradeOrder, Position, Trade> booker) {
     if (seq <= streamSeq) { return false; }
     long tradeSeq = TradeFeedHandler.TradeSeqGaps.seqOf(order.getId());
@@ -123,18 +111,17 @@ public final class TradeView {
       position.setAverageCostBasis(BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP));
     }
     Trade trade = booker.apply(order, position);
-    // A Rejected trade (bond fail-closed) reaches the blotter, never a position: not even a flat one.
-    if (trade.getState() != TradeState.Rejected) {
+    // A Rejected trade (bond fail-closed) reaches the blotter (as an SQL exception row), never a position: not even a
+    // flat one.
+    if (trade.getState() == TradeState.Rejected) {
+      rejected.add(trade);
+    } else {
       if (fresh) { positions.put(k, position); }
       dirtyPositions.add(k);
       LocalDate day = tradeDate(trade);
       sidesByDay.merge(day, 1L, Long::sum);
       dirtyDays.add(day);
     }
-    ArrayDeque<Trade> ring = blotter.computeIfAbsent(order.getAccountId(), a -> new ArrayDeque<>());
-    ring.addLast(trade);
-    if (ring.size() > blotterDepth) { ring.pollFirst(); }
-    dirtyAccounts.add(order.getAccountId());
     if (tradeSeq > 0) {   // a new epoch restarts tradeSeq; the sums keep counting
       acct = new Accounting(acct.sides() + 1, tradeSeq, acct.sumSeq() + tradeSeq, acct.sumSq() + tradeSeq * tradeSeq,
           acct.duplicates(), epoch);
@@ -159,13 +146,11 @@ public final class TradeView {
   public synchronized Cut cut() {
     List<Position> ps = new ArrayList<>(dirtyPositions.size());
     for (String k : dirtyPositions) { ps.add(copy(positions.get(k))); }
-    Map<Integer, List<Trade>> bs = new HashMap<>();
-    for (Integer a : dirtyAccounts) { bs.put(a, new ArrayList<>(blotter.get(a))); }
     Map<LocalDate, Long> ds = new HashMap<>();
     for (LocalDate d : dirtyDays) { ds.put(d, sidesByDay.get(d)); }
-    Cut cut = new Cut(ps, bs, ds, streamSeq, consensusSeq, appliedSinceCut, acct);
+    Cut cut = new Cut(ps, List.copyOf(rejected), ds, streamSeq, consensusSeq, appliedSinceCut, acct);
     dirtyPositions.clear();
-    dirtyAccounts.clear();
+    rejected.clear();
     dirtyDays.clear();
     appliedSinceCut = 0;
     return cut;
@@ -174,7 +159,7 @@ public final class TradeView {
   /** A snapshot write failed: put its changes back on the dirty list for the next cut. */
   public synchronized void remark(Cut cut) {
     for (Position p : cut.positions()) { dirtyPositions.add(key(p.getProjectionScope(), p.getAccountId(), p.getSecurity())); }
-    dirtyAccounts.addAll(cut.blotters().keySet());
+    rejected.addAll(0, cut.rejected());
     dirtyDays.addAll(cut.days().keySet());
     appliedSinceCut += cut.applied();
   }

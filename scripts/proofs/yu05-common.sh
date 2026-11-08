@@ -28,6 +28,8 @@ DB_DEPLOY=${DB_DEPLOY:-eod-price-db}
 # dbq <sql>  -> tab-separated rows, no header (for reading the MariaDB projection; settlement state
 # has no HTTP read endpoint, it lives only in the trade-processor projection — FR-PTC07).
 # The database container's own credentials (a production-shaped rig randomizes them); traderx where it has none.
+# the history store (ClickHouse trades, the trade system of record since the ADR-102 cutover)
+hist(){ $K exec sts/clickhouse -c clickhouse -- clickhouse-client -q "$1" 2>/dev/null; }
 dbq(){ $K exec "deploy/${DB_DEPLOY}" -- sh -c "mariadb -u\"\${MARIADB_USER:-traderx}\" -p\"\${MARIADB_PASSWORD:-traderx}\" traderx -N -B -e \"$1\"" 2>/dev/null; }
 
 # mint <admin:true|false> <accounts-json e.g. [] or [22214]>  -> prints the raw JWT

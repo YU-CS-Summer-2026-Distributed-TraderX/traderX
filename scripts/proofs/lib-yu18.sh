@@ -93,6 +93,8 @@ sql() { # sql "<statement>" -> tab-separated rows, no header
   u="$(secret mariadb-credentials username)"; p="$(secret mariadb-credentials password)"
   "${K[@]}" exec "deploy/${DB_DEPLOY}" -c "${DB_CONTAINER}" -- mariadb -u"${u:-traderx}" -p"${p:-traderx}" traderx -sN -e "$1" 2>/dev/null
 }
+# hist "<query>" -> the history store's answer (ClickHouse, the trade system of record since the ADR-102 cutover)
+hist() { "${K[@]}" exec sts/clickhouse -c clickhouse -- clickhouse-client -q "$1" 2>/dev/null; }
 # mget <member> <path> [bearer] — GET on a member's own HTTP port, from inside the member.
 mget() {
   local hdr=()

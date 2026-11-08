@@ -9,6 +9,8 @@ import java.util.HashMap;
  * {@code payload}; unknown keys are skipped, so an additive bridge field never fails a row.
  *
  * <p>Trades: key = tradeSeq, ref = source order ref. Orders: key = order ref, ref = client order key (0 = none).
+ * Trades also keep the id's prefix ({@code e1-<epoch>-} or "") and the source order's epoch, both one value per
+ * epoch, so the blotter rebuilds the exact ids (ADR-102 cutover: the store is the trade system of record).
  */
 final class Rows {
   final boolean trades;
@@ -17,14 +19,14 @@ final class Rows {
   final int[] acct, qty, remaining, lastQty, ordinal;
   final byte[] side;
   final double[] px, lastPx;
-  final String[] sec, status;
+  final String[] sec, status, idPrefix, orderEpoch;
 
   Rows(boolean trades, int cap) {
     this.trades = trades;
     ts = new long[cap]; seq = new long[cap]; key = new long[cap]; ref = new long[cap]; cseq = new long[cap];
     acct = new int[cap]; qty = new int[cap]; side = new byte[cap]; px = new double[cap]; sec = new String[cap];
     created = new long[cap]; remaining = new int[cap]; lastQty = new int[cap]; ordinal = new int[cap];
-    lastPx = new double[cap]; status = new String[cap];
+    lastPx = new double[cap]; status = new String[cap]; idPrefix = new String[cap]; orderEpoch = new String[cap];
   }
 
   long lastSeq() { return seq[n - 1]; }
@@ -39,7 +41,7 @@ final class Rows {
       d = data; i = 0;
       int r = b.n;
       b.seq[r] = streamSeq; b.ref[r] = 0; b.created[r] = 0; b.remaining[r] = 0; b.lastQty[r] = 0;
-      b.ordinal[r] = 0; b.lastPx[r] = 0; b.status[r] = "";
+      b.ordinal[r] = 0; b.lastPx[r] = 0; b.status[r] = ""; b.idPrefix[r] = ""; b.orderEpoch[r] = "";
       while (true) {
         int ks = indexOf('"', i);
         if (ks < 0) break;
@@ -55,6 +57,7 @@ final class Rows {
               int d2 = s.lastIndexOf('-', dash - 1);
               b.key[r] = Long.parseLong(s, d2 + 1, dash, 10);
               b.side[r] = (byte) s.charAt(dash + 1);
+              b.idPrefix[r] = intern(s.substring(0, d2 + 1));
             } else b.key[r] = Long.parseLong(s, dash + 1, s.length(), 10);   // <epoch>-<ref>
           }
           case "security" -> b.sec[r] = intern(str());
@@ -62,7 +65,11 @@ final class Rows {
           case "price", "limitPrice" -> b.px[r] = px();
           case "accountId" -> b.acct[r] = (int) num();
           case "side" -> { String s = str(); if (!b.trades) b.side[r] = (byte) s.charAt(0); }
-          case "sourceOrderId" -> { String s = str(); b.ref[r] = Long.parseLong(s, s.lastIndexOf('-') + 1, s.length(), 10); }
+          case "sourceOrderId" -> {
+            String s = str(); int dash = s.lastIndexOf('-');
+            b.ref[r] = Long.parseLong(s, dash + 1, s.length(), 10);
+            b.orderEpoch[r] = intern(s.substring(0, Math.max(dash, 0)));
+          }
           case "consensusSequence" -> b.cseq[r] = num();
           case "remainingQuantity" -> b.remaining[r] = (int) num();
           case "status" -> b.status[r] = intern(str());

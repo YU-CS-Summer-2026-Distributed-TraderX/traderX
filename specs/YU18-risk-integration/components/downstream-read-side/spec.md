@@ -50,8 +50,9 @@ and order bridges, MariaDB.
   rebuild from the last `ORDER_VIEW_REPLAY_SECONDS` (300) of the stream.
 - FR-DRS-08: `TRADE_PROJECTION_MODE=snapshot` (requires jetstream mode) SHALL book every trade side in
   memory through `TradeService.book`. Every `TRADE_PROJECTION_SNAPSHOT_MS` (5000) `TradeSnapshotStore`
-  SHALL write, in one transaction, the changed positions, each changed account's last
-  `TRADE_PROJECTION_BLOTTER_DEPTH` (100) fills, and the per-partition stream cursor in
+  SHALL write, in one transaction, the changed positions, the sides booking refused since the last snapshot
+  (the ADR-102 cutover, 2026-11-08, retired the per-account window of `TRADE_PROJECTION_BLOTTER_DEPTH` fills: the
+  blotter reads the history store, FR-THT-09), and the per-partition stream cursor in
   `projection_cursor(projection_scope, partition_id, stream_seq, consensus_seq, snapshot_at)`.
   A restart SHALL load the snapshot and replay from `stream_seq + 1`, ignoring any sequence at or below it.
 - FR-DRS-09: `PROJECTION_FANOUT=false` SHALL stop the per-trade `/accounts/{id}/trades|positions` publishes.
@@ -96,8 +97,9 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
 
 ### Settlement, recon and retention on the trade store
 
-- FR-DRS-19: In snapshot mode, a fill the bond rule rejects (`TradeService.book`) SHALL appear in its
-  account's blotter window as `Rejected` and SHALL NOT create or change a position.
+- FR-DRS-19: In snapshot mode, a fill the bond rule rejects (`TradeService.book`) SHALL be written to SQL `trades`
+  as a `Rejected` exception row (the blotter shows it in place of the history row, FR-THT-09) and SHALL NOT create
+  or change a position.
 - FR-DRS-20: In snapshot mode, `GET /v2/projection-feed/settlement?asOf=<ISO instant>` (default now)
   SHALL return `{scope, asOf, tPlusDays, sides, settled, unsettled, partitions: {<p>: {sides, settled,
   unsettled, streamSeq, days: {<trade date>: {sides, settlesOn, settled}}}}}`. The trade date is the

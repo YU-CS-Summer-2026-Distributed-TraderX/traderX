@@ -74,7 +74,7 @@ class FeedBarrierTest {
   @Test void snapshotModeStopsAtAStoreFailureAndBooksItOnRedelivery() throws Exception {
     RunRegistry registry = mock(RunRegistry.class);
     when(registry.scope(anyString())).thenThrow(DOWN).thenReturn(Map.of());
-    TradeView view = new TradeView(10);
+    TradeView view = new TradeView();
     TradeFeedHandler h = snapshotHandler(view, registry);
     List<Message> batch = List.of(trade(1), trade(2));
 
@@ -94,7 +94,7 @@ class FeedBarrierTest {
     when(registry.scope(anyString())).thenReturn(Map.of());
     doThrow(new IllegalArgumentException("RUN_TRADE_ID_MISMATCH")).when(registry)
         .validate(org.mockito.ArgumentMatchers.argThat(e -> e != null && "e1-x-2-B".equals(((TradeOrder) e).getId())), anyMap());
-    TradeView view = new TradeView(10);
+    TradeView view = new TradeView();
     TradeFeedHandler h = snapshotHandler(view, registry);
 
     h.onSnapshotBatch(0, List.of(trade(1), trade(2), message(3, "{not json"), trade(4)));

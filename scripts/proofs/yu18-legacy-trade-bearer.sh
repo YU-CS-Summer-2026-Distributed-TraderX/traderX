@@ -17,7 +17,7 @@ ACCT="${ACCT:-22214}"; SEC="${SEC:-IBM}"
 pf GW "${GATEWAY_TARGET:-svc/order-matcher}" "${GATEWAY_PORT:-18110}"
 pf TS "${TS_TARGET:-svc/trade-service}" 18092
 trades_all() { local m s=""; for ((m=0; m<MEMBERS; m++)); do s+="$(mget "${m}" /health | jget 'd.get("trades")') "; done; echo "${s% }"; }
-rows() { sql "SELECT COUNT(*) FROM trades WHERE accountid=${ACCT} AND security='${SEC}'"; }
+rows() { hist "SELECT count() FROM trades WHERE account=${ACCT} AND security='${SEC}'"; }
 TICKET() { echo "{\"accountId\":${ACCT},\"security\":\"${SEC}\",\"side\":\"Buy\",\"quantity\":$1}"; }
 
 step "1. control: the gateway's /trades refuses a bare caller"
