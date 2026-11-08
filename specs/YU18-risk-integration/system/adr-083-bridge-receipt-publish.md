@@ -45,7 +45,30 @@ the projection saw either loss.
 - No wire format changes. The JSON bytes and subjects are unchanged. A core subscriber ignores the reply
   subject.
 
+## Amendment, 2026-11-08: a promoted member publishes what the stream is missing (FR-DRS-37)
+
+Only the leader published, and live. A record the dying leader applied but did not get stored was sent by no
+one: in its lane queue, on the wire, or committed only in the new leader's term and applied there before the
+role change. Production lost 4 trade sides at a leader kill (e1108) and 6 the day before (e1107b).
+
+6. **Every member offers, the leader publishes.** The service offers every trade and order record on every
+   member, tagged with the role it was applied in. A follower's lane keeps the last `capacityPerLane` records.
+7. **Catch-up from the stream's last stored message.** At a promotion the lane reads its subject's last message
+   (`$JS.API` `STREAM.MSG.GET` by last-by-subject, the stream found by subject) and publishes the kept records
+   after it, then everything new, holding later records to the same cut. Apply order is the same on every member,
+   so the partition stays in apply order and each record is stored once. Decision 4 is unchanged: this is not a
+   resend of a 429 but the first publish of a record its leader never stored.
+
+The deterministic core is unchanged: same outputs, same snapshot, no format change. So no snapshot barrier or
+fresh epoch is needed, and the build rolls like any bridge change. A follower now allocates one record per output
+and keeps up to 65,536 per lane per bridge.
+
 **Rejected:**
+
+- *Every member publishes with `Nats-Msg-Id` dedupe.* That triples the bridges' NATS traffic. The dedupe table
+  also holds every id for the duplicate window: 48M ids at 400K/s for the 2-minute default.
+- *Replay from the Aeron archive at a promotion.* It is correct, but a shadow replay of the log is seconds of work
+  on the new leader's critical path, and the kept tail already holds every record that can be missing.
 
 - *Synchronous JetStream publish with retry.* It waits on every ack (~350K msgs/s ceiling on the bench),
   and its retry reorders the partition.
