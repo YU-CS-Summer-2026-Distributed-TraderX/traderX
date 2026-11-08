@@ -57,7 +57,7 @@
       position limit; the policy itself stays as it is. Kind run done:
       every accepted order traded (members' trade sides rose by exactly the accepted count).
 - [x] G1 above the full-history index cap defers to G2 (FR-PRG-18, 2026-10-29).
-- [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Built 2026-11-08 (FR-PRG-40):
+- [x] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Built 2026-11-08 (FR-PRG-40):
       `prepare.py --archive-purge` renders the agent, the member's `/recon/tail-state` is the reference, G1/G2 switch to
       it with the purge held. Offline and in-process on real members. Kind proof 2026-11-08 11:05–11:11 am ET
       (`rig/kind-purge.sh`, image built at a78cc592, members rendered by `prepare.archive_purge`): every member purged
@@ -66,8 +66,14 @@
       65,895 orders from log position 12,161,632 to applied 160,904, book hashes equal to the live digests); idle past two
       snapshots it was INCONCLUSIVE. The proof client's orders rest and never trade (0 trades, book at 100,000 open
       orders): trades through the tail are covered by `ThreeMemberClusterTest` only. Design accepted (yaakov 2026-11-08,
-      "Yes, both": discard the purged log; an empty tail does not refuse). Left: one production session (build, roll
-      the members, gate), with its own yes.
+      "Yes, both": discard the purged log; an empty tail does not refuse). Production 2026-11-08 (yaakov: "Yes, run it";
+      members on `cluster-node-member:mem-afc8bd6a-j21`, population 7a25a9a2): on e1108 G1/G2 by snapshot+tail were
+      INCONCLUSIVE (tail empty) and G3 refused on e1108's lost-fill order 1-18372; on fresh epoch e1108b, 9,657,584
+      orders at ~20K/s for 12 min (0 rejected), each agent deleted 7 segments of 128 MiB (/data/archive 957 MB to
+      308 MB); after down and up on the purged log, G1/G2 ok by snapshot+tail on all three (2,037,536-message tail from
+      log position 975,671,776 to applied 9,659,963, equal to each live digest), G3 ok. That up then timed out at G3h:
+      history-feed ingests ~1,500 rows/s, so the 9.66M trades and 16M order events need ~3 h to drain (handed to the
+      trade-history-tiers lane). The purge hold is still set on the members' disks (released by the next gate PASS).
       - Purge the members' log behind a snapshot (archive purge, the bench's B2, proven on hxb at 250K/s). This bounds
         B1's growth and G2's replay time.
       - Once the log is purged, G1 and G2 cannot replay from 0. They switch to snapshot plus tail: replay from the
@@ -87,7 +93,9 @@
 - [x] A fresh epoch loads accounts and reference data before its first order (FR-PRG-30).
 - [x] Only the last epoch's archive is kept: a fresh epoch's `up` deletes every older one, `rig.sh prune-archives` on
       its own (FR-PRG-39, ADR-101 amendment 2026-11-08). Offline and on mariadb:11.4.
-- [ ] First run on production: e1101–e1107 would go and e1108 stay (yaakov's yes needed; plan in the session record).
+- [x] First run on production, 2026-11-08 3:41 pm ET (fresh epoch e1108b, yaakov: "Yes, fresh epoch", the `up` run by
+      yaakov): every archive older than e1108b deleted (21 member snapshots of e1101–e1108, their arc_* tables in MariaDB and
+      ClickHouse); left: traderx-e1108b-m{0,1,2}, arc_e1108b_*, the history ConfigMaps and the DB snapshot.
 - [x] initialize-reference-data.mjs completes on a live rig: its last line named a variable 790c245d removed (FR-PRG-30).
 - [x] Every `up` opens the US Eastern business day, so DAY orders are admitted (FR-PRG-31).
 - [x] `LOADGEN=N` brings idle load pods up with the rig; `loadgen.sh start RATE` loads them in seconds (FR-PRG-32).
