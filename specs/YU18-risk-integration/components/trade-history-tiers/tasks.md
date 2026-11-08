@@ -34,6 +34,11 @@
   non-empty one (`test_rig`, A/B; `feed_streams`/`nats_api` exercised on a real NATS 2.14). FR-PRG-29, ADR-101.
   The smoke reads its cancel from trade-processor's order read model, not SQL `orderbook` (FR-PRG-04, `test_rig`:
   CANCELED passes; still NEW, another order or absent refuses; no orderbook query; the bearer stays off argv).
+- [~] FR-THT-02/03 on GKE (yaakov: "Yes, run on GKE", 2026-11-07): a disposable namespace `pa-proof-tht` beside
+  production on its own pools (`tht-pool` e2-standard-8, `tht-history-pool` c4d-standard-8). `kind-yu18-rig.py
+  --registry/--pool/--ns` (missing-proofs' disposable-rig patch, `.traderx.svc` rewritten) plus `--history-pool` and
+  `--cold-bucket`: production's history sizes and Hyperdisk class (as `tht-clickhouse-hot`, reclaim Delete), the
+  locked digests, the cold disk on `gs://<bucket>/<ns>/`.
 - [ ] KDB-X feed lane: exactly-once write-down, account-sorted `p#` HDB, heap-guarded paged q (FR-THT-04).
 - [x] Check KDB-X Community object storage on `gs://`; record the answer in ADR-102 (yes, with `objstor` init).
 - [ ] q gateway over several HDB processes; `par.txt` over several disks.

@@ -10,12 +10,17 @@
 #   python3 scripts/proofs/kind-yu18-rig.py --tag <tag> | kubectl --context kind-traderx-gap18 apply -f -
 #   CTX=kind-traderx-gap18 NS=traderx bash scripts/proofs/run-yu18-kind.sh [proof-name-substring...]
 #
+# On GKE, a disposable namespace beside production, on the idle loadgen pool (production's namespace is refused):
+#   python3 scripts/proofs/kind-yu18-rig.py --tag <tag> --ns pa-proof-<x> \
+#     --registry us-east1-docker.pkg.dev/<project>/<repo> --pool loadgen-pool | kubectl --context <gke> apply -f -
+#   CTX=<gke> NS=pa-proof-<x> bash scripts/proofs/run-yu18-kind.sh
+#
 # The rig must have no other writer: several proofs read the members' trade count as theirs, and
 # yu18-store-failure-barrier's closed form covers every side the epoch booked.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-: "${CTX:?set CTX (a kind context)}"; : "${NS:?set NS}"
-[[ "${CTX}" == kind-* ]] || { echo "[FAIL] kind only: these proofs make the database read only and run one-off pods" >&2; exit 1; }
+: "${CTX:?set CTX (a kind context, or GKE with a disposable NS)}"; : "${NS:?set NS}"
+( . "${here}/lib-yu18.sh"; disposable_rig ) || { echo "[FAIL] disposable rig only (kind, or a pa-proof-* namespace labelled traderx-proof=disposable): these proofs make the database read only and run one-off pods" >&2; exit 1; }
 export CTX NS FIX_TARGET="${FIX_TARGET:-svc/order-matcher}"
 LOG="${PROOF_LOG_DIR:-${TMPDIR:-/tmp}/yu18-kind-proofs}"; mkdir -p "${LOG}"
 ACCOUNTS="${ACCOUNTS:-22214 42422}"

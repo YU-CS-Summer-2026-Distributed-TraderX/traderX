@@ -15,7 +15,7 @@
 # Usage: CTX=<kind ctx> NS=<ns> [NEGATIVE=1] bash scripts/proofs/yu18-readiness-diagnostics.sh
 here="$(cd "$(dirname "$0")" && pwd)"
 . "${here}/lib-yu18.sh"
-[[ "${CTX}" == kind-* ]] || fail "kind only: step 2 deletes a member pod"
+disposable_rig || fail "disposable rig only (kind, or a labelled pa-proof-* namespace): step 2 deletes a member pod"
 check() { python3 -c '
 import json, sys, time
 d = json.loads(sys.argv[1]); now = time.time() * 1000; bad = []
