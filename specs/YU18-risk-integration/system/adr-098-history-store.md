@@ -52,3 +52,15 @@ below the rate.
 - Putting it on the production rig needs a ClickHouse volume and host size (21.8 GiB per 10 full-rate minutes,
   ~131 GiB/hour) and the ingest ceiling of the capture stream itself, which one NATS server does not yet give at 1M
   msgs/s (bake-off §5.1; the feed-capture lane).
+
+**Amendment 2026-11-07 (production e1107b, `tip-aba349f8-j21`):** the store recorded nothing. The default render runs
+one partition (no `BRIDGE_PARTITIONS`, `PROJECTION_FEED_PARTITIONS=1`, layout `one`), so the bridges publish bare
+`/trades` and `/orders` on TRADERX_FEED; history-feed always suffixed `.<p>` and its lanes filtered `/trades.0` and
+`/orders.0`, matched nothing, and reported nothing pending (cursor 0, 0 rows against the members' 6 sides). G3h passed
+because the epoch was empty at bring-up. Every proof before it ran 4 partitions on per-partition streams
+(`kind-yu18-rig.py`'s default; kind `traderx-tht2` and GKE `pa-proof-tht`), where the suffix is the bridges' rule too, so
+they did not cover the default shape. The lane now takes the bridges' rule (`HistoryFeedMain.subjectFor`, pinned
+against it in `RowsTest`), and `/health` names any stream subject no lane reads, which G3h refuses (FR-HST-02,
+FR-THT-06). Tests: `HistoryFeedSubjectsIT` (NATS 2.14 + ClickHouse 25.8: P=1 bare subjects stored, `unowned {}`; a
+2-partition feed over them stores 0 and reports `{"/orders":3,"/trades":6}`; with the old always-suffixed rule the first
+half times out) and `test_rig.Up.test_a_stream_subject_no_lane_reads_is_refused`.

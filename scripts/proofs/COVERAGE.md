@@ -1798,7 +1798,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GFS-17` | LIVE |  |  | added 2026-11-06: reset against a stored later day not driven. FixSessionPersistenceIT |
 | YU18 | `FR-GFS-18` | CI |  |  | added 2026-11-06: group commit ordering. FixBarrierLossTest, FixFenceProbeTest |
 | YU18 | `FR-HST-01` | LIVE |  |  | added 2026-11-06: history store not in any proof rig. RowsTest |
-| YU18 | `FR-HST-02` | CI |  |  | added 2026-11-06: lane/batch mechanics |
+| YU18 | `FR-HST-02` | CI + local (docker) |  |  | added 2026-11-06: lane/batch mechanics. 2026-11-07: HistoryFeedSubjectsIT (P=1 bare subjects stored; a mismatched feed stores 0 and /health names the unread subjects; fails with the old always-suffixed rule); RowsTest pins subjectFor and unowned |
 | YU18 | `FR-HST-03` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
 | YU18 | `FR-HST-04` | CI |  |  | added 2026-11-06: ClickHouse write shape |
 | YU18 | `FR-HST-05` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |

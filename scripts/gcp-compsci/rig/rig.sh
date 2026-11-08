@@ -495,6 +495,13 @@ g3_history(){
   # FR-THT-02 renders the store into the production manifests: its absence is a refusal, never a skip.
   kc get sts clickhouse -o name >/dev/null 2>&1 || die "G3h: no history store (sts/clickhouse) on $NS (FR-THT-02)"
   wait_for 600 "every history-feed lane open with nothing pending (G3h)" history_caught_up
+  # Nothing pending is also true of a lane whose filter matches nothing (production 2026-11-07: lanes on /trades.0 while
+  # the members published /trades; 0 rows). history-feed names the stream subjects no lane reads; any is a refusal.
+  local health unowned
+  health=$(history_health) || die "G3h: history-feed's health could not be read"
+  unowned=$(jq -ce '.unowned | objects' <<<"$health") \
+    || die "G3h: history-feed reports no unread-subject check (an image before it, or NATS unreadable: $(jq -r '.unownedError // "none"' <<<"$health"))"
+  [ "$unowned" = '{}' ] || die "G3h: no history-feed lane reads $unowned on the capture stream: the store misses those messages (FR-THT-02)"
   rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
     || die "G3h: the history store could not be read"
   printf '%s\n' "$rows" > "$EVIDENCE/gate-history.tsv"

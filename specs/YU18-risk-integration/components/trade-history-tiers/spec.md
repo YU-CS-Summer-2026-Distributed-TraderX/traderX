@@ -60,7 +60,10 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   Implemented as `rig.sh` G3h, after G3: per partition count, max, wrapped sums of `trade_seq` and `trade_seq²`
   (ClickHouse's UInt64 arithmetic wraps 2^64 like the closed form) and duplicates, against the closed form over
   sides 1..t minus `rig-unprojected` (no base: the store is fed from cursor 0). Waits for every lane open with
-  nothing pending. Mandatory since FR-THT-02 renders the store (2026-11-07): no `sts/clickhouse` is a refusal. The sums are
+  nothing pending, then refuses unless history-feed's `unowned` is `{}` (FR-HST-02): nothing pending is also true of a
+  lane whose filter matches nothing, and on production e1107b (2026-11-07) G3h passed that way on an empty epoch while
+  the store held 0 of the next 6 sides. A health without `unowned` (an older image) refuses too.
+  Mandatory since FR-THT-02 renders the store (2026-11-07): no `sts/clickhouse` is a refusal. The sums are
   order-insensitive: the order is the stream's, held by FR-HST-03's cursor, so a set check is the exact one.
 - FR-THT-08 (proposed 2026-11-06): A fresh epoch (ADR-101) SHALL archive the history tables with the read model's
   epoch tables (`arc_<label>_trades`, `_orders`, `_history_cursor`), because trade and order refs restart at 1 and

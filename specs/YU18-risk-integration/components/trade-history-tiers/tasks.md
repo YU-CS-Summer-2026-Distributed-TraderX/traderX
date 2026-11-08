@@ -40,6 +40,10 @@
 - [x] Production findings 2026-11-07 11:28 pm ET (coordinator): history-feed is held at 0 across the fresh-epoch
   reset and started on the recreated streams (FR-THT-02); a retried fresh-epoch `up` reuses its own three empty claims
   under G0 instead of refusing, and wiped becomes provisioned only with no claim (`test_rig`, A/B). FR-PRG-29, ADR-101.
+- [x] Production bug 2026-11-07 (e1107b, coordinator): at one partition history-feed filtered `/trades.0` against bare
+  `/trades` and stored nothing; G3h passed on the empty epoch. Lanes take the bridges' subject rule; `/health` reports
+  unread subjects and G3h refuses them (`HistoryFeedSubjectsIT` A/B, `RowsTest`, `test_rig`). FR-HST-02, FR-THT-06,
+  ADR-098. Not yet on production: needs a history-feed image build and rollout.
 - [x] FR-THT-02/03 on GKE (yaakov: "Yes, run on GKE", 2026-11-07; spec "GKE evidence"): a disposable namespace `pa-proof-tht` beside
   production on its own pools (`tht-pool` e2-standard-8, `tht-history-pool` c4d-standard-8). `kind-yu18-rig.py
   --registry/--pool/--ns` (missing-proofs' disposable-rig patch, `.traderx.svc` rewritten) plus `--history-pool` and

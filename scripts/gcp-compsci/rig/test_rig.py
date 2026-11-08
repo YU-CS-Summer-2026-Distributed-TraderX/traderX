@@ -47,7 +47,7 @@ kubectl(){
     *"nc localhost 4222"*) echo 'INFO {"server_id":"x"}'; echo 'MSG r 1 40'; echo '{"type":"stream_delete_response","success":true}';;
     *"get sts clickhouse"*) [ -z "${HIST_ABSENT:-}" ];;   # HIST_ABSENT: no history store rendered
     *"get deploy history-feed"*) [ -n "${HIST_ABSENT:-}" ] || echo 1;;
-    *"history-feed:18095/health"*) echo '{"ready":true,"lanes":[{"pending":0},{"pending":0}]}';;
+    *"history-feed:18095/health"*) echo "$HIST_HEALTH";;
     *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
       t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
       printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
@@ -130,7 +130,7 @@ def nats_pods(*pods):   # (uid, phase, restarts, last reason)
         for u, ph, r, why in pods]})
 
 
-GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
+GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'HIST_HEALTH': '{"ready":true,"unowned":{},"lanes":[{"pending":0},{"pending":0}]}', 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
@@ -430,6 +430,15 @@ class Up(unittest.TestCase):
                           ('0\\t3\\t5\\t9\\t35\\t0\\n1\\t2\\t2\\t4\\t8\\t1', '1 duplicated'),             # 4 deleted AND 2 doubled
                           ('0\\t3\\t6\\t10\\t46\\t0\\n1\\t2\\t4\\t6\\t20\\t0', 'above the members trades')):  # a side never booked
             self.assertIn(why, self.refused('G3h', HIST=rows))
+
+    # FR-THT-02 (production 2026-11-07, e1107b): history-feed's lanes filtered /trades.0 and /orders.0 while the members
+    # published /trades and /orders; every lane was open with nothing pending and the store held 0 of 6 sides.
+    def test_a_stream_subject_no_lane_reads_is_refused(self):
+        lanes = '"lanes":[{"pending":0},{"pending":0}]'
+        for health, why in (('{"ready":true,"unowned":{"/orders":4416,"/trades":6},' + lanes + '}', 'no history-feed lane reads {"/orders":4416,"/trades":6}'),
+                            ('{"ready":true,' + lanes + '}', 'reports no unread-subject check'),
+                            ('{"ready":true,"unowned":null,"unownedError":"timeout",' + lanes + '}', 'NATS unreadable: timeout')):
+            self.assertIn(why, self.refused('G3h', HIST=self.HIST, HIST_HEALTH=health))
 
     def test_an_unreadable_history_store_is_refused(self):
         self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
