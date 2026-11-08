@@ -1,5 +1,27 @@
 # Engine requests from the VaR/ES end-to-end proof, November 6
 
+> **November 7: implemented by TraderX in its own fork, with Alex's permission.** The fork is branch
+> `traderx/engine-fork` of Alex's repository, worktree `~/dev/lmax/jax-risk-traderx`, cut from `17ac757`,
+> committed locally and not pushed. Alex's `main` is unchanged. Each request below is now a fork change
+> with an ORE/QuantLib-valued test in `tests/test_traderx_products.py`:
+>
+> - **R1, cash equity.** `trade_type: "equity"`, plus the spot as factor `equity:<symbol>/spot`, a
+>   lognormal move of the log spot.
+> - **R2, listed option.** `trade_type: "equity_option"`, Black-Scholes finite differences, American or
+>   European, on `market.equities[symbol].volatility` and its dividend curve. Each listed contract is
+>   revalued once per run.
+> - **R3, OIS swaps and swaptions.** `overnight_index` on every swap and swaption ("USD-SOFR", "EUR-ESTR",
+>   "GBP-SONIA", "JPY-TONA"), on the index's calendar, day count and payment lag. Options calibrate on
+>   their own conventions with `swap_index_from_trade`.
+> - **R4, corporate bonds.** `credit_spread` on `bond`, plus the `30/360` day count.
+> - **R5, American below Bermudan.** Opt-in `exercise_on_period_starts`. The 24-a-year grid missed the
+>   Bermudan's dates. ORE's default is unchanged.
+> - **R6, compile time.** Market risk assembles the portfolio P&L on the host instead of with a stacking
+>   program compiled per trade count.
+>
+> Results: `docs/risk-integration/fork-pricing-20261107.md`. The text below is the November 6 request as
+> sent, kept for the record.
+
 **From:** Yaakov / TraderX · **For:** Alex · **Engine measured:** your upstream `17ac757e8ffe9b180fa6e98ca6114c474ab0e6ad`
 (main, October 29), unmodified, local CPU (`uvicorn engine.api.app:app`).
 

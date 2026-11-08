@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""ORE parity spot check (FR-RP-BOOK-04): the engine's t=0 NPV per trade against ORE's own, from
-the engine's test oracle ``tests/support/ore_npv_oracle.py`` (one in-process OREApp NPV run).
+"""ORE parity spot check (FR-RP-BOOK-04, FR-RP-VARES-06): the engine's t=0 NPV per trade against ORE's
+own, from the engine's test oracle ``tests/support/ore_npv_oracle.py`` (one in-process OREApp NPV run)
+for Treasuries and term-index trades, and against QuantLib built here for the rest (``fork_reference``):
+cash equities (units x spot), listed options (``FdBlackScholesVanillaEngine``, or the analytic European),
+overnight-index swaps and Europeans (``OvernightIndexedSwap``, ``BachelierSwaptionEngine``) and spread
+bonds (``FixedRateBond`` on a ``ZeroSpreadedTermStructure``).
 
 Runs in the ENGINE's environment, from an unmodified archive of the pinned revision:
     <venv>/bin/python ore_parity.py --engine-source DIR --request request.json --reply reply.json \
@@ -51,6 +55,67 @@ def quantlib_direct(t, market, ccy, tenor):
     return option.NPV() * (1 if t.long_short == 'Long' else -1)
 
 
+#: Options are priced by finite differences on both sides, on different meshes.
+OPTION_REL = 3e-4
+
+
+def fork_reference(t, market, ccy):
+    """QuantLib's value of a trade the fork added (see the module docstring), in its own currency, on the
+    request's flat market; None for a trade the ORE oracle covers."""
+    import ORE
+    from engine.instruments.schedules import OVERNIGHT_INDICES
+    from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER, resolve_accrual_day_count
+    asof = ORE.DateParser.parseISO(market['asof'])
+    ORE.Settings.instance().evaluationDate = asof
+    date = ORE.DateParser.parseISO
+    flat = lambda c: ORE.YieldTermStructureHandle(ORE.FlatForward(asof, c['rates'][0], TIME_AXIS_DAY_COUNTER, ORE.Continuous))  # noqa: E731
+    cur = market['currencies'][ccy]
+    disc = flat(cur['discount_curve'])
+    if t.trade_type == 'equity':
+        return t.quantity * t.multiplier * market['equities'][t.symbol]['spot']
+    if t.trade_type == 'equity_option':
+        eq = market['equities'][t.symbol]
+        process = ORE.BlackScholesMertonProcess(
+            ORE.QuoteHandle(ORE.SimpleQuote(eq['spot'])), flat(eq['dividend_curve']), disc,
+            ORE.BlackVolTermStructureHandle(ORE.BlackConstantVol(asof, ORE.NullCalendar(), eq['volatility'], TIME_AXIS_DAY_COUNTER)))
+        payoff = ORE.PlainVanillaPayoff(ORE.Option.Call if t.option_type == 'Call' else ORE.Option.Put, t.strike)
+        expiry = date(t.expiry_date)
+        if t.exercise == 'American':
+            option = ORE.VanillaOption(payoff, ORE.AmericanExercise(asof, expiry))
+            option.setPricingEngine(ORE.FdBlackScholesVanillaEngine(process, 800, 800))
+        else:
+            option = ORE.VanillaOption(payoff, ORE.EuropeanExercise(expiry))
+            option.setPricingEngine(ORE.AnalyticEuropeanEngine(process))
+        return t.quantity * t.multiplier * option.NPV()
+    if t.trade_type == 'bond' and t.credit_spread:
+        dates = [date(t.coupon_schedule[0].start_date)] + [date(p.end_date) for p in t.coupon_schedule]
+        schedule = ORE.Schedule(ORE.DateVector(dates))
+        bond = ORE.FixedRateBond(0, abs(t.face_amount), schedule, [t.coupon_rate], resolve_accrual_day_count(t.accrual_day_count))
+        bond.setPricingEngine(ORE.DiscountingBondEngine(ORE.YieldTermStructureHandle(ORE.ZeroSpreadedTermStructure(
+            disc, ORE.QuoteHandle(ORE.SimpleQuote(t.credit_spread)), ORE.Continuous, ORE.Annual, TIME_AXIS_DAY_COUNTER))))
+        return bond.NPV() * (1 if t.face_amount > 0 else -1)
+    if t.trade_type in ('swap', 'european_swaption') and t.overnight_index:
+        index = OVERNIGHT_INDICES[t.overnight_index]
+        day_count = resolve_accrual_day_count(index.day_count)
+        fwd = flat(cur['index_curves'][f'{ccy}-SIMINDEX-{t.index_tenor_months}M'])
+        schedule = ORE.Schedule(date(t.effective_date), date(t.maturity_date), ORE.Period(t.index_tenor_months, ORE.Months),
+                                index.calendar, ORE.ModifiedFollowing, ORE.ModifiedFollowing, ORE.DateGeneration.Forward, False)
+        overnight = ORE.OvernightIndex(t.overnight_index, 0, ORE.USDCurrency(), index.calendar, day_count, fwd)
+        swap = ORE.OvernightIndexedSwap(ORE.OvernightIndexedSwap.Payer if t.payer else ORE.OvernightIndexedSwap.Receiver,
+                                        t.notional, schedule, t.fixed_rate, day_count, overnight, t.floating_spread,
+                                        index.payment_lag_days, ORE.ModifiedFollowing, index.calendar)
+        swap.setPricingEngine(ORE.DiscountingSwapEngine(disc))
+        if t.trade_type == 'swap':
+            return swap.NPV()
+        vols = cur['swaption_vols']['vols']
+        if len({v for row in vols for v in row}) != 1:
+            raise SystemExit('fork_reference prices Europeans on a flat normal vol only')
+        option = ORE.Swaption(swap, ORE.EuropeanExercise(date(t.exercise_date)))
+        option.setPricingEngine(ORE.BachelierSwaptionEngine(disc, ORE.QuoteHandle(ORE.SimpleQuote(vols[0][0]))))
+        return option.NPV() * (1 if t.long_short == 'Long' else -1)
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--engine-source', required=True)
@@ -84,14 +149,22 @@ def main():
     pricing = req.config.pricing.to_dataclass()
     fx = dict(body['market'].get('fx_spots', {}))
     t0 = time.monotonic()
-    ore_npv, ore_refused = {}, {}
+    ore_npv, ore_refused, reference = {}, {}, {}
     # The oracle takes one currency (USD) and one index. The engine builds every currency's trades alike
     # (TARGET, its SimIndex), so a currency's trades on that currency's curves, labelled USD, are the same
     # numbers; the engine reports in the base currency, so ORE's value is converted at the run's FX spot.
     groups = {}
     for t in chosen:
+        rate = 1.0 if t.currency == body['config'].get('base_currency', 'USD') else fx[f'{t.currency}USD']
+        value = fork_reference(t, body['market'], t.currency)
+        if value is not None:
+            ore_npv[t.trade_id] = value * rate
+            reference[t.trade_id] = 'quantlib-fork'
+            continue
+        if t.trade_type in ('bermudan_swaption', 'american_swaption') and getattr(t, 'overnight_index', None):
+            ore_refused[t.trade_id] = 'no ORE reference for an OIS Bermudan/American here; bounds checked instead'
+            continue
         groups.setdefault((t.currency, getattr(t, 'index_tenor_months', None) if t.trade_type != 'bond' else None), []).append(t)
-    reference = {}
     for (ccy, tenor), group in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         rate = 1.0 if ccy == body['config'].get('base_currency', 'USD') else fx[f'{ccy}USD']
         if tenor not in (None, ORACLE_TENOR):
@@ -132,7 +205,8 @@ def main():
     for t in chosen:
         e, o = engine_npv.get(t.trade_id), ore_npv.get(t.trade_id)
         diff = None if o is None or e is None else e - o
-        ok = diff is not None and (abs(diff) <= a.abs or abs(diff) <= a.rel * abs(o))
+        rel = OPTION_REL if t.trade_type == 'equity_option' else a.rel
+        ok = diff is not None and (abs(diff) <= a.abs or abs(diff) <= rel * abs(o))
         if o is None and t.trade_type in ('bermudan_swaption', 'american_swaption'):
             ok = None   # bounds below
         rows.append({'trade_id': t.trade_id, 'trade_type': t.trade_type, 'engine': e, 'ore': o, 'diff': diff, 'ok': ok,
@@ -145,7 +219,8 @@ def main():
     by_terms = {}
     for t in chosen:
         if t.trade_type.endswith('_swaption'):
-            key = (t.currency, t.notional, t.fixed_rate, t.payer, t.effective_date, t.maturity_date, t.long_short)
+            key = (t.currency, t.overnight_index, t.index_tenor_months, t.notional, t.fixed_rate, t.payer, t.effective_date,
+                   t.maturity_date, t.long_short)
             by_terms.setdefault(key, {})[t.trade_type] = engine_npv.get(t.trade_id)
     bounds = []
     for key, v in by_terms.items():

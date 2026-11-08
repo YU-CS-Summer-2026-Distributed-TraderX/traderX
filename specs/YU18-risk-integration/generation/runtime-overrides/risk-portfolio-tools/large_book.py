@@ -88,6 +88,11 @@ def main():
             x = m.refusal(r)
             refused.setdefault(f"{x['class']}/{x['owner']}/{x['request']}", 0)
             refused[f"{x['class']}/{x['owner']}/{x['request']}"] += 1
+    spots = m.equity_spots(parsed['positions'][1])
+    trades, unspotted = m.without_spot(trades, spots)
+    for r in unspotted:
+        x = m.refusal(r)
+        refused[f"{x['class']}/{x['owner']}/{x['request']}"] = refused.get(f"{x['class']}/{x['owner']}/{x['request']}", 0) + 1
     only = set(filter(None, a.only.split(',')))
     if only:
         trades = [t for t in trades if t['trade_type'] in only]
@@ -99,13 +104,13 @@ def main():
     for t in trades:
         mix[t['trade_type']] = mix.get(t['trade_type'], 0) + 1
     analytics = a.analytics.split(',')
-    body = m.run_request(trades, asof, None, scenarios=a.scenarios)
+    body = m.run_request(trades, asof, None, scenarios=a.scenarios, spots=spots)
     body['analytics'] = analytics
     body['outputs'] = {'pnl': 'none'}
     if 'market_risk' not in analytics:
         body['config'].pop('market_risk')
         body['outputs'] = {}
-    body['idempotency_key'] = 'large-book-' + hashlib.sha256(bundle.encoded({'cut': manifest['cut'], 'request': body, 'nonce': a.nonce})).hexdigest()[:24]
+    body['idempotency_key'] = 'large-book-' + hashlib.sha256(bundle.encoded({'cut': manifest['cut'], 'request': body, 'engine': m.ENGINE_REVISION, 'nonce': a.nonce})).hexdigest()[:24]
     request_bytes = bundle.encoded(body)
     (evidence / 'request.json').write_bytes(request_bytes)
     pid = listener_pid(a.origin)
@@ -149,6 +154,7 @@ def main():
         npvs = [t['npv'] for t in r['trades']]
         result['trade_npv_finite'] = all(isinstance(x, (int, float)) and math.isfinite(x) for x in npvs)
         result['run_id'] = run_id
+        result['engine'] = r.get('engine')
         result['engine_timings'] = {k: doc[k] for k in ('submitted', 'started', 'finished') if k in doc}
         if doc.get('started') and doc.get('finished'):
             result['engine_seconds'] = round((datetime.fromisoformat(doc['finished']) -

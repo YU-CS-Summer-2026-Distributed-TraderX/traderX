@@ -117,9 +117,10 @@ class VarEsEndToEndTest {
     static final String NOTE = "UST-4.250-20291115";
     static final String CORPORATE = "GS-5.750-20360124";
     static final String SWAP_CONVENTIONS = "USD-SOFR-1Y-ACT360";
-    /** A second swap in the one TraderX convention whose day count Alex's engine implements
-     *  (ACT/365F is Actual/365 Fixed, which ORE spells ACT/365); its notional needs a sequenced FX rate. */
+    /** A GBP-SONIA swap (ACT/365F, which ORE spells ACT/365); its notional needs a sequenced FX rate. */
     static final String GBP_SWAP_CONVENTIONS = "GBP-SONIA-1Y-ACT365F";
+    /** A EUR-ESTR swap, the other ACT/360 overnight index (FR-RP-VARES-06). */
+    static final String EUR_SWAP_CONVENTIONS = "EUR-ESTR-1Y-ACT360";
     static final LocalDate SESSION_DATE = LocalDate.of(2026, 10, 26);
     static final int PRICE_VERSION = 1;
     private static final String FIX_PASSWORD = "e2e-fix-password";
@@ -238,6 +239,11 @@ class VarEsEndToEndTest {
             + ",\"payReceive\":\"Receive\",\"notional\":5000000,\"fixedRate\":0.045,\"effectiveDate\":\"2026-10-28\","
             + "\"maturityDate\":\"2029-10-28\",\"conventions\":\"" + GBP_SWAP_CONVENTIONS + "\"}");
         assertTrue(gbpSwap.contains("\"booked\":true"), gbpSwap);
+        post("/risk/control/fxrate", null, "{\"currency\":\"EUR\",\"rate\":1.08}");
+        final String eurSwap = post("/swaps", bearer, "{\"clientOrderId\":\"e2e-swap-eur\",\"accountId\":" + BUYER
+            + ",\"payReceive\":\"Receive\",\"notional\":8000000,\"fixedRate\":0.025,\"effectiveDate\":\"2026-10-28\","
+            + "\"maturityDate\":\"2033-10-28\",\"conventions\":\"" + EUR_SWAP_CONVENTIONS + "\"}");
+        assertTrue(eurSwap.contains("\"booked\":true"), eurSwap);
         // ...and swaptions (FR-RIX-01): the three GBP styles on one underlying, plus a USD-SOFR European.
         for (final String style : List.of("European", "Bermudan", "American")) {
             final String swpt = post("/swaptions", bearer, "{\"clientOrderId\":\"e2e-swpt-" + style + "\",\"accountId\":" + SELLER
@@ -252,9 +258,9 @@ class VarEsEndToEndTest {
             + "\"expiryDate\":\"2027-10-26\",\"exerciseStyle\":\"European\"}");
         assertTrue(usdSwpt.contains("\"booked\":true"), usdSwpt);
 
-        // Every member applied the same business: five crosses (ten account legs) and six contracts.
-        await(() -> services.stream().allMatch(s -> s.engine().tradeCounter() == 10 && s.contractCount() == 6),
-            "all three members booked 10 trade legs and 6 contracts");
+        // Every member applied the same business: five crosses (ten account legs) and seven contracts.
+        await(() -> services.stream().allMatch(s -> s.engine().tradeCounter() == 10 && s.contractCount() == 7),
+            "all three members booked 10 trade legs and 7 contracts");
 
         // 5. venue close (ADR-069): a named log position, not a wall-clock claim.
         final String closed = post("/session", null, "{\"phase\":\"CLOSED\"}");
@@ -299,10 +305,11 @@ class VarEsEndToEndTest {
         assertTrue(rows.stream().allMatch(r -> r.contains(",CLUSTER_LAST_TRADE_AT_N,")), "marks are the cut's last trade at N");
         assertTrue(contracts.contains(",PAY_FIXED,10000000,0.042000,USD-SOFR,"), contracts);
         assertTrue(contracts.contains(",RECEIVE_FIXED,5000000,0.045000,GBP-SONIA,"), contracts);
+        assertTrue(contracts.contains(",RECEIVE_FIXED,8000000,0.025000,EUR-ESTR,"), contracts);
         for (final String style : List.of(",SWAPTION,2027-10-26,EUROPEAN", ",SWAPTION,2027-10-26,BERMUDAN", ",SWAPTION,2027-10-26,AMERICAN")) {
             assertEquals(style.endsWith("EUROPEAN") ? 2 : 1, contracts.lines().filter(l -> l.endsWith(style)).count(), style + " in\n" + contracts);
         }
-        assertEquals(6, contracts.lines().filter(l -> !l.startsWith("#")).skip(1).count(), "two swaps and four swaptions");
+        assertEquals(7, contracts.lines().filter(l -> !l.startsWith("#")).skip(1).count(), "three swaps and four swaptions");
 
         // Negative control on the real cut: a counterparties table that misses the seller.
         final IllegalStateException refused = assertThrows(IllegalStateException.class,
@@ -325,7 +332,7 @@ class VarEsEndToEndTest {
         assertThrows(IllegalArgumentException.class, () -> RiskExtractReady.payload(stamp, seq + 2, positions, contracts,
             pos.toUri().toString(), otc.toUri().toString()));
         System.out.println("VAR-ES-E2E-TRADERX seq=" + seq + " cutSha256=" + sha + " positions=" + rows.size()
-            + " contracts=6 sessionDate=" + SESSION_DATE + " receipt=" + receipt);
+            + " contracts=7 sessionDate=" + SESSION_DATE + " receipt=" + receipt);
     }
 
     /**

@@ -25,23 +25,38 @@ class MappingTest(unittest.TestCase):
         self.assertEqual(('bond', 100000.0, '2027-06-30', 0.0, []),
                          (t['trade_type'], t['face_amount'], t['maturity_date'], t['coupon_rate'], t['coupon_schedule']))
 
-    def test_equity_and_option_are_refused_by_name(self):
-        for kind in ('EQUITY', 'OPTION'):
-            with self.assertRaises(m.Refused) as ctx:
-                m.map_position(position(instrumentType=kind, security='AAPL'))
-            self.assertEqual(kind, ctx.exception.instrument_class)
-            self.assertIn('no ' + kind.lower() + ' product', ctx.exception.reason)
+    def test_equity_maps_to_shares_of_its_spot(self):
+        t = m.map_position(position(instrumentType='EQUITY', security='AAPL', quantity='-100', closingMark='150.000000'))
+        self.assertEqual(('equity', 'AAPL', -100.0, 1.0), (t['trade_type'], t['symbol'], t['quantity'], t['multiplier']))
 
-    def test_act360_swap_is_refused_not_defaulted(self):
-        with self.assertRaises(m.Refused) as ctx:
-            m.map_contract(contract())
-        self.assertIn('ACT/360', ctx.exception.reason)
-        self.assertIn('refused, not defaulted', ctx.exception.reason)
+    def test_option_maps_from_its_occ_symbol(self):
+        t = m.map_position(position(instrumentType='OPTION', security='AAPL261218P00152500', quantity='3',
+                                    contractMultiplier='100'))
+        self.assertEqual(('equity_option', 'AAPL', 'Put', 152.5, '2026-12-18', 'American', 3.0, 100.0),
+                         tuple(t[k] for k in ('trade_type', 'symbol', 'option_type', 'strike', 'expiry_date', 'exercise',
+                                              'quantity', 'multiplier')))
+        with self.assertRaises(m.Refused):
+            m.map_position(position(instrumentType='OPTION', security='AAPL'))
+
+    def test_corporate_is_30_360_on_a_credit_spread(self):
+        t = m.map_position(position(instrumentType='CORPORATE', security='GS-5.750-20360124', coupon='5.750',
+                                    maturityDate='2036-01-24', lastCouponDate='2026-07-24'))
+        self.assertEqual(('30/360', m.CREDIT_SPREAD, 0.0575), (t['accrual_day_count'], t['credit_spread'], t['coupon_rate']))
+        self.assertEqual({'start_date': '2026-07-24', 'end_date': '2027-01-24'}, t['coupon_schedule'][0])
+        self.assertNotIn('credit_spread', m.map_position(position()), 'a Treasury has no spread')
+
+    def test_sofr_is_an_act360_ois(self):
+        t = m.map_contract(contract())
+        self.assertEqual(('swap', 'ACT/360', 'USD-SOFR', 12), (t['trade_type'], t['accrual_day_count'],
+                                                               t['overnight_index'], t['index_tenor_months']))
+        with self.assertRaises(m.Refused):
+            m.map_contract(contract(floatIndex='USD-LIBOR'))
 
     def test_act365f_is_the_engines_act365(self):
         t = m.map_contract(contract(dayCount='ACT/365F', floatIndex='GBP-SONIA', currency='GBP', payReceive='RECEIVE_FIXED'))
-        self.assertEqual(('swap', 'ACT/365', 12, False, 'GBP'),
-                         (t['trade_type'], t['accrual_day_count'], t['index_tenor_months'], t['payer'], t['currency']))
+        self.assertEqual(('swap', 'ACT/365', 12, False, 'GBP', 'GBP-SONIA'),
+                         (t['trade_type'], t['accrual_day_count'], t['index_tenor_months'], t['payer'], t['currency'],
+                          t['overnight_index']))
         market = m.market_for([t], '2026-10-26')
         self.assertIn('GBP-SIMINDEX-12M', market['currencies']['GBP']['index_curves'])
         self.assertEqual({'GBPUSD': 1.27}, market['fx_spots'])
@@ -75,17 +90,54 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(('2027-10-26', '2031-10-28'), (am['first_exercise_date'], am['last_exercise_date']))
         market = m.market_for([eu], '2026-10-26')
         self.assertEqual(len(m.VOL_TENORS), len(market['currencies']['GBP']['swaption_vols']['vols']))
-        with self.assertRaises(m.Refused) as ctx:
-            m.map_contract(dict(base, exerciseStyle='EUROPEAN', dayCount='ACT/360'))
-        self.assertEqual(('engine', 'R3'), (m.refusal(ctx.exception)['owner'], m.refusal(ctx.exception)['request']))
+        sofr = m.map_contract(dict(base, exerciseStyle='EUROPEAN', dayCount='ACT/360', currency='USD', floatIndex='USD-SOFR'))
+        self.assertEqual(('european_swaption', 'USD-SOFR'), (sofr['trade_type'], sofr['overnight_index']))
+        request = m.run_request([be, am], '2026-10-26', 'k')
+        self.assertEqual({'swap_index_from_trade': True, 'exercise_on_period_starts': True}, request['config']['pricing']['american'])
 
-    def test_every_engine_gap_names_its_request(self):
-        for kind, request in (('EQUITY', 'R1'), ('OPTION', 'R2'), ('CORPORATE', 'R4')):
-            with self.assertRaises(m.Refused) as ctx:
-                m.map_position(position(instrumentType=kind))
-            self.assertEqual({'owner': 'engine', 'request': request},
-                             {k: m.refusal(ctx.exception)[k] for k in ('owner', 'request')})
+    def test_no_class_is_an_engine_gap_and_a_missing_spot_is_ours(self):
+        self.assertEqual({}, m.ENGINE_GAP)
         self.assertEqual('traderx', m.refusal(m.Refused('TREASURY', 'x', 'zero face'))['owner'])
+        option = m.map_position(position(instrumentType='OPTION', security='MSFT261218C00400000'))
+        kept, refused = m.without_spot([option], {'AAPL': 150.0})
+        self.assertEqual(([], 'traderx'), (kept, m.refusal(refused[0])['owner']))
+
+
+class EquityMarketTest(unittest.TestCase):
+    """FR-RP-VARES-06: spots from the cut, the spot factors in the engine's order, their covariance."""
+    def test_spots_factors_and_covariance(self):
+        rows = [position(instrumentType='EQUITY', security='AAPL', closingMark='150.000000'),
+                position(instrumentType='EQUITY', security='AAPL', accountId='9', closingMark='150.000000'),
+                position(instrumentType='EQUITY', security='MSFT', closingMark='400.000000')]
+        spots = m.equity_spots(rows)
+        self.assertEqual({'AAPL': 150.0, 'MSFT': 400.0}, spots)
+        with self.assertRaises(ValueError):
+            m.equity_spots(rows + [position(instrumentType='EQUITY', security='AAPL', closingMark='151.000000')])
+        trades = [m.map_position(r) for r in rows] + [m.map_position(position())]
+        request = m.run_request(trades, '2026-10-26', 'k', spots=spots)
+        labels = request['config']['market_risk']['scenarios']['factors']
+        self.assertEqual(['equity:AAPL/spot', 'equity:MSFT/spot'], labels[-2:])
+        cov = request['config']['market_risk']['scenarios']['covariance']
+        horizon = 10 * m.EQUITY_VOL ** 2 / 252
+        self.assertAlmostEqual(horizon, cov[-1][-1])
+        self.assertAlmostEqual(horizon * m.EQUITY_CORRELATION, cov[-1][-2])
+        self.assertEqual(0.0, cov[0][-1], 'rates and equities are independent')
+        self.assertEqual(150.0, request['market']['equities']['AAPL']['spot'])
+
+    def test_one_negative_control_per_class(self):
+        rows = [position(instrumentType='EQUITY', security='AAPL', closingMark='150.000000')]
+        trades = [m.map_position(rows[0]), m.map_position(position(instrumentType='OPTION', security='AAPL261218C00150000')),
+                  m.map_position(position(instrumentType='CORPORATE', coupon='5.750', maturityDate='2036-01-24',
+                                          lastCouponDate='2026-07-24')), m.map_contract(contract())]
+        body = m.run_request(trades, '2026-10-26', 'k', spots=m.equity_spots(rows))
+        controls = {name: (control, expect) for name, control, expect in m.negative_controls(body, trades)}
+        self.assertEqual({'ois-index-curve', 'equity-spot', 'option-volatility', 'corporate-greeks'}, set(controls))
+        eq, _ = controls['equity-spot']
+        self.assertNotIn('AAPL', eq['market']['equities'])
+        self.assertNotIn('equity:AAPL/spot', eq['config']['market_risk']['scenarios']['factors'])
+        n = len(eq['config']['market_risk']['scenarios']['factors'])
+        self.assertEqual((n, n), (len(eq['config']['market_risk']['scenarios']['covariance']),
+                                  len(eq['config']['market_risk']['scenarios']['covariance'][0])))
 
 
 class RankRuleTest(unittest.TestCase):

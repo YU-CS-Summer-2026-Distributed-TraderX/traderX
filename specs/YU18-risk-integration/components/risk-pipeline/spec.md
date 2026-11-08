@@ -128,3 +128,47 @@ Engine measured: Alex's upstream `17ac757e8ffe9b180fa6e98ca6114c474ab0e6ad` (mai
   and reply. A large run completing is not financial validation.
 - SC-RP-BOOK-01: `test_book_gen.py` passes (determinism, capacity refusals, every class present, OCC symbols
   that `OccSymbol` reads as options).
+
+## TraderX's engine fork, November 7
+
+**ADR (November 7): TraderX owns a fork of the engine.** Alex gave permission to branch off his engine. The
+fork is branch `traderx/engine-fork` of his repository, in the worktree `~/dev/lmax/jax-risk-traderx`, cut
+from his `17ac757`. It is committed locally and never pushed; his `main` is untouched. R1-R6 of
+`coordination/alex-engine-requests-20261106.md` are implemented there instead of requested. Each comes
+with an engine test whose expected value is ORE/QuantLib's, not the engine's
+(`tests/test_traderx_products.py`). `var_es_e2e.ENGINE_REVISION` names the fork commit. A run whose
+`engine.revision` is any other commit, or is marked modified, fails the proof.
+Consequence: rebasing onto a later upstream is TraderX's work, and the fork's products are ours to keep in
+parity with ORE.
+
+- FR-RP-VARES-06: The engine half SHALL price every class with no refusal:
+  - an EQUITY row as `equity` (quantity x multiplier x spot);
+  - an OPTION row as `equity_option`, parsed from its OCC symbol (root, expiry, call/put, strike / 1000),
+    American;
+  - a CORPORATE row as a bond accruing `30/360` (the extract's stated `bondDayCount`) with a flat synthetic
+    `credit_spread`;
+  - every contract as an OIS on its `floatIndex` (`overnight_index`): USD-SOFR, EUR-ESTR, GBP-SONIA or
+    JPY-TONA, accruing the convention's day count.
+
+  The synthetic market SHALL take each equity's spot from its EQUITY rows' `closingMark` (rows of one
+  security must agree), with a flat volatility and dividend yield per name. An equity trade whose name has
+  no EQUITY row in the cut is refused, owner `traderx`. Equity spots are risk factors
+  (`equity:<symbol>/spot`, lognormal, pairwise correlated, independent of rates). Bermudans and Americans
+  SHALL calibrate on their own underlying's conventions (`swap_index_from_trade`), and Americans also
+  exercise on every period start in their window (`exercise_on_period_starts`). The TraderX half SHALL also
+  book a EUR-ESTR swap. One negative control per new input SHALL be refused with a 400 naming it:
+  - the OIS index curve;
+  - the equity's spot;
+  - the option's volatility;
+  - a spread bond's Greeks.
+- FR-RP-VARES-07: `ore_parity.py` SHALL check the fork's products against QuantLib built in the parity
+  script itself:
+  - equities exactly;
+  - options with `FdBlackScholesVanillaEngine` or the analytic European, to 3e-4;
+  - OIS swaps and Europeans with `OvernightIndexedSwap` on the index's calendar and payment lag, and
+    `BachelierSwaptionEngine`;
+  - spread bonds with `FixedRateBond` on a `ZeroSpreadedTermStructure`.
+
+  OIS Bermudans and Americans SHALL be checked by the no-arbitrage bounds.
+- SC-RP-VARES-02: The engine fork's `tests/test_traderx_products.py` passes. `scripts/proofs/yu18-var-es-e2e.sh`
+  against the fork exits 0 with every class priced and every negative control refused.

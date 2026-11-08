@@ -4,20 +4,23 @@
 #
 #   TraderX half   VarEsEndToEndTest (the generated order-matcher suite): every instrument class
 #                  TraderX books (listed equity over REST, listed option over FIX, Treasury bill, coupon
-#                  note and corporate over the binary fast path, OTC swaps over REST /swaps, European,
-#                  Bermudan and American swaptions over REST /swaptions) through the REAL gateway (a child
-#                  JVM) into three real members; venue close; the sequenced EOD marker at N; the cut rendered
-#                  byte-identically on every member; the production exporters' write-once fixture.
+#                  note and corporate over the binary fast path, OTC swaps over REST /swaps (USD-SOFR,
+#                  GBP-SONIA, EUR-ESTR), European, Bermudan and American swaptions over REST /swaptions)
+#                  through the REAL gateway (a child JVM) into three real members; venue close; the
+#                  sequenced EOD marker at N; the cut rendered byte-identically on every member; the
+#                  production exporters' write-once fixture.
 #                  Negative control: a counterparties table missing one account REFUSES.
-#   engine half    risk-var-es-e2e.py: eod-risk-bundles packages the receipt; every row is mapped to Alex's
-#                  upstream engine's POST /runs (analytics npv + market_risk) or REFUSED by name, with its
-#                  owner (FR-RP-VARES-04); VaR and ES must be finite and non-zero for the portfolio and
-#                  attributed to every trade from the inline P&L; a market missing a curve must be refused.
+#   engine half    risk-var-es-e2e.py: eod-risk-bundles packages the receipt; every row is mapped to
+#                  TraderX's engine fork (traderx/engine-fork, var_es_e2e.ENGINE_REVISION) POST /runs
+#                  (analytics npv + market_risk): equities, OCC options, Treasuries, corporates on a credit
+#                  spread, OIS swaps and swaptions; VaR and ES must be finite and non-zero for the portfolio
+#                  and attributed to every trade from the inline P&L. One negative control per new input
+#                  (OIS index curve, equity spot, option volatility, spread-bond Greeks) must be refused.
 #
-# Exit 0 only when every instrument in the fixture carries finite non-zero VaR and ES. Against Alex's
-# 17ac757 every class TraderX can fix prices (bills, notes, the GBP swap, all three swaption styles); the
-# equity, option, corporate and ACT/360 (USD-SOFR) rows are refused as ENGINE gaps R1-R4, requested in
-# coordination/alex-engine-requests-20261106.md. That is the finding this proof makes visible.
+# Exit 0 only when every instrument in the fixture carries finite non-zero VaR and ES and the run's engine
+# is the fork's ENGINE_REVISION, unmodified (FR-RP-VARES-06). Against Alex's 17ac757 the equity, option,
+# corporate and ACT/360 rows were refused (R1-R4, coordination/alex-engine-requests-20261106.md); the fork
+# implements them.
 #
 # Usage:
 #   RISK_ENGINE_ORIGIN=http://127.0.0.1:8765 scripts/proofs/yu18-var-es-e2e.sh [NEW_PRIVATE_OUTPUT_DIR]
@@ -94,7 +97,7 @@ for k, v in sorted((r.get('attribution') or {}).items()):
     print('  priced ', v.get('class'), v.get('security') or v.get('contractId'), {q: v[q] for q in v if q.startswith(('VaR', 'ES'))})
 for x in r.get('refused') or []:
     print('  REFUSED', x['class'], x['identity'], '-', x['reason'])
-print('negative ', r.get('negative_control', {}).get('status'), 'expected 400')
+print('negative ', [(c['control'], c['status']) for c in r.get('negative_controls', [])], 'expected 400 each')
 print('coverage ', r.get('coverage'))
 PY
 echo

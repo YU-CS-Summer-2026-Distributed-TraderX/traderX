@@ -76,9 +76,9 @@ The golden reference covers regular flat-curve bills and notes, signed dirty PV,
 
 ## VaR/ES on every class, and large books (November 6)
 
-`var_es_e2e.py` is the engine half of `scripts/proofs/yu18-var-es-e2e.sh` (FR-RP-VARES-01..04).
+`var_es_e2e.py` is the engine half of `scripts/proofs/yu18-var-es-e2e.sh` (FR-RP-VARES-01..04, 06), against TraderX's engine fork (`traderx/engine-fork`).
 `ore_parity.py` spot-checks a run's t=0 NPVs against ORE/QuantLib in the engine's own environment
-(FR-RP-VARES-05). `book_gen.py` writes a seeded booking plan; `VarEsEndToEndTest.largeBookThroughTheRealIngress`
+(FR-RP-VARES-05, 07). `book_gen.py` writes a seeded booking plan; `VarEsEndToEndTest.largeBookThroughTheRealIngress`
 books it through the real gateway (`TRADERX_LARGE_BOOK_PLAN`, `TRADERX_LARGE_BOOK_OUTPUT`); `large_book.py`
 prices the resulting fixture as one run and measures it (FR-RP-BOOK-01..04). Runbook and numbers:
 `docs/risk-integration/full-pricing-and-large-books-20261106.md`.
