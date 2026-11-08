@@ -31,7 +31,8 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   (Secret `history-cold-hmac`). `validate` refuses an absent, unsized, unclaimed or surging store, a writer on other
   streams, and hot days without the cold disk; `pin_images` refuses an image with no locked digest (ClickHouse 25.8,
   amd64 child `sha256:4ff0d6c1…` in `public-image-lock.json`). history-feed is a private image (`build-images.py`,
-  `measure-admission.py`; admission counts 13+E private, 10 upstream, 26 slots). `rig.sh pools` creates
+  `measure-admission.py`; admission counts 13+E private, 10 upstream, 26 slots; the build-context set is
+  `build-images.py`'s `COMPONENTS`, read by `admit.py`, since a literal 11 refused the 43006beb candidate, ADR-096 §6). `rig.sh pools` creates
   `history-pool`, `up` brings it to 1 node and waits for `sts/clickhouse` with the support workloads, `down` takes
   it to 0. Not done: the GCS bucket and HMAC key (cloud provisioning), and a GKE bring-up.
 - FR-THT-03: ClickHouse SHALL keep the newest `HISTORY_HOT_DAYS` date partitions on local SSD and move older ones to

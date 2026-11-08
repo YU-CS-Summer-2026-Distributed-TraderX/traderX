@@ -40,6 +40,9 @@ TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
 
 
 ri20=module('ri20_companion',ROOT/'scripts/yu15/image-admission.py')
+# The selected build contexts are build-images.py's components, read from that one list: a hard-coded 11 refused the
+# 43006beb candidate once FR-THT-02 added history-feed (2026-11-07), with every payload byte-identical.
+BUILD_CONTEXTS=frozenset(module('admit_build_images',Path(__file__).with_name('build-images.py')).COMPONENTS)
 derive=module('companion_derivation',ROOT/'scripts/yu15/generation-derivation.py')
 require=ri20.require
 
@@ -97,6 +100,12 @@ def read_evidence(folder, binding):
     return raw
 
 
+def check_contexts(receipt):
+    have=set(receipt['contexts'])
+    require(have==BUILD_CONTEXTS,'incomplete selected build-context population: missing '
+            f'{sorted(BUILD_CONTEXTS-have)}, unexpected {sorted(have-BUILD_CONTEXTS)} (build-images.py COMPONENTS)')
+
+
 def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_hash):
     require(plan.get('schema')=='traderx-compsci-intended-deployment-v1','unsupported profile plan')
     require(plan.get('target')==TARGET,'wrong explicit deployment target')
@@ -108,7 +117,7 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
             'derivation does not cover the complete current state ancestry')
     require(receipt.get('sourceInputsSha256')==current_source_hash,'current source differs from independent derivation')
     require(receipt.get('contexts')==plan.get('contexts') and receipt['contexts'],'missing/different intended contexts')
-    require(len(receipt['contexts'])==11,'incomplete selected build-context population')
+    check_contexts(receipt)
     require(plan.get('imageSourceCommit')==REVIEWED_IMAGE_COMMIT,'unreviewed image dependency')
     check_population(plan)
     require(ri20.sha(plan.get('imageSourceInputsSha256')),'missing original image build-input identity')

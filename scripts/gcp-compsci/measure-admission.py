@@ -8,7 +8,7 @@ The scripted form of the October 11 hand measurements (coordination/.../image-ad
                  SOURCE_DATE_EPOCH is that commit's time (generated UI metadata is a context input).
                  Each workload exception the population declares (ADR-096 §6) needs --exception-root
                  ROOT=GENERATED: a checkout of exactly its commit and that commit's render.
-  2. population  the 12 private + 9 upstream references are read FROM THE CANDIDATE, never typed in;
+  2. population  the private + upstream references (admit.py's counts) are read FROM THE CANDIDATE, never typed in;
                  optionally (--live-context) every running traderx container must run one of them.
   3. derivation  generation-derivation.validated(): independent full-ancestry contexts + receipt.
   4. images      each private image is pulled by digest; Id, linux/amd64 and the labels
@@ -65,6 +65,8 @@ def module(name, path):
 admit = module('measure_admit', HERE / 'admit.py')
 derive = admit.derive
 EXCEPTIONS = admit.EXCEPTIONS   # image -> {workload, component, sourceCommit} (ADR-096 §6)
+# One component list: build-images.py's (admit.BUILD_CONTEXTS); this map only names their images.
+assert set(COMPONENTS) == admit.BUILD_CONTEXTS, f'measure-admission COMPONENTS differ from build-images.py: {sorted(set(COMPONENTS) ^ admit.BUILD_CONTEXTS)}'
 
 
 def component_of(name):
