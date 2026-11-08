@@ -65,6 +65,21 @@ probe on `/v2/projection-feed/accounting` (it reads the capture streams and SQL,
 an answer, all before any member starts; refuses rc 2 against the rig.sh without the wait) and `test_prepare` (both
 renders carry the probe; KeyError against the prepare.py before it).
 
+**Amendment 2026-11-07, 11:28 pm ET (production):** G3h timed out on the same bring-up. history-feed had started at
+10:58 pm, before the reset, and bound both lanes to the TRADERX_FEED incarnation the reset then deleted; trade-processor
+recreated the stream, but history-feed kept reading the dead one until a `rollout restart`. The archive now stops
+history-feed with trade-processor and starts it after the accounting answers (the streams exist again). The rebind is
+left to the restart rather than to history-feed itself: an empty store could rebind safely, but the restart covers it
+with no code in the writer.
+
+A refused `up` after the members started also left `provisioned` with three empty claims, which G-pre refused as an
+incomplete wipe and which were deleted by hand twice. `up` now checks for no claim when it turns wiped into
+provisioned, so claims under provisioned can only be the epoch's own. A retry reads their error logs and starts the
+members on them, and G0's provisioned check (applied <= 0, trades 0) refuses anything else. Reusing the claims keeps
+the retry free of a delete. Tests: `test_rig.FreshEpoch` (history-feed held across the reset, none when not rendered;
+three claims pass the retry, with members holding anything refused; 1 claim refused; a wiped epoch with claims refused
+before any rename). Each fails against the rig.sh before it.
+
 ## Consequences
 
 - The empty engine needs the account directory and the instrument catalog before its first order; `rig.sh up` loads

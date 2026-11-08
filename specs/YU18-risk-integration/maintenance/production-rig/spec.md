@@ -187,7 +187,12 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   trade-processor, it SHALL wait until `/v2/projection-feed/accounting` answers before G3 reads the read model, and the
   render SHALL give trade-processor a readiness probe on that endpoint, so Ready means G3's read answers (2026-11-07
   11:01 pm ET: `rollout status` returned on a probe-less pod, the accounting read got connection refused 10 s before
-  it listened, and G3 refused). The gate SHALL accept empty members and no shutdown baseline only while
+  it listened, and G3 refused). history-feed, when rendered, SHALL be stopped with trade-processor and started only
+  after that answer, because it binds its lanes to the stream incarnation it starts on (2026-11-07 11:28 pm ET: one
+  started before the reset read the deleted stream and G3h timed out). `up` SHALL turn wiped into provisioned only
+  with no member claim; under provisioned, all three claims are that epoch's own (an `up` refused after the members
+  started) and SHALL be read like any other, with G0 refusing unless the members are empty, and 1 or 2 claims SHALL
+  refuse (2026-11-07: twice deleted by hand). The gate SHALL accept empty members and no shutdown baseline only while
   `rig-epoch` is provisioned, and mark it consumed on PASS; a missing baseline otherwise SHALL refuse.
 - **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
   does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom
