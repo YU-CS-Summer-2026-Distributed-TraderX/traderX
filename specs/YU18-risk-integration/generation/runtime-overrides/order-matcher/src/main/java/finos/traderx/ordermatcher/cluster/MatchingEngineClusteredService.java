@@ -535,6 +535,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public static final byte KIND_BUSINESS_DAY = 105;
     public static final byte KIND_RUN_CONTROL = 106;
     public static final byte KIND_SELF_MATCH_GROUP = 107;
+    /** RI33 (FR-AAD-02): an account control's committed decision; id at 13, outcome at 8. */
+    public static final byte KIND_ACCOUNT_CONTROL = 108;
 
     // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
@@ -1115,6 +1117,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         activeSession = null;
         drainOutputs(session);
         applyingMarketTrade = false;
+        if (event.type == InputEvent.TYPE_ACCOUNT_CONTROL) {
+            // RI33 (FR-AAD-02): the admission's committed decision, correlated by the issuer's id in
+            // the ingress inputSeq slot. Byte 8: 0 = the member holds the account, 1 = refused
+            // (F7: table full, ignored). Egress only: the apply above is unchanged on every member.
+            ackBuffer.putLong(0, appliedSeq);
+            ackBuffer.putInt(8, risk.knowsAccount(event.accountId) ? 0 : 1);
+            ackBuffer.putByte(12, KIND_ACCOUNT_CONTROL);
+            ackBuffer.putLong(13, applyRequestId);
+            ackBuffer.putByte(21, (byte) 0);ackBuffer.putByte(22, (byte) 0);ackBuffer.putByte(23, (byte) 0);
+            ackBuffer.putLong(24, 0L);
+            offerEgress(session);
+        }
         if (timeThis) {
             latency.recordApplyNanos(System.nanoTime() - applyStartNanos);
         }
