@@ -129,7 +129,10 @@ def configure_private_runtime(docs):
                 # FR-DRS-25: the projection pulls a durable JetStream consumer, so sides booked while it is
                 # down are replayed on restart instead of lost. FR-THT-01: the snapshot read model, named, never a
                 # default: 889e47be cut production from rows to snapshot silently when the default flipped (2026-11-07).
-                set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'TRADE_PROJECTION_MODE': 'snapshot'})
+                # The order view is memory-only with its 5 s SQL snapshot, as production e1107 ran (G3 reads the
+                # snapshot's open orders; the smoke reads the view through /accounts/{id}/orders).
+                set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'TRADE_PROJECTION_MODE': 'snapshot',
+                            'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000'})
             if name == 'cluster-gateway':
                 # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
                 # misses is re-read from TRADERX_FEED rather than lost.
@@ -432,15 +435,16 @@ def validate_read_model(docs, require):
     tp, members = env('trade-processor'), env('order-matcher-cluster', 'StatefulSet')
     require(tp.get('TRADE_PROJECTION_MODE') == 'snapshot',
             'trade-processor must name TRADE_PROJECTION_MODE=snapshot: a default changes the read model unseen (FR-THT-01)')
+    require(int(tp.get('ORDER_VIEW_SNAPSHOT_MS') or 0) > 0,
+            "no order view snapshot (ORDER_VIEW_SNAPSHOT_MS): the restore gate's G3 cannot check open orders, and a "
+            "memory-only view loses every order older than the replay window on restart (FR-DRS-30, FR-PRG-22)")
     if tp.get('PROJECTION_FEED_STREAM_LAYOUT') != 'partition' and tp.get('PROJECTION_FEED_PARTITIONS') is None:
-        return   # the unsized profile (--read-model rows): one stream, FR-PRG-20's sizing does not apply
+        return   # the default profile: one partition, one stream; FR-PRG-20's sizing does not apply
     require(tp.get('PROJECTION_FEED_MODE') == 'jetstream', 'the trade store reads the stream: PROJECTION_FEED_MODE=jetstream (FR-PRG-20)')
     require(tp.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition',
             'one capture stream holds ~50K orders/s; the profile is sized for one stream per partition (FR-DRS-32, ADR-097)')
     require(tp.get('PROJECTION_FEED_PARTITIONS') == members.get('BRIDGE_PARTITIONS', '1'),
             "trade-processor's partitions differ from the members' BRIDGE_PARTITIONS: a partition would never be read (FR-PRG-20)")
-    require(tp.get('ORDER_FEED_PERSIST') != 'false' or int(tp.get('ORDER_VIEW_SNAPSHOT_MS') or 0) > 0,
-            'a memory-only order view without its snapshot loses every order older than the replay window on restart (FR-DRS-30)')
     conf = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')['data']['nats.conf']
     store = int(re.search(r'max_file_store: (\d+)G', conf).group(1)) * 10**9
     claim = next(d for d in docs if d['kind'] == 'PersistentVolumeClaim' and d['metadata']['name'] == 'nats-data')

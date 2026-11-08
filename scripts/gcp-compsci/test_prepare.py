@@ -43,6 +43,21 @@ class Rendering(unittest.TestCase):
         c['env']=[e for e in c['env'] if e['name']!='TRADE_PROJECTION_MODE']
         with self.assertRaisesRegex(AssertionError,'TRADE_PROJECTION_MODE=snapshot'): module.validate(docs)
 
+    def test_the_default_render_is_the_snapshot_read_model_at_one_partition(self):
+        # As production e1107 ran it (2026-11-07): without ORDER_VIEW_SNAPSHOT_MS the restore gate's G3 refused
+        # ("no order view snapshot") at 7:13 pm ET.
+        tp=next(d for d in self.docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor')
+        env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
+        self.assertEqual({k:env.get(k) for k in ('TRADE_PROJECTION_MODE','ORDER_FEED_PERSIST','ORDER_VIEW_SNAPSHOT_MS',
+                                                 'PROJECTION_FEED_PARTITIONS','PROJECTION_FEED_STREAM_LAYOUT')},
+                         {'TRADE_PROJECTION_MODE':'snapshot','ORDER_FEED_PERSIST':'false','ORDER_VIEW_SNAPSHOT_MS':'5000',
+                          'PROJECTION_FEED_PARTITIONS':None,'PROJECTION_FEED_STREAM_LAYOUT':None})
+        for value in (None,'0'):
+            docs=copy.deepcopy(self.docs)
+            c=module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor'))['containers'][0]
+            c['env']=[e for e in c['env'] if e['name']!='ORDER_VIEW_SNAPSHOT_MS']+([{'name':'ORDER_VIEW_SNAPSHOT_MS','value':value}] if value else [])
+            with self.assertRaisesRegex(AssertionError,'no order view snapshot'): module.validate(docs)
+
     def test_member_archive_storageclass_is_rendered(self):
         # Members claim a retained volume of this class; a render without it leaves them Pending.
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')

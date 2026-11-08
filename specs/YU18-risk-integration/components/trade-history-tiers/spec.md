@@ -17,7 +17,9 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   Production cutover (found 2026-11-07): the CompSci render without `--read-model snapshot` never set
   `TRADE_PROJECTION_MODE`, so production ran trade-processor's default: rows until 9a2b5b90, snapshot from it. The
   889e47be build was production's first on the snapshot read model, unannounced. Since 2026-11-07 every render names
-  `TRADE_PROJECTION_MODE=snapshot` and `validate` refuses a render that leaves it to the default.
+  `TRADE_PROJECTION_MODE=snapshot` and `validate` refuses a render that leaves it to the default. The default render
+  is the snapshot read model at one partition with the memory-only order view and its 5 s snapshot
+  (`ORDER_FEED_PERSIST=false`, `ORDER_VIEW_SNAPSHOT_MS=5000`), as production e1107 ran it (FR-PRG-22).
 - FR-THT-02: ClickHouse (`history-feed`) SHALL be the trade history's system of record on GKE: every trade side and
   order event exactly once (FR-HST-03), on the per-partition streams (FR-DRS-34), rendered into the production
   manifests and started by `rig.sh up`. Its health SHALL be part of the rig's readiness.

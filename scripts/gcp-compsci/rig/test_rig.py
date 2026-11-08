@@ -190,6 +190,21 @@ class Up(unittest.TestCase):
             rc, out, _ = run('wait_for(){ "${@:3}" >/dev/null 2>&1 || die "timed out waiting for: $2"; note "ok: $2"; }; rig_up', ORDERS=orders)
             self.assertEqual(rc, 2, why); self.assertIn('order 7 CANCELED in the order read model', out, why)
 
+    def test_the_default_render_one_partition_memory_only_orders_passes_g3_and_the_smoke(self):
+        # The default render as production e1107 ran it: one partition, ORDER_FEED_PERSIST=false with the 5 s order-view
+        # snapshot. G3 reads the accounting's single partition and the snapshot's open orders; the smoke reads the view.
+        import json
+        one = json.dumps({'scope': 'legacy-unknown', 'partitions': 1,
+                          'trades': {'0': {'cursor': 50, 'sides': 5, 'maxSeq': 5, 'sumSeq': '15', 'sumSq': '55', 'duplicates': 0,
+                                           'epoch': '', 'streamLast': 40}},
+                          'orders': {'0': {'cursor': 60, 'open': 2, 'resting': 2, 'streamLast': 55}}})
+        rc, out, _ = run('rig_up', TP_MODE='snapshot', ACCT=one)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3 ok: the read model booked sides 1..5, each once; 2 open orders', out)
+        self.assertIn('ok: order 7 CANCELED in the order read model (FR-PRG-04)', out)
+        no_orders = json.dumps({**json.loads(one), 'orders': None}).replace(', "orders": null', '')
+        self.assertIn('no order view snapshot', self.refused('G3', TP_MODE='snapshot', ACCT=no_orders))
+
     def test_pools_creates_the_history_pool_tainted_for_the_store(self):
         rc, out, _ = run('DRY=1; rig_pools')
         self.assertEqual(rc, 0, out)
