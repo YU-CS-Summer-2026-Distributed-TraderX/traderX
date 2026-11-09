@@ -80,7 +80,18 @@ final class ClickHouseStore {
     return Long.parseLong(query("SELECT max(seq) FROM " + table + " WHERE part = {p:UInt16}", Map.of("p", "" + part)).trim());
   }
 
-  void insert(Rows b, int part) throws Exception {
+  /** The lane's highest stored position ({@link Rows#pos}), 0 when empty. */
+  long maxPos(String table, int part) throws Exception {
+    return Long.parseLong(query("SELECT max(" + (table.equals("trades") ? "trade_seq" : "cseq * 65536 + ordinal") + ") FROM "
+        + table + " WHERE part = {p:UInt16}", Map.of("p", "" + part)).trim());
+  }
+
+  /**
+   * Writes the batch and returns the rows written. With {@code repeats} (FR-THT-11: the batch goes back over a position
+   * its lane already passed) the INSERT itself leaves out every row the store already holds and every row the batch
+   * holds twice, so the answer may be less than {@code b.n}.
+   */
+  int insert(Rows b, int part, boolean repeats) throws Exception {
     StringBuilder sb = new StringBuilder(b.n * 128);
     for (int r = 0; r < b.n; r++) {
       sb.append(b.ts[r]).append('\t').append(b.seq[r]).append('\t').append(part).append('\t');
@@ -97,20 +108,59 @@ final class ClickHouseStore {
           .append(b.ordinal[r]).append('\t').append(Long.toUnsignedString(b.ref[r])).append('\n');
       }
     }
-    post(b.trades ? INSERT_TRADES : INSERT_ORDERS, Map.of(), sb.toString().getBytes(StandardCharsets.UTF_8));
+    byte[] body = sb.toString().getBytes(StandardCharsets.UTF_8);
+    if (!repeats) {
+      send(b.trades ? INSERT_TRADES : INSERT_ORDERS, Map.of(), body).body().close();
+      return b.n;
+    }
+    // The lookup's bound: trades by position (ts is the publish time, new on a republish; trade_seq_mm prunes), orders
+    // by ts (the engine's event time, the same on a republish; the date partition and each part's ts range prune).
+    long[] v = b.trades ? b.key : b.ts;
+    long lo = v[0], hi = v[0];
+    for (int r = 1; r < b.n; r++) { lo = Math.min(lo, v[r]); hi = Math.max(hi, v[r]); }
+    HttpResponse<InputStream> resp = send(b.trades ? INSERT_NEW_TRADES : INSERT_NEW_ORDERS,
+        Map.of("p", "" + part, "lo", "" + lo, "hi", "" + hi), body);
+    resp.body().close();
+    var m = WRITTEN.matcher(resp.headers().firstValue("X-ClickHouse-Summary").orElse(""));
+    return m.find() ? Integer.parseInt(m.group(1)) : b.n;
   }
 
+  static final java.util.regex.Pattern WRITTEN = java.util.regex.Pattern.compile("\"written_rows\":\"(\\d+)\"");
+
   // Millisecond epochs on the wire, converted server-side: TSV has no portable integer form of DateTime64.
-  static final String INSERT_TRADES = "INSERT INTO trades SELECT fromUnixTimestamp64Milli(ts), seq, part, trade_seq,"
+  static final String SELECT_TRADES = "INSERT INTO trades SELECT fromUnixTimestamp64Milli(ts), seq, part, trade_seq,"
       + " side, account, security, qty, px, order_ref, cseq, id_prefix, order_epoch FROM input('ts Int64, seq UInt64,"
       + " part UInt16, trade_seq UInt64, side FixedString(1), account UInt32, security String, qty UInt32, px Float64,"
-      + " order_ref UInt64, cseq UInt64, id_prefix String, order_epoch String') FORMAT TabSeparated";
-  static final String INSERT_ORDERS = "INSERT INTO orders SELECT fromUnixTimestamp64Milli(ts), seq, part, order_ref,"
+      + " order_ref UInt64, cseq UInt64, id_prefix String, order_epoch String')";
+  static final String SELECT_ORDERS = "INSERT INTO orders SELECT fromUnixTimestamp64Milli(ts), seq, part, order_ref,"
       + " account, security, side, qty, remaining, limit_px, status, last_px, last_qty,"
       + " fromUnixTimestamp64Milli(created), cseq, ordinal, client_key FROM input('ts Int64, seq UInt64, part UInt16,"
       + " order_ref UInt64, account UInt32, security String, side FixedString(1), qty UInt32, remaining UInt32,"
       + " limit_px Float64, status String, last_px Float64, last_qty UInt32, created Int64, cseq UInt64,"
-      + " ordinal UInt16, client_key UInt64') FORMAT TabSeparated";
+      + " ordinal UInt16, client_key UInt64')";
+  static final String INSERT_TRADES = SELECT_TRADES + " FORMAT TabSeparated";
+  static final String INSERT_ORDERS = SELECT_ORDERS + " FORMAT TabSeparated";
+
+  /**
+   * FR-THT-11: the store holds each trade side and each order event once, however many times the stream holds it (the
+   * bridges republish at a promotion and at a NATS reconnect, FR-DRS-37/38: at least once). A row is left out only when
+   * the store's lane, or the batch at an earlier stream sequence, already holds a row equal in everything the engine
+   * produced: every column but seq, and for a trade side ts (the bridge's publish time). The same id with different
+   * content is not a repeat: it is written, and G3h refuses the store. An order event with no position (cseq 0) is never
+   * left out. One lane writes a (table, part), so the lookup and the write cannot race.
+   */
+  static final String TRADE_FACT = "trade_seq, side, account, security, qty, px, order_ref, cseq, id_prefix, order_epoch";
+  static final String INSERT_NEW_TRADES = SELECT_TRADES + " WHERE (" + TRADE_FACT + ") NOT IN (SELECT trade_seq, side,"
+      + " account, toString(security), qty, px, order_ref, cseq, toString(id_prefix), toString(order_epoch) FROM trades"
+      + " WHERE part = {p:UInt16} AND trade_seq BETWEEN {lo:UInt64} AND {hi:UInt64})"
+      + " ORDER BY seq LIMIT 1 BY " + TRADE_FACT + " FORMAT TabSeparated";
+  static final String ORDER_FACT = "cseq, ordinal, order_ref, account, security, side, qty, remaining, limit_px, status,"
+      + " last_px, last_qty, created, client_key, ts";
+  static final String INSERT_NEW_ORDERS = SELECT_ORDERS + " WHERE cseq = 0 OR (" + ORDER_FACT + ") NOT IN (SELECT cseq,"
+      + " ordinal, order_ref, account, toString(security), side, qty, remaining, limit_px, toString(status), last_px,"
+      + " last_qty, toUnixTimestamp64Milli(created), client_key, toUnixTimestamp64Milli(ts) FROM orders"
+      + " WHERE part = {p:UInt16} AND ts BETWEEN fromUnixTimestamp64Milli({lo:Int64}) AND fromUnixTimestamp64Milli({hi:Int64}))"
+      + " ORDER BY seq LIMIT 1 BY if(cseq = 0, seq, 0), " + ORDER_FACT + " FORMAT TabSeparated";
 
   // FR-HST-05: the four access paths the bake-off measured. Times are ClickHouse DateTime64 text or epoch ms.
   static final String FILLS = "SELECT ts, trade_seq, side, security, qty, px, order_ref FROM trades"
@@ -141,6 +191,10 @@ final class ClickHouseStore {
   }
 
   private InputStream post(String sql, Map<String, String> params, byte[] body) throws Exception {
+    return send(sql, params, body).body();
+  }
+
+  private HttpResponse<InputStream> send(String sql, Map<String, String> params, byte[] body) throws Exception {
     StringJoiner q = new StringJoiner("&", base + "?", "");
     q.add("query=" + URLEncoder.encode(sql, StandardCharsets.UTF_8));
     params.forEach((k, v) -> q.add("param_" + k + "=" + URLEncoder.encode(v, StandardCharsets.UTF_8)));
@@ -152,7 +206,7 @@ final class ClickHouseStore {
       try (InputStream in = resp.body()) { err = new String(in.readAllBytes(), StandardCharsets.UTF_8); }
       throw new StoreException(resp.statusCode(), err.trim());
     }
-    return resp.body();
+    return resp;
   }
 
   static final class StoreException extends Exception {

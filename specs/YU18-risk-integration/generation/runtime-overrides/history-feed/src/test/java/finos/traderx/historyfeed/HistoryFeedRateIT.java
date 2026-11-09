@@ -55,10 +55,12 @@ class HistoryFeedRateIT {
       for (int s = 0; s < CROSSES; s++) {                // the backlog, before the feed starts
         long seq = s + 1, ms = 1761782400000L + s;
         acks.add(js.publishAsync("/orders", HistoryFeedKillIT.order(2 * seq - 1, s % 20, "NEW", 0, ms, 0)));
-        acks.add(js.publishAsync("/trades", HistoryFeedKillIT.trade(seq, "B", s % 20, 2 * seq, ms)));
-        acks.add(js.publishAsync("/trades", HistoryFeedKillIT.trade(seq, "S", (s + 7) % 20, 2 * seq - 1, ms)));
+        // The bridges' numbering: a tradeSeq per side and order positions that rise, so the lanes take the plain INSERT
+        // (FR-THT-11), as production's do.
+        acks.add(js.publishAsync("/trades", HistoryFeedKillIT.trade(2 * seq - 1, "B", s % 20, 2 * seq, ms)));
+        acks.add(js.publishAsync("/trades", HistoryFeedKillIT.trade(2 * seq, "S", (s + 7) % 20, 2 * seq - 1, ms)));
         acks.add(js.publishAsync("/orders", HistoryFeedKillIT.order(2 * seq, s % 20, "FILLED", 100, ms, 1)));
-        acks.add(js.publishAsync("/orders", HistoryFeedKillIT.order(2 * seq - 1, (s + 7) % 20, "FILLED", 100, ms, 2)));
+        acks.add(js.publishAsync("/orders", HistoryFeedKillIT.order(2 * seq, (s + 7) % 20, "FILLED", 100, ms, 2)));
         if (acks.size() > 20_000) { for (var f : acks) f.get(); acks.clear(); }
       }
       for (var f : acks) f.get();

@@ -127,7 +127,8 @@ public final class HistoryFeedMain {
         if (i > 0) sb.append(',');
         sb.append("{\"durable\":\"").append(l.durable).append("\",\"stream\":\"").append(l.stream)
           .append("\",\"cursor\":").append(l.cursor.get()).append(",\"rows\":").append(l.rows.get())
-          .append(",\"pending\":").append(l.pending()).append(",\"recreates\":").append(l.recreates.get())
+          .append(",\"pending\":").append(l.pending()).append(",\"duplicates\":").append(l.duplicates.get())
+          .append(",\"recreates\":").append(l.recreates.get())
           .append(",\"writeFailures\":").append(l.writeFailures.get()).append(",\"lastWriteMs\":").append(l.lastWriteMs.get())
           .append(",\"lastError\":\"").append(l.lastError.replace("\\", "/").replace("\"", "'")).append("\"}");
       }

@@ -57,7 +57,7 @@ class HistoryTierIT {
         b.px[i] = 100 + (i % 400) / 100.0; b.ref[i] = seq + 1; b.cseq[i] = seq + 1;
         b.n++;
       }
-      ch.insert(b, 0);
+      ch.insert(b, 0, false);
     }
     assertEquals("0", disks(ch, "cold_object"), "nothing is cold before the policy");
     Map<String, String> before = answers(ch);

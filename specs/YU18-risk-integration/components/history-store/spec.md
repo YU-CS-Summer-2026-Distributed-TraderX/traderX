@@ -9,7 +9,8 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
 
 - FR-HST-01: Every trade side and every order event the bridges publish on the partition subjects
   (`/trades.<p>`, `/orders.<p>`, `p = accountId mod P`) SHALL be stored as exactly one row of `trades` or
-  `orders`, carrying its partition `part` and its stream sequence `seq`. Trades keep `trade_seq`, `side`,
+  `orders`, carrying its partition `part` and its stream sequence `seq`: one row per side or event, however many
+  messages carry it (FR-THT-11; until 2026-11-09 one row per stream message). Trades keep `trade_seq`, `side`,
   `account`, `security`, `qty`, `px`, `order_ref`, `cseq` (consensus sequence) and `ts` (the envelope `date`);
   orders keep `order_ref`, `account`, `security`, `side`, `qty`, `remaining`, `limit_px`, `status`, `last_px`,
   `last_qty`, `created`, `cseq`, `ordinal` (output ordinal), `client_key` and `ts` (`updatedAt`). Ids are stored
@@ -35,10 +36,12 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   interleaved with new messages, and an AckPolicy.All ack of a later message retires earlier redeliveries that
   were never written (measured: 19 of 360,000,000 order events lost across one `kill -9`). The same reopening SHALL
   happen, in the running process, when a delivery's consumer sequence is not the previous one + 1 (a pull response
-  lost with its connection, FR-DRS-33), after it writes what it holds, and after any failed write.
+  lost with its connection, FR-DRS-33), after it writes what it holds, and after any failed write. This is once per
+  stream message. A side the stream itself holds twice is FR-THT-11.
 - FR-HST-04: ClickHouse writes SHALL be one `INSERT ... SELECT ... FROM input(...) FORMAT TabSeparated` per
   batch into MergeTree tables `PARTITION BY toDate(ts) ORDER BY (account, ts)` with `fsync_after_insert=1` and
-  `fsync_part_directory=1`; the INSERT returning is the durability point the ack waits for.
+  `fsync_part_directory=1`; the INSERT returning is the durability point the ack waits for. A batch that goes back
+  over a position its lane has stored takes the same INSERT with the rows the store already holds left out (FR-THT-11).
 - FR-HST-05: The store SHALL answer, from the same tables: (a) one account's fills today, paged by
   `ORDER BY ts DESC, seq DESC LIMIT 100 OFFSET n`; (b) one account's VWAP against the market's per security
   over a window (TCA), and VWAP by account and security over the window; (c) the full end-of-day export of both
