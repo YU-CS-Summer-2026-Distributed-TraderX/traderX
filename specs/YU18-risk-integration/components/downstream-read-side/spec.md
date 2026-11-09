@@ -319,9 +319,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   still storing from the old connection is not sent twice. If the stream cannot be read, the lane retries on a new
   connection while the ring keeps absorbing records. A failed publish is retried this way and is no longer counted as
   dropped.
-  Past the ring: an outage longer than the ring holds loses the oldest records. If the newest record the lane no
-  longer keeps is after the stream's last, the catch-up logs an ALERT, increments `/health` `bridges.*.gaps`, and still
-  publishes what it kept, in order. At P=6 and 400K orders/s a trade lane fills its ring in about 1 s, and an order
+  Past what a lane holds: while NATS is unreachable the lane waits in its reconnect and its queue (65,536) holds
+  what the member applies; once the queue is full it refuses the newest records, which is the queue rule below. Past
+  the ring: if the newest record the lane no longer keeps is after the stream's last, the catch-up logs an ALERT,
+  increments `/health` `bridges.*.gaps`, and still publishes what it kept, in order. On kind (2026-11-09, FR-DRS-40's
+  control run) NATS stayed down 49 s on its fourth restart (kubelet's crash backoff): the order lane, at about 2,000
+  events/s, refused 36,293 and counted the gap; the trade lane, at about 1,000 sides/s, held everything. At P=6 and 400K orders/s a trade lane fills its ring in about 1 s, and an order
   lane in about 0.5 s. So a NATS pod restart at full rate is a loud gap, repaired from the archive. At kind's rate
   in run 2 (about 1,200 sides/s and 2,400 order events/s) the rings cover about 55 s and 27 s.
   Found on kind 2026-11-08 (trade-history lane, run 1). NATS was OOM-killed three times at its 768Mi limit. The
@@ -379,6 +382,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     `#aNatsRestartRepublishesWhatTheStreamLost` run under both schemes (legacy failed: no position stored).
     `ReceiptLanesIT#aStreamWhoseLastOrderEventHasNoPositionIsACountedGap` (before: gaps 0).
     `OrderBatchProjectionIT#aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun`.
+  - On kind (2026-11-09, `scripts/proofs/kind-bridge-nats-restart.sh`): production's default shape with legacy ids,
+    4 x 250 orders/s for 180 s, NATS SIGKILLed twice in place under a steady leader. With this rule the stream held
+    145,590 of the members' 145,590 new sides and 291,180 of 291,180 order events; the leader republished 90 sides
+    and 166 order events and counted no gap. The control, the same members rolled to the build before this rule, lost
+    45 of 289,908 order events behind INFO lines only, with every trade side held. An earlier pair read the same
+    way (333,528 of 333,528; the control lost 68 of 285,724).
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

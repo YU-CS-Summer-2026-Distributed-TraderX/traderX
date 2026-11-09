@@ -84,7 +84,8 @@ kind (2026-11-08) the stream was missing 952 sides that all three members had ap
    for 200 ms, and a stream it cannot read is retried on the next connection.
 10. **Past the ring is loud.** If the newest record the ring evicted is after the stream's last, the catch-up counts
     a gap (`bridges.*.gaps` on `/health`), logs an ALERT, and publishes what it kept, in order. Repair is the archive
-    replay (Decision 4).
+    replay (Decision 4). While NATS is unreachable the lane waits in its reconnect, so it is the lane's queue that
+    holds the outage; a full queue refuses the newest records and that too is a counted gap (Decision 11).
 
 Cost: the leader now retains the records it publishes for as long as a follower already did, one array store per
 record. A record is held for one ring's length, about 1 s at 400K/s and P=6, instead of until its publish. There is

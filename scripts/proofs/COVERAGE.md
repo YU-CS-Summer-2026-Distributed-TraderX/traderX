@@ -1,5 +1,14 @@
 # Proof coverage against the specs
 
+## Bridge catch-up across a NATS restart on kind (2026-11-09, FR-DRS-38/40, kind traderx-drs40, torn down)
+
+`kind-bridge-nats-restart.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape,
+legacy ids): 4 x 250 orders/s for 180 s, NATS SIGKILLed twice in place under a steady leader. PASS: G3h on 145,590 new
+sides, order events 291,180 of 291,180, store = stream, the leader republished 90 sides and 166 order events, no gap.
+Control (`EXPECT_LOSS=1`, the same members rolled to the build before FR-DRS-40): lost 45 of 289,908 order events,
+trade sides all held. The script refuses to start inside kubelet's crash backoff (NATS up under 10 minutes after a
+restart): on its fourth restart NATS stayed down 49 s and the order lane's full queue refused 36,293 events, loudly.
+
 ## History store on GKE (2026-11-07, FR-THT-02/03/06, traderx-demo namespace pa-proof-tht, torn down)
 
 `kind-history-store.sh` on the disposable GKE rig (prepare.py's history sizes on c4d Hyperdisk, cold disk on GCS):

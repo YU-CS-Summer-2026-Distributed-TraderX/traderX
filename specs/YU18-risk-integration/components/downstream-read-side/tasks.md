@@ -57,6 +57,7 @@
       production and kind run; a last message without one is a counted gap; the SQL order projection accepts it
       (FR-DRS-40). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` (order events),
       `ReceiptLanesIT` under both schemes, `OrderBatchProjectionIT#aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun`.
+      On kind: `scripts/proofs/kind-bridge-nats-restart.sh` (291,180 of 291,180 order events; the control lost 45).
 
 ## Still open
 
