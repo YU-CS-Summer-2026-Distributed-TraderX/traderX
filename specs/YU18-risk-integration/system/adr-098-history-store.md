@@ -72,3 +72,9 @@ left 3.07M trades in the store and 16.2M order events queued, and G3h timed out 
 this: it acked to a store-reported watermark (FR-HST-02) instead. A lane now asks for 2 x batch + fetch, reads the
 granted value back, and does not start below one batch. G3h's wait is 600 s plus the backlog at 20,000 rows/s
 (FR-THT-10). Locally the same 5M backlog now drains in about 13 s at P=1, against about 30 minutes before.
+
+**Amendment 2026-11-09 (GKE `pa-proof-400k`, 8 partitions):** the capture stream is the ceiling this ADR's consequences
+named. One NATS server (44 CPUs, 160Gi) was lossless at 202K feed messages/s (67K orders/s, every count equal) and
+dropped at stream ingest from 285K messages/s. The feed and ClickHouse drained at 640K to 813K rows/s once NATS
+delivered. A side the bridge published twice was stored twice: the store's identity is the stream sequence, and
+G3h refuses it. Both are RI34.
