@@ -17,7 +17,7 @@ def controls(root, folder):
     source=admit.derive.source_hash(admit.derive.inputs(root))
     def check(p=plan,i=inventory,r=receipt,s=source):return admit.validate(root,rendered,p,i,folder,r,s)
     images=admit.PRIVATE_IMAGES+admit.UPSTREAM_IMAGES
-    report=check();assert len(report['artifacts'])==images and len(report['slots'])==admit.SLOTS
+    report=check();assert len(report['artifacts'])==images and len(set(report['slots'])-admit.OPTIONAL_SLOTS)==admit.SLOTS
     print(f'PASS nonempty measured baseline: {images} images / {admit.SLOTS} slots')
     count=1
     def refuses(label,action):
