@@ -37,10 +37,11 @@ final class FeedLane implements Runnable {
   private final JetStreamOptions jso = JetStreamOptions.builder().requestTimeout(Duration.ofMinutes(10)).build();
 
   final AtomicLong rows = new AtomicLong(), recreates = new AtomicLong(), cursor = new AtomicLong(),
-      writeFailures = new AtomicLong(), lastWriteMs = new AtomicLong();
+      writeFailures = new AtomicLong(), lastWriteMs = new AtomicLong(), duplicates = new AtomicLong();
   volatile String lastError = "";
   volatile boolean ready;
   private volatile JetStreamSubscription sub;
+  private long high;                 // FR-THT-11: the highest position (Rows.pos) the store holds for this lane
 
   FeedLane(Connection nc, ClickHouseStore store, String stream, String feed, int part, int partitions, int batchRows,
            int flushMs, int fetch) {
@@ -85,6 +86,7 @@ final class FeedLane implements Runnable {
     ready = false;
     long c = store.maxSeq(table, part);
     cursor.set(c);
+    high = store.maxPos(table, part);
     checkIncarnation(c);
     open(c);
     ready = true;
@@ -121,19 +123,34 @@ final class FeedLane implements Runnable {
     }
   }
 
-  /** Durable INSERT, then the ack. A failed INSERT ends the consumer lifetime: the next one reopens at the cursor. */
+  /**
+   * Durable INSERT, then the ack. A failed INSERT ends the consumer lifetime: the next one reopens at the cursor.
+   * FR-THT-11: a lane's positions only rise, so a batch whose every row is above the last takes the plain INSERT, as it
+   * always has. A batch that goes back over one holds a message the stream carries twice (or one that arrived late) and
+   * takes the INSERT that leaves out what the store already holds; which rows those are is the store's answer, never
+   * the lane's guess. A row with no position (0: an order event of the legacy id scheme, which the bridges do not
+   * republish) is never a repeat and never asks.
+   */
   private void flush(Rows b, Message last) throws Exception {
     if (b.n == 0) return;
-    long t = System.nanoTime();
+    long t = System.nanoTime(), h = high;
+    boolean repeats = false;
+    for (int r = 0; r < b.n; r++) { long p = b.pos(r); if (p > h) h = p; else if (p != 0) repeats = true; }
+    int written;
     try {
-      store.insert(b, part);
+      written = store.insert(b, part, repeats);
     } catch (Exception e) {
       writeFailures.incrementAndGet();
       b.n = 0;
       throw e;
     }
     lastWriteMs.set((System.nanoTime() - t) / 1_000_000);
-    rows.addAndGet(b.n);
+    high = h;
+    rows.addAndGet(written);
+    if (written < b.n) {
+      duplicates.addAndGet(b.n - written);
+      System.out.printf("%s: left out %d of %d messages the store already holds (FR-THT-11)%n", durable, b.n - written, b.n);
+    }
     cursor.set(b.lastSeq());
     b.n = 0;
     if (last != null) last.ack();

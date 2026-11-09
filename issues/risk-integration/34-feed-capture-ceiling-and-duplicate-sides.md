@@ -1,7 +1,11 @@
 # RI34 — The feed capture stops being lossless near 285K messages/s, and a republished side is stored twice
 
-Opened: 2026-11-09 (the 400K campaign, namespace `pa-proof-400k` on traderx-demo, torn down). Status: open, not
-diagnosed. Evidence: shared notes `history-feed-rate-20261108/campaign-400k/`. Spec: trade-history-tiers FR-THT-10.
+Opened: 2026-11-09 (the 400K campaign, namespace `pa-proof-400k` on traderx-demo, torn down). Evidence: shared notes
+`history-feed-rate-20261108/campaign-400k/`. Spec: trade-history-tiers FR-THT-10, FR-THT-11.
+
+Status: section 1 (the NATS capture ceiling) is open and not diagnosed. Section 2 is fixed in the store's writer
+(FR-THT-11, 2026-11-09, not deployed): history-feed leaves out what the store already holds. Why the bridge published
+those sides twice in that run is not diagnosed; the bridges republish by design (FR-DRS-37/38).
 
 ## 1. One NATS server loses feed messages well below 400K orders/s
 
@@ -37,5 +41,19 @@ about 3 s apart, with different stream sequences (for example trade_seq 31414397
 - G3h counts them ("1104397 duplicated trade side(s)") and refuses, so the gate catches it. But the store is the trade
   system of record (ADR-102), and a blotter or extract reading it would see the side twice.
 
-To find out: why the bridge republished (a retry on a slow or refused publish, or FR-DRS-37's replay), and whether
-history-feed should refuse a trade_seq it already holds for the partition, as trade-processor does.
+Fixed 2026-11-09 (FR-THT-11; ADR-098 amendment): the store holds each trade side and each order event once.
+- A lane keeps the highest position it has stored (a side's `tradeSeq`; an order event's (`consensusSequence`,
+  `outputOrdinal`)). A batch that goes back over it is written by an INSERT that leaves out every row the store or the
+  batch already holds, equal in everything the engine produced. A batch above it is written as before.
+- It is not trade-processor's refusal by `tradeSeq`: the store is asked, so a record that arrives late is kept, and the
+  same id with other content is stored and refused by G3h rather than dropped.
+- The tables stay plain MergeTree, so no reader changed and there is no window before a merge.
+- Tests: `HistoryFeedDuplicateIT` (fails without the fix); kind `scripts/trade-history-tiers/kind-history-duplicates.sh`.
+- Not covered: a store that already holds repeats is not cleaned, and the fix is not deployed.
+- Not covered: order events under the legacy id scheme, which production runs (no run descriptor in the render). They
+  carry no `consensusSequence` or `outputOrdinal`, so a repeat cannot be told from a second identical event, and the
+  bridges' catch-up does not republish them. Whether order events were in the stream twice in the third attempt was
+  not measured: the count taken then was by stream sequence.
+
+Still to find out: why the bridge republished in that run (a retry on a slow or refused publish, or FR-DRS-37's
+replay). That belongs with section 1 and the bridge.

@@ -132,6 +132,51 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   - stream 5,361,888 messages = store 1,787,296 trades + 3,574,592 orders; members 1,787,296
   - an earlier run refused at G3h with 952 sides absent from the stream itself, lost when kind's 768Mi NATS was OOM-killed
     under the members' core publishes. That is not the feed.
+- FR-THT-11: The history store SHALL hold each trade side and each order event once, however many times the capture
+  stream holds it (2026-11-09, RI34 section 2). The bridges republish at a promotion and at a new NATS connection
+  (FR-DRS-37/38): at least once. On GKE `pa-proof-400k` 1,104,397 trade sides were in the stream twice and the store
+  held both, because it stored one row per stream message.
+  - A lane's positions only rise: a trade side's `tradeSeq`, an order event's (`consensusSequence`, `outputOrdinal`),
+    the bridges' own catch-up position. The lane keeps the highest position it has stored, read from the store at
+    every open. A batch whose every row is above it takes the plain INSERT, as before: the write path does not change
+    until the stream goes back over a position.
+  - A batch with a row at or below it SHALL be written by one INSERT that leaves out a row when the lane's rows in the
+    store, or an earlier row of the batch, already hold a row equal in everything the engine produced: every column
+    but `seq`, and for a trade side `ts` (the bridge's publish time, which a republish changes). The first stored
+    wins. The lookup is bounded by the batch's `trade_seq` range (trades) or its `ts` range (orders, whose `ts` is the
+    engine's and does not change). The lane does not decide which rows are repeats: the store answers, so a record
+    that arrives late and was never stored is kept.
+  - The same id with different content is not a repeat. It SHALL be stored, and G3h's duplicate count refuses the
+    store.
+  - An order event with no position SHALL never be left out and never causes the lookup. That is every order event
+    under the legacy id scheme (no run descriptor), which the production render and the kind rig run today: their
+    order events carry no `consensusSequence` or `outputOrdinal`, so nothing tells a repeat from a second identical
+    event. The bridges do not republish those either (their catch-up needs the same position, FR-DRS-37). Order
+    events are held once only under epoch-v1 ids. Trade sides are held once under both schemes: a legacy side still
+    has its `tradeSeq`.
+  - No reader changes. The tables are plain MergeTree and hold each side once at every moment, so G3h, the blotter,
+    TCA, the export and the recon count each side once with no `FINAL` and no wait for a merge.
+  - The cursor stays max(`seq`) (FR-HST-03). It can sit behind repeats at the stream's tail; a restart reads them
+    again and leaves them out again. When caught up, the store's rows are the stream's messages less the repeats.
+  - `/health` reports `duplicates` per lane: messages left out since the process started.
+  - Positioned order events get the same treatment as trade sides: the same catch-up republishes them, and the
+    export and any sum over order events would count a repeat twice.
+  - Cost, measured locally 2026-11-09 (ClickHouse 25.8 on Docker Desktop, the laptop at load average 16):
+    `HistoryFeedRateIT`'s 1M rows took 4.9 s as built, 5.1 s with the check forced off and 6.1 s with every batch
+    forced through the leaving-out INSERT. On a 40M-side store with 5,000 accounts the lookup took 4-8 ms on unmerged
+    parts and 70-120 ms where the range fell inside one merged 40M-row part (the `trade_seq` minmax index prunes
+    whole parts there, not granules). Not measured on GKE or on a cold (GCS) partition.
+  - Tests: `HistoryFeedDuplicateIT` (NATS 2.14 + ClickHouse 25.8, the shipped jar, P=2): 35,000 repeated messages,
+    of rows stored before a SIGKILL (the sides' publish time a day later), back to back in one batch, and at the
+    stream's tail read again by a third process; a late cross is kept; a side with another quantity under a stored id
+    is stored; two identical order events with no position are both stored. With the leaving-out INSERT disabled the
+    test fails.
+  - Proven on kind `traderx-dup` (`kind-history-duplicates.sh`, 2026-11-09 9:36-9:38 am ET; production's default
+    shape and its legacy ids; history-feed from this change, the other images 2026-11-08's): 290,806 sides booked;
+    4,057 stored sides read back off the stream and published again, 2,030 with history-feed running and 2,027 across
+    its restart; history-feed left out 2,030, then 4,057 after the restart (it reads the first 2,030 again); the
+    store held 290,806 trades throughout; G3h: sides 1..290,806, each once. The stream also held the repeats of three
+    earlier runs of the script. The 4,016 order events republished were unpositioned and were stored, as above.
 - FR-THT-07: Either store SHALL be rebuildable from the capture streams from its cursor 0, with the result equal to
   the store it replaces (count and hash, FR-THT-06).
 

@@ -78,3 +78,37 @@ named. One NATS server (44 CPUs, 160Gi) was lossless at 202K feed messages/s (67
 dropped at stream ingest from 285K messages/s. The feed and ClickHouse drained at 640K to 813K rows/s once NATS
 delivered. A side the bridge published twice was stored twice: the store's identity is the stream sequence, and
 G3h refuses it. Both are RI34.
+
+**Amendment 2026-11-09 (each side once, FR-THT-11):** the store's identity is the side, not the stream message. The
+bridges republish by design (FR-DRS-37/38, at least once), and ClickHouse is the trade system of record (ADR-102), so
+a republished side must not be a second row. Decision: the single writer leaves repeats out at the INSERT.
+- A lane's positions only rise (`tradeSeq`; (`consensusSequence`, `outputOrdinal`)). The lane keeps the highest it
+  has stored. A batch above it is written as before. A batch that goes back over it is written by an INSERT whose
+  `WHERE ... NOT IN (SELECT ... FROM <table> WHERE part = p AND <the batch's range>)` and `LIMIT 1 BY` leave out the
+  rows the store or the batch already holds.
+- A row is a repeat only if it equals a stored row in everything the engine produced: every column but `seq`, and for
+  a trade side `ts`. The same id with other content is stored and G3h refuses the store. A dropped row can never be a
+  different fact.
+- Exactly one writer per (table, part) (decision 4) is what makes look-up-then-write safe without a lock.
+- Order events are keyed by (`consensusSequence`, `outputOrdinal`), which only epoch-v1 ids carry. Under the legacy
+  id scheme, which the production render runs today (no run descriptor), an order event has no position: it is never
+  left out, and the bridges do not republish it. Trade sides are covered under both schemes by `tradeSeq`. Holding
+  legacy order events once would mean treating equal content as the same event at a lookup on every batch; not done.
+- What a query sees before a background merge: nothing different. The tables stay plain MergeTree and hold each side
+  once from the moment the INSERT returns, so no reader changed.
+
+Rejected:
+- **ReplacingMergeTree, readers on `FINAL` or `argMax`.** Repeats stay visible until a merge, so G3h, the blotter,
+  TCA, the export, the recon and trade-processor's settlement lookup would each have to read `FINAL` or double-count.
+  Merges never cross a date partition, and a republished side's `ts` is its new publish time, so a repeat across
+  midnight UTC would never merge away. The existing tables would need a rebuild (engine and sort key).
+- **ClickHouse insert deduplication (a token, or the block-hash window).** It drops a retried identical block. A
+  republished side arrives in a different block.
+- **A high-water mark alone in the feed** (refuse any position at or below the lane's highest, as trade-processor
+  refuses by `tradeSeq`). It drops without asking the store, so a record that arrives late, behind newer ones, would
+  be lost from the system of record. The high-water mark only chooses which INSERT to use.
+
+Consequences: the store's rows are the stream's messages less the repeats, so "store rows = stream messages" holds
+only for a stream with none; `/health` `duplicates` counts what a process left out. The leaving-out INSERT reads the
+lane's stored rows in the batch's range: 4-8 ms locally on unmerged parts, 70-120 ms inside one merged 40M-row part,
+and only for a batch that goes back. A store that already holds repeats is not cleaned by this.

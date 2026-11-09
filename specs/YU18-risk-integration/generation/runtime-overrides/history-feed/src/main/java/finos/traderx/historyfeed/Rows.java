@@ -31,6 +31,13 @@ final class Rows {
 
   long lastSeq() { return seq[n - 1]; }
 
+  /**
+   * FR-THT-11: where row r sits in its lane's apply order, the bridges' own catch-up position (FR-DRS-37): a trade
+   * side's tradeSeq, an order event's (consensusSequence, outputOrdinal). A lane's positions only rise, so one at or
+   * below the last is a message the stream holds twice. 0: an order event with no position (a legacy id scheme).
+   */
+  long pos(int r) { return trades ? key[r] : cseq[r] << 16 | ordinal[r]; }
+
   /** Parses one message into row n; the stream sequence is the row's identity (FR-HST-01). */
   static final class Parser {
     private final HashMap<String, String> interned = new HashMap<>();
@@ -40,7 +47,7 @@ final class Rows {
     void parse(byte[] data, Rows b, long streamSeq) {
       d = data; i = 0;
       int r = b.n;
-      b.seq[r] = streamSeq; b.ref[r] = 0; b.created[r] = 0; b.remaining[r] = 0; b.lastQty[r] = 0;
+      b.seq[r] = streamSeq; b.ref[r] = 0; b.cseq[r] = 0; b.created[r] = 0; b.remaining[r] = 0; b.lastQty[r] = 0;
       b.ordinal[r] = 0; b.lastPx[r] = 0; b.status[r] = ""; b.idPrefix[r] = ""; b.orderEpoch[r] = "";
       while (true) {
         int ks = indexOf('"', i);

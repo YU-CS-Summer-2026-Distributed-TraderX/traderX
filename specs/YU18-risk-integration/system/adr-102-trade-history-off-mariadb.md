@@ -80,6 +80,14 @@ The store is the trade system of record only if it keeps up. On production e1108
 1,500 rows/s, because NATS stored the lanes' `maxAckPending(-1)` as 1000. That is fixed, with a scaled G3h wait, in
 FR-THT-10 (ADR-098 amendment 2026-11-08). The cutover's rollout needs that history-feed image with it.
 
+## Each side once, 2026-11-09
+
+A system of record cannot hold a side twice. The bridges republish at a promotion and at a NATS reconnect
+(FR-DRS-37/38), and on GKE `pa-proof-400k` the store held 1,104,397 sides twice (RI34). history-feed now leaves out
+at the INSERT any row its store already holds, for trades and order events alike; the tables stay plain MergeTree, so
+the blotter, TCA, the extract's source and G3h read each side once with no `FINAL` (FR-THT-11; the choice and what
+was rejected are in ADR-098's amendment of 2026-11-09).
+
 ## Cutover, 2026-11-08 (kind)
 
 Decided by yaakov (2026-11-08, through the EOD integration coordinator): ClickHouse becomes the trade system of record
