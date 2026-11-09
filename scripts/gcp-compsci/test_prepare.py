@@ -817,6 +817,17 @@ class HistoryStore(unittest.TestCase):
     def broken(self,change,docs=None):
         docs=copy.deepcopy(docs or self.docs); change(docs); return docs
 
+    # FR-THT-10: the partitioned render is the full-rate one (~1M feed messages/s); one partition keeps the e1108b sizes.
+    def test_the_store_and_its_writer_are_sized_by_the_partitions(self):
+        def size(docs):
+            cpu=lambda k,n: module.podspec(self.doc(docs,k,n))['containers'][0]['resources']['limits']['cpu']
+            claim=self.doc(docs,'StatefulSet','clickhouse')['spec']['volumeClaimTemplates'][0]['spec']['resources']['requests']['storage']
+            return cpu('StatefulSet','clickhouse'),cpu('Deployment','history-feed'),claim
+        self.assertEqual(size(self.docs),('6','8','500Gi'))
+        with tempfile.TemporaryDirectory() as d:
+            module.prepare(Path(d)/'one','test-candidate','10.93.0.10',read_model='snapshot',partitions=1)
+            self.assertEqual(size(list(yaml.safe_load_all((Path(d)/'one/candidate.yaml').read_text()))),('4','2','200Gi'))
+
     def test_the_store_and_its_writer_are_rendered_on_their_own_pool(self):
         store,writer=self.doc(self.docs,'StatefulSet','clickhouse'),self.doc(self.docs,'Deployment','history-feed')
         for d in (store,writer):
@@ -825,7 +836,7 @@ class HistoryStore(unittest.TestCase):
             self.assertIn({'key':'traderx-history','operator':'Equal','value':'true','effect':'NoSchedule'},pod['tolerations'])
             res=pod['containers'][0]['resources']; self.assertEqual(res['requests'],res['limits'])
         claim=store['spec']['volumeClaimTemplates'][0]['spec']
-        self.assertEqual((claim['storageClassName'],claim['resources']['requests']['storage']),('clickhouse-hot','200Gi'))
+        self.assertEqual((claim['storageClassName'],claim['resources']['requests']['storage']),('clickhouse-hot','500Gi'))
         sc=self.doc(self.docs,'StorageClass','clickhouse-hot')
         self.assertEqual((sc['parameters']['type'],sc['reclaimPolicy']),('hyperdisk-balanced','Retain'))
         env={e['name']:e.get('value') for e in module.podspec(writer)['containers'][0]['env']}
@@ -837,7 +848,7 @@ class HistoryStore(unittest.TestCase):
     def test_an_unsized_or_unclaimed_or_absent_store_is_refused(self):
         def pod(docs,kind,name): return module.podspec(self.doc(docs,kind,name))['containers'][0]
         def unsized(docs): pod(docs,'StatefulSet','clickhouse').pop('resources')
-        def burstable(docs): pod(docs,'Deployment','history-feed')['resources']['limits']['memory']='8Gi'
+        def burstable(docs): pod(docs,'Deployment','history-feed')['resources']['limits']['memory']='16Gi'
         def unclaimed(docs): self.doc(docs,'StatefulSet','clickhouse')['spec']['volumeClaimTemplates'][0]['spec'].pop('storageClassName')
         def absent(docs): docs.remove(self.doc(docs,'StatefulSet','clickhouse'))
         def surging(docs): self.doc(docs,'Deployment','history-feed')['spec']['strategy']={'type':'RollingUpdate'}

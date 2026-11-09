@@ -483,6 +483,10 @@ class Up(unittest.TestCase):
         rc, out, _ = run('history_wait_secs', HIST_HEALTH='{"lanes":[{"pending":16200000}]}', HISTORY_DRAIN_FLOOR='200000')
         self.assertEqual(out.strip(), '681')
 
+    def test_the_full_rate_history_pool_is_one_variable(self):
+        for env, machine in (({}, 'c4d-standard-8'), ({'HISTORY_MACHINE': 'c4d-standard-16'}, 'c4d-standard-16')):
+            self.assertEqual(run('pool_machine history-pool', **env)[1].strip(), machine)
+
     def test_an_unreadable_history_store_is_refused(self):
         self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
 

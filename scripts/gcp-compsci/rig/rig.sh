@@ -58,10 +58,11 @@ SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke 
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
 pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
-  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo c4d-standard-8;; esac; }
+  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
 pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo 1;;
   gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
 # history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).
+# FR-THT-10: the partitioned (full-rate) render sizes them at 6 + 8 CPU: HISTORY_MACHINE=c4d-standard-16 creates the pool.
 RIG_POOLS="default-pool engine-pool nats-pool gateway-pool history-pool"
 
 et(){ TZ=America/New_York date '+%-I:%M:%S %p ET'; }
