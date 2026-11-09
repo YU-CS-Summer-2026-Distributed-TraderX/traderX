@@ -180,6 +180,15 @@ class Rendering(unittest.TestCase):
         """FR-PRG-37: 10Gi filled on 2026-11-04 (InnoDB error 28)."""
         claim=[d for d in self.docs if d['kind']=='PersistentVolumeClaim' and d['metadata']['name']=='eod-price-db-data']
         self.assertEqual([c['spec']['resources']['requests']['storage'] for c in claim],['50Gi'])
+        # 2026-11-08: the size constant once reassigned the claim's NAME, so the snapshot render's claim was '50Gi',
+        # which the API server refuses (RFC 1123). The partitioned render names it eod-price-db-fast.
+        with tempfile.TemporaryDirectory() as d:
+            module.prepare(Path(d)/'p','test-candidate','10.93.0.10',read_model='snapshot',partitions=8)
+            docs=list(yaml.safe_load_all((Path(d)/'p/candidate.yaml').read_text()))
+        db=next(x for x in docs if x['kind']=='Deployment' and x['metadata']['name']=='eod-price-db')
+        names={v['persistentVolumeClaim']['claimName'] for v in module.podspec(db)['volumes'] if 'persistentVolumeClaim' in v}
+        self.assertEqual(names,{'eod-price-db-fast'})
+        self.assertIn('eod-price-db-fast',{x['metadata']['name'] for x in docs if x['kind']=='PersistentVolumeClaim'})
 
     def test_console_reads_the_kdb_vm(self):
         """FR-DA12: the Kdb tab's q service is the traderx-kdb VM, by name, exactly once."""

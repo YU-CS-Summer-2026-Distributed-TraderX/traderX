@@ -114,6 +114,16 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   cores at 1M/s; the bake-off store took 1.5-3 cores draining 730K rows/s. The laptop could not measure the store at
   1M/s (fsynced inserts on Docker Desktop's disk took about 300 ms per 7K rows), so the store's rate at 1M/s is the 400K
   campaign's measurement, not yet this requirement's. Test: `test_prepare.HistoryStore.test_the_store_and_its_writer_are_sized_by_the_partitions`.
+  On GKE (2026-11-08/09, namespace `pa-proof-400k` on traderx-demo, own pools, torn down; candidate `p4k-da9c3030`, 8
+  partitions, 18 gateways, the store at the full-rate sizes) 400K orders/s was NOT reached, and the limit was NATS, not
+  the feed or the store (RI34):
+  - PASS at a flat 67K orders/s (202K feed messages/s) for 10 minutes: members = read model = store = 40,252,682
+    sides, stream 120,758,046 messages = store rows, G3 and G3h ok, history lag about 1 s, caught up 6 s after the load.
+  - At 100K orders/s (285K messages/s) NATS dropped 1,021,951 sides at stream ingest; at 147K orders/s, 31.2M.
+  - history-feed and ClickHouse stayed under 1 CPU each while NATS starved them, then drained an 83M backlog at 640K
+    rows/s (peak 813K rows/s). The store equalled the stream exactly in every run.
+  - The fill feed was off for these runs (18 gateways x 8 partitions of consumers otherwise), so they measure the
+    capture and history path, not the full production configuration.
   Proven on kind `traderx-rate` (P=1, production defaults; `kind-history-rate.sh`, 2026-11-08 9:23-9:51 pm ET):
   - the load: binary-load.mjs, 1,787,296 orders, with history-feed held at 0
   - the pre-fix image: 2,983 rows/s

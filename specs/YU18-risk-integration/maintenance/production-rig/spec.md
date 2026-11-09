@@ -194,6 +194,9 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   2026-11-04 after the 18.5M-order scale-out rehearsal and an epoch archive: the schema-migrate init container's
   temporary mariadbd failed with InnoDB error 28 and `rig.sh up` refused at eod-price-db Ready. The live claim was
   expanded in place (standard-rwo allows expansion); a claim only grows, so the render never goes back down.
+  Fixed 2026-11-08: the size had been written over the partitioned render's claim NAME (`READ_MODEL_DB_CLAIM =
+  '50Gi'`), so `--read-model snapshot` rendered a claim named `50Gi`, which the API server refuses (RFC 1123). The
+  size is `READ_MODEL_DB_SIZE`; the fast claim is `eod-price-db-fast` again (`test_the_read_model_database_claim_is_50gi`).
 - **FR-PRG-36:** `loadgen.sh start` SHALL pass `LOADGEN_PAUSE_MS` (100..60000, default 3000) as binary-load.mjs's phase
   pause, the window in which every 10 s phase's orders must be answered before the boundary check. 1000 ms stopped a
   ~185K/s production run after its first phase on 2026-11-02 (~500 orders per session unanswered). A longer pause
