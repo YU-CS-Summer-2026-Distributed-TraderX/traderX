@@ -45,7 +45,7 @@ import bundle   # noqa: E402
 
 #: TraderX's fork of the engine (Alex's 17ac757 plus R1-R6, ADR in risk-pipeline/spec.md FR-RP-VARES-06).
 #: The run's own ``engine.revision`` must be this commit, unmodified, or the proof fails.
-ENGINE_REVISION = 'acef170ba5e96e03941f7204b1f9ff56d918a4dd'
+ENGINE_REVISION = '0e2c61fa539044e3a94997529a6dcd6094322b8d'
 UPSTREAM_REVISION = '17ac757e8ffe9b180fa6e98ca6114c474ab0e6ad'
 QUANTILES = (0.99, 0.975)
 #: Day counts the engine implements (``engine.market_data.day_counts``); anything else is refused by

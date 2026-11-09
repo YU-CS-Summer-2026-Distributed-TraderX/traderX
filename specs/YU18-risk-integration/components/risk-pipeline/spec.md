@@ -123,7 +123,8 @@ Engine measured: Alex's upstream `17ac757e8ffe9b180fa6e98ca6114c474ab0e6ad` (mai
 - FR-RP-BOOK-03: `large_book.py` SHALL package such a fixture, map it as the proof does and price it as ONE
   run. A portfolio's VaR/ES is never split. It SHALL record wall time, the engine process tree's peak
   resident memory, request/reply bytes, the priced mix and refusals by class/owner. `--tile k` repeats the
-  priced trades with `~k` identities; a tiled run is labelled tiled, not a cut.
+  priced trades with `~k` identities; a tiled run is labelled tiled, not a cut. `--precision JSON` sets
+  the request's `config.precision` (default: the engine's float64) and is recorded in `measure.json`.
 - FR-RP-BOOK-04: Large-book correctness is spot-checked with `ore_parity.py --sample N` on the run's own request
   and reply. A large run completing is not financial validation.
 - SC-RP-BOOK-01: `test_book_gen.py` passes (determinism, capacity refusals, every class present, OCC symbols
@@ -136,7 +137,7 @@ fork is branch `traderx/engine-fork` of his repository, in the worktree `~/dev/l
 from his `17ac757`. It is committed locally and never pushed; his `main` is untouched. R1-R6 of
 `coordination/alex-engine-requests-20261106.md` are implemented there instead of requested. Each comes
 with an engine test whose expected value is ORE/QuantLib's, not the engine's
-(`tests/test_traderx_products.py`). `var_es_e2e.ENGINE_REVISION` names the fork commit (`acef170`, the engine lane's November 9 commit; TraderX moves the pin). From that commit a Monte Carlo request draws the same scenarios on every host ([scenario-draw-20261109.md](../../../../docs/risk-integration/scenario-draw-20261109.md)); before it the draw, and so VaR and ES, depended on the host's numpy. A run whose
+(`tests/test_traderx_products.py`). `var_es_e2e.ENGINE_REVISION` names the fork commit (`0e2c61f`, the engine lane's November 9 head: `acef170` plus grouped recalibration and a republished ORE-parity page; TraderX moves the pin). From that commit a Monte Carlo request draws the same scenarios on every host ([scenario-draw-20261109.md](../../../../docs/risk-integration/scenario-draw-20261109.md)); before it the draw, and so VaR and ES, depended on the host's numpy. A run whose
 `engine.revision` is any other commit, or is marked modified, fails the proof.
 Consequence: rebasing onto a later upstream is TraderX's work, and the fork's products are ours to keep in
 parity with ORE.
