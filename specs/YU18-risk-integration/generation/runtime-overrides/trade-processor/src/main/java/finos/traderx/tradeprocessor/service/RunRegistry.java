@@ -29,8 +29,10 @@ public final class RunRegistry {
   /** Same checks against a run row the caller already read in this transaction (one read per batch). */
   public void validate(ScopedEvent e,Map<String,Object> run) {
     if (UNKNOWN.equals(e.getProjectionScope()) && e.getClusterEpoch()==null
-        && e.getEventIdScheme()==null && e.getRunDescriptorHash()==null && e.getConsensusSequence()==null) {
-      return; // Existing bytes keep their unknown legacy scope; never attributed to active run.
+        && e.getEventIdScheme()==null && e.getRunDescriptorHash()==null) {
+      // Existing bytes keep their unknown legacy scope; never attributed to active run. FR-DRS-40: a legacy
+      // order event carries its position (consensusSequence, outputOrdinal) for ordering; that attributes nothing.
+      return;
     }
     if (!Objects.equals(run.get("cluster_epoch"),e.getClusterEpoch())
         || !Objects.equals(run.get("event_id_scheme"),e.getEventIdScheme())
@@ -85,7 +87,7 @@ public final class RunRegistry {
     }
   }
   public void applied(ScopedEvent e,boolean trade) {
-    if (e.getConsensusSequence()==null) { return; }
+    if (e.getConsensusSequence()==null || UNKNOWN.equals(e.getProjectionScope())) { return; }
     String field=trade ? "trade_rows" : "order_updates";
     jdbc.update("UPDATE projection_runs SET "+field+"="+field+"+1, checkpoint_seq=GREATEST(checkpoint_seq,?) WHERE projection_scope=?",
                 e.getConsensusSequence(),e.getProjectionScope());

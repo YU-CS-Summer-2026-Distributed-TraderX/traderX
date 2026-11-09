@@ -84,7 +84,8 @@ kind (2026-11-08) the stream was missing 952 sides that all three members had ap
    for 200 ms, and a stream it cannot read is retried on the next connection.
 10. **Past the ring is loud.** If the newest record the ring evicted is after the stream's last, the catch-up counts
     a gap (`bridges.*.gaps` on `/health`), logs an ALERT, and publishes what it kept, in order. Repair is the archive
-    replay (Decision 4).
+    replay (Decision 4). While NATS is unreachable the lane waits in its reconnect, so it is the lane's queue that
+    holds the outage; a full queue refuses the newest records and that too is a counted gap (Decision 11).
 
 Cost: the leader now retains the records it publishes for as long as a follower already did, one array store per
 record. A record is held for one ring's length, about 1 s at 400K/s and P=6, instead of until its publish. There is
@@ -143,3 +144,31 @@ dropped a side or reconnected.
 - *Retrying 429s from the lane.* It reorders the partition (Decision 4).
 - *Watching the server's WARN log.* It is rate-limited, carries no ids, and is not on the publisher's
   path.
+
+## Amendment, 2026-11-09: an order event carries its position under every id scheme (FR-DRS-40)
+
+Decision 7 cuts an order lane at (`consensusSequence`, `outputOrdinal`), and only epoch-v1 ids wrote that pair.
+Production and kind run no run descriptor (ADR-101), so their order events had no position: the order lane never
+caught up, and a NATS restart lost its in-flight events without a counter. The amendments above were proven for
+order events with managed ids only.
+
+13. **The position is on every order event.** The legacy message gains `consensusSequence` and `outputOrdinal`,
+    which the engine already assigns to every output; it gains no scope, epoch, scheme or hash, so it is still an
+    unattributed event to every reader. The cut reads the pair without a descriptor. The epoch check stays for
+    managed ids; a legacy message cannot name an epoch, so the stream must start empty with the epoch (FR-PRG-29),
+    which the trade cut already relies on.
+14. **No position is a gap, not a guess.** A stream whose last message has no position was written by an earlier
+    member build. If the lane holds records it applied while following or sent earlier, it counts a gap and logs an
+    ALERT, and publishes only what it has not sent as leader. This is the state during the roll that deploys
+    Decision 13, and never after a fresh epoch.
+
+Cost: about 50 bytes per order event on the wire and in the stream. No engine, log or snapshot change, so no
+snapshot barrier and no fresh epoch.
+
+**Rejected:**
+
+- *Managed epoch-v1 runs on production.* Not a render change: the descriptor must be provisioned on every member
+  disk, an epoch-v1 core starts with admission closed and the transition that opened it was retired (FR-THT-01),
+  trade ids and notification subjects change, and the rig's gates assume the legacy scheme (ADR-101 declined it).
+- *The position in a NATS header.* history-feed and trade-processor already read the pair from the payload, and a
+  header moves the lane to `HPUB` for every message.

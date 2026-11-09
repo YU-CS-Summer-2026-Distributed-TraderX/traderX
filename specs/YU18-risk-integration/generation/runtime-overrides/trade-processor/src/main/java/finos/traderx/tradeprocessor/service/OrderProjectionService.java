@@ -176,7 +176,7 @@ public final class OrderProjectionService {
       else if (old==null && entityManager!=null) {entityManager.persist(row);saved=row;}
       else {saved=orders.save(row);}
       if (applied==null) {registry.applied(update,false);}
-      else if (update.getConsensusSequence()!=null) {
+      else if (update.getConsensusSequence()!=null && !RunRegistry.UNKNOWN.equals(update.getProjectionScope())) {
         long[] a=applied.computeIfAbsent(update.getProjectionScope(),k->new long[2]);
         a[0]++;a[1]=Math.max(a[1],update.getConsensusSequence());
       }

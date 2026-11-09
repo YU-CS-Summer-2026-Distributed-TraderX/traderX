@@ -148,6 +148,22 @@ class OrderBatchProjectionIT {
     assertEquals(sealed,state(jdbc));
   }
 
+  /** FR-DRS-40: a legacy order event carries its position (as the members' bridge writes it with no run
+   *  descriptor). Both paths write it, and it counts for no run. Before: RUN_DESCRIPTOR_MISMATCH on the first. */
+  @Test void aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun() throws Exception {
+    List<OrderUpdate> stream=OrderBatchStream.lifecycles(5,200,1);
+    long seq=0;
+    for (OrderUpdate u:stream) {u.setConsensusSequence(++seq);u.setOutputOrdinal(0);}
+    String expected=reference(stream);
+    assertTrue(expected.contains("consensussequence="+seq+","),"the last update's position is not in its row:\n"+expected);
+    assertTrue(expected.contains("{checkpoint_seq=0, order_updates=0, projection_scope=legacy-unknown}"),
+        "a legacy update moved the legacy run's counters:\n"+expected);
+    reset(jdbc);
+    var s=service();
+    for (var b:OrderBatchStream.batches(stream,37)) {s.persistAll(b);}
+    assertEquals(expected,state(jdbc));
+  }
+
   @Test void aConflictInABatchRollsTheWholeBatchBack() throws Exception {
     var s=service();
     s.persistAll(List.of(OrderBatchStream.managed(1,10,0)).stream().peek(u->{u.setAccountId(1001);u.setSecurity("IBM");u.setSide("Buy");

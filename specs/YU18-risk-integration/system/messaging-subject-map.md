@@ -232,6 +232,9 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   dropped it. Core subscribers ignore the reply subject.
 - Bridge warm-up (FR-DRS-39): at start each lane publishes 20,000 sample records to `_bridge.warm.trade` or
   `_bridge.warm.order`. No stream may capture `_bridge.warm.>` and nothing subscribes to it; NATS discards them.
+- Order event position (FR-DRS-40): every `/orders` and `/orders.<p>` payload carries `consensusSequence` and
+  `outputOrdinal`, with or without a run descriptor. Without one it carries no `projectionScope`, `clusterEpoch`,
+  `eventIdScheme` or `runDescriptorHash`. The pair orders the events of a subject; it attributes nothing.
 - Bridge catch-up (FR-DRS-37, FR-DRS-38): at a promotion, and on every new NATS connection while leading, each lane
   reads the last message on its subject until two reads agree (`$JS.API.STREAM.NAMES`, then
   `$JS.API.STREAM.MSG.GET.<stream>`). A NATS user that may only publish would be refused. The lane would then

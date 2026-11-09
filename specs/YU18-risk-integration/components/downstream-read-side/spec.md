@@ -299,14 +299,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   new leader after its role change that the old leader had stored is skipped. A trade side's position is its
   `tradeSeq` (one per side). An order event's is (`consensusSequence`, `outputOrdinal`). A message of another epoch
   or id scheme means none of this run's records is stored. When the subject is empty, everything kept is published.
-  With no stream capturing the subject, or a legacy order message that carries no position, the lane logs an ALERT
-  and publishes nothing kept. A stream it cannot read is retried on a new connection (FR-DRS-38). Eviction past the
+  With no stream capturing the subject the lane logs an ALERT and publishes nothing kept; a last message that
+  carries no position is FR-DRS-40's gap. A stream it cannot read is retried on a new connection (FR-DRS-38). Eviction past the
   cut is logged as an ALERT and counted (FR-DRS-38). `/health` `bridges` reports `replayed`. Found on production 2026-11-08 (epoch e1108): the
   members agreed at 80,888 trades, and `/trades`, the read model and the history store held 80,884. Sides
   16169..16172 were applied in the second after the leader was killed; e1107b showed 81,146 against 81,140.
   `ThreeMemberClusterTest#tradesInFlightAtALeaderKillReachTheStreamExactlyOnce` stops the leader's bridge, books
   three more matches and kills the leader. Before this rule the stream held sides 1..4 of 1..10. `ReceiptLanesIT`
-  holds the cut on both bridges with managed ids, including the records applied after the promotion.
+  holds the cut on both bridges, with managed and with legacy ids (FR-DRS-40), including the records applied after
+  the promotion.
 - FR-DRS-38: The same exactly-once, in-order guarantee SHALL hold across a NATS restart under a steady leader. The
   bridges publish without waiting for the stream's confirmation, so what was in flight when NATS died is not stored.
   A lane therefore keeps its last `capacityPerLane` records (65,536) in every role, not only while following, and
@@ -318,9 +319,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   still storing from the old connection is not sent twice. If the stream cannot be read, the lane retries on a new
   connection while the ring keeps absorbing records. A failed publish is retried this way and is no longer counted as
   dropped.
-  Past the ring: an outage longer than the ring holds loses the oldest records. If the newest record the lane no
-  longer keeps is after the stream's last, the catch-up logs an ALERT, increments `/health` `bridges.*.gaps`, and still
-  publishes what it kept, in order. At P=6 and 400K orders/s a trade lane fills its ring in about 1 s, and an order
+  Past what a lane holds: while NATS is unreachable the lane waits in its reconnect and its queue (65,536) holds
+  what the member applies; once the queue is full it refuses the newest records, which is the queue rule below. Past
+  the ring: if the newest record the lane no longer keeps is after the stream's last, the catch-up logs an ALERT,
+  increments `/health` `bridges.*.gaps`, and still publishes what it kept, in order. On kind (2026-11-09, FR-DRS-40's
+  control run) NATS stayed down 49 s on its fourth restart (kubelet's crash backoff): the order lane, at about 2,000
+  events/s, refused 36,293 and counted the gap; the trade lane, at about 1,000 sides/s, held everything. At P=6 and 400K orders/s a trade lane fills its ring in about 1 s, and an order
   lane in about 0.5 s. So a NATS pod restart at full rate is a loud gap, repaired from the archive. At kind's rate
   in run 2 (about 1,200 sides/s and 2,400 order events/s) the rings cover about 55 s and 27 s.
   Found on kind 2026-11-08 (trade-history lane, run 1). NATS was OOM-killed three times at its 768Mi limit. The
@@ -328,7 +332,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   1,259,773..1,260,724 were missing.
   `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` freezes NATS while the leader
   sends sides 5..10, SIGKILLs it, starts it again and books 11..14. Before this rule the stream held 1..4 and 11..14.
-  `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed ids, and
+  `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed and legacy ids, and
   `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` the gap.
   A record the lane's full queue refuses never reaches the ring, so no catch-up can republish it. The lane SHALL
   count it as a gap with an ALERT: at the next catch-up if it is after the stream's last message (a follower's drop
@@ -353,10 +357,42 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   of 65,536, and one of 18 dropped 50,338.
   `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes` counts both bridges' samples on the
   scratch subjects, and checks that the stream and the counters hold only the real record.
+- FR-DRS-40: An order event SHALL carry its position (`consensusSequence`, `outputOrdinal`) under every id scheme,
+  so FR-DRS-37 and FR-DRS-38 hold for order events on a runtime with no run descriptor. That is what production and
+  kind run (ADR-101; production's `/health` read `runDescriptorHash: null` on every member in epochs e1107 to
+  e1108b). Until this rule only epoch-v1 ids wrote the position, so the legacy order lane had no cut: after a
+  promotion it republished nothing it had kept, and after a NATS restart the events it had sent but NATS had not
+  stored were lost with an INFO line and no counter. Trade sides were never affected: a legacy trade id carries its
+  `tradeSeq`.
+  - The legacy message gains the two fields and nothing else: no scope, epoch, scheme or descriptor hash. The engine
+    already assigns both to every output in every scheme; the deterministic core, the log and the snapshot are
+    unchanged.
+  - A legacy message cannot name its epoch, so the cut relies on the stream starting empty with the epoch
+    (FR-PRG-29), as the trade cut does.
+  - A stream whose last message has no position (a member build before this rule wrote it) gives no cut. When the
+    lane then holds records it applied while following or sent earlier, it cannot tell whether they are stored: it
+    SHALL count a gap (`gaps`), log an ALERT, and publish only what it has not yet sent as leader.
+  - Readers. trade-processor's order view already orders by the pair when present, so a repeat or an earlier event
+    no longer overwrites a newer one. Its SQL order projection SHALL accept the pair on an unattributed event and
+    count it for no run (before: `RUN_DESCRIPTOR_MISMATCH` on every order event). history-feed holds a positioned
+    order event once (FR-THT-11). The gateway's FIX fill feed and the algo engine read by field and ignore the pair.
+  - Tests. `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` (legacy ids) now also
+    requires every order's FILLED event on the stream and the order events in apply order, once each; before this
+    rule 6 of 10 orders read FILLED. `ReceiptLanesIT#aPromotedMemberPublishesOnlyWhatTheStreamIsMissing` and
+    `#aNatsRestartRepublishesWhatTheStreamLost` run under both schemes (legacy failed: no position stored).
+    `ReceiptLanesIT#aStreamWhoseLastOrderEventHasNoPositionIsACountedGap` (before: gaps 0).
+    `OrderBatchProjectionIT#aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun`.
+  - On kind (2026-11-09, `scripts/proofs/kind-bridge-nats-restart.sh`): production's default shape with legacy ids,
+    4 x 250 orders/s for 180 s, NATS SIGKILLed twice in place under a steady leader. With this rule the stream held
+    145,590 of the members' 145,590 new sides and 291,180 of 291,180 order events; the leader republished 90 sides
+    and 166 order events and counted no gap. The control, the same members rolled to the build before this rule, lost
+    45 of 289,908 order events behind INFO lines only, with every trade side held. An earlier pair read the same
+    way (333,528 of 333,528; the control lost 68 of 285,724).
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
-  the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.
-- NFR-DRS-02: No engine, ack, snapshot or wire format changes.
+  the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
+  FR-DRS-40's position on an order event.
+- NFR-DRS-02: No engine, ack, snapshot or wire format changes, apart from FR-DRS-40's two fields on `/orders`.
 
 ## Success Criteria
 
