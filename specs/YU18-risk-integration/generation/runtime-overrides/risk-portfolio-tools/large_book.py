@@ -10,7 +10,8 @@ and takes a ``~k`` identity suffix; a tiled run is labelled so, it is not a cut)
 for resident memory. Writes ``measure.json`` (and request/reply bytes) to a new evidence directory.
 
     python3 large_book.py --artifacts OUT --origin http://127.0.0.1:8766 --evidence EVID \
-        [--tile 4] [--scenarios 256] [--analytics npv,market_risk] [--only bond,swap,...]
+        [--tile 4] [--scenarios 256] [--analytics npv,market_risk] [--only bond,swap,...] \
+        [--precision '{"profile": "float32"}']
 """
 import argparse
 import hashlib
@@ -60,6 +61,7 @@ def main():
     ap.add_argument('--only', default='', help='comma list of engine trade types to keep (default: every priced one)')
     ap.add_argument('--limit', type=int, default=0, help='keep the first N mapped trades (after --only)')
     ap.add_argument('--deadline', type=float, default=6 * 3600)
+    ap.add_argument('--precision', default='', help="JSON for the request's config.precision (default: the engine's float64)")
     ap.add_argument('--nonce', default='', help='mixed into the idempotency key, to re-measure an identical request')
     a = ap.parse_args()
     os.umask(0o077)
@@ -107,6 +109,8 @@ def main():
     body = m.run_request(trades, asof, None, scenarios=a.scenarios, spots=spots)
     body['analytics'] = analytics
     body['outputs'] = {'pnl': 'none'}
+    if a.precision:
+        body['config']['precision'] = json.loads(a.precision)
     if 'market_risk' not in analytics:
         body['config'].pop('market_risk')
         body['outputs'] = {}
@@ -128,7 +132,7 @@ def main():
     if pid:
         threading.Thread(target=sample, daemon=True).start()
     result = {'artifacts': str(artifacts), 'cut': manifest['cut'], 'bundle_seconds': round(t_bundle, 3),
-              'tile': a.tile, 'tiled': a.tile > 1, 'scenarios': a.scenarios, 'analytics': analytics,
+              'precision': body['config'].get('precision'), 'tile': a.tile, 'tiled': a.tile > 1, 'scenarios': a.scenarios, 'analytics': analytics,
               'priced_trades': len(trades), 'mix': mix, 'refused': refused,
               'request_bytes': len(request_bytes), 'engine_rss_before_mib': base_rss and round(base_rss / 1024, 1)}
     t1 = time.monotonic()

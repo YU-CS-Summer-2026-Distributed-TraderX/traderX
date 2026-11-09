@@ -2,7 +2,7 @@
 
 **What changed.** TraderX's engine fork now draws its Monte Carlo scenarios from the covariance's
 symmetric square root (fork commit `4b2fd3a`, on `traderx/engine-perf`; the proof is pinned to that
-branch's head, `acef170`). Before, the draw read the eigenvectors `np.linalg.eigh` returned, and those
+branch's head, `0e2c61f`, moved from `acef170` on November 9 after the grouped recalibration landed). Before, the draw read the eigenvectors `np.linalg.eigh` returned, and those
 are not unique where eigenvalues repeat. The book's covariance repeats them across its 50 equally
 correlated equities, so one request gave another VaR on another machine.
 
@@ -26,8 +26,8 @@ The book has not been run on the new draw.
 
 ## Checks
 
-- **The proof** (`scripts/proofs/yu18-var-es-e2e.sh`, local, engine `acef170`, `modified=false`):
-  PASSED. Every instrument has finite non-zero VaR and ES, and the four negative controls are refused
+- **The proof** (`scripts/proofs/yu18-var-es-e2e.sh`, local, engine `acef170` and again `0e2c61f`,
+  `modified=false`): PASSED both times; VaR99 381,036.79 (the two heads agree to 1e-16). Every instrument has finite non-zero VaR and ES, and the four negative controls are refused
   with a 400.
 - **ORE parity** (`ore_parity.py` on the proof's reply): 15 of 15 referenced trades agree, max 2.7e-5
   relative, the 3 bounds hold. Unchanged: today's values do not depend on the scenarios.
@@ -43,9 +43,9 @@ The book has not been run on the new draw.
 ## Reproduce
 
 ```bash
-S=<scratch>; git clone --no-checkout ~/dev/lmax/jax-risk-traderx $S/snap && git -C $S/snap -c core.autocrlf=false checkout acef170
+S=<scratch>; git clone --no-checkout ~/dev/lmax/jax-risk-traderx $S/snap && git -C $S/snap -c core.autocrlf=false checkout 0e2c61f
 cd $S/snap && PYTHONPATH=$S/snap JAX_PLATFORMS=cpu JAX_RISK_JOB_QUEUE=$S/q/jobs.sqlite3 python -m uvicorn engine.api.app:app --port 8772
 RISK_ENGINE_ORIGIN=http://127.0.0.1:8772 scripts/proofs/yu18-var-es-e2e.sh "$(mktemp -d /private/tmp/var-es.XXXXXX)/out"
 ```
 
-`acef170` is on `traderx/engine-perf`; `traderx/engine-fork` is at `3e1d1d9` until it is fast-forwarded.
+`0e2c61f` is on `traderx/engine-perf`; `traderx/engine-fork` is at `acef170` until it is fast-forwarded.
