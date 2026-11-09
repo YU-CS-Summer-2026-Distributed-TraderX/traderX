@@ -471,6 +471,22 @@ class Up(unittest.TestCase):
                             ('{"ready":true,"unowned":null,"unownedError":"timeout",' + lanes + '}', 'NATS unreadable: timeout')):
             self.assertIn(why, self.refused('G3h', HIST=self.HIST, HIST_HEALTH=health))
 
+    # FR-THT-10 (production 2026-11-08, e1108b): a 16M-row backlog at 1,500 rows/s timed out the fixed 600 s. The wait is
+    # 600 s plus the backlog at 20,000 rows/s; no backlog, or an unreadable health, is the plain 600 s.
+    def test_the_history_wait_scales_with_the_backlog(self):
+        for health, secs in (('{"lanes":[{"pending":0},{"pending":0}]}', '600'),
+                             ('{"lanes":[{"pending":3070000},{"pending":16200000}]}', '1563'),
+                             ('{"lanes":[{"pending":-1},{"pending":400000}]}', '620'),
+                             ('not json', '600')):
+            rc, out, _ = run('history_wait_secs', HIST_HEALTH=health)
+            self.assertEqual((rc, out.strip()), (0, secs), health)
+        rc, out, _ = run('history_wait_secs', HIST_HEALTH='{"lanes":[{"pending":16200000}]}', HISTORY_DRAIN_FLOOR='200000')
+        self.assertEqual(out.strip(), '681')
+
+    def test_the_full_rate_history_pool_is_one_variable(self):
+        for env, machine in (({}, 'c4d-standard-8'), ({'HISTORY_MACHINE': 'c4d-standard-16'}, 'c4d-standard-16')):
+            self.assertEqual(run('pool_machine history-pool', **env)[1].strip(), machine)
+
     def test_an_unreadable_history_store_is_refused(self):
         self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
 

@@ -58,10 +58,11 @@ SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke 
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
 pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
-  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo c4d-standard-8;; esac; }
+  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
 pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo 1;;
   gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
 # history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).
+# FR-THT-10: the partitioned (full-rate) render sizes them at 6 + 8 CPU: HISTORY_MACHINE=c4d-standard-16 creates the pool.
 RIG_POOLS="default-pool engine-pool nats-pool gateway-pool history-pool"
 
 et(){ TZ=America/New_York date '+%-I:%M:%S %p ET'; }
@@ -474,6 +475,13 @@ HISTORY_CHECK_SQL="SELECT part, count(), max(trade_seq), sum(trade_seq), sum(tra
 history_health(){ kc exec deploy/trade-processor -- curl -sf -m15 http://history-feed:18095/health; }
 # Every lane open and nothing pending: with the gateways at 0 the store then holds all the stream has.
 history_caught_up(){ history_health | jq -e '.ready and (.lanes | length > 0 and all(.pending == 0))' >/dev/null; }
+# FR-THT-10: G3h's wait is 600 s plus the backlog at the floor rate the feed must beat (HISTORY_DRAIN_FLOOR rows/s, the
+# production order rate): a 16M backlog is given 20 minutes, and a feed below the floor still refuses (e1108b drained at
+# 1,500 rows/s, 3 h). An unreadable health reads as no backlog: the plain 600 s.
+history_wait_secs(){
+  local p; p=$(history_health 2>/dev/null | jq -e '[.lanes[].pending | select(. > 0)] | add // 0' 2>/dev/null) || p=0
+  echo $((600 + p / ${HISTORY_DRAIN_FLOOR:-20000}))
+}
 # The verdict on HISTORY_CHECK_SQL's rows for members' trades t and the unprojected ranges: "OK n sides" or why not.
 history_verdict(){ python3 -c '
 import sys
@@ -496,7 +504,7 @@ g3_history(){
   local t=$1 ranges rows verdict
   # FR-THT-02 renders the store into the production manifests: its absence is a refusal, never a skip.
   kc get sts clickhouse -o name >/dev/null 2>&1 || die "G3h: no history store (sts/clickhouse) on $NS (FR-THT-02)"
-  wait_for 600 "every history-feed lane open with nothing pending (G3h)" history_caught_up
+  wait_for "$(history_wait_secs)" "every history-feed lane open with nothing pending (G3h)" history_caught_up
   # Nothing pending is also true of a lane whose filter matches nothing (production 2026-11-07: lanes on /trades.0 while
   # the members published /trades; 0 rows). history-feed names the stream subjects no lane reads; any is a refusal.
   local health unowned

@@ -92,6 +92,36 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   `SettlementService.forceSettle` / `SettlementController` (trade-processor, `SettlementServiceTest`), prepare.py
   `HISTORY_CLIENTS` and `validate_history_store` (`test_prepare`). Proven on kind `traderx-cut`
   (`kind-cutover-check.sh`, yu18-projection-effect-end, a live forced settlement); not on GKE or production.
+- FR-THT-10: The history feed SHALL keep up with production load (2026-11-08). A lane's consumer SHALL be granted an
+  unacked window of at least one batch (`maxAckPending` 2 x `HISTORY_BATCH_ROWS` + `HISTORY_FETCH`), read back from
+  the server, and a lane granted less SHALL NOT start. Production e1108b, 2026-11-08 (`tip-1ef5e86e-j21`): the lanes
+  asked for -1, NATS 2.14 stored its default 1000, and the ack waits for the INSERT, so each lane moved 1000 rows per
+  500 ms flush, about 1,500 rows/s. A 12-minute load of 9,657,584 trades left 3.07M in the store and 16.2M order
+  events queued, and G3h timed out. G3h's wait SHALL be 600 s plus the lanes' backlog at `HISTORY_DRAIN_FLOOR` rows/s
+  (20,000, the production order rate): a backlog gets time in proportion, and a feed slower than the floor still
+  refuses. Measured locally (NATS 2.14, ClickHouse 25.8, the feed on 2 CPUs, P=1, production defaults): 1,450
+  rows/s per lane before; a 5M-message backlog drained in about 13 s after (about 200K rows/s per lane, 1M in 2.9 s
+  in `HistoryFeedRateIT`). One partition is about 10x the 20K orders/s rate (about 35K messages/s). The bench's 400K
+  orders/s (about 700K messages/s) needs the partitioned layout (P=4, 730K rows/s in the bake-off), not yet in the
+  production render. Tests: `HistoryFeedRateIT` (fails with the old consumer, times out at 60 s),
+  `test_rig.Up.test_the_history_wait_scales_with_the_backlog`.
+  At 400K orders/s (about 1M feed messages/s) the render SHALL be the partitioned one (`--read-model snapshot
+  --partitions 8`, FR-DRS-34's per-partition streams, so trade-processor, the order view and history-feed's 16 lanes
+  each read one partition's stream; one stream acks about 240-280K messages/s, bake-off). That render SHALL size
+  history-feed at 8 CPU / 8Gi and ClickHouse at 6 CPU / 24Gi with a 500Gi claim (`HISTORY_*_FULL_RATE`), on one
+  c4d-standard-16 (`HISTORY_MACHINE`); one partition keeps 2 CPU, 4 CPU and 200Gi. The basis, measured 2026-11-08: the
+  feed's process costs about 170K rows per CPU-second at P=8 (jnats about 320K messages, the parser over 1M), so about 6
+  cores at 1M/s; the bake-off store took 1.5-3 cores draining 730K rows/s. The laptop could not measure the store at
+  1M/s (fsynced inserts on Docker Desktop's disk took about 300 ms per 7K rows), so the store's rate at 1M/s is the 400K
+  campaign's measurement, not yet this requirement's. Test: `test_prepare.HistoryStore.test_the_store_and_its_writer_are_sized_by_the_partitions`.
+  Proven on kind `traderx-rate` (P=1, production defaults; `kind-history-rate.sh`, 2026-11-08 9:23-9:51 pm ET):
+  - the load: binary-load.mjs, 1,787,296 orders, with history-feed held at 0
+  - the pre-fix image: 2,983 rows/s
+  - this image: the 4,517,458-message backlog drained in 39 s (114K rows/s, G3h's wait 825 s)
+  - G3h: sides 1..1,787,296, each once
+  - stream 5,361,888 messages = store 1,787,296 trades + 3,574,592 orders; members 1,787,296
+  - an earlier run refused at G3h with 952 sides absent from the stream itself, lost when kind's 768Mi NATS was OOM-killed
+    under the members' core publishes. That is not the feed.
 - FR-THT-07: Either store SHALL be rebuildable from the capture streams from its cursor 0, with the result equal to
   the store it replaces (count and hash, FR-THT-06).
 

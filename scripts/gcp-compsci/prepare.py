@@ -345,6 +345,11 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
 HISTORY_DIR = ROOT / 'specs/YU18-risk-integration/generation/runtime-overrides/history-feed/k8s'
 HISTORY_STORE = {'cpu': '4', 'memory': '16Gi', 'disk': '200Gi'}
 HISTORY_FEED = {'cpu': '2', 'memory': '4Gi'}
+# FR-THT-10: the partitioned render is the full-rate one (400K orders/s, ~1M feed messages/s). The feed costs ~170K rows
+# per CPU-second (jnats ~320K msgs, the parser >1M; 2026-11-08), so ~6 cores at 1M/s, 8 to drain a backlog while it
+# keeps up. The store took 1.5-3 cores draining 730K rows/s in the bake-off. Both on one c4d-standard-16 (HISTORY_MACHINE).
+HISTORY_STORE_FULL_RATE = {'cpu': '6', 'memory': '24Gi', 'disk': '500Gi'}
+HISTORY_FEED_FULL_RATE = {'cpu': '8', 'memory': '8Gi'}
 HISTORY_CLASS = 'clickhouse-hot'
 HISTORY_FEED_ENV = {'PROJECTION_FEED_STREAM': 'TRADERX_FEED', 'PROJECTION_FEED_PARTITIONS': '1',
                     'PROJECTION_FEED_STREAM_LAYOUT': 'one'}   # both services' defaults
@@ -359,15 +364,17 @@ def history_store(docs, hot_days=0):
     on exactly trade-processor's streams. FR-THT-03 with hot_days > 0: the `tiered` policy, cold volume on GCS."""
     tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
     feed = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])}
+    full = int(feed.get('PROJECTION_FEED_PARTITIONS') or 1) > 1
+    store_size, feed_size = (HISTORY_STORE_FULL_RATE, HISTORY_FEED_FULL_RATE) if full else (HISTORY_STORE, HISTORY_FEED)
     for doc in docs:
         name, pod = doc['metadata']['name'], podspec(doc)
         if doc['kind'] == 'StatefulSet' and name == 'clickhouse':
             c = pod['containers'][0]
-            c['resources'] = {'requests': {'cpu': HISTORY_STORE['cpu'], 'memory': HISTORY_STORE['memory']},
-                              'limits': {'cpu': HISTORY_STORE['cpu'], 'memory': HISTORY_STORE['memory']}}
+            c['resources'] = {'requests': {'cpu': store_size['cpu'], 'memory': store_size['memory']},
+                              'limits': {'cpu': store_size['cpu'], 'memory': store_size['memory']}}
             claim = doc['spec']['volumeClaimTemplates'][0]['spec']
             claim['storageClassName'] = HISTORY_CLASS
-            claim['resources']['requests']['storage'] = HISTORY_STORE['disk']
+            claim['resources']['requests']['storage'] = store_size['disk']
             if hot_days > 0:
                 set_env(c, {'HISTORY_COLD_ENDPOINT': f'https://storage.googleapis.com/{HISTORY_COLD_BUCKET}/{NAMESPACE}/'})
                 secret_env(c, 'HISTORY_COLD_KEY_ID', 'history-cold-hmac', 'access-id')
@@ -376,8 +383,8 @@ def history_store(docs, hot_days=0):
                 pod.setdefault('volumes', []).append({'name': 'tiered', 'configMap': {'name': 'clickhouse-tiered'}})
         elif doc['kind'] == 'Deployment' and name == 'history-feed':
             c = pod['containers'][0]
-            c['resources'] = {'requests': {'cpu': HISTORY_FEED['cpu'], 'memory': HISTORY_FEED['memory']},
-                              'limits': {'cpu': HISTORY_FEED['cpu'], 'memory': HISTORY_FEED['memory']}}
+            c['resources'] = {'requests': {'cpu': feed_size['cpu'], 'memory': feed_size['memory']},
+                              'limits': {'cpu': feed_size['cpu'], 'memory': feed_size['memory']}}
             set_env(c, {k: feed.get(k) or v for k, v in HISTORY_FEED_ENV.items()} | {'HISTORY_HOT_DAYS': str(hot_days)})
         elif doc['kind'] == 'Deployment' and name == 'position-service' and feed.get('SETTLEMENT_T_PLUS_DAYS'):
             # ADR-102 cutover: the blotter derives a history row's state with trade-processor's own T+N.

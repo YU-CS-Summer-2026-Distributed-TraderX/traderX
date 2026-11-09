@@ -49,6 +49,12 @@ final class FeedLane implements Runnable {
     this.batchRows = batchRows; this.flushMs = flushMs; this.fetch = fetch;
   }
 
+  /**
+   * FR-THT-10: the ack follows the INSERT, so the unacked window must hold a whole batch plus the fetch in flight, or the
+   * server stops delivering mid-batch and the lane writes one window per flush interval.
+   */
+  static long maxAckPending(int batchRows, int fetch) { return 2L * batchRows + fetch; }
+
   /** Undelivered plus delivered-but-unacked for this lane's durable; -1 when unknown. */
   long pending() {
     try { var ci = sub.getConsumerInfo(); return ci.getNumPending() + ci.getNumAckPending(); }
@@ -187,11 +193,14 @@ final class FeedLane implements Runnable {
     JetStreamManagement jsm = nc.jetStreamManagement(jso);
     try { jsm.deleteConsumer(stream, durable); } catch (JetStreamApiException missing) { }
     ConsumerConfiguration.Builder cc = ConsumerConfiguration.builder().durable(durable).filterSubject(subject)
-        .ackPolicy(AckPolicy.All).ackWait(ACK_WAIT).maxAckPending(-1);
+        .ackPolicy(AckPolicy.All).ackWait(ACK_WAIT).maxAckPending(maxAckPending(batchRows, fetch));
     if (c == 0) cc.deliverPolicy(DeliverPolicy.All);
     else cc.deliverPolicy(DeliverPolicy.ByStartSequence).startSequence(c + 1);
     long t0 = System.nanoTime();
-    jsm.addOrUpdateConsumer(stream, cc.build());
+    long granted = jsm.addOrUpdateConsumer(stream, cc.build()).getConsumerConfiguration().getMaxAckPending();
+    // FR-THT-10: the server's word, not ours. -1 was stored as its default 1000 (2026-11-08, 1,500 rows/s in production).
+    if (granted < batchRows) throw new IllegalStateException(durable + ": the server granted maxAckPending " + granted
+        + " < HISTORY_BATCH_ROWS " + batchRows + "; every batch would wait out its flush interval");
     sub = nc.jetStream(jso).subscribe(null, PullSubscribeOptions.bind(stream, durable));
     System.out.printf("%s on %s %s: open at seq %d (%.1f s)%n", durable, stream, subject, c + 1, (System.nanoTime() - t0) / 1e9);
   }
