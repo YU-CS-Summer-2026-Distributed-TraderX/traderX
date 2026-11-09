@@ -10,7 +10,12 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
 - FR-HST-01: Every trade side and every order event the bridges publish on the partition subjects
   (`/trades.<p>`, `/orders.<p>`, `p = accountId mod P`) SHALL be stored as exactly one row of `trades` or
   `orders`, carrying its partition `part` and its stream sequence `seq`: one row per side or event, however many
-  messages carry it (FR-THT-11; until 2026-11-09 one row per stream message). Trades keep `trade_seq`, `side`,
+  messages carry it (FR-THT-11; until 2026-11-09 one row per stream message), and however many it shares a message
+  with (FR-DRS-41: a message holds one or more records, so rows of one message share its `seq`; the cursor is still
+  max(`seq`), and a message's rows go into one INSERT, so they are in the store together or not at all. The one
+  exception is a message whose own records straddle midnight UTC, written as one INSERT across two date partitions,
+  which ClickHouse does not make atomic; a bridge drain spans microseconds, so that is about one message in 1e9 per
+  lane per day). Trades keep `trade_seq`, `side`,
   `account`, `security`, `qty`, `px`, `order_ref`, `cseq` (consensus sequence) and `ts` (the envelope `date`);
   orders keep `order_ref`, `account`, `security`, `side`, `qty`, `remaining`, `limit_px`, `status`, `last_px`,
   `last_qty`, `created`, `cseq`, `ordinal` (output ordinal), `client_key` and `ts` (`updatedAt`). Ids are stored

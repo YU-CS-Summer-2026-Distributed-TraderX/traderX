@@ -756,6 +756,36 @@ Raw logs (`cells.log`, per-cell `load.log` / `varz.log`, the reader's log, NATS 
 notes, `feed-capture-1m-20261030/`. All five VMs and their disks were deleted at 2:13 am ET (verified: no `fc1m`
 instance or disk remains). Cloud cost: about $13.
 
+### 7.14 One message per drain (FR-DRS-41)
+
+**Question.** §7.13 found one server bound at 415–505K messages/s whatever the stream count, and the 400K campaign
+(RI34, 2026-11-08/09) lost messages from ~285K/s with consumers attached. Is the wall per message or per byte, and
+what does the bridge gain by sending several records in one message?
+
+**Measured** (2026-11-09, one `nats:2.14` server in docker with 4 CPUs on a loaded laptop, `nats bench js pub async`,
+8 clients, file store, R1; the shape is the point, not the absolute):
+
+| Message size | ≈ records at 540 B | msgs/s | records/s | MiB/s |
+|---|---|---|---|---|
+| 108 B | — | 461,675 | — | 48 |
+| 540 B | 1 | 363,202–406,307 | 0.36–0.41M | 187–209 |
+| 1,080 B | 2 | 384,551 | 0.77M | 396 |
+| 5,400 B | 10 | 149,219–150,867 | 1.5M | 768–777 |
+| 54,000 B | 100 | 22,282 | 2.2M | 1,126 |
+
+Below ~1 KB the server is bound per message at the ~400K/s of §7.13; above it per byte. Sync publish: 61,892/s.
+
+**Decision** (FR-DRS-41, ADR-083 decisions 15–18). A lane publishes everything its SPSC queue holds, up to
+`BRIDGE_BATCH_MAX` (64; 1..1,024) records and 256 KiB, as one newline-separated message with one receipt. A quiet lane
+sends one record per message (the previous wire); a loaded one sends what piled up while the last message went out,
+which is the egress-coalescing shape the members already use toward the gateways. Counters stay in records (the reply
+subject carries the count and the first~last key); the catch-up compares the last record of the last message; every
+reader splits on the newline. At 400K orders/s the stream is ~20–40K messages/s and the wall is bytes (~540 MB/s).
+
+**Kind** (production's default shape, ~1,400 orders/s, `kind-bridge-batching.sh`): 5.5–5.7 records per message with
+batching on, 1.00 in the control; G3h, each order event once, store = published records and stream = published
+messages in every run. The CPU effect is below kind's noise; it needs the GKE rate (RI34 §1a).
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K

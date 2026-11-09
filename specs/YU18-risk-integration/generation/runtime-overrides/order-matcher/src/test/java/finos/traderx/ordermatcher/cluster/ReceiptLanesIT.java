@@ -42,18 +42,24 @@ class ReceiptLanesIT {
 
     @Container
     static final GenericContainer<?> NATS = new GenericContainer<>("nats:2.14-alpine")
-        .withCopyToContainer(Transferable.of("jetstream {\n store_dir: /data\n max_buffered_msgs: 64\n}\n"), "/etc/nats/tiny.conf")
+        // 64 messages, or 64 KiB: the count forces drops of one-record messages, the size of batched ones (FR-DRS-41).
+        .withCopyToContainer(Transferable.of("jetstream {\n store_dir: /data\n max_buffered_msgs: 64\n max_buffered_size: 65536\n}\n"), "/etc/nats/tiny.conf")
         .withCommand("-c", "/etc/nats/tiny.conf")
         .withExposedPorts(4222)
         .waitingFor(Wait.forLogMessage(".*Server is ready.*", 1));
 
-    @Test
-    void everyIngestDropIsCountedAndEachPartitionStaysInOrder() throws Exception {
+    /** FR-DRS-41: with one record per message (the wire before batching) and with the default drain batching; the
+     *  counters are in records either way, and every stored message's records are in tradeSeq order. */
+    @ParameterizedTest(name = "records per message: {0}")
+    @ValueSource(ints = {1, ReceiptLanes.BATCH_DEFAULT})
+    void everyIngestDropIsCountedAndEachPartitionStaysInOrder(final int batchMax) throws Exception {
         final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
         try (Connection nc = Nats.connect(url)) {
+            try { nc.jetStreamManagement().deleteStream("T"); } catch (final Exception first) { }   // the other variant's
             nc.jetStreamManagement().addStream(StreamConfiguration.builder().name("T")
                 .subjects("/trades.*").storageType(StorageType.File).build());
             final TradeNatsPublisher bridge = new TradeNatsPublisher(url, "/trades", "e1", null, 1 << 17, PARTITIONS);
+            bridge.batchMax(batchMax);
             bridge.start();
             for (int i = 1; i <= SIDES; i++) {
                 bridge.offer(i, i, "IBM", (byte) (i & 1), 1, 100_000_000L, i, 0L);
@@ -66,26 +72,31 @@ class ReceiptLanesIT {
             final long stored = nc.jetStreamManagement().getStreamInfo("T").getStreamState().getMsgCount();
             assertEquals(0, bridge.dropped(), "lane queues were sized to hold the whole burst");
             assertEquals(SIDES, bridge.published(), "every side was published");
-            assertEquals(bridge.published(), stored + bridge.rejected(), "a drop went uncounted (stored + rejected != published)");
             assertTrue(bridge.rejected() > 0, "the 64-message ingest queue forced no drops: the test proves nothing");
-            assertEquals(stored, bridge.acked(), "every stored message was acked");
             assertEquals(bridge.rejected(), bridge.rejected(0) + bridge.rejected(1));
+            if (batchMax == 1) { assertEquals(bridge.published(), bridge.messages(), "one record per message"); }
+            else { assertTrue(bridge.messages() < bridge.published() / 4, "drains were batched: " + bridge.json()); }
 
-            // Order: within each partition subject, stored tradeSeqs strictly increase.
+            // Order: within each partition subject, stored tradeSeqs strictly increase, across records and messages.
             final Pattern id = Pattern.compile("\"id\":\"(\\d+)-[BS]\"");
             final Map<String, Long> last = new HashMap<>();
             final JetStreamSubscription sub = nc.jetStream().subscribe("/trades.*",
                 PushSubscribeOptions.builder().stream("T").ordered(true).build());
-            long seen = 0;
+            long seen = 0, records = 0;
             for (Message m; (m = sub.nextMessage(Duration.ofSeconds(2))) != null; seen++) {
-                final Matcher x = id.matcher(new String(m.getData(), StandardCharsets.UTF_8));
-                assertTrue(x.find());
-                final long seq = Long.parseLong(x.group(1));
-                final Long prev = last.put(m.getSubject(), seq);
-                assertTrue(prev == null || seq > prev, "partition " + m.getSubject() + " reordered: " + prev + " then " + seq);
+                for (final byte[] record : ReceiptLanes.records(m.getData())) {
+                    final Matcher x = id.matcher(new String(record, StandardCharsets.UTF_8));
+                    assertTrue(x.find());
+                    final long seq = Long.parseLong(x.group(1));
+                    final Long prev = last.put(m.getSubject(), seq);
+                    assertTrue(prev == null || seq > prev, "partition " + m.getSubject() + " reordered: " + prev + " then " + seq);
+                    records++;
+                }
                 if (seen + 1 == stored) { break; }
             }
             assertEquals(stored, seen + 1, "read back every stored message");
+            assertEquals(bridge.published(), records + bridge.rejected(), "a drop went uncounted (stored records + rejected != published)");
+            assertEquals(records, bridge.acked(), "every stored record was acked");
             bridge.stop();
         }
     }
@@ -338,6 +349,37 @@ class ReceiptLanesIT {
         }
     }
 
+    /**
+     * FR-DRS-41 with FR-DRS-37: the stream's last message holds several records, and the catch-up cuts at its LAST
+     * record. The old leader stored sides 1..300 in batched messages and died; the new leader applied 1..280 while
+     * following and 281..310 after its promotion. The stream must read back exactly 1..310, each once, and the
+     * catch-up's own messages are batched too.
+     */
+    @Test
+    void aCatchUpCutsAtTheLastRecordOfABatchedMessage() throws Exception {
+        try (RestartableNats js = new RestartableNats(); Connection nc = Nats.connect(js.url)) {
+            js.addFeedStream();
+            final TradeNatsPublisher old = new TradeNatsPublisher(js.url, "/trades", "e9", null, 1024, 1);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", null, 1024, 1);
+            trades.role(false);
+            old.start();
+            trades.start();
+            for (int seq = 1; seq <= 300; seq++) { trade(old, seq); }
+            final long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+            while (stored(nc, "/trades", "id").size() < 300 && System.nanoTime() < deadline) { Thread.sleep(50); }
+            final long before = storedMessages(nc, "/trades");
+            assertTrue(before < 300, "the old leader's drains were batched: " + before + " messages for 300 sides");
+            old.stop();
+            for (int seq = 1; seq <= 280; seq++) { trade(trades, seq); }
+            trades.role(true);
+            for (int seq = 281; seq <= 310; seq++) { trade(trades, seq); }
+            while (stored(nc, "/trades", "id").size() < 310 && System.nanoTime() < deadline) { Thread.sleep(50); }
+            assertEquals(tradeIds(false, 310), stored(nc, "/trades", "id"), "exactly 1..310, each once, in order");
+            assertTrue(storedMessages(nc, "/trades") - before < 30, "the catch-up's 30 sides went in batched messages too");
+            trades.stop();
+        }
+    }
+
     private static RunDescriptor descriptor(final Path dir) throws Exception {
         final Path run = dir.resolve("run.json");
         Files.writeString(run, "{\"schema\":\"traderx.run.v1\",\"epoch\":\"e9\",\"eventIdScheme\":\"epoch-v1\","
@@ -391,9 +433,19 @@ class ReceiptLanesIT {
         final JetStreamSubscription sub = nc.jetStream().subscribe(subject,
             PushSubscribeOptions.builder().stream("TRADERX_FEED").ordered(true).build());
         for (Message m; (m = sub.nextMessage(Duration.ofMillis(300))) != null; ) {
-            out.add(ReceiptLanes.field(m.getData(), field));
+            for (final byte[] record : ReceiptLanes.records(m.getData())) { out.add(ReceiptLanes.field(record, field)); }   // FR-DRS-41
         }
         sub.unsubscribe();
         return out;
+    }
+
+    /** Messages stored on {@code subject}. */
+    private static long storedMessages(final Connection nc, final String subject) throws Exception {
+        final JetStreamSubscription sub = nc.jetStream().subscribe(subject,
+            PushSubscribeOptions.builder().stream("TRADERX_FEED").ordered(true).build());
+        long n = 0;
+        for (Message m; (m = sub.nextMessage(Duration.ofMillis(300))) != null; ) { n++; }
+        sub.unsubscribe();
+        return n;
     }
 }

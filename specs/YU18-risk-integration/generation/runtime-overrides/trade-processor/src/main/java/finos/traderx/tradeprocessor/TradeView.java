@@ -56,6 +56,7 @@ public final class TradeView {
   private final Map<LocalDate, Long> sidesByDay = new HashMap<>();
   private final Set<LocalDate> dirtyDays = new HashSet<>();
   private long streamSeq;
+  private int streamIdx = Integer.MAX_VALUE;   // FR-DRS-41: the last record applied of message streamSeq (MAX: all of it)
   private long consensusSeq;
   private long appliedSinceCut;
   private long appliedTotal;
@@ -71,6 +72,7 @@ public final class TradeView {
       positions.put(key(p.getProjectionScope(), p.getAccountId(), p.getSecurity()), p);
     }
     streamSeq = cursorStreamSeq;
+    streamIdx = Integer.MAX_VALUE;
     consensusSeq = cursorConsensusSeq;
   }
 
@@ -91,12 +93,22 @@ public final class TradeView {
   /** Book one trade side at stream position {@code seq}; {@code booker} mutates the position and
    *  returns the trade row (kept only when Rejected). A seq at or below the cursor is a replay and is ignored. */
   public synchronized boolean apply(TradeOrder order, long seq, BiFunction<TradeOrder, Position, Trade> booker) {
-    if (seq <= streamSeq) { return false; }
+    return apply(order, seq, Integer.MAX_VALUE, booker);
+  }
+
+  /**
+   * FR-DRS-41: record {@code idx} of the message at stream position {@code seq} (a message holds one or more sides).
+   * A record at or before the last applied, by (seq, idx), is a replay and is ignored. The caller holds this view's
+   * monitor across one message's records, so a cut never falls between them: the cursor it carries is a whole message.
+   */
+  public synchronized boolean apply(TradeOrder order, long seq, int idx, BiFunction<TradeOrder, Position, Trade> booker) {
+    if (seq < streamSeq || (seq == streamSeq && idx <= streamIdx)) { return false; }
     long tradeSeq = TradeFeedHandler.TradeSeqGaps.seqOf(order.getId());
     String epoch = tradeSeq > 0 ? TradeFeedHandler.TradeSeqGaps.epochOf(order.getId()) : acct.epoch();
     if (tradeSeq > 0 && epoch.equals(acct.epoch()) && tradeSeq <= acct.maxSeq()) {
       acct = new Accounting(acct.sides(), acct.maxSeq(), acct.sumSeq(), acct.sumSq(), acct.duplicates() + 1, epoch);
       streamSeq = seq;
+      streamIdx = idx;
       return false;
     }
     String k = key(order.getProjectionScope(), order.getAccountId(), order.getSecurity());
@@ -127,6 +139,7 @@ public final class TradeView {
           acct.duplicates(), epoch);
     }
     streamSeq = seq;
+    streamIdx = idx;
     if (order.getConsensusSequence() != null) { consensusSeq = Math.max(consensusSeq, order.getConsensusSequence()); }
     appliedSinceCut++;
     appliedTotal++;
@@ -139,7 +152,7 @@ public final class TradeView {
    * move there. Without this an idle partition's cursor ages out of retention while nothing was lost.
    */
   public synchronized void idle(long streamLastSeq) {
-    if (streamLastSeq > streamSeq) { streamSeq = streamLastSeq; }
+    if (streamLastSeq > streamSeq) { streamSeq = streamLastSeq; streamIdx = Integer.MAX_VALUE; }
   }
 
   /** Copy out everything changed since the last cut, with the cursor it is exact at, and reset. */

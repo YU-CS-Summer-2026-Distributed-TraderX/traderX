@@ -38,14 +38,35 @@ final class Rows {
    */
   long pos(int r) { return trades ? key[r] : cseq[r] << 16 | ordinal[r]; }
 
-  /** Parses one message into row n; the stream sequence is the row's identity (FR-HST-01). */
+  /** FR-DRS-41: the most records a bridge puts in one message (ReceiptLanes.BATCH_CAP); a lane's buffer leaves room for one. */
+  static final int MAX_RECORDS = 1024;
+
+  /**
+   * Parses one message into rows n.., one per record (FR-DRS-41: a message holds one or more records, newline-separated,
+   * in apply order); every row of a message carries its stream sequence, the row's identity (FR-HST-01). Returns the
+   * number of records.
+   */
   static final class Parser {
     private final HashMap<String, String> interned = new HashMap<>();
     private byte[] d;
-    private int i;
+    private int i, end;
 
-    void parse(byte[] data, Rows b, long streamSeq) {
-      d = data; i = 0;
+    int parse(byte[] data, Rows b, long streamSeq) {
+      int k = 0;
+      for (int s = 0; s < data.length; ) {
+        int e = s;
+        while (e < data.length && data[e] != '\n') e++;
+        if (e > s) {
+          if (++k > MAX_RECORDS) throw new IllegalStateException("message at stream seq " + streamSeq + " holds more than " + MAX_RECORDS + " records");
+          record(data, s, e, b, streamSeq);
+        }
+        s = e + 1;
+      }
+      return k;
+    }
+
+    private void record(byte[] data, int from, int to, Rows b, long streamSeq) {
+      d = data; i = from; end = to;
       int r = b.n;
       b.seq[r] = streamSeq; b.ref[r] = 0; b.cseq[r] = 0; b.created[r] = 0; b.remaining[r] = 0; b.lastQty[r] = 0;
       b.ordinal[r] = 0; b.lastPx[r] = 0; b.status[r] = ""; b.idPrefix[r] = ""; b.orderEpoch[r] = "";
@@ -93,21 +114,21 @@ final class Rows {
       b.n++;
     }
 
-    private int indexOf(char c, int from) { for (int j = from; j < d.length; j++) if (d[j] == c) return j; return -1; }
+    private int indexOf(char c, int from) { for (int j = from; j < end; j++) if (d[j] == c) return j; return -1; }
     private String intern(String s) { return interned.computeIfAbsent(s, x -> x); }
     private String str() { int s = i + 1, e = indexOf('"', s); i = e + 1; return new String(d, s, e - s, StandardCharsets.ISO_8859_1); }
     private long num() {
       long v = 0; boolean neg = d[i] == '-'; if (neg) i++;
-      while (i < d.length && d[i] >= '0' && d[i] <= '9') v = v * 10 + (d[i++] - '0');
+      while (i < end && d[i] >= '0' && d[i] <= '9') v = v * 10 + (d[i++] - '0');
       return neg ? -v : v;
     }
     private double px() {
       if (d[i] == 'n') { i += 4; return 0; }       // null
-      long w = num(); if (i >= d.length || d[i] != '.') return w;
+      long w = num(); if (i >= end || d[i] != '.') return w;
       i++; long f = 0, sc = 1;
       while (d[i] >= '0' && d[i] <= '9') { f = f * 10 + (d[i++] - '0'); sc *= 10; }
       return w + (double) f / sc;
     }
-    private void skip() { if (d[i] == '"') str(); else while (i < d.length && d[i] != ',' && d[i] != '}') i++; }
+    private void skip() { if (d[i] == '"') str(); else while (i < end && d[i] != ',' && d[i] != '}') i++; }
   }
 }

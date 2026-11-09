@@ -3,7 +3,8 @@
 Opened: 2026-11-09 (the 400K campaign, namespace `pa-proof-400k` on traderx-demo, torn down). Evidence: shared notes
 `history-feed-rate-20261108/campaign-400k/`. Spec: trade-history-tiers FR-THT-10, FR-THT-11.
 
-Status: section 1 (the NATS capture ceiling) is open and not diagnosed. Section 2 is fixed in the store's writer
+Status: section 1 (the NATS capture ceiling) is diagnosed as a per-message cost and answered in the bridges by drain
+batching (FR-DRS-41, 2026-11-09, not deployed, not yet measured on GKE; §1a). Section 2 is fixed in the store's writer
 (FR-THT-11, 2026-11-09, not deployed): history-feed leaves out what the store already holds. Why the bridge published
 those sides twice in that run is not diagnosed; the bridges republish by design (FR-DRS-37/38).
 
@@ -29,6 +30,35 @@ c3-standard-44 with 160Gi (c3-standard-8 / 24Gi was OOM-killed three times in th
 
 To find out: whether NATS's cost is the publish path (core publish, no flow control), the consumer count, or the
 single server; and whether the bridges should publish with acknowledgement and back-pressure instead of losing.
+
+### 1a. Diagnosis and the first answer (2026-11-09): the cost is per message, so a lane publishes its drain as one
+
+- Where the pipeline stopped, in order. The load driver delivered 174K orders/s at the 400K setting: every pod sat at
+  its 16 x 2,000 in-flight cap (`unanswered` steady at about 31.9K) with 10 s phases and a 3 s pause, so the 185K
+  "member ceiling" was read behind the driver. The leader with the bridges on held about 185–200K orders/s at 4.8 of
+  7 CPUs (16 publisher and 16 receipt threads encoding about 3 JSON messages per order; the bench's 400–450K knee was
+  measured with the bridges off). One NATS server at one record per message dropped from about 285K messages/s, and
+  FR-DRS-34 had already seen one c4d-standard-32 at 415–505K messages/s with its disk 16% busy and CPU 35–60% idle,
+  whatever the stream count: a per-message cost.
+- Measured (local, one `nats:2.14` server in docker with 4 CPUs, `nats bench js pub async`, 8 clients, file store):
+  540 B messages 363–406K/s (0.4M records/s); 1,080 B 385K/s (0.77M records/s); 5,400 B 150K/s (1.5M records/s);
+  54,000 B 22K/s (2.2M records/s). Below about 1 KB the server is bound per message at the same ~400K/s FR-DRS-34
+  found; above it, per byte (0.75–1.1 GiB/s on the laptop's disk). Evidence: shared notes `400k-options-20261109.md`.
+- The answer in the bridges (FR-DRS-41, ADR-083 decisions 15–18, commit on trade-history-tiers): a lane publishes what
+  its queue holds, up to 64 records and 256 KiB, as one newline-separated message with one receipt; counters stay in
+  records; readers split. At 400K orders/s (1.2M records/s) that is about 20–40K messages/s on one server and the
+  wall moves to bytes (about 540 MB/s of JSON), and the leader's 32 bridge threads pay the jnats publish and receipt
+  path per drain, not per record.
+- On kind (2026-11-09, 4:02–4:17 pm ET, `scripts/trade-history-tiers/kind-bridge-batching.sh`, production's default
+  shape, one partition, about 1,400 orders/s): batching on, 491,616 records in 85,572 messages (5.7 per message), then
+  503,478 in 91,019 (5.5); the control at `BRIDGE_BATCH_MAX=1`, 501,672 in 501,672. Every run: G3h ok, each order
+  event once, the store gained exactly the published records and the stream exactly the published messages, 0
+  rejected. At kind's rate the per-message cost is below the noise in CPU (leader lane threads 0.036 cores in both
+  arms, NATS 0.19–0.21 cores); the ratio is the finding, the CPU effect needs the GKE rate.
+- Not yet done: a GKE run with batching on (needs yaakov's yes and a cost projection: about $40–60 for 3 hours on
+  last night's shape); the load driver's phase and in-flight settings (free, before any measurement); whether the
+  leader still needs its bridges moved to a follower after batching; the FIX fill feed's 18x fan-out before any run
+  with FIX on; the three-server NATS cluster (FR-DRS-34) if the single server's byte rate has no margin.
 
 ## 2. A side the bridge publishes twice is stored twice
 

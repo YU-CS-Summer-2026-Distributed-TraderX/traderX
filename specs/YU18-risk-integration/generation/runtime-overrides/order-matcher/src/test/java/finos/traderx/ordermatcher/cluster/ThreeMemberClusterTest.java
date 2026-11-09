@@ -307,9 +307,10 @@ class ThreeMemberClusterTest {
         final JetStreamSubscription sub = nc.jetStream().subscribe("/orders",
             PushSubscribeOptions.builder().stream("TRADERX_FEED").ordered(true).build());
         for (Message m; (m = sub.nextMessage(Duration.ofMillis(300))) != null; ) {
-            final byte[] d = m.getData();
-            out.add(new String[] {ReceiptLanes.field(d, "consensusSequence"), ReceiptLanes.field(d, "outputOrdinal"),
-                ReceiptLanes.field(d, "id"), ReceiptLanes.field(d, "status")});
+            for (final byte[] d : ReceiptLanes.records(m.getData())) {   // FR-DRS-41: a message holds one or more events
+                out.add(new String[] {ReceiptLanes.field(d, "consensusSequence"), ReceiptLanes.field(d, "outputOrdinal"),
+                    ReceiptLanes.field(d, "id"), ReceiptLanes.field(d, "status")});
+            }
         }
         sub.unsubscribe();
         return out;
@@ -336,9 +337,11 @@ class ThreeMemberClusterTest {
         final JetStreamSubscription sub = nc.jetStream().subscribe("/trades",
             PushSubscribeOptions.builder().stream("TRADERX_FEED").ordered(true).build());
         for (Message m; (m = sub.nextMessage(Duration.ofMillis(300))) != null; ) {
-            final Matcher x = id.matcher(new String(m.getData(), java.nio.charset.StandardCharsets.UTF_8));
-            assertTrue(x.find());
-            out.add(x.group(1));
+            for (final byte[] record : ReceiptLanes.records(m.getData())) {
+                final Matcher x = id.matcher(new String(record, java.nio.charset.StandardCharsets.UTF_8));
+                assertTrue(x.find());
+                out.add(x.group(1));
+            }
         }
         sub.unsubscribe();
         return out;

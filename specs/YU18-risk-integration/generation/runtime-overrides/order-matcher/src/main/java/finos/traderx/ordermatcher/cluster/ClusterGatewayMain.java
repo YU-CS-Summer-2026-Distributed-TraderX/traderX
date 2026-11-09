@@ -2778,7 +2778,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         // Ordered consumer: from "now" (FIX sessions are ephemeral, TD-AC01), in stream
                         // order, and recreated at the last delivered sequence + 1 on any gap or missed
                         // heartbeat.
-                        nats.jetStream().subscribe(subject, d, m -> sink.accept(m.getData()), false,
+                        // FR-DRS-41: a bridge message holds one or more order events
+                        nats.jetStream().subscribe(subject, d, m -> { for (final byte[] r : ReceiptLanes.records(m.getData())) { sink.accept(r); } }, false,
                             io.nats.client.PushSubscribeOptions.builder().stream(e.getKey()).ordered(true)
                                 .configuration(io.nats.client.api.ConsumerConfiguration.builder()
                                     .deliverPolicy(io.nats.client.api.DeliverPolicy.New).build())
@@ -2787,7 +2788,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
             } else {
                 for (final String subject : new String[] {"/orders", "/orders.*"}) {
-                    d.subscribe(subject, m -> sink.accept(m.getData()));
+                    d.subscribe(subject, m -> { for (final byte[] r : ReceiptLanes.records(m.getData())) { sink.accept(r); } });
                 }
             }
             nats.flush(java.time.Duration.ofSeconds(5));   // the server holds the interest before we say so

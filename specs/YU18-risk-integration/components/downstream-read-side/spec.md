@@ -388,6 +388,34 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     and 166 order events and counted no gap. The control, the same members rolled to the build before this rule, lost
     45 of 289,908 order events behind INFO lines only, with every trade side held. An earlier pair read the same
     way (333,528 of 333,528; the control lost 68 of 285,724).
+- FR-DRS-41: A bridge lane SHALL publish everything its queue holds, up to `BRIDGE_BATCH_MAX` records (default 64, at
+  most 1,024) and 256 KiB, as ONE NATS message: the records in apply order, each on its own line (the bridges' JSON
+  holds no newline). One message and one receipt per drain instead of per record. At a quiet rate a drain holds one
+  record and the wire is byte for byte the one before this rule; under load the drain fills, which is when the server's
+  per-message cost is the wall: one NATS server stores about 400K messages/s of this wire whatever their size up to
+  about 1 KB, and 1.5M records/s at 10 per message (downstream-at-400k.md §7.13 and §7.14). `BRIDGE_BATCH_MAX=1` is
+  the one-record wire. The 400K campaign (RI34) found one server dropping from about 285K messages/s and the leader at
+  about 185–200K orders/s with 16 publisher and 16 receipt threads; this rule attacks both.
+  - The reply subject is `<inbox>.<n>.<first>~<last>` on the trade bridge (`<inbox>.<n>` on the order bridge): the
+    record count, then the first and last key, so a 429 still names what was lost and `published`, `acked` and
+    `rejected` stay in records; `/health` `bridges.*.messages` counts the messages. A message is stored or 429'd whole.
+  - The catch-up (FR-DRS-37/38) compares the LAST record of the stream's last message; its own republish is batched.
+  - Readers split a message on the newline before their per-record parse: trade-processor's trade store, order view,
+    SQL order projection, recon and core-mode subscriber; history-feed (one row per record, each with the message's
+    `seq`, FR-HST-01); the gateway's FIX fill feed. trade-processor's trade view holds its lock across one message's
+    sides and keys its replay check by (stream sequence, record index), so a snapshot never cuts through a message and
+    a message's second side is not taken for a replay of its first.
+  - Ordering, exactly-once and catch-up are unchanged: a partition's records are in apply order within and across
+    messages; dedupe keys (`tradeSeq`; `consensusSequence`, `outputOrdinal`) are per record.
+  - Tests. `ReceiptLanesIT#everyIngestDropIsCountedAndEachPartitionStaysInOrder` runs at 1 and at 64 records per
+    message (the 64-KiB ingest queue forces 429s of batched messages; counts in records; order across records);
+    `ReceiptLanesIT#aCatchUpCutsAtTheLastRecordOfABatchedMessage` (300 sides in under 300 messages, a promotion
+    republishes exactly 281..310); `HistoryFeedRateIT` at 1 and 64 per message (1M records: 3.5 s and 2.7 s);
+    `RowsTest#a_batched_message_is_one_row_per_record_each_with_the_stream_sequence`;
+    `FeedBarrierTest#aBatchedMessageBooksEveryRecordItHolds` (before: the view booked 2 of 4, taking a message's
+    second side for a replay). `ThreeMemberClusterTest#tradesInFlightAt*` read the stream by record.
+  - On kind: `scripts/trade-history-tiers/kind-history-rate.sh` now checks store rows = the bridges' published records
+    and stream messages = their published messages. Results in RI34.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

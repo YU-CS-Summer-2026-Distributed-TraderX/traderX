@@ -60,6 +60,16 @@ import java.util.function.ToIntFunction;
  * whose encode-and-publish path the JIT has not compiled yet does: a member's first load, or a follower promoted under
  * load, which has only ever kept records. So each lane first sends {@link #WARM_PUBLISHES} sample records through
  * that path to a scratch subject no stream captures.
+ *
+ * <p>Batching (FR-DRS-41): a lane publishes everything its drain holds, up to {@code BRIDGE_BATCH_MAX} records (default
+ * {@value #BATCH_DEFAULT}, at most {@value #BATCH_CAP}) and {@value #BATCH_BYTES} bytes, as ONE message, the records in
+ * apply order separated by a newline. One NATS message and one receipt per drain instead of per record: at a quiet
+ * rate a drain holds one record and the wire is as before; under load it fills, which is exactly when the server's
+ * per-message cost is the wall (one server stores ~400K messages/s of this wire whatever their size up to ~1 KB,
+ * downstream-at-400k.md §7.13 and the 2026-11-09 local run). A message is stored or 429'd whole, so a drop is
+ * still exact: the reply subject carries the record count and the first and last key, {@code <inbox>.<n>.<first>~<last>},
+ * and the counters stay in records. The catch-up compares the LAST record of the stream's last message. Readers
+ * split a message on the newline before their per-record parse; {@code BRIDGE_BATCH_MAX=1} is the one-record wire.
  */
 final class ReceiptLanes<R extends ReceiptLanes.Record> {
     interface Encoder<R> { byte[] encode(StringBuilder sb, R r); }
@@ -89,8 +99,11 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     /** FR-DRS-39: the scratch subject prefix and how many samples a lane sends on it before its first record. */
     static final String WARM_SUBJECT = "_bridge.warm";
     static final int WARM_PUBLISHES = 20_000;
+    /** FR-DRS-41: records per message. The byte cap keeps a message far under NATS's 1 MiB payload. */
+    static final int BATCH_DEFAULT = 64, BATCH_CAP = 1024, BATCH_BYTES = 256 * 1024;
+    volatile int batchMax = batchMaxFromEnv();
     private final OneToOneConcurrentArrayQueue<R>[] queues;
-    private final AtomicLongArray published, rejected, acked, failed;
+    private final AtomicLongArray published, rejected, acked, failed, messages;
     private final Thread[] threads;
     private final Connection[] connections;
     private final int[] replyPrefix;
@@ -126,6 +139,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         this.rejected = new AtomicLongArray(n);
         this.acked = new AtomicLongArray(n);
         this.failed = new AtomicLongArray(n);
+        this.messages = new AtomicLongArray(n);
         this.threads = new Thread[n];
         this.connections = new Connection[n];
         this.replyPrefix = new int[n];
@@ -133,6 +147,38 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     }
 
     int lanes() { return subjects.length; }
+
+    /** {@code BRIDGE_BATCH_MAX}: unset, blank or unparsable is the default; clamped to 1..{@value #BATCH_CAP}. */
+    static int batchMaxFromEnv() {
+        final String v = System.getenv("BRIDGE_BATCH_MAX");
+        if (v == null || v.isBlank()) { return BATCH_DEFAULT; }
+        try { return Math.max(1, Math.min(BATCH_CAP, Integer.parseInt(v.trim()))); } catch (final NumberFormatException e) { return BATCH_DEFAULT; }
+    }
+
+    /** A stored message's records (FR-DRS-41: one per line, in apply order); a one-record message is itself, uncopied. */
+    static List<byte[]> records(final byte[] msg) {
+        int nl = -1;
+        for (int i = 0; i < msg.length; i++) { if (msg[i] == '\n') { nl = i; break; } }
+        if (nl < 0) { return List.of(msg); }
+        final List<byte[]> out = new java.util.ArrayList<>();
+        int start = 0;
+        for (int i = nl; i <= msg.length; i++) {
+            if (i == msg.length || msg[i] == '\n') {
+                if (i > start) { out.add(java.util.Arrays.copyOfRange(msg, start, i)); }
+                start = i + 1;
+            }
+        }
+        return out;
+    }
+
+    /** The last record of a stored message (FR-DRS-41: one record per line); a one-record message is itself. */
+    static byte[] lastRecord(final byte[] msg) {
+        int end = msg.length;
+        while (end > 0 && msg[end - 1] == '\n') { end--; }
+        int start = end;
+        while (start > 0 && msg[start - 1] != '\n') { start--; }
+        return start == 0 && end == msg.length ? msg : java.util.Arrays.copyOfRange(msg, start, end);
+    }
 
     /** Apply thread: the member's role, from onStart and every onRoleChange. */
     void role(final boolean isLeader) { leader = isLeader; }
@@ -173,12 +219,15 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         l.warm();
         while (running) {
             if (l.nc == null && !l.connect()) { return; }
-            final R r = q.poll();
-            if (r != null) {
+            // FR-DRS-41: take what the queue holds, up to one message's worth, before publishing: under load that is
+            // the drain one message carries; at a quiet rate it is one record.
+            int polled = 0;
+            for (R r; polled < batchMax && (r = q.poll()) != null; polled++) {
                 l.append(r);
                 if (!r.leader) { l.leading = false; }
                 else if (!l.leading) { l.leading = true; l.caughtUp = false; }
-            } else if (!l.leading && leader) { // promoted with nothing new applied yet
+            }
+            if (polled == 0 && !l.leading && leader) { // promoted with nothing new applied yet
                 l.leading = true;
                 l.caughtUp = false;
             }
@@ -192,8 +241,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                         + " is missing them (replay from the archive to repair)");
                 }
             }
-            if (r == null || (++n & 1023) == 0) { l.check(); }
-            if (r == null) {
+            final long before = n;
+            n += polled;
+            if (polled == 0 || before >> 10 != n >> 10) { l.check(); }   // idle, or every 1024 records
+            if (polled == 0) {
                 flushRejectedIds(lane, false);
                 try { Thread.sleep(1); } catch (final InterruptedException e) { break; }
             }
@@ -213,6 +264,9 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         @SuppressWarnings("unchecked")
         final R[] ring = (R[]) new Record[retain];
         final StringBuilder sb = new StringBuilder(512);
+        byte[] buf = new byte[BATCH_BYTES + 4096];   // the message being built: records separated by '\n'
+        int len, count;                              // bytes and records in buf
+        String firstKey, lastKey;                    // the reply subject names the message's first and last key
         long head, next;        // records appended; index of the next to publish
         R lastEvicted;          // the newest record the ring no longer keeps
         ToIntFunction<R> cut;   // non-null until a record past the stream's last is published
@@ -250,7 +304,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 onReceipt(i, m);
             });
             d.setPendingLimits(-1, -1);
-            d.subscribe(key == null ? inbox : inbox + ".>");
+            d.subscribe(inbox + ".>");
             sentOnConn = 0;
             quietSince = System.nanoTime();
             caughtUp = false;
@@ -280,22 +334,64 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             head++;
         }
 
+        /**
+         * Publish what the ring holds from {@code next}: each pass encodes up to {@code batchMax} records (and
+         * {@value #BATCH_BYTES} bytes) into one message (FR-DRS-41). A failed publish leaves {@code next} where the
+         * message began; the reconnect's catch-up then decides what the stream still needs.
+         */
         void pump() {
+            final int max = batchMax;
             while (next < head && nc != null) {
-                final R r = ring[(int) (next % retain)];
-                if (cut != null) {
-                    final int c = cut.applyAsInt(r);
-                    if (c <= 0) { next++; if (c == 0) { cut = null; } continue; } // the stream holds it
-                    cut = null;
+                final long from = next;
+                long first = next;      // the first record in the message (the cut's skips precede it)
+                reset();
+                while (next < head && count < max) {
+                    final R r = ring[(int) (next % retain)];
+                    if (cut != null) {
+                        final int c = cut.applyAsInt(r);
+                        if (c <= 0) { next++; if (c == 0) { cut = null; } continue; } // the stream holds it
+                        cut = null;
+                    }
+                    if (count == 0) { first = next; }
+                    if (!add(r)) { break; }   // the byte cap: this record starts the next message
+                    next++;
                 }
-                if (!publish(r)) { return; }
-                next++;
+                if (count == 0) { continue; }
+                if (!publish(subject)) { next = from; return; }
+                for (long k = first; k < next; k++) {
+                    final R r = ring[(int) (k % retain)];
+                    if (r.sent || !r.leader) { replayed.incrementAndGet(); }
+                    r.sent = true;
+                }
             }
         }
 
-        /** The one encode-and-publish path, for real records and warm-up samples alike. */
+        void reset() { len = 0; count = 0; firstKey = null; lastKey = null; }
+
+        /** Encode r onto the message being built; false when it does not fit behind what is there (never when first). */
+        boolean add(final R r) {
+            final byte[] rec = encoder.encode(sb, r);
+            if (count > 0 && len + 1 + rec.length > BATCH_BYTES) { return false; }
+            if (len + 1 + rec.length > buf.length) { buf = java.util.Arrays.copyOf(buf, Math.max(buf.length * 2, len + 1 + rec.length)); }
+            if (count > 0) { buf[len++] = '\n'; }
+            System.arraycopy(rec, 0, buf, len, rec.length);
+            len += rec.length;
+            if (key != null) { final String k = key.apply(r); if (count == 0) { firstKey = k; } lastKey = k; }
+            count++;
+            return true;
+        }
+
+        /** The reply subject: the record count, then (keyed bridges) the first and last key, so a 429 names them. */
+        String reply() {
+            if (key == null) { return inbox + "." + count; }
+            return inbox + "." + count + "." + (count == 1 ? firstKey : firstKey + "~" + lastKey);
+        }
+
+        /** The one encode-and-publish path, for real records and warm-up samples alike: one record, one message. */
         void send(final String to, final R r) {
-            nc.publish(to, key == null ? inbox : inbox + "." + key.apply(r), encoder.encode(sb, r));
+            reset();
+            add(r);
+            nc.publish(to, reply(), java.util.Arrays.copyOf(buf, len));
         }
 
         /**
@@ -314,9 +410,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             }
         }
 
-        boolean publish(final R r) {
+        /** Publish the message built in buf; counts its records as published. */
+        boolean publish(final String to) {
             try {
-                send(subject, r);
+                nc.publish(to, reply(), java.util.Arrays.copyOf(buf, len));
             } catch (final Exception e) {
                 final long n = failed.incrementAndGet(i);
                 if (n == 1 || n % 10_000 == 0) {
@@ -326,9 +423,8 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 reconnect("publish failed");
                 return false;
             }
-            if (r.sent || !r.leader) { replayed.incrementAndGet(); }
-            r.sent = true;
-            published.incrementAndGet(i);
+            published.addAndGet(i, count);
+            messages.incrementAndGet(i);
             sentOnConn++;
             return true;
         }
@@ -371,7 +467,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                                 if (again.getSeq() == m.getSeq()) { break; }
                                 m = again;
                             }
-                            last = m.getData();
+                            last = lastRecord(m.getData());
                             outcome = "after the stream's last";
                         } catch (final JetStreamApiException e) {
                             if (e.getApiErrorCode() != 10037) { throw e; } // 10037: no message found
@@ -438,23 +534,29 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         }
     }
 
-    /** A stream reply: PubAck JSON, or a 429 status (also an "error" JSON body) when ingest dropped it. */
+    /** A stream reply: PubAck JSON, or a 429 status (also an "error" JSON body) when ingest dropped it. The reply
+     *  subject's first token past the inbox is the message's record count (FR-DRS-41), then its first~last key. */
     void onReceipt(final int lane, final Message m) {
+        final String subj = m.getSubject();
+        final String tail = subj != null && subj.length() > replyPrefix[lane] ? subj.substring(replyPrefix[lane]) : "";
+        final int dot = tail.indexOf('.');
+        int n = 1;
+        try { n = Math.max(1, Integer.parseInt(dot < 0 ? tail : tail.substring(0, dot))); } catch (final NumberFormatException ignore) { }
         final boolean tooMany = (m.getStatus() != null && m.getStatus().getCode() == 429) || isError(m.getData());
         if (!tooMany) {
-            acked.incrementAndGet(lane);
+            acked.addAndGet(lane, n);
             return;
         }
-        final long n = rejected.incrementAndGet(lane);
-        if (key != null && m.getSubject() != null && m.getSubject().length() > replyPrefix[lane]) {
+        final long before = rejected.getAndAdd(lane, n), after = before + n;
+        if (key != null && dot >= 0) {
             synchronized (rejectedIds[lane]) {
-                rejectedIds[lane].append(rejectedIds[lane].length() == 0 ? "" : " ").append(m.getSubject().substring(replyPrefix[lane]));
+                rejectedIds[lane].append(rejectedIds[lane].length() == 0 ? "" : " ").append(tail, dot + 1, tail.length());
             }
-            if (n % ID_BATCH == 0) { flushRejectedIds(lane, true); }
+            if (before / ID_BATCH != after / ID_BATCH) { flushRejectedIds(lane, true); }
         }
-        if (n == 1 || n % 10_000 == 0) {
+        if (before == 0 || before / 10_000 != after / 10_000) {
             System.out.println("ALERT " + name + "-nats-bridge partition " + lane + " (" + subjects[lane]
-                + "): NATS dropped " + n + " message(s) at stream ingest (429 Too Many Requests); the projection"
+                + "): NATS dropped " + after + " record(s) at stream ingest (429 Too Many Requests); the projection"
                 + " is missing them - recon will name them MISSING; replay from the archive to repair");
         }
     }
@@ -471,7 +573,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             rejectedFlushedAt[lane] = System.nanoTime();
         }
         System.out.println("ALERT " + name + "-nats-bridge partition " + lane + " (" + subjects[lane]
-            + ") NATS-rejected ids: " + ids);
+            + ") NATS-rejected ids (first~last of each message): " + ids);
     }
 
     /** A top-level-unique JSON field's raw value (a string without its quotes, or a number), or null. */
@@ -495,16 +597,19 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     long rejected() { return sum(rejected); }
     long acked() { return sum(acked); }
     long failed() { return sum(failed); }
+    /** NATS messages published (FR-DRS-41: each holds one or more records). */
+    long messages() { return sum(messages); }
     long rejected(final int lane) { return rejected.get(lane); }
     /** Records published at a promotion that the previous leader applied but the stream did not hold. */
     long replayed() { return replayed.get(); }
     /** Catch-ups that found records the stream is missing and the lane no longer kept (FR-DRS-38). */
     long gaps() { return gaps.get(); }
 
-    /** {"published":..,"acked":..,"rejected":..,"failed":..,"replayed":..,"gaps":..,"rejectedByPartition":[..],
-     *  "queuedByPartition":[..]} for /health. */
+    /** {"published":..,"messages":..,"acked":..,"rejected":..,"failed":..,"replayed":..,"gaps":..,"rejectedByPartition":[..],
+     *  "queuedByPartition":[..]} for /health; every count but messages is in records. */
     String json() {
-        final StringBuilder b = new StringBuilder("{\"published\":").append(published()).append(",\"acked\":").append(acked())
+        final StringBuilder b = new StringBuilder("{\"published\":").append(published()).append(",\"messages\":").append(messages())
+            .append(",\"acked\":").append(acked())
             .append(",\"rejected\":").append(rejected()).append(",\"failed\":").append(failed())
             .append(",\"replayed\":").append(replayed()).append(",\"gaps\":").append(gaps()).append(",\"rejectedByPartition\":[");
         for (int i = 0; i < subjects.length; i++) { b.append(i == 0 ? "" : ",").append(rejected.get(i)); }

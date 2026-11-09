@@ -87,12 +87,19 @@ until history_caught_up; do sleep 1; done
 drain=$((SECONDS - s0)); r1=$(rows); note "drained $((r1 - r0)) rows in ${drain} s ($(( (r1 - r0) / (drain > 0 ? drain : 1) )) rows/s)"
 out=$( (g3_history "$t") 2>&1) || fail "G3h: $out"
 echo "$out" | tee "$EVIDENCE/g3h.txt" | grep -F "G3h ok" || fail "G3h printed no verdict: $out"
-o=$(q "SELECT count(), uniqExact(part, seq) FROM orders FORMAT TSV")
-[[ $(cut -f1 <<<"$o") == $(cut -f2 <<<"$o") ]] || fail "orders holds a duplicated stream message: $o"
-# The stream's own count: at one partition TRADERX_FEED holds only /trades and /orders, so the store holds exactly it.
+# FR-DRS-41: a stream message holds one or more records, so the orders table is checked by (consensusSequence, ordinal)
+# where the events carry one, else by (part, seq, order ref, status): each event once.
+o=$(q "SELECT count(), if(max(cseq) > 0, uniqExact(cseq, ordinal), uniqExact(part, seq, order_ref, status, last_qty, remaining)) FROM orders FORMAT TSV")
+[[ $(cut -f1 <<<"$o") == $(cut -f2 <<<"$o") ]] || fail "orders holds a duplicated event: $o"
+# The stream's own count: at one partition TRADERX_FEED holds only /trades and /orders. The members' bridges report the
+# records they published and the messages that carried them (FR-DRS-41); the store holds exactly the records, and the
+# stream exactly the messages.
 stream=$(kc exec deploy/nats -- wget -qO- 'http://localhost:8222/jsz?streams=true' \
   | jq '[.account_details[].stream_detail[] | select(.name == "TRADERX_FEED") | .state.messages] | add // -1')
-stored=$(rows); [[ $stored == "$stream" ]] || fail "the store holds $stored rows, the stream $stream messages"
-note "store = stream: $stored rows, $stream messages on TRADERX_FEED"
-echo "$t trades, $sides by the load; store = stream $stored; backlog $backlog; drained in ${drain}s; orders $o; ${old_rate:+old image $old_rate rows/s}" > "$EVIDENCE/summary.txt"
+bridges=$(kc exec order-matcher-cluster-0 -c cluster-node -- wget -qO- localhost:8080/health | jq -c '[.bridges | .. | objects | select(has("messages")) | {published, messages}]')
+records=$(jq '[.[].published] | add' <<<"$bridges"); messages=$(jq '[.[].messages] | add' <<<"$bridges")
+stored=$(rows); [[ $stored == "$records" ]] || fail "the store holds $stored rows, the bridges published $records records (in $messages messages; the stream holds $stream)"
+[[ $stream == "$messages" ]] || fail "the stream holds $stream messages, the bridges published $messages"
+note "store = records: $stored rows = $records published, in $messages messages = stream $stream (TRADERX_FEED)"
+echo "$t trades, $sides by the load; store = records $stored in $messages messages; backlog $backlog; drained in ${drain}s; orders $o; ${old_rate:+old image $old_rate rows/s}" > "$EVIDENCE/summary.txt"
 echo; echo "KIND-HISTORY-RATE PASS ($(cat "$EVIDENCE/summary.txt")) evidence $EVIDENCE"

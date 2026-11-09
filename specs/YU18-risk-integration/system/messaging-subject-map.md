@@ -227,9 +227,12 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
 - `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and
   `/accounts/{id}/positions` publishes.
 - Bridge receipts (ADR-083): every `/trades[.<p>]` and `/orders[.<p>]` message carries a reply subject
-  on its lane's own inbox. The trade bridge uses `_INBOX.<lane id>.<trade id>` and the order bridge
-  uses the bare inbox. Only the stream answers: a PubAck when it stored the message, a 429 when ingest
-  dropped it. Core subscribers ignore the reply subject.
+  on its lane's own inbox: `_INBOX.<lane id>.<n>.<first trade id>~<last trade id>` on the trade bridge and
+  `_INBOX.<lane id>.<n>` on the order bridge, n the message's record count (FR-DRS-41). Only the stream answers: a
+  PubAck when it stored the message, a 429 when ingest dropped it. Core subscribers ignore the reply subject.
+- Bridge batching (FR-DRS-41): a `/trades[.<p>]` or `/orders[.<p>]` message holds one or more records, in apply
+  order, separated by `\n` (the bridges' JSON holds no newline). Every reader splits on it before parsing a record.
+  A lane sends up to `BRIDGE_BATCH_MAX` (64) records and 256 KiB per message; 1 is the one-record wire.
 - Bridge warm-up (FR-DRS-39): at start each lane publishes 20,000 sample records to `_bridge.warm.trade` or
   `_bridge.warm.order`. No stream may capture `_bridge.warm.>` and nothing subscribes to it; NATS discards them.
 - Order event position (FR-DRS-40): every `/orders` and `/orders.<p>` payload carries `consensusSequence` and

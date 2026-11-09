@@ -171,19 +171,24 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     Map<String, finos.traderx.tradeprocessor.model.InstrumentMetadata> bonds = new java.util.HashMap<>();
     long duplicatesBefore = view.accounting().duplicates();
     for (Message m : msgs) {
-      try {
-        var envelope = envelope(m.getData());
-        if (envelope == null) { continue; }
-        TradeOrder t = envelope.getPayload();
-        java.util.Date at = envelope.getDate();     // trade time on the ledger: the bridge's clock, as captured
-        if (runRegistry != null) { runRegistry.validate(t, runs.computeIfAbsent(t.getProjectionScope(), runRegistry::scope)); }
-        if (view.apply(t, m.metaData().streamSequence(), (o, p) -> tradeService.book(o, p, bonds, at))) { applied.incrementAndGet(); }
-      } catch (Exception x) {
-        // FR-DRS-35: a store failure is a barrier. The feed applies this batch again (the view ignores what it already
-        // booked); booking the next side here would move the cursor, and the snapshot, past a valid one.
-        if (JetStreamFeed.retryable(x)) { throw JetStreamFeed.barrier(x); }
-        log.error("trade store: /trades message at stream sequence {} refused and skipped (refused={}): {}",
-            m.metaData().streamSequence(), refused.incrementAndGet(), x.toString());
+      List<byte[]> records = records(m.getData());          // FR-DRS-41: one message, one or more sides
+      synchronized (view) {                                 // a cut never falls between one message's sides
+        for (int i = 0; i < records.size(); i++) {
+          try {
+            var envelope = envelope(records.get(i));
+            if (envelope == null) { continue; }
+            TradeOrder t = envelope.getPayload();
+            java.util.Date at = envelope.getDate();     // trade time on the ledger: the bridge's clock, as captured
+            if (runRegistry != null) { runRegistry.validate(t, runs.computeIfAbsent(t.getProjectionScope(), runRegistry::scope)); }
+            if (view.apply(t, m.metaData().streamSequence(), i, (o, p) -> tradeService.book(o, p, bonds, at))) { applied.incrementAndGet(); }
+          } catch (Exception x) {
+            // FR-DRS-35: a store failure is a barrier. The feed applies this batch again (the view ignores what it already
+            // booked); booking the next side here would move the cursor, and the snapshot, past a valid one.
+            if (JetStreamFeed.retryable(x)) { throw JetStreamFeed.barrier(x); }
+            log.error("trade store: /trades message at stream sequence {} refused and skipped (refused={}): {}",
+                m.metaData().streamSequence(), refused.incrementAndGet(), x.toString());
+          }
+        }
       }
     }
     long duplicates = view.accounting().duplicates() - duplicatesBefore;
@@ -192,7 +197,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
           + " ({}); refused, not booked twice (total duplicates={})", partition, duplicates, view.accounting().maxSeq(),
           view.accounting().duplicates());
     }
-    if (partitionCount <= 1) { for (Message m : msgs) { try { TradeOrder t = decode(m.getData()); if (t != null) { gaps.observe(t.getId()); } } catch (Exception ignore) { } } }
+    if (partitionCount <= 1) { for (Message m : msgs) { for (byte[] record : records(m.getData())) { try { TradeOrder t = decode(record); if (t != null) { gaps.observe(t.getId()); } } catch (Exception ignore) { } } } }
   }
 
   private void snapshotLoop(int partition) {

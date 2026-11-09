@@ -132,6 +132,16 @@ final class TradeNatsPublisher {
         lanes.start();
     }
 
+    /** FR-DRS-41: records per NATS message, at most (tests; production reads BRIDGE_BATCH_MAX). */
+    void batchMax(final int n) {
+        lanes.batchMax = Math.max(1, Math.min(ReceiptLanes.BATCH_CAP, n));
+    }
+
+    /** NATS messages published (FR-DRS-41). */
+    long messages() {
+        return lanes.messages();
+    }
+
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
     /** Pre-orderRef form, for the ancestor callers described on the constructor above. 0 is the
      *  same value writeTradeBooked emitted before it learned the originating order. */

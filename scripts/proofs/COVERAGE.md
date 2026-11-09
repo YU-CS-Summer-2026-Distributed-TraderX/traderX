@@ -1,5 +1,15 @@
 # Proof coverage against the specs
 
+## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
+
+`kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
+120 s binary load at about 1,400 orders/s with everything up. Batching on (`BRIDGE_BATCH_MAX` unset, 64): 491,616
+records in 85,572 messages (5.7 per message) and, after the control, 503,478 in 91,019 (5.5). Control
+(`BRIDGE_BATCH_MAX=1`): 501,672 in 501,672. Every run PASS: G3h, each order event once, the store gained exactly the
+bridges' published records and the stream exactly their published messages, 0 rejected. The leader's lane threads
+sat at 0.036 cores in both arms and NATS at 0.19–0.21: kind's rate is below where the per-message cost shows; the
+server-side ratio is downstream-at-400k.md §7.14 (local: 0.4M records/s at 1 per message, 1.5M at 10).
+
 ## Bridge catch-up across a NATS restart on kind (2026-11-09, FR-DRS-38/40, kind traderx-drs40, torn down)
 
 `kind-bridge-nats-restart.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape,
@@ -1819,6 +1829,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-THT-09` | LIVE | yu18-projection-effect-end |  | added 2026-11-08: kind traderx-cut, blotter ids = the store's (effect-end step 3, kind-cutover-check over every account), extract = history store = SQL positions, live forced settlement and TCA on booked ids (200 / 403 foreign / 404 unknown), yu05-auth-entitlements PASS. TradeRepositoryTest, SettlementServiceTest, HistoryStoreTest, test_prepare (NetworkPolicy, T+N parity). Not on GKE/production |
 | YU18 | `FR-THT-10` | LIVE (kind) | kind-history-rate |  | added 2026-11-08: HistoryFeedRateIT (P=1, production defaults): 1M-message backlog drained in 2.9 s; granted maxAckPending >= batch; the old consumer times out at 60 s. test_rig: history_wait_secs (600 s + backlog / 20,000) and HISTORY_MACHINE. test_prepare: partitioned sizing. kind traderx-rate: 1,787,296 sides by binary-load with history-feed at 0; pre-fix image 2,983 rows/s, fixed image drained 4.52M in 39 s; G3h ok; stream 5,361,888 = store; members equal. GKE pa-proof-400k 2026-11-09 (P=8): PASS at 67K orders/s (202K msgs/s, 40,252,682 sides, every count equal); NATS drops from 285K msgs/s, so 400K orders/s NOT reached (RI34); drain 640K-813K rows/s. Not in production |
 | YU18 | `FR-THT-11` | LIVE (kind) | kind-history-duplicates |  | added 2026-11-09 (RI34 section 2): HistoryFeedDuplicateIT (P=2, shipped jar): 35,000 repeated messages across a SIGKILL, inside one batch and at the stream's tail are left out, a late cross and a same-id-other-quantity side are stored, unpositioned order events are never left out; fails with the leaving-out INSERT disabled. HistoryFeedRateIT now uses the bridges' numbering (plain INSERT path): 1M rows 4.9 s as built, 5.1 s check off, 6.1 s every batch forced through the check (loaded laptop). kind traderx-dup 2026-11-09: 4,057 republished sides left out across a history-feed restart, store 290,806 = members, G3h ok. Not proven: order events on kind or production (legacy ids carry no position, so they are not held once); GKE; a cold partition |
+| YU18 | `FR-DRS-41` | LIVE (kind) | kind-bridge-batching |  | added 2026-11-09 (RI34 section 1a): ReceiptLanesIT at 1 and 64 records per message (a 64 KiB ingest queue forces 429s of batched messages; counts in records; order across records), the cut at the last record of a batched message; HistoryFeedRateIT 1M records at 1 and 64 per message (3.5 s / 2.7 s); RowsTest; FeedBarrierTest (before: the trade view booked 2 of 4). kind traderx-bat: 5.5–5.7 records per message on, 1.00 off; G3h, store = records, stream = messages in every run. Not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |
