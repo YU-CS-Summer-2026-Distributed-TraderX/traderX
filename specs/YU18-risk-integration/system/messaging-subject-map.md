@@ -19,7 +19,9 @@ added `commandType` and one added egress ack kind on the existing templates.
     on the deterministic apply stream) is published here so the cluster's fills reach `trade-processor`
     → the SQL DB → the `/accounts/*/trades` + `/positions` UI feeds. Not the gateway egress (best-effort,
     submitting-session-only). Leader-only (no follower dupes); at-least-once, keyed by `tradeSeq`+side so
-    `trade-processor` (Trade JPA id) dedups. Enabled by `TRADE_BRIDGE_NATS_URL`. See ADR-048.
+    `trade-processor` (Trade JPA id) dedups. Enabled by `TRADE_BRIDGE_NATS_URL`. See ADR-048. YU18
+    (FR-DRS-37): a promoted leader first publishes the sides its predecessor applied but the stream does not
+    hold, after the subject's last stored side.
   - consumer: `trade-processor`
   - delivery: `point-to-point`
   - wildcard: `no`
@@ -227,3 +229,6 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   on its lane's own inbox. The trade bridge uses `_INBOX.<lane id>.<trade id>` and the order bridge
   uses the bare inbox. Only the stream answers: a PubAck when it stored the message, a 429 when ingest
   dropped it. Core subscribers ignore the reply subject.
+- Bridge catch-up (FR-DRS-37): at a promotion each lane makes one JetStream API read, the last message on its
+  subject (`$JS.API.STREAM.NAMES`, then `$JS.API.STREAM.MSG.GET.<stream>`). A NATS user that may only publish
+  would refuse it, and the lane would ALERT and skip the catch-up.

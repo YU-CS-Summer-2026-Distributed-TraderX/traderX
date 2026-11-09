@@ -26,6 +26,11 @@ admin_token(){ local n; n=$(( $(cat "$EVIDENCE/.tok" 2>/dev/null || echo 0) + 1 
 expired(){ local t; read -r t || t=''; [ -n "${TOKEN_SINGLE_USE:-}" ] || return 1
   grep -qx "$t" "$EVIDENCE/.spent" 2>/dev/null && return 0; echo "$t" >> "$EVIDENCE/.spent"; return 1; }
 member(){ local v="M$1"; echo "${!v:-$M}"; }
+# Archive listings with state (FR-PRG-39): each starts from its env (unset = epoch e2's archive only), and a delete
+# removes what it names, so a retry inside one run sees what the first attempt left.
+state(){ local f="$EVIDENCE/.$1"; [ -f "$f" ] || printf '%s\n' $2 > "$f"; grep . "$f" || true; }
+unstate(){ local f="$EVIDENCE/.$1" n; shift; for n in "$@"; do grep -vx "$n" "$f" > "$f.t" || true; mv "$f.t" "$f"; done; }
+SQL_ARC=${SQL_ARC-arc_e2_trades arc_e2_positions}; CH_ARC_TABLES=${CH_ARC_TABLES-arc_e2_trades}; SNAP_LIST=${SNAP_LIST-traderx-e2-m0 traderx-e2-m1 traderx-e2-m2}
 read_model(){ [ -n "${RM_FAIL:-}" ] && return 1; if [ -f "$EVIDENCE/.rm" ]; then echo "$RM_AFTER"; else touch "$EVIDENCE/.rm"; echo "$RM"; fi; }
 kubectl(){
   call "kubectl $*"
@@ -53,6 +58,11 @@ kubectl(){
       case $r in -*) rm -f "$EVIDENCE/.held-$d"; touch "$EVIDENCE/.held-$d";; =*) r=${r#=}; echo "${r%% *}" > "$EVIDENCE/.held-$d";; esac;;
     *"get deploy history-feed -o jsonpath={.spec.replicas}"*) echo "${HF_SPEC:-1}";;
     *"get deploy history-feed"*) [ -n "${HIST_ABSENT:-}" ] || echo deployment.apps/history-feed;;
+    *"get configmap -o json"*) [ -n "${HISTORY_FAIL:-}" ] && return 1   # HISTORY: "<label>=<created> ..." history records
+      jq -cn --arg h "${HISTORY-e1=2026-11-01T01:00:00Z e2=2026-11-02T01:00:00Z}" '{items: [{metadata: {name: "rig-epoch"}},
+        ($h | splits(" ") | select(. != "") | split("=") | {metadata: {name: "rig-epoch-\(.[0])-history", creationTimestamp: .[1]}})]}';;
+    *clickhouse-client*"system.tables"*) [ -n "${CH_LIST_FAIL:-}" ] && return 1; state ch-arc "$CH_ARC_TABLES";;
+    *clickhouse-client*"DROP TABLE IF EXISTS "*) [ -n "${CH_DROP_FAIL:-}" ] && return 1; n="$*"; n=${n#*IF EXISTS }; unstate ch-arc "${n%% *}";;
     *clickhouse-client*) case "$*" in   # CH_LIVE / CH_ARC: whether the live / archived history tables exist
       *"EXISTS TABLE arc_"*) echo "${CH_ARC:-0}";; *"EXISTS TABLE"*) echo "${CH_LIVE:-1}";;
       *"count() FROM arc_"*) echo 81140;; *"count() FROM"*) echo "${CH_ROWS:-0}";; esac;;
@@ -85,6 +95,9 @@ kubectl(){
     *"get pvc data-order-matcher-cluster-"*volumeName*) n="$*"; n=${n#*cluster-}; echo "pv-${n%% *}";;
     *"get pv pv-"*volumeHandle*) n="$*"; n=${n#*pv-}; echo "projects/p/zones/us-east1-b/disks/disk-${n%% *}";;
     *"get deploy trade-processor -o jsonpath={.spec.replicas}"*) echo "${TP_SPEC:-1}";;
+    *"left(table_name,4)='arc_'"*) [ -n "${SQL_LIST_FAIL:-}" ] && return 1; state sql-arc "$SQL_ARC";;
+    *"from information_schema.referential_constraints where"*) echo "${ARC_REFS:-}";;
+    *"DROP TABLE IF EXISTS "*) [ -n "${SQL_DROP_FAIL:-}" ] && return 1; n="$*"; n=${n#*IF EXISTS }; n=${n%%;*}; unstate sql-arc ${n//,/ }; echo 1;;
     *"count(*) from information_schema.tables"*) echo "${ARC_EXISTS:-0}";;
     *"from information_schema.tables"*) printf '%s\n' ${PRESENT:-trades positions orderbook order_view_snapshot projection_accounting projection_cursor projection_trade_days projection_recon};;
     *"select count(*) from arc_"*) echo 42;;
@@ -107,6 +120,9 @@ kubectl(){
     *"web-front-end-console"*) [ -n "${SMOKE_FAIL:-}" ] && { echo "FAIL refused: 58=Invalid Logon message"; return 1; }; printf 'NEW 7 MSFT @ 1\nCANCELED 7\nOK\n';;
     *"get sts order-matcher-cluster -o jsonpath={.status.replicas}"*) echo "${STS_REPLICAS:-0}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec.replicas}"*) echo "${STS_SPEC:-0}";;
+    *"containers[*].name}"*) [ -n "${CONTAINERS_FAIL:-}" ] && return 1; echo "cluster-node${PURGE:+ archive-purge}";;   # PURGE: rendered
+    *"-- touch /data/archive-purge.hold"*|*"-- rm -f /data/archive-purge.hold"*) [ -z "${HOLD_FAIL:-}" ];;
+    *tail-state*) expired || echo "${TAIL_STATE:-$TAIL_OK}";;
     *"get sts order-matcher-cluster -o jsonpath={.spec"*) echo member-image;;
     *"get sts order-matcher-cluster -o jsonpath"*) echo 3;;
     *"get pod rig-errlog-"*phase*) echo "$ERRLOG_PHASE";;
@@ -128,6 +144,8 @@ gcloud(){ call "gcloud $*"; case "$*" in *networkIP*) echo 10.0.0.5;;
       broken) echo "ERROR: (gcloud) Reauthentication required" >&2; return 1;;
     esac;;
   *"disks describe"*) return 1;;
+  *"snapshots list"*) [ -n "${SNAP_LIST_FAIL:-}" ] && return 1; state snaps "$SNAP_LIST";;
+  *"snapshots delete"*) [ -n "${SNAP_DELETE_FAIL:-}" ] && return 1; n="$*"; n=${n#*snapshots delete }; n=${n%% --*}; unstate snaps $n;;
   esac; }
 '''
 
@@ -157,6 +175,10 @@ def acct(p0=(3, 5, 9, 35, 0), p1=(2, 4, 6, 20, 0), resting=(1, 1), orders=True):
 
 
 GOOD['ACCT'] = acct()
+# FR-PRG-40: /recon/tail-state for the members in GOOD, 40 session messages replayed after the oldest retained snapshot
+TAIL = {'applied': 100, 'complete': True, 'bookHash': '11', 'positionHash': '22', 'openOrders': 2, 'positions': 3, 'digestTrades': 5,
+        'replayedMessages': 40, 'snapshotLogPosition': 4096, 'inconclusive': False}
+GOOD['TAIL_OK'] = __import__('json').dumps(TAIL)
 GOOD['ORDERS'] = '[{"id":"om-7","status":"CANCELED"}]'   # the smoke order (NEW 7), cancelled, in the order read model   # rows mode was retired (FR-THT-01): unset TRADE_PROJECTION_MODE is the snapshot read model
 
 
@@ -612,6 +634,75 @@ class Up(unittest.TestCase):
         self.assertIn('one per node does not hold', out)
 
 
+class Purge(unittest.TestCase):
+    """FR-PRG-40: with the archive purge rendered the log no longer starts at 0, so G1 and G2 read /recon/tail-state (the
+    oldest retained snapshot plus a strict replay of its tail), with the purge held while they read. An empty tail is
+    INCONCLUSIVE, never ok; the gate then rests on G4. Without the purge the replay from 0 runs as before."""
+    def tail(self, **change):
+        import json
+        return json.dumps({**TAIL, **change})
+
+    def refused(self, why, **env):
+        rc, out, calls = run('rig_up', PURGE='1', **env)
+        self.assertEqual(rc, 2, out); self.assertIn('REFUSED', out); self.assertIn(why, out)
+        self.assertIsNone(first(calls, SCALE_UP), 'a gateway started after a refusal')
+        self.assertIsNone(first(calls, 'rm -f /data/archive-purge.hold'), 'the purge was released after a refusal')
+        return out, calls
+
+    def test_a_purged_log_is_gated_by_snapshot_plus_tail_with_the_purge_held(self):
+        rc, out, calls = run('rig_up', PURGE='1')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G1/G2 ok (snapshot+tail)', out)
+        self.assertIsNone(first(calls, 'reindex')); self.assertIsNone(first(calls, 'shadow-state'))
+        held = [i for i, c in enumerate(calls) if 'touch /data/archive-purge.hold' in c]
+        tails = [i for i, c in enumerate(calls) if 'tail-state' in c]
+        released = [i for i, c in enumerate(calls) if 'rm -f /data/archive-purge.hold' in c]
+        self.assertEqual((len(held), len(tails), len(released)), (3, 3, 3), out)
+        gate = first(calls, 'create configmap rig-gate')
+        self.assertLess(max(held), min(tails)); self.assertLess(gate, min(released)); self.assertLess(max(released), first(calls, SCALE_UP))
+        self.assertIn('--from-literal=tail=PASS', calls[gate])
+        for c in ('order-matcher-cluster-0', 'order-matcher-cluster-2'):
+            self.assertTrue(any(c in x and 'touch /data/archive-purge.hold' in x for x in calls), c)
+
+    def test_an_empty_tail_is_inconclusive_never_ok_and_the_gate_rests_on_g4(self):
+        empty = self.tail(replayedMessages=0, inconclusive=True)
+        rc, out, calls = run('rig_up', PURGE='1', TAIL_STATE=empty)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G1/G2 INCONCLUSIVE (not ok)', out); self.assertNotIn('G1/G2 ok', out); self.assertIn('G4 ok', out)
+        self.assertIn('--from-literal=tail=INCONCLUSIVE', calls[first(calls, 'create configmap rig-gate')])
+        self.refused('G4', TAIL_STATE=empty, BASELINE_ABSENT='1')   # nothing else to stand on
+        self.refused('G2', TAIL_STATE=self.tail(replayedMessages=0, inconclusive=True, bookHash='99'))   # a mismatch still refuses
+
+    def test_a_snapshot_plus_tail_that_differs_or_cannot_answer_is_refused(self):
+        for env, why in (({'TAIL_STATE': self.tail(bookHash='12')}, "G2: member 0's restored state differs from its snapshot+tail"),
+                         ({'TAIL_STATE': self.tail(positions=4)}, 'G2'),
+                         ({'TAIL_STATE': self.tail(applied=99)}, "G1: member 0's snapshot+tail gives applied 99"),
+                         ({'TAIL_STATE': self.tail(digestTrades=4)}, 'trades 4'),
+                         ({'TAIL_STATE': self.tail(complete=False)}, 'G1'),
+                         ({'TAIL_STATE': '{"error":"RECOVERY_ARCHIVE_DISCONTINUITY: term=3"}'}, 'G1: member 0 has no /recon/tail-state answer'),
+                         ({'TAIL_STATE': '{"bookHash":"11","positionHash":"22"}'}, 'no /recon/tail-state answer'),   # no verdict field
+                         ({'HOLD_FAIL': '1'}, 'failed (the archive purge hold)'),
+                         ({'CONTAINERS_FAIL': '1'}, "the members' containers cannot be read")):
+            out, calls = self.refused(why, **env)
+            self.assertIsNone(first(calls, 'reindex'), why)
+
+    def test_each_tail_read_carries_a_token_minted_for_it(self):
+        rc, out, calls = run('rig_up', PURGE='1', TOKEN_SINGLE_USE='1')
+        self.assertEqual(rc, 0, out)
+
+    def test_without_the_purge_rendered_the_replay_from_0_still_runs(self):   # control
+        rc, out, calls = run('rig_up')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, 'reindex')); self.assertIsNotNone(first(calls, 'shadow-state'))
+        self.assertIsNone(first(calls, 'tail-state')); self.assertIsNone(first(calls, 'archive-purge.hold'))
+        self.assertNotIn('--from-literal=tail=', calls[first(calls, 'create configmap rig-gate')])
+
+    def test_a_fresh_epoch_with_the_purge_rendered_has_nothing_to_replay(self):
+        rc, out, calls = run('rig_up', PURGE='1', **FreshEpoch.EMPTY)
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(first(calls, 'tail-state')); self.assertIsNone(first(calls, 'archive-purge.hold'))
+
+
 class FreshEpoch(unittest.TestCase):
     """FR-PRG-29 / ADR-101: a fresh epoch wipes the member disks only after READY snapshots of exactly those disks, and
     the gate accepts an empty epoch and a missing baseline only while `rig-epoch` says provisioned. Each refusal test
@@ -847,6 +938,107 @@ class FreshEpoch(unittest.TestCase):
         self.refused('must be stopped', 'rig_archive_members e2', STS_SPEC='3')
         rc, out, calls = run('rig_archive_members e2')   # control: READY snapshots of these disks exist
         self.assertEqual(rc, 0, out); self.assertIsNone(first(calls, 'snapshots create'))
+
+
+# Three epochs archived; e1108 the newest (FR-PRG-39). Not a member snapshot: traderx-eod-price-db-20261101.
+ARC_TABLES = 'trades positions orderbook'.split()
+ARCHIVES = {'HISTORY': 'e1101=2026-11-01T05:00:00Z e1107=2026-11-07T05:00:00Z e1108=2026-11-08T05:00:00Z',
+         'SQL_ARC': ' '.join(f'arc_{l}_{t}' for l in ('e1101', 'e1107', 'e1108') for t in ARC_TABLES),
+         'CH_ARC_TABLES': 'arc_e1107_trades arc_e1107_orders arc_e1108_trades arc_e1108_history_cursor',
+         'SNAP_LIST': ' '.join(f'traderx-{l}-m{i}' for l in ('e1101', 'e1107', 'e1108') for i in range(3))
+                      + ' traderx-eod-price-db-20261101'}
+
+
+class Retention(unittest.TestCase):
+    """FR-PRG-39 (yaakov 2026-11-08, "Keep only the last one"): once epoch L's archive is complete, every older epoch's
+    arc_<label>_* tables (eod-price-db and ClickHouse) and member-disk snapshots go; L's stay, live tables are never
+    named, and a label whose age is not on record is refused."""
+    TABLES, THREE = ARC_TABLES, ARCHIVES
+    LEFT = 'echo LEFT; cat "$EVIDENCE/.sql-arc" "$EVIDENCE/.ch-arc" "$EVIDENCE/.snaps"'
+
+    def deletes(self, calls):
+        return [c for c in calls if re.search(r'DROP TABLE|snapshots delete', c)]
+
+    def refused(self, why, body='prune_archives e1108', **env):
+        rc, out, calls = run(body, **{**self.THREE, **env})
+        self.assertEqual(rc, 2, out); self.assertIn('REFUSED', out); self.assertIn(why, out)
+        self.assertEqual(self.deletes(calls), [], why)
+        return out
+
+    def test_every_older_epoch_goes_and_the_newest_stays(self):
+        rc, out, calls = run(f'prune_archives e1108; {self.LEFT}', **self.THREE)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(out.split('LEFT')[1].split()), sorted(
+            [f'arc_e1108_{t}' for t in self.TABLES] + ['arc_e1108_trades', 'arc_e1108_history_cursor', 'traderx-eod-price-db-20261101']
+            + [f'traderx-e1108-m{i}' for i in range(3)]))
+        sql = [c for c in self.deletes(calls) if 'eod-price-db' in c]
+        self.assertEqual(len(sql), 1, 'one DROP for every old SQL table')
+        self.assertIn('SET foreign_key_checks=0; DROP TABLE IF EXISTS arc_e1101_trades, arc_e1101_positions', sql[0])
+        for c in self.deletes(calls):
+            self.assertNotIn('e1108', c); self.assertNotRegex(c, r'EXISTS (trades|positions|orderbook)\b')
+        self.assertIsNotNone(first(calls, r'clickhouse-client -q DROP TABLE IF EXISTS arc_e1107_orders SYNC'), out)
+        self.assertIsNotNone(first(calls, r'snapshots delete traderx-e1101-m0 .*traderx-e1107-m2 --project'), out)
+        self.assertIn('older epochs: e1101 e1107 (14 objects', out)
+        rc, out, calls = run('prune_archives e1108; prune_archives e1108', **self.THREE)   # a rerun deletes nothing more
+        self.assertEqual(rc, 0, out); self.assertIn('nothing older than e1108', out)
+        self.assertEqual(len(self.deletes(calls)), 1 + 2 + 1, out)
+
+    def test_a_label_whose_age_is_not_on_record_is_refused(self):
+        three = self.THREE
+        self.refused('traderx-e1109-m0 (no rig-epoch-e1109-history)', SNAP_LIST=three['SNAP_LIST'] + ' traderx-e1109-m0')
+        self.refused('arc_e1109_trades (not older than e1108)', SQL_ARC=three['SQL_ARC'] + ' arc_e1109_trades',
+                     HISTORY=three['HISTORY'] + ' e1109=2026-11-09T05:00:00Z')
+        self.refused('arc_e1107_trades (not older than e1108)',
+                     HISTORY='e1101=2026-11-01T05:00:00Z e1107=2026-11-08T05:00:00Z e1108=2026-11-08T05:00:00Z')
+        self.refused('arc_Odd_trades (not arc_<label>_<table>)', SQL_ARC=three['SQL_ARC'] + ' arc_Odd_trades')
+        self.refused('no rig-epoch-e1108-history', HISTORY='e1101=2026-11-01T05:00:00Z e1107=2026-11-07T05:00:00Z')
+        for env, why in (({'HISTORY_FAIL': '1'}, 'ConfigMaps cannot be listed'), ({'SQL_LIST_FAIL': '1'}, "eod-price-db's archived tables"),
+                         ({'CH_LIST_FAIL': '1'}, "ClickHouse's archived tables"), ({'SNAP_LIST_FAIL': '1'}, 'snapshots cannot be listed')):
+            self.refused(why, **env)
+
+    def test_nothing_older_goes_until_the_newest_archive_is_complete(self):
+        self.refused("epoch e1108's read model is not archived", SQL_ARC=' '.join(f'arc_e1101_{t}' for t in self.TABLES))
+        self.refused("epoch e1108's three member-disk snapshots are not all READY", SNAPS='absent')
+        self.refused('are not all READY', SNAP_LIST=self.THREE['SNAP_LIST'].replace('traderx-e1108-m2 ', ''))
+
+    def test_a_live_tables_key_onto_an_archive_is_refused(self):
+        self.refused('a table outside the old archives references them: trades->arc_e1101_trades', ARC_REFS='trades->arc_e1101_trades')
+
+    def test_a_retry_after_a_partial_delete_finishes_it(self):
+        for fail, done in (('SNAP_DELETE_FAIL', ('eod-price-db', 'clickhouse')), ('CH_DROP_FAIL', ('eod-price-db',)),
+                           ('SQL_DROP_FAIL', ())):
+            # the first attempt stops at its failing delete; the second, against what it left, finishes
+            rc, out, calls = run(f'( {fail}=1 prune_archives e1108 ) && exit 9; echo RETRY >> "$LOG"; prune_archives e1108; {self.LEFT}', **self.THREE)
+            self.assertEqual(rc, 0, f'{fail}: {out}'); self.assertIn('rerun retries', out)
+            self.assertFalse(re.search('e1101|e1107', out.split('LEFT')[1].split('REFUSED')[0]), f'{fail}: {out}')   # stderr follows
+            second = calls[calls.index('RETRY'):]
+            for store in done:   # what the first attempt deleted is not deleted again
+                self.assertFalse([c for c in self.deletes(second) if store in c], f'{fail}: {store} deleted twice')
+            self.assertEqual(len([c for c in self.deletes(second) if 'snapshots delete' in c]), 1, fail)
+
+    def test_a_fresh_epoch_up_prunes_after_its_archive_and_before_the_restart(self):
+        wiped = {**FreshEpoch.EMPTY, **self.THREE, 'EPOCH': 'wiped e1108', 'ARC_EXISTS': '1'}
+        rc, out, calls = run('rig_up', **wiped)
+        self.assertEqual(rc, 0, out)
+        steps = [first(calls, p) for p in (r'rig-epoch .*state=archived', r'DROP TABLE IF EXISTS arc_e1101',
+                                           r'snapshots delete traderx-e1101-m0', r'scale deploy/trade-processor --replicas=1',
+                                           r'rig-epoch .*state=provisioned')]
+        self.assertNotIn(None, steps, out); self.assertEqual(steps, sorted(steps), out)
+        # refused (a newer snapshot set with no record): the epoch stays archived, and the retry prunes before restarting
+        rc, out, calls = run('rig_up', **{**wiped, 'SNAP_LIST': self.THREE['SNAP_LIST'] + ' traderx-e1109-m0'})
+        self.assertEqual(rc, 2, out); self.assertIn('(no rig-epoch-e1109-history)', out)
+        self.assertIsNone(first(calls, r'trade-processor --replicas=1')); self.assertIsNone(first(calls, 'state=provisioned'))
+        rc, out, calls = run('rig_up', **{**wiped, 'EPOCH': 'archived e1108', 'TP_SPEC': '0', 'HELD_trade_processor': '1'})
+        self.assertEqual(rc, 0, out); self.assertLess(first(calls, 'snapshots delete'), first(calls, 'trade-processor --replicas=1'))
+
+    def test_prune_archives_on_its_own(self):
+        rc, out, calls = run('rig_prune_archives', **self.THREE, EPOCH='initialized e1108')
+        self.assertEqual(rc, 0, out); self.assertEqual(len(self.deletes(calls)), 4, out)
+        rc, out, calls = run('DRY=1; rig_prune_archives', **self.THREE, EPOCH='initialized e1108')   # reads, deletes nothing
+        self.assertEqual(rc, 0, out); self.assertEqual(self.deletes(calls), [])
+        self.assertIn('would delete: snap traderx-e1107-m2', out); self.assertIn('would delete: sql arc_e1101_trades', out)
+        for env in ({'EPOCH': 'wiped e1108'}, {}):
+            self.refused('no completed fresh-epoch archive', 'rig_prune_archives', **env)
 
 
 class GatewayShrink(unittest.TestCase):

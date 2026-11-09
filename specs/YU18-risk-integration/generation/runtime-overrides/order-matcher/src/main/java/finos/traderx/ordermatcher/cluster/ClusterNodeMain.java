@@ -932,6 +932,13 @@ public final class ClusterNodeMain {
             return shadowStateJson(s, before, service.appliedSeq());
         }));
 
+        // FR-PRG-40: the same reference once the archive is purged behind a snapshot: the oldest retained snapshot plus a
+        // strict replay of the log after it. An empty tail is reported inconclusive, never as agreement.
+        server.createContext("/recon/tail-state", exchange -> guarded.apply(exchange, () -> {
+            final long before = service.appliedSeq();
+            return tailStateJson(recon.tailState(), before, service.appliedSeq());
+        }));
+
         server.createContext("/recon/full-history/reindex", exchange ->
             guarded.apply(exchange, () -> {
                 // Bracket the replay with the live trade counter. The replay's own index is a
@@ -1206,6 +1213,14 @@ public final class ClusterNodeMain {
     }
 
     /** {@code complete}: the member applied nothing while the replay ran, and the replay reached its applied sequence. */
+    static java.util.Map<String, Object> tailStateJson(final ClusterRecon.TailState t, final long memberBefore,
+                                                       final long memberAfter) {
+        final java.util.Map<String, Object> m = shadowStateJson(t.state(), memberBefore, memberAfter);
+        m.put("snapshotLogPosition", t.snapshotLogPosition());
+        m.put("inconclusive", t.state().replayedMessages() == 0);
+        return m;
+    }
+
     static java.util.Map<String, Object> shadowStateJson(final ClusterRecon.ShadowState s, final long memberBefore,
                                                          final long memberAfter) {
         final java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();

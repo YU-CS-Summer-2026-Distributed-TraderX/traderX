@@ -74,7 +74,8 @@ class TestDataCleanup(unittest.TestCase):
                                   capture_output=True, text=True, timeout=300)
 
     def rig(self, fn):
-        return self.bash(f'set -euo pipefail; RIG_LIB=1 . "{RIG}"; {self.stub()}{fn}')
+        # reset_feed (NATS, FR-PRG-29) is test_rig's; this test is about the tables
+        return self.bash(f'set -euo pipefail; RIG_LIB=1 . "{RIG}"; {self.stub()}reset_feed(){{ :; }}; {fn}')
 
     def cleanup(self, *args):   # the script itself, with the stub inserted right after it sources rig.sh
         line = 'RIG_LIB=1 . "$HERE/rig.sh"\n'

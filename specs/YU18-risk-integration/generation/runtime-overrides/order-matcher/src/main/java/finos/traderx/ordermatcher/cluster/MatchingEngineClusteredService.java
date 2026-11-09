@@ -535,6 +535,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public static final byte KIND_BUSINESS_DAY = 105;
     public static final byte KIND_RUN_CONTROL = 106;
     public static final byte KIND_SELF_MATCH_GROUP = 107;
+    /** RI33 (FR-AAD-02): an account control's committed decision; id at 13, outcome at 8. */
+    public static final byte KIND_ACCOUNT_CONTROL = 108;
 
     // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
@@ -769,7 +771,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public RunDescriptor runDescriptor() {return runDescriptor;}
     public int runPhase() {return runPhase;}
     /** YU18 (§7.9): the bridges' publish counters - published, queue drops, and NATS ingest drops (429
-     *  receipts) per partition. Per-process and off-consensus: only the leader publishes, so followers read 0. */
+     *  receipts) per partition. Per-process and off-consensus: only the leader publishes, so followers read 0;
+     *  "replayed" counts what a promotion published for the previous leader (FR-DRS-37). */
     public String bridgeJson() {
         return "{\"trades\":" + (tradeBridge == null ? "null" : tradeBridge.json())
             + ",\"orders\":" + (orderBridge == null ? "null" : orderBridge.json()) + "}";
@@ -784,6 +787,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         return trades ? (tradeBridge == null ? 0 : tradeBridge.published()) : (orderBridge == null ? 0 : orderBridge.published());
     }
     public long frozenRunSequence() {return frozenRunSequence;}
+    // TRADE_BRIDGE_NATS_URL; package-private so ThreeMemberClusterTest points in-process members at its NATS.
+    String bridgeUrl = System.getenv("TRADE_BRIDGE_NATS_URL");
     private TradeNatsPublisher tradeBridge;
     // Leader-side order-lifecycle → NATS /orders bridge (YU13): the order-state sibling of the trade
     // bridge, gated on the same env so default behaviour is unchanged. Null on every member until then.
@@ -824,16 +829,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
         }
-        final String bridgeUrl = System.getenv("TRADE_BRIDGE_NATS_URL");
         if (bridgeUrl != null && !bridgeUrl.isBlank()) {
             // Epoch-qualified order ids so the read-model key never collides across incarnations
             // (brief 05 item 0). Managed runs use the persisted descriptor; legacy keeps its configured prefix.
             final String configuredEpoch = System.getenv("CLUSTER_EPOCH");
             final String epoch = configuredEpoch == null || configuredEpoch.isBlank() ? "1" : configuredEpoch;
             tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, 1 << 16);
+            tradeBridge.role(role == Cluster.Role.LEADER);
             tradeBridge.start();
             orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
                 epoch, runDescriptor, 1 << 16);
+            orderBridge.role(role == Cluster.Role.LEADER);
             orderBridge.start();
         }
         final String extractUrl = System.getenv("RISK_EXTRACT_NATS_URL");
@@ -1115,6 +1121,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         activeSession = null;
         drainOutputs(session);
         applyingMarketTrade = false;
+        if (event.type == InputEvent.TYPE_ACCOUNT_CONTROL) {
+            // RI33 (FR-AAD-02): the admission's committed decision, correlated by the issuer's id in
+            // the ingress inputSeq slot. Byte 8: 0 = the member holds the account, 1 = refused
+            // (F7: table full, ignored). Egress only: the apply above is unchanged on every member.
+            ackBuffer.putLong(0, appliedSeq);
+            ackBuffer.putInt(8, risk.knowsAccount(event.accountId) ? 0 : 1);
+            ackBuffer.putByte(12, KIND_ACCOUNT_CONTROL);
+            ackBuffer.putLong(13, applyRequestId);
+            ackBuffer.putByte(21, (byte) 0);ackBuffer.putByte(22, (byte) 0);ackBuffer.putByte(23, (byte) 0);
+            ackBuffer.putLong(24, 0L);
+            offerEgress(session);
+        }
         if (timeThis) {
             latency.recordApplyNanos(System.nanoTime() - applyStartNanos);
         }
@@ -2090,6 +2108,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (newRole == Cluster.Role.LEADER) {
             stampFirstApplyAsLeader = true;
         }
+        // FR-DRS-37: the bridges tag what is applied from here with the new role; a promoted lane
+        // publishes the trades and orders the stream is missing before anything new.
+        if (tradeBridge != null) {
+            tradeBridge.role(newRole == Cluster.Role.LEADER);
+        }
+        if (orderBridge != null) {
+            orderBridge.role(newRole == Cluster.Role.LEADER);
+        }
         System.out.println("ROLE-CHANGE role=" + newRole + " atMs=" + System.currentTimeMillis());
     }
 
@@ -2637,7 +2663,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         lastLoadedNextOrderRef = nextOrderRef;
     }
 
-    private void loadSnapshot(final Image snapshotImage) {
+    /** Package-private for the restore gate's snapshot+tail shadow (ClusterRecon.tailState, FR-PRG-40). */
+    void loadSnapshot(final Image snapshotImage) {
         // FR-XOD-18. Two Aeron behaviours this loop must not inherit:
         //  - a record larger than one message (a full ADR-090 stream is 2,108 bytes) arrives as fragments, so the
         //    handler sits behind an assembler and always sees whole messages;
@@ -2715,27 +2742,27 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 directAckKind = out.kind;
             }
             // Read-side tap (YU05 recon/regulatory). Handed the reusable ring slot, so a consumer
-            // copies what it needs synchronously. Placed before the leader-gated bridges on
+            // copies what it needs synchronously. Placed before the role-tagged bridges on
             // purpose: a shadow replay is never leader, and the recon window must see every
             // committed output regardless of role.
             final java.util.function.Consumer<OutputEvent> tap = outputSink;
             if (tap != null) {
                 tap.accept(out);
             }
-            // Leader-side trade bridge: every booked trade → NATS /trades → trade-processor → DB +
-            // positions + UI. Leader-only so followers never duplicate; offer is non-blocking so the
-            // deterministic apply thread is never held up by NATS.
-            if (out.kind == OutputEvent.KIND_TRADE_BOOKED && role == Cluster.Role.LEADER
-                && tradeBridge != null) {
+            // Trade bridge: every booked trade → NATS /trades → trade-processor → DB + positions + UI.
+            // Offered on EVERY member, tagged with its role (FR-DRS-37): the leader publishes; a follower
+            // keeps the trade and, if promoted, publishes what the stream does not hold - a trade the
+            // dying leader applied but never got stored. Non-blocking, so NATS never holds up apply.
+            if (out.kind == OutputEvent.KIND_TRADE_BOOKED && tradeBridge != null) {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
                     out.side, out.tradeQty, out.tradePx, out.orderRef, out.inputSeq);
             }
             // Leader-side order bridge: every order-state transition → NATS /orders → read model →
-            // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
-            // the trade bridge. Covers both the input's own order and counterparty resting orders
+            // orderbook projection → REST enumeration. Same every-member, leader-publishes, non-blocking
+            // discipline as the trade bridge. Covers both the input's own order and counterparty resting orders
             // hit by an aggressor (FLAG_RESTING_UPDATE) — so an STP/replace cancel of a resting
             // order is observable to its owner via this feed (brief 07).
-            if (bridgesOrder(out) && role == Cluster.Role.LEADER && orderBridge != null) {
+            if (bridgesOrder(out) && orderBridge != null) {
                 // The trace id goes ONLY on the applying order's own egress. A resting order hit
                 // by an aggressor is a DIFFERENT order, and the key we hold is the aggressor's:
                 // stamping it would put a real, resolvable trace id on a stranger's row, which

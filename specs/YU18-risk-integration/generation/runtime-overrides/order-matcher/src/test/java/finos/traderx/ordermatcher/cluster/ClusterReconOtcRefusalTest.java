@@ -178,7 +178,12 @@ class ClusterReconOtcRefusalTest {
             assertEquals(plain.risk().executedNotional(ACCOUNT),tapped.risk().executedNotional(ACCOUNT));
         }
         assertEquals(3,decisions.size()); assertEquals(2,tapped.contractCount());
-        assertEquals(6,offersA.size(), "each actual booking attempts one successful direct egress");
+        // Byte 12 of each 32-byte ack is its kind (hex chars 24..25).
+        java.util.function.ToLongFunction<Byte> ofKind = k -> offersA.stream()
+            .filter(o -> Integer.parseInt(o.substring(24, 26), 16) == (k & 0xff)).count();
+        assertEquals(6,ofKind.applyAsLong(MatchingEngineClusteredService.KIND_SWAP_BOOKED), "each actual booking attempts one successful direct egress");
+        assertEquals(2,ofKind.applyAsLong(MatchingEngineClusteredService.KIND_ACCOUNT_CONTROL), "each account control acks its decision (FR-AAD-02)");
+        assertEquals(8,offersA.size(), "nothing else reaches egress");
         assertEquals(offersA,offersB, "unchanged delivered ack bytes and offer counts");
         assertEquals(outputsA,outputsB); assertTrue(outputsA.isEmpty(), "no OTC output-ring events introduced");
         assertEquals(List.of("UNKNOWN_ACCOUNT","PRICE_MISSING","ACCOUNT_DISABLED"),decisions.stream().map(d -> ClusterRecon.reasonName(d.reason())).toList());

@@ -14,6 +14,9 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.RecordingLog;
 import io.aeron.cluster.codecs.MessageHeaderDecoder;
 import io.aeron.cluster.codecs.SessionMessageHeaderDecoder;
+import io.aeron.cluster.codecs.SnapshotMark;
+import io.aeron.cluster.codecs.SnapshotMarkerDecoder;
+import io.aeron.logbuffer.ControlledFragmentHandler;
 import io.aeron.logbuffer.FragmentHandler;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.YieldingIdleStrategy;
@@ -158,6 +161,10 @@ final class ClusterRecon {
     record ShadowState(long replayedMessages, long applied, long bookHash, long positionHash, long tradeCounter,
                        int openOrders, int positions) { }
 
+    /** FR-PRG-40: the same digest from a shadow restored from the oldest snapshot this member retains, then a strict replay
+     *  of the log from that snapshot's position. {@code replayedMessages} counts the tail's session messages only. */
+    record TailState(ShadowState state, long snapshotLogPosition) { }
+
     private final File clusterDir;
     private final String aeronDir;
     private final String epoch;
@@ -223,6 +230,24 @@ final class ClusterRecon {
         final MatchingEngine.RecoveryDigest d = shadow[0].engine().recoveryDigest();
         return new ShadowState(counters[0], counters[1], d.orderHash(), d.positionHash(), d.tradeCounter(),
             d.openOrders(), d.positions());
+    }
+
+    /**
+     * FR-PRG-40: the restore gate's reference once the archive is purged behind a snapshot ({@link ArchivePurgeMain}),
+     * where {@link #shadowState()} refuses by design. The shadow loads the OLDEST snapshot this member still retains,
+     * with the member's own loadSnapshot, and replays the log from its position strictly contiguously to the end. Not the
+     * latest: a restarted member restored from the latest, and the tail between the two is what this re-derives through
+     * the apply path. An empty tail (no session message after that snapshot) proves nothing about the restore; the caller
+     * reports it INCONCLUSIVE, never as agreement.
+     */
+    synchronized TailState tailState() {
+        final long[] counters = new long[2]; // replayed messages, applied seq
+        final long[] snapshot = {-1};
+        final MatchingEngineClusteredService[] shadow = new MatchingEngineClusteredService[1];
+        replay((out, ticker) -> { }, null, null, counters, true, shadow, snapshot);
+        final MatchingEngine.RecoveryDigest d = shadow[0].engine().recoveryDigest();
+        return new TailState(new ShadowState(counters[0], counters[1], d.orderHash(), d.positionHash(), d.tradeCounter(),
+            d.openOrders(), d.positions()), snapshot[0]);
     }
 
     synchronized ReindexResult reindexFullHistory() {
@@ -517,11 +542,19 @@ final class ClusterRecon {
         return replay(sink, contractSink, refusalSink, counters, strict, null);
     }
 
-    /** {@code shadowOut}, when given, receives the shadow after the replay (FR-ERH-F16). */
     private long replay(final ReplaySink sink, final ContractSink contractSink,
                         final java.util.function.Consumer<MatchingEngineClusteredService.OtcRefusal> refusalSink,
                         final long[] counters, final boolean strict,
                         final MatchingEngineClusteredService[] shadowOut) {
+        return replay(sink, contractSink, refusalSink, counters, strict, shadowOut, null);
+    }
+
+    /** {@code shadowOut}, when given, receives the shadow after the replay (FR-ERH-F16). {@code snapshotOut}, when given,
+     *  restores the shadow from the oldest retained snapshot first, replays from its position, and receives it (FR-PRG-40). */
+    private long replay(final ReplaySink sink, final ContractSink contractSink,
+                        final java.util.function.Consumer<MatchingEngineClusteredService.OtcRefusal> refusalSink,
+                        final long[] counters, final boolean strict,
+                        final MatchingEngineClusteredService[] shadowOut, final long[] snapshotOut) {
         final MatchingEngineClusteredService shadow = new MatchingEngineClusteredService();
         if (shadowOut != null) {
             shadowOut[0] = shadow;
@@ -579,25 +612,43 @@ final class ClusterRecon {
                 }
             }
             terms.sort(Comparator.comparingLong(e -> e.termBaseLogPosition));
-            if (strict && (terms.isEmpty() || terms.get(0).termBaseLogPosition != 0)) {
+            long start = 0;
+            if (snapshotOut != null) {
+                final RecordingLog.Entry snapshot = oldestRetainedSnapshot(archive, recordingLog, terms);
+                if (snapshot == null) {
+                    throw new IllegalStateException("RECOVERY_NO_RETAINED_SNAPSHOT");
+                }
+                restoreSnapshot(aeron, archive, snapshot.recordingId, shadow);
+                start = snapshotOut[0] = snapshot.logPosition;
+            }
+            if (strict && start == 0 && (terms.isEmpty() || terms.get(0).termBaseLogPosition != 0)) {
                 throw new IllegalStateException("RECOVERY_ARCHIVE_GENESIS_MISSING");
             }
-            long previousEnd = 0;
+            long previousEnd = start;
+            boolean covered = start == 0;
             for (int i = 0; i < terms.size(); i++) {
                 final RecordingLog.Entry term = terms.get(i);
+                final boolean last = i + 1 == terms.size();
+                if (start > 0 && !last && terms.get(i + 1).termBaseLogPosition <= start) {
+                    continue; // wholly before the snapshot
+                }
                 final long[] bounds = recordingBounds(archive, term.recordingId);
-                final long from = Math.max(term.termBaseLogPosition, bounds[0]);
-                final long to = i + 1 < terms.size()
-                    ? Math.min(terms.get(i + 1).termBaseLogPosition, bounds[1]) : bounds[1];
-                if (strict && (from != previousEnd || bounds[0] > term.termBaseLogPosition
-                    || to < from || (i + 1 < terms.size() && to != terms.get(i + 1).termBaseLogPosition))) {
+                final long base = Math.max(term.termBaseLogPosition, start);
+                final long from = Math.max(base, bounds[0]);
+                final long to = !last ? Math.min(terms.get(i + 1).termBaseLogPosition, bounds[1]) : bounds[1];
+                if (strict && (from != previousEnd || bounds[0] > base
+                    || to < from || (!last && to != terms.get(i + 1).termBaseLogPosition))) {
                     throw new IllegalStateException("RECOVERY_ARCHIVE_DISCONTINUITY: term=" + term.leadershipTermId);
                 }
+                covered = true;
                 previousEnd = to;
                 if (to > from) {
                     replayRange(aeron, archive, term.recordingId, from, to - from, handler);
                     if (replayFailure[0] != null) throw replayFailure[0];
                 }
+            }
+            if (strict && !covered) {
+                throw new IllegalStateException("RECOVERY_ARCHIVE_DISCONTINUITY: no term covers the snapshot at " + start);
             }
         }
         applied[1] = shadow.appliedSeq();
@@ -628,6 +679,97 @@ final class ClusterRecon {
         // silently drops the second one if that ever changes is the shape of this whole defect.
         for (int i = before; i < shadow.contractCount(); i++) {
             contractSink.accept(shadow.contractTuples().get(i), millis);
+        }
+    }
+
+    /** The service's snapshot with the lowest log position whose recording the archive still holds and whose position
+     *  the log still covers: the earliest restore point a purged member has (FR-PRG-40). */
+    private static RecordingLog.Entry oldestRetainedSnapshot(final AeronArchive archive, final RecordingLog recordingLog,
+                                                             final List<RecordingLog.Entry> terms) {
+        final List<RecordingLog.Entry> snapshots = new ArrayList<>();
+        for (final RecordingLog.Entry e : recordingLog.entries()) {
+            if (e.isValid && e.type == RecordingLog.ENTRY_TYPE_SNAPSHOT && e.serviceId == 0) {
+                snapshots.add(e);
+            }
+        }
+        snapshots.sort(Comparator.comparingLong(e -> e.logPosition));
+        for (final RecordingLog.Entry e : snapshots) {
+            if (archive.listRecording(e.recordingId, (a, b, c, d, f, g, h, i, j, k, l, m, n, o, p, q) -> { }) == 0) {
+                continue; // purged with the log behind the second-latest snapshot
+            }
+            for (final RecordingLog.Entry term : terms) {
+                if (term.leadershipTermId == e.leadershipTermId
+                    && recordingBounds(archive, term.recordingId)[0] <= e.logPosition) {
+                    return e;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The member's own restore: Aeron's section of the recording skipped, as its snapshot loader does, then the
+     *  service's {@code loadSnapshot}, which fails closed on a refused or truncated record (FR-XOD-18). */
+    private static void restoreSnapshot(final Aeron aeron, final AeronArchive archive, final long recordingId,
+                                        final MatchingEngineClusteredService shadow) {
+        final long[] bounds = recordingBounds(archive, recordingId);
+        final YieldingIdleStrategy idle = new YieldingIdleStrategy();
+        final long deadline = System.currentTimeMillis() + REPLAY_DEADLINE_MS;
+        long replaySessionId = Aeron.NULL_VALUE;
+        try (Subscription subscription = aeron.addSubscription(IPC, REPLAY_STREAM_ID)) {
+            replaySessionId = archive.startReplay(recordingId, bounds[0], bounds[1] - bounds[0], IPC, REPLAY_STREAM_ID);
+            Image image;
+            while ((image = subscription.imageBySessionId((int) replaySessionId)) == null) {
+                checkDeadline(deadline, "snapshot image never arrived for recording " + recordingId);
+                idle.idle();
+            }
+            skipClusterSection(image, deadline);
+            shadow.loadSnapshot(image);
+        } finally {
+            if (replaySessionId != Aeron.NULL_VALUE) {
+                try {
+                    archive.stopReplay(replaySessionId);
+                } catch (final RuntimeException ignore) {
+                    // already finished on its own
+                }
+            }
+        }
+    }
+
+    /** A service snapshot recording opens with Aeron's own section (BEGIN marker, client sessions, END marker); the
+     *  service's records follow. Consumed through the END marker, so loadSnapshot's first record is the service's. */
+    private static void skipClusterSection(final Image image, final long deadline) {
+        final MessageHeaderDecoder header = new MessageHeaderDecoder();
+        final SnapshotMarkerDecoder marker = new SnapshotMarkerDecoder();
+        final boolean[] end = {false, false}; // END seen, a service record before it
+        // Not a throw: a poll hands a handler's exception to the client's error handler and keeps polling.
+        final ControlledFragmentHandler handler = (buffer, offset, length, h) -> {
+            header.wrap(buffer, offset);
+            if (header.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
+                end[1] = true;
+                return ControlledFragmentHandler.Action.ABORT;
+            }
+            if (header.templateId() == SnapshotMarkerDecoder.TEMPLATE_ID) {
+                marker.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, header.blockLength(), header.version());
+                if (marker.mark() == SnapshotMark.END) {
+                    end[0] = true;
+                    return ControlledFragmentHandler.Action.BREAK;
+                }
+            }
+            return ControlledFragmentHandler.Action.CONTINUE;
+        };
+        final YieldingIdleStrategy idle = new YieldingIdleStrategy();
+        while (!end[0]) {
+            final int fragments = image.controlledPoll(handler, 16);
+            if (end[1]) {
+                throw new IllegalStateException("snapshot: a service record before Aeron's END marker");
+            }
+            if (fragments == 0) {
+                if (image.isEndOfStream()) {
+                    throw new IllegalStateException("snapshot truncated before Aeron's END marker");
+                }
+                checkDeadline(deadline, "snapshot stalled before Aeron's END marker");
+                idle.idle();
+            }
         }
     }
 

@@ -288,6 +288,23 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   snapshot mode or order-view snapshots; rows mode never reads the column. Its last statement lists every unbound
   cursor past 0, each of which the build refuses until it is reconciled and attested. Rolling the image back needs no schema
   change: the earlier build names its columns, and a binding it leaves stale is refused, not skipped.
+- FR-DRS-37: Every trade side and order event the cluster applies SHALL be stored on its `TRADERX_FEED` subject
+  exactly once, in apply order, across a leader change. Only the leader publishes, so the bridges SHALL NOT depend
+  on the role at apply time: every member offers every record, tagged with its role. A lane keeps the records its
+  member applied while following (the last `capacityPerLane`, 65,536), and when the member becomes leader it reads
+  the last message the stream stored on its subject and publishes the kept records after it, in order, before
+  anything new. Records applied after the promotion are held to the same cut, so a record the log applies on the
+  new leader after its role change that the old leader had stored is skipped. A trade side's position is its
+  `tradeSeq` (one per side). An order event's is (`consensusSequence`, `outputOrdinal`). A message of another epoch
+  or id scheme means none of this run's records is stored. When the subject is empty, everything kept is published.
+  With no stream capturing the subject, an unreachable stream after 10 attempts, or a legacy order message that
+  carries no position, the lane logs an ALERT and publishes nothing kept. Eviction past the cut is logged as an ALERT
+  that names the count. `/health` `bridges` reports `replayed`. Found on production 2026-11-08 (epoch e1108): the
+  members agreed at 80,888 trades, and `/trades`, the read model and the history store held 80,884. Sides
+  16169..16172 were applied in the second after the leader was killed; e1107b showed 81,146 against 81,140.
+  `ThreeMemberClusterTest#tradesInFlightAtALeaderKillReachTheStreamExactlyOnce` stops the leader's bridge, books
+  three more matches and kills the leader. Before this rule the stream held sides 1..4 of 1..10. `ReceiptLanesIT`
+  holds the cut on both bridges with managed ids, including the records applied after the promotion.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

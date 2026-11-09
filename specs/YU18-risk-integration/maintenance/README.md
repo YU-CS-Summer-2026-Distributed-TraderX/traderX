@@ -16,6 +16,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Generated build-input derivation](generation-derivation/README.md) | Done: approved local guard integration; LR05 remains separate |
 | [Image admission](image-admission/README.md) | See pack tasks and linked RI/LR evidence |
 | [Member account readouts](member-account-readout/README.md) | See pack tasks and linked RI/LR evidence |
+| [Account admission decisions](account-admission/README.md) | RI33: implemented on `admission-200`, not merged |
 | [OTC refusal audit](otc-refusal-audit/README.md) | See pack tasks and linked RI/LR evidence |
 | [Queued-task lifecycle](owner-task-deadline/README.md) | See pack tasks and linked RI/LR evidence |
 | [Projector OOM exit](projector-oom-exit/README.md) | See pack tasks and linked RI/LR evidence |

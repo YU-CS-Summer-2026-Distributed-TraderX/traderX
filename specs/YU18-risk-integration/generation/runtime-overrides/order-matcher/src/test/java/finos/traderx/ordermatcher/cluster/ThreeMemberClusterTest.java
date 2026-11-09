@@ -1,6 +1,8 @@
 package finos.traderx.ordermatcher.cluster;
 
+import com.sun.net.httpserver.HttpServer;
 import finos.traderx.ordermatcher.lmax.AeronReplicationCodec;
+import finos.traderx.ordermatcher.lmax.MatchingEngine;
 import finos.traderx.ordermatcher.lmax.InputEvent;
 import finos.traderx.ordermatcher.lmax.OutputEvent;
 import io.aeron.cluster.ClusterTool;
@@ -21,14 +23,32 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.time.Duration;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import io.nats.client.Connection;
+import io.nats.client.JetStreamSubscription;
+import io.nats.client.Message;
+import io.nats.client.Nats;
+import io.nats.client.PushSubscribeOptions;
+import io.nats.client.api.StorageType;
+import io.nats.client.api.StreamConfiguration;
+import org.testcontainers.DockerClientFactory;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Three-member Raft proof, in process (T-AC13/14 at in-process scope — the kind run repeats it
@@ -58,6 +78,8 @@ class ThreeMemberClusterTest {
     private final InputEvent ingress = new InputEvent();
     private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
     private final List<long[]> acks = new ArrayList<>(); // {orderRef, kind, tradeSeq}
+    private String bridgeUrl; // NATS for the members' bridges; null = no bridge (the default)
+    private int segmentLength; // 0: ClusterNodeConfig's archive segments and log terms
 
     private static final class Node {
         final int id;
@@ -152,14 +174,224 @@ class ThreeMemberClusterTest {
         assertEquals(14, maxTradeSeq);
     }
 
+    /**
+     * FR-DRS-37: every trade the cluster applies reaches TRADERX_FEED exactly once across a leader
+     * kill. Production 2026-11-08: members 80,888 trades, `/trades` 80,884; the four missing were
+     * applied in the second after the leader died. The bridge published only on the leader, live,
+     * so what the dying leader applied but had not got stored was never sent by anyone. Here the
+     * leader's bridge stops before it publishes the last three matches (in flight at the kill), the
+     * leader dies, and the new leader must publish exactly those six sides (one tradeSeq per side): no gap, no duplicate.
+     */
+    @Test
+    void tradesInFlightAtALeaderKillReachTheStreamExactlyOnce() throws Exception {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "needs Docker for NATS JetStream");
+        try (GenericContainer<?> nats = new GenericContainer<>("nats:2.14-alpine").withCommand("-js")
+                .withExposedPorts(4222).waitingFor(Wait.forLogMessage(".*Server is ready.*", 1))) {
+            nats.start();
+            bridgeUrl = "nats://" + nats.getHost() + ":" + nats.getMappedPort(4222);
+            try (Connection nc = Nats.connect(bridgeUrl)) {
+                nc.jetStreamManagement().addStream(StreamConfiguration.builder().name("TRADERX_FEED")
+                    .subjects("/trades", "/orders").storageType(StorageType.Memory).build());
+                for (int i = 0; i < 3; i++) {
+                    launch(i, true);
+                }
+                final int leader1 = awaitLeader(-1);
+                connectClient();
+                // The bridge publishes only a trade whose security has a ticker: ids 0 and 1 (SECURITY).
+                offerSymbolRegister("AAA");
+                offerSymbolRegister("IBM");
+                offerAccountControl(ACCOUNT, true);
+                offerAccountControl(COUNTER, true);
+                offerSecurityControl(SECURITY, true);
+                offerPriceTick(150 * PX);
+
+                // Two matches the live leader publishes: the stream's last stored trade is the cut.
+                offerNewOrder(100 * PX);
+                offerNewOrder(100 * PX);
+                offerSellOrder(COUNTER, 100 * PX, 20);
+                awaitEgress(() -> countKind(OutputEvent.KIND_TRADE_BOOKED) == 4);
+                assertEquals(4, streamTradeIds(nc, 4).size(), "the live leader published round 1");
+
+                // The dying leader: its bridge stops, so the next three matches it applies are never
+                // published by it. The followers apply them too.
+                nodes[leader1].service.onTerminate(null);
+                offerNewOrder(100 * PX);
+                offerNewOrder(100 * PX);
+                offerNewOrder(100 * PX);
+                offerSellOrder(COUNTER, 100 * PX, 30);
+                awaitEgress(() -> countKind(OutputEvent.KIND_TRADE_BOOKED) == 10);
+                stop(leader1);
+                awaitLeader(leader1);
+
+                // One tradeSeq per side: five matches book sides 1..10, in apply order.
+                final List<String> ids = streamTradeIds(nc, 10);
+                assertEquals(List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L),
+                    ids.stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList(),
+                    "every applied trade side on the stream exactly once, in order: " + ids);
+            }
+        }
+    }
+
+    /** The trade ids on {@code /trades} in stream order, read once {@code want} are stored (or 20 s
+     *  pass) and a further second has gone by, so a late duplicate is counted too. */
+    private static List<String> streamTradeIds(final Connection nc, final int want) throws Exception {
+        final long deadline = System.currentTimeMillis() + 20_000;
+        while (readTradeIds(nc).size() < want && System.currentTimeMillis() < deadline) {
+            Thread.sleep(200);
+        }
+        Thread.sleep(1_000);
+        return readTradeIds(nc);
+    }
+
+    private static List<String> readTradeIds(final Connection nc) throws Exception {
+        final Pattern id = Pattern.compile("\"id\":\"([^\"]+)\"");
+        final List<String> out = new ArrayList<>();
+        final JetStreamSubscription sub = nc.jetStream().subscribe("/trades",
+            PushSubscribeOptions.builder().stream("TRADERX_FEED").ordered(true).build());
+        for (Message m; (m = sub.nextMessage(Duration.ofMillis(300))) != null; ) {
+            final Matcher x = id.matcher(new String(m.getData(), java.nio.charset.StandardCharsets.UTF_8));
+            assertTrue(x.find());
+            out.add(x.group(1));
+        }
+        sub.unsubscribe();
+        return out;
+    }
+
+    /**
+     * FR-PRG-40: once the archive is purged behind a snapshot (ArchivePurgeMain), the strict replay from 0 refuses and
+     * the restore gate's reference is the oldest retained snapshot plus a strict replay of the log after it. On real
+     * members, purged and then restarted from their own disks (the latest snapshot plus its tail, as on the rig): each
+     * member's tail-state equals its live digest, replays exactly the session messages after the oldest retained
+     * snapshot, and moved the state past that snapshot (so the equality is not the snapshot agreeing with itself). With
+     * nothing after the snapshots the tail is empty and reported inconclusive.
+     */
+    @Test
+    void aPurgedLogIsReproducedFromTheOldestRetainedSnapshotPlusItsTail() throws Exception {
+        segmentLength = 256 * 1024;   // as ArchivePurgeTest: a few thousand orders span several segments
+        for (int i = 0; i < 3; i++) {
+            launch(i, true);
+        }
+        int leader = awaitLeader(-1);
+        connectClient();
+        offerAccountControl(ACCOUNT, true);
+        offerAccountControl(COUNTER, true);
+        offerSecurityControl(SECURITY, true);
+        offerPriceTick(150 * PX);
+        crossPairs(1000);
+        takeSnapshot(leader);
+        crossPairs(1000);
+        takeSnapshot(leader);                                  // the oldest a purge keeps, once a third follows
+        final MatchingEngine.RecoveryDigest atOldest = nodes[leader].service.engine().recoveryDigest();
+        crossPairs(1000);
+        takeSnapshot(leader);
+        crossPairs(200);                                       // a tail past the latest snapshot too
+        final HttpServer health = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        health.createContext("/health", ex -> {
+            final Node n = nodes[Integer.parseInt(ex.getRequestURI().getPath().substring("/health/".length()))];
+            final byte[] body = ("{\"applied\":" + (n == null ? -1 : n.service.appliedSeq()) + "}").getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, body.length);
+            ex.getResponseBody().write(body);
+            ex.close();
+        });
+        health.start();
+        try {
+            purge(health);
+            final long applied = nodes[leader].service.appliedSeq();
+            for (int i = 0; i < 3; i++) {
+                stop(i);
+            }
+            for (int i = 0; i < 3; i++) {
+                launch(i, false);
+            }
+            leader = awaitLeader(-1);
+            for (int i = 0; i < 3; i++) {
+                final int k = i;
+                await("member " + i + " restored", () -> nodes[k].service.appliedSeq() == applied);
+            }
+            for (int i = 0; i < 3; i++) {
+                final ClusterRecon recon = recon(i);
+                final IllegalStateException refused = assertThrows(IllegalStateException.class, recon::shadowState);
+                assertTrue(refused.getMessage().startsWith("RECOVERY_ARCHIVE_"), refused.getMessage());
+                final ClusterRecon.TailState tail = recon.tailState();
+                final MatchingEngine.RecoveryDigest live = nodes[i].service.engine().recoveryDigest();
+                assertEquals(applied, tail.state().applied(), "member " + i);
+                assertEquals(live.orderHash(), tail.state().bookHash(), "member " + i);
+                assertEquals(live.positionHash(), tail.state().positionHash(), "member " + i);
+                assertEquals(live.tradeCounter(), tail.state().tradeCounter(), "member " + i);
+                assertEquals(2 * 1000 + 2 * 200, tail.state().replayedMessages(), "the orders after the oldest retained snapshot");
+                assertNotEquals(atOldest.tradeCounter(), tail.state().tradeCounter(), "control: the tail moved the state");
+                assertTrue(tail.snapshotLogPosition() > 0);
+                assertFalse((Boolean) ClusterNodeMain.tailStateJson(tail, applied, applied).get("inconclusive"));
+            }
+            // Idle: two more snapshots with nothing after them, purged behind: the tail holds no session message.
+            takeSnapshot(leader);
+            takeSnapshot(leader);
+            purge(health);
+            for (int i = 0; i < 3; i++) {
+                final ClusterRecon.TailState tail = recon(i).tailState();
+                assertEquals(0, tail.state().replayedMessages(), "member " + i);
+                assertTrue((Boolean) ClusterNodeMain.tailStateJson(tail, applied, applied).get("inconclusive"));
+                assertEquals(nodes[i].service.engine().recoveryDigest().orderHash(), tail.state().bookHash());
+            }
+        } finally {
+            health.stop(0);
+        }
+    }
+
+    /** n buy/sell pairs between ACCOUNT and COUNTER that cross, alternating direction so positions stay flat. */
+    private void crossPairs(final int n) {
+        acks.clear();
+        for (int i = 0; i < n; i++) {
+            final boolean buy = i % 2 == 0;
+            offerLimitOrder(ACCOUNT, buy ? InputEvent.SIDE_BUY : InputEvent.SIDE_SELL, 100 * PX, 1);
+            offerLimitOrder(COUNTER, buy ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY, 100 * PX, 1);
+        }
+        awaitEgress(() -> countKind(OutputEvent.KIND_TRADE_BOOKED) == 2L * n);
+        await("every member applied the pairs", () -> {
+            final long a = nodes[0].service.appliedSeq();
+            return a == nodes[1].service.appliedSeq() && a == nodes[2].service.appliedSeq();
+        });
+    }
+
+    /** One ArchivePurgeMain pass per member (history discarded: this is about the gate's reference, not the offload). */
+    private void purge(final HttpServer health) {
+        final String base = "http://127.0.0.1:" + health.getAddress().getPort() + "/health/";
+        for (int i = 0; i < 3; i++) {
+            try (ArchivePurgeMain p = new ArchivePurgeMain(new File(nodeDir(i), "cluster"), aeronDir(i),
+                    List.of(base + 0, base + 1, base + 2), 5000, 0, 70)) {
+                final String line = p.poll();
+                assertTrue(line != null && line.startsWith("PURGE "), "member " + i + ": " + line);
+            }
+        }
+    }
+
+    private ClusterRecon recon(final int id) {
+        return new ClusterRecon(nodeDir(id), aeronDir(id), "1", 16, 1000, 1000);
+    }
+
+    private File nodeDir(final int id) {
+        return new File(tempDir.toFile(), "node-" + id);
+    }
+
+    private String aeronDir(final int id) {
+        return new File(tempDir.toFile(), "aeron-" + id).getAbsolutePath();
+    }
+
     // ----- harness ---------------------------------------------------------------------------
 
     private void launch(final int id, final boolean cleanStart) {
         final Node node = new Node(id);
         node.service = new MatchingEngineClusteredService();
+        if (bridgeUrl != null) {
+            node.service.bridgeUrl = bridgeUrl;
+        }
         final ClusterNodeConfig.Contexts contexts = ClusterNodeConfig.contexts(id, HOSTNAMES, PORT_BASE,
             new File(tempDir.toFile(), "aeron-" + id).getAbsolutePath(),
             new File(tempDir.toFile(), "node-" + id), node.service, cleanStart);
+        if (segmentLength > 0) {
+            contexts.archive().segmentFileLength(segmentLength);
+            contexts.consensusModule().logChannel("aeron:udp?term-length=64k|fc=min");
+        }
         node.driver = ClusteredMediaDriver.launch(
             contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
         node.container = ClusteredServiceContainer.launch(contexts.container());
@@ -424,6 +656,15 @@ class ThreeMemberClusterTest {
         ingress.priceTicks = 0;
         ingress.eventTimeMillis = 0;
         offerIngress();
+    }
+
+    private void offerSymbolRegister(final String ticker) {
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
+        codec.encodeSymbolRegister(buffer, 0, System.nanoTime(), ticker);
+        await("symbol " + ticker + " offered", () -> {
+            client.pollEgress();
+            return client.offer(buffer, 0, AeronReplicationCodec.SYMBOL_BYTES) > 0;
+        });
     }
 
     private void offerPriceTick(final long px) {

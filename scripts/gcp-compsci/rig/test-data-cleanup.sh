@@ -12,7 +12,8 @@
 #
 # The live epoch is never touched: the restore gate's G3 compares its rows with the members' trades, and the members'
 # positions on these accounts can only go with a fresh epoch (FR-PRG-29), which moves the live rows into an archive this
-# script can then clear. The disk snapshots are listed, not deleted: each is an epoch's archive of record (ADR-101).
+# script can then clear. The disk snapshots are listed, not deleted here: `rig.sh` keeps only the last epoch's archive
+# and deletes the older ones whole, tables and snapshots (FR-PRG-39), so `apply` is left with that one label at most.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RIG_LIB=1 . "$HERE/rig.sh"

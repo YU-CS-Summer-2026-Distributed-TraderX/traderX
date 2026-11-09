@@ -47,7 +47,8 @@
       without `--fix-test-clients`, and delete Secret `fix-test-clients`.
       Procedure and script ready, not run (FR-PRG-38, 2026-11-06): the rehearsal's rows are now in archived epochs
       (`arc_<label>_*`, FR-PRG-29), so after the next fresh epoch: `rig/test-data-cleanup.sh plan`, then on yaakov's
-      yes `apply <every archived label>`. Add `--accounts --secret` only when the test loads are retired: the load
+      yes `apply <every archived label>`. Since FR-PRG-39 the older epochs' rows go with their whole archive, so only
+      the last label is left to `apply`, and only if it should go before the next fresh epoch deletes it. Add `--accounts --secret` only when the test loads are retired: the load
       clients trade on those directory rows and log on with that Secret.
 - [x] Binary load for the throughput run (FR-PRG-16, 2026-10-29): `rig/binary-load.mjs` + `binary-load.sh`, offline
       against a scripted gateway. `rig.sh pools` creates `loadgen-pool`,
@@ -56,8 +57,17 @@
       position limit; the policy itself stays as it is. Kind run done:
       every accepted order traded (members' trade sides rose by exactly the accepted count).
 - [x] G1 above the full-history index cap defers to G2 (FR-PRG-18, 2026-10-29).
-- [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Not tonight. Estimate about
-      1 day, plus a kind proof and one production cycle.
+- [ ] Log retention for production (yaakov 2026-10-29: "we can also delete older stuff"). Built 2026-11-08 (FR-PRG-40):
+      `prepare.py --archive-purge` renders the agent, the member's `/recon/tail-state` is the reference, G1/G2 switch to
+      it with the purge held. Offline and in-process on real members. Kind proof 2026-11-08 11:05–11:11 am ET
+      (`rig/kind-purge.sh`, image built at a78cc592, members rendered by `prepare.archive_purge`): every member purged
+      behind its second-latest snapshot (2 passes, 11 segments deleted each, ~0.3 ms per unlink, no cluster error); the
+      replay from 0 answered an HTTP error; after a restart from disk `g12_tail` held the purge and passed (each tail
+      65,895 orders from log position 12,161,632 to applied 160,904, book hashes equal to the live digests); idle past two
+      snapshots it was INCONCLUSIVE. The proof client's orders rest and never trade (0 trades, book at 100,000 open
+      orders): trades through the tail are covered by `ThreeMemberClusterTest` only. Design accepted (yaakov 2026-11-08,
+      "Yes, both": discard the purged log; an empty tail does not refuse). Left: one production session (build, roll
+      the members, gate), with its own yes.
       - Purge the members' log behind a snapshot (archive purge, the bench's B2, proven on hxb at 250K/s). This bounds
         B1's growth and G2's replay time.
       - Once the log is purged, G1 and G2 cannot replay from 0. They switch to snapshot plus tail: replay from the
@@ -75,6 +85,9 @@
 - [x] The read-model fingerprint is an in-DB aggregate, never a dump (FR-PRG-27).
 - [x] A fresh epoch archives the member disks and the read model, then resets; the gate accepts it only while provisioned (FR-PRG-29, ADR-101).
 - [x] A fresh epoch loads accounts and reference data before its first order (FR-PRG-30).
+- [x] Only the last epoch's archive is kept: a fresh epoch's `up` deletes every older one, `rig.sh prune-archives` on
+      its own (FR-PRG-39, ADR-101 amendment 2026-11-08). Offline and on mariadb:11.4.
+- [ ] First run on production: e1101–e1107 would go and e1108 stay (yaakov's yes needed; plan in the session record).
 - [x] initialize-reference-data.mjs completes on a live rig: its last line named a variable 790c245d removed (FR-PRG-30).
 - [x] Every `up` opens the US Eastern business day, so DAY orders are admitted (FR-PRG-31).
 - [x] `LOADGEN=N` brings idle load pods up with the rig; `loadgen.sh start RATE` loads them in seconds (FR-PRG-32).
