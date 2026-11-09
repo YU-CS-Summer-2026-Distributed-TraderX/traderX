@@ -94,6 +94,8 @@ a republished side must not be a second row. Decision: the single writer leaves 
   id scheme, which the production render runs today (no run descriptor), an order event has no position: it is never
   left out, and the bridges do not republish it. Trade sides are covered under both schemes by `tradeSeq`. Holding
   legacy order events once would mean treating equal content as the same event at a lookup on every batch; not done.
+  From FR-DRS-40 (2026-11-09) the bridge writes the position under the legacy scheme too, so a legacy order event
+  is left out like any other; only a message from an earlier member build still has none.
 - What a query sees before a background merge: nothing different. The tables stay plain MergeTree and hold each side
   once from the moment the INSERT returns, so no reader changed.
 

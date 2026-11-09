@@ -53,6 +53,10 @@
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.
+- [x] Order events carry their position under the legacy id scheme too, so the order lane's catch-up works where
+      production and kind run; a last message without one is a counted gap; the SQL order projection accepts it
+      (FR-DRS-40). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` (order events),
+      `ReceiptLanesIT` under both schemes, `OrderBatchProjectionIT#aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun`.
 
 ## Still open
 

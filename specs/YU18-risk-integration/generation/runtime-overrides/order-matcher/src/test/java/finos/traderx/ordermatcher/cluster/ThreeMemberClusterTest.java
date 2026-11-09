@@ -236,7 +236,9 @@ class ThreeMemberClusterTest {
      * FR-DRS-38: NATS restarts mid-load under a steady leader (kind's OOM-killed NATS, run 1 of 2026-11-08: 952
      * sides missing from the stream that all three members applied). NATS freezes while the leader's bridge sends
      * sides 5..10 into its socket and is then SIGKILLed and started again; sides 11..14 follow. The stream must hold
-     * sides 1..14 exactly once, in order.
+     * sides 1..14 exactly once, in order. FR-DRS-40: and every order event once, in apply order, on the legacy ids
+     * this cluster runs (no run descriptor, as production and kind): all ten orders read FILLED. Before it, the four
+     * orders placed and filled while NATS was frozen never reached the stream.
      */
     @Test
     void tradesInFlightAtANatsRestartReachTheStreamExactlyOnce() throws Exception {
@@ -282,8 +284,39 @@ class ThreeMemberClusterTest {
                 assertEquals(java.util.stream.LongStream.rangeClosed(1, 14).boxed().toList(),
                     ids.stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList(),
                     "every applied trade side on the stream exactly once, in order: " + ids);
+                final long deadline = System.currentTimeMillis() + 20_000;
+                while (filled(readOrderEvents(nc)) < 10 && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(200);
+                }
+                Thread.sleep(1_000); // a late duplicate is counted too
+                final List<String[]> events = readOrderEvents(nc);
+                assertEquals(10, filled(events), "every order's FILLED event is on the stream: " + events.size());
+                for (int i = 1; i < events.size(); i++) {
+                    final String[] a = events.get(i - 1), b = events.get(i);
+                    final int c = Long.compare(Long.parseLong(b[0]), Long.parseLong(a[0]));
+                    assertTrue(c > 0 || (c == 0 && Integer.parseInt(b[1]) > Integer.parseInt(a[1])),
+                        "order events once each, in apply order: " + a[0] + "/" + a[1] + " then " + b[0] + "/" + b[1]);
+                }
             }
         }
+    }
+
+    /** {consensusSequence, outputOrdinal, id, status} of every message on {@code /orders}, in stream order. */
+    private static List<String[]> readOrderEvents(final Connection nc) throws Exception {
+        final List<String[]> out = new ArrayList<>();
+        final JetStreamSubscription sub = nc.jetStream().subscribe("/orders",
+            PushSubscribeOptions.builder().stream("TRADERX_FEED").ordered(true).build());
+        for (Message m; (m = sub.nextMessage(Duration.ofMillis(300))) != null; ) {
+            final byte[] d = m.getData();
+            out.add(new String[] {ReceiptLanes.field(d, "consensusSequence"), ReceiptLanes.field(d, "outputOrdinal"),
+                ReceiptLanes.field(d, "id"), ReceiptLanes.field(d, "status")});
+        }
+        sub.unsubscribe();
+        return out;
+    }
+
+    private static long filled(final List<String[]> events) {
+        return events.stream().filter(e -> "FILLED".equals(e[3])).map(e -> e[2]).distinct().count();
     }
 
     /** The trade ids on {@code /trades} in stream order, read once {@code want} are stored (or 20 s

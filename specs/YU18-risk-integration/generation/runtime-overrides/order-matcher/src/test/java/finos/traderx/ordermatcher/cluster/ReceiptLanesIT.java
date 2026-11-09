@@ -22,6 +22,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -93,18 +95,18 @@ class ReceiptLanesIT {
      * stored trade sides 1..4 and order events up to (11,0), then died. The new leader applied sides 1..2 and the
      * (10,*) events while following, and the rest after its promotion - including 3..4 and (11,0), which the log
      * applied on it after the role change although the old leader had stored them. Each subject must read back
-     * every record once: trades by managed id, orders by (consensusSequence, outputOrdinal).
+     * every record once: trades by id, orders by (consensusSequence, outputOrdinal). FR-DRS-40: with managed
+     * ids and with legacy ids (no run descriptor, as production and kind run).
      */
-    @Test
-    void aPromotedMemberPublishesOnlyWhatTheStreamIsMissing(@TempDir final Path dir) throws Exception {
+    @ParameterizedTest(name = "managed ids: {0}")
+    @ValueSource(booleans = {true, false})
+    void aPromotedMemberPublishesOnlyWhatTheStreamIsMissing(final boolean managed, @TempDir final Path dir)
+            throws Exception {
         try (GenericContainer<?> js = new GenericContainer<>("nats:2.14-alpine").withCommand("-js")
                 .withExposedPorts(4222).waitingFor(Wait.forLogMessage(".*Server is ready.*", 1))) {
             js.start();
             final String url = "nats://" + js.getHost() + ":" + js.getMappedPort(4222);
-            final Path run = dir.resolve("run.json");
-            Files.writeString(run, "{\"schema\":\"traderx.run.v1\",\"epoch\":\"e9\",\"eventIdScheme\":\"epoch-v1\","
-                + "\"storageLineage\":\"l\",\"projectionScope\":\"s\",\"adoptionEvidenceSha256\":null}");
-            final RunDescriptor d = RunDescriptor.read(run);
+            final RunDescriptor d = managed ? descriptor(dir) : null;
             try (Connection nc = Nats.connect(url)) {
                 nc.jetStreamManagement().addStream(StreamConfiguration.builder().name("TRADERX_FEED")
                     .subjects("/trades", "/orders").storageType(StorageType.Memory).build());
@@ -146,8 +148,7 @@ class ReceiptLanesIT {
                 }
                 Thread.sleep(500); // a duplicate would land after the counts are reached
 
-                assertEquals(List.of("e1-e9-1-S", "e1-e9-2-B", "e1-e9-3-S", "e1-e9-4-B", "e1-e9-5-S", "e1-e9-6-B",
-                    "e1-e9-7-S"), stored(nc, "/trades", "id"), "each trade side once, in apply order");
+                assertEquals(tradeIds(managed, 7), stored(nc, "/trades", "id"), "each trade side once, in apply order");
                 final List<String> positions = new ArrayList<>();
                 final List<String> seqs = stored(nc, "/orders", "consensusSequence");
                 final List<String> ordinals = stored(nc, "/orders", "outputOrdinal");
@@ -167,12 +168,14 @@ class ReceiptLanesIT {
      * freezes, the bridges send sides 5..9 and (11,*), (12,0) into the frozen socket, and NATS is SIGKILLed and
      * started again, so none of those was stored. On its new connection each lane reads the stream's last message
      * and republishes what follows it before anything new: each subject reads back every record once, in order.
+     * FR-DRS-40: with managed ids and with legacy ids (before it, the legacy order lane lost (11,*) and (12,0)).
      */
-    @Test
-    void aNatsRestartRepublishesWhatTheStreamLost(@TempDir final Path dir) throws Exception {
+    @ParameterizedTest(name = "managed ids: {0}")
+    @ValueSource(booleans = {true, false})
+    void aNatsRestartRepublishesWhatTheStreamLost(final boolean managed, @TempDir final Path dir) throws Exception {
         try (RestartableNats js = new RestartableNats()) {
             js.addFeedStream();
-            final RunDescriptor d = descriptor(dir);
+            final RunDescriptor d = managed ? descriptor(dir) : null;
             final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", d, 1024, 1);
             final OrderNatsPublisher orders = new OrderNatsPublisher(js.url, "/orders", "e9", d, 1024, 1);
             trades.start();
@@ -198,17 +201,45 @@ class ReceiptLanesIT {
             Thread.sleep(500); // a duplicate would land after the counts are reached
 
             try (Connection nc = Nats.connect(js.url)) {
-                final List<String> want = new ArrayList<>();
-                for (int seq = 1; seq <= 12; seq++) { want.add("e1-e9-" + seq + ((seq & 1) == 1 ? "-S" : "-B")); }
-                assertEquals(want, stored(nc, "/trades", "id"), "each trade side once, in apply order");
+                assertEquals(tradeIds(managed, 12), stored(nc, "/trades", "id"), "each trade side once, in apply order");
                 assertEquals(List.of("10/0", "10/1", "11/0", "11/1", "12/0", "13/0"), positions(nc),
                     "each order event once, in apply order");
             }
             assertEquals(5, trades.replayed(), "sides 5..9 were republished on the new connection");
             assertEquals(3, orders.replayed());
             assertEquals(0, trades.gaps());
+            assertEquals(0, orders.gaps());
             trades.stop();
             orders.stop();
+        }
+    }
+
+    /**
+     * FR-DRS-40: the stream's last order event has no position (a member build before FR-DRS-40 wrote it), so a
+     * promoted lane cannot tell whether the two events it applied while following are stored. It publishes neither
+     * and counts a gap (before: an ALERT line and gaps 0). What it applies as leader follows.
+     */
+    @Test
+    void aStreamWhoseLastOrderEventHasNoPositionIsACountedGap() throws Exception {
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            try (Connection nc = Nats.connect(js.url)) {
+                nc.jetStream().publish("/orders", "{\"topic\":\"/orders\",\"payload\":{\"id\":\"e9-9\"}}"
+                    .getBytes(StandardCharsets.UTF_8));
+                final OrderNatsPublisher orders = new OrderNatsPublisher(js.url, "/orders", "e9", null, 1024, 1);
+                orders.role(false);
+                orders.start();
+                order(orders, 10, 0);
+                order(orders, 10, 1);
+                orders.role(true);
+                final long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+                while (orders.gaps() == 0 && System.nanoTime() < deadline) { Thread.sleep(50); }
+                assertEquals(1, orders.gaps(), "an unknowable catch-up is a counted gap");
+                order(orders, 11, 0);
+                while (stored(nc, "/orders", "id").size() < 2 && System.nanoTime() < deadline) { Thread.sleep(50); }
+                assertEquals(List.of("e9-9", "e9-11"), stored(nc, "/orders", "id"));
+                orders.stop();
+            }
         }
     }
 
@@ -322,6 +353,13 @@ class ReceiptLanesIT {
                 Thread.sleep(100);
             }
         }
+    }
+
+    /** Trade side ids 1..n as the bridge writes them: epoch-v1 with a run descriptor, legacy without. */
+    private static List<String> tradeIds(final boolean managed, final int n) {
+        final List<String> out = new ArrayList<>();
+        for (int seq = 1; seq <= n; seq++) { out.add((managed ? "e1-e9-" : "") + seq + ((seq & 1) == 1 ? "-S" : "-B")); }
+        return out;
     }
 
     private static List<String> positions(final Connection nc) throws Exception {

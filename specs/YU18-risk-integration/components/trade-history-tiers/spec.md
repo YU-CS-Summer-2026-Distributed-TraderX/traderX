@@ -153,7 +153,8 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
     order events carry no `consensusSequence` or `outputOrdinal`, so nothing tells a repeat from a second identical
     event. The bridges do not republish those either (their catch-up needs the same position, FR-DRS-37). Order
     events are held once only under epoch-v1 ids. Trade sides are held once under both schemes: a legacy side still
-    has its `tradeSeq`.
+    has its `tradeSeq`. From FR-DRS-40 the members' bridge writes the position on legacy order events too, so they
+    are held once like the rest; an order event with no position is then one a member build before FR-DRS-40 wrote.
   - No reader changes. The tables are plain MergeTree and hold each side once at every moment, so G3h, the blotter,
     TCA, the export and the recon count each side once with no `FINAL` and no wait for a merge.
   - The cursor stays max(`seq`) (FR-HST-03). It can sit behind repeats at the stream's tail; a restart reads them

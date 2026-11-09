@@ -397,12 +397,20 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             if (!comparable) {
                 // No position to compare: publish from the first record never sent while leading, as before the
                 // catch-up existed; what was in flight or applied while following may be missing.
-                long followed = 0;
-                for (long k = oldest; k < head; k++) { if (!ring[(int) (k % retain)].leader) { followed++; } }
+                long followed = 0, inFlight = 0;
+                for (long k = oldest; k < head; k++) {
+                    final R r = ring[(int) (k % retain)];
+                    if (!r.leader) { followed++; } else if (r.sent) { inFlight++; }
+                }
                 cut = r -> r.leader && !r.sent ? 1 : -1;
-                System.out.println((followed == 0 ? "INFO " : "ALERT ") + name + "-nats-bridge partition " + i + " ("
-                    + subject + ") no catch-up (" + (last == null ? outcome : "last message carries no position") + "); "
-                    + followed + " record(s) applied while following are not republished");
+                // FR-DRS-40: a stream is there but its last message has no position (a build before FR-DRS-40, or
+                // not a bridge's message): whether it holds what this lane kept cannot be told, so it is a gap.
+                final boolean gap = last != null && followed + inFlight != 0;
+                if (gap) { gaps.incrementAndGet(); }
+                System.out.println((gap || followed != 0 ? "ALERT " : "INFO ") + name + "-nats-bridge partition " + i
+                    + " (" + subject + ") no catch-up (" + (last == null ? outcome : "last message carries no position")
+                    + "); " + followed + " record(s) applied while following are not republished"
+                    + (gap ? ", " + inFlight + " sent earlier may not be stored (replay from the archive to repair)" : ""));
                 return;
             }
             long republish = 0, skipped = 0;

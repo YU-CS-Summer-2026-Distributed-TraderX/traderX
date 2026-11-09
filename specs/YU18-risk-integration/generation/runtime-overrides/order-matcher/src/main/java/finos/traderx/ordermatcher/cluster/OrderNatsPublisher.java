@@ -123,13 +123,15 @@ final class OrderNatsPublisher {
     }
 
     /** FR-DRS-37: a stored order event's position is (consensusSequence, outputOrdinal), total in apply order.
-     *  Only managed ids carry it; a legacy message has no position, so nothing is replayed. Another epoch's
-     *  message means none of ours is stored yet. */
+     *  FR-DRS-40: every id scheme writes it. A managed run also names its epoch, and another epoch's message means
+     *  none of ours is stored yet; a legacy message cannot name one, so the stream must start empty with the epoch
+     *  (FR-PRG-29), as the trade cut already requires. A message without a position (a build before FR-DRS-40)
+     *  gives no cut. */
     java.util.function.ToIntFunction<Rec> cut(final byte[] lastStored) {
-        if (descriptor == null || !descriptor.managedIds()) { return null; }
         final String seq = ReceiptLanes.field(lastStored, "consensusSequence");
         final String ordinal = ReceiptLanes.field(lastStored, "outputOrdinal");
-        if (!descriptor.epoch().equals(ReceiptLanes.field(lastStored, "clusterEpoch"))) { return r -> 1; }
+        if (descriptor != null && descriptor.managedIds()
+                && !descriptor.epoch().equals(ReceiptLanes.field(lastStored, "clusterEpoch"))) { return r -> 1; }
         if (seq == null || ordinal == null) { return null; }
         final long s = Long.parseLong(seq);
         final int o = Integer.parseInt(ordinal);
@@ -318,10 +320,13 @@ final class OrderNatsPublisher {
                 sb.append(",\"sessionDate\":").append(r.sessionDate);
             }
         }
+        // FR-DRS-40: the position rides every scheme, so the catch-up and every reader can order and dedupe.
         if (descriptor!=null && descriptor.managedIds()) {
             sb.append(descriptor.eventFields(r.consensusSequence));
-            sb.append(",\"outputOrdinal\":").append(r.outputOrdinal);
+        } else {
+            sb.append(",\"consensusSequence\":").append(r.consensusSequence);
         }
+        sb.append(",\"outputOrdinal\":").append(r.outputOrdinal);
         sb.append("}}");
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
@@ -365,6 +370,11 @@ final class OrderNatsPublisher {
     /** Republished at a catch-up (promotion or a new NATS connection): missing from the stream. */
     long replayed() {
         return lanes.replayed();
+    }
+
+    /** FR-DRS-38/40: catch-ups that found the stream missing records, or could not tell (see {@link ReceiptLanes}). */
+    long gaps() {
+        return lanes.gaps();
     }
 
     /** Lost before NATS: the lane's queue was full. A failed publish is not lost: the lane reconnects and catches up. */
