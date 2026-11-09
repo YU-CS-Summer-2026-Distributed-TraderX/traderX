@@ -47,6 +47,9 @@
       sides that were in flight at the kill are stored once, in order. An outage past the ring is a counted, ALERTed
       gap (FR-DRS-38; kind 2026-11-08, 952 sides). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce`,
       `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost`, `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap`.
+- [x] A record refused by a full lane queue is a counted gap with an ALERT, at the catch-up or at once while leading
+      (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog.
+      `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
 
 ## Still open
 

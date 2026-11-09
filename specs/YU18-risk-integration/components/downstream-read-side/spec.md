@@ -69,14 +69,16 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   in apply order.
 - FR-DRS-12: When `TRADERX_FEED` captures the bridge subjects, every published message SHALL get exactly
   one outcome. Once quiet, for each bridge, `published = acked + rejected` and `acked` equals the number
-  of that bridge's messages the stream stored. Messages that never reached NATS (lane queue full, or a
-  failed publish call) SHALL count in `traderx_bridge_dropped`, never in `published`.
+  of that bridge's messages the stream stored. Messages that never reached NATS because the lane queue
+  was full SHALL count in `traderx_bridge_dropped`, never in `published`. A failed publish call is retried on a new
+  connection (FR-DRS-38) and counts in `failed` only.
 - FR-DRS-13: Each member's `GET /health` SHALL carry
   `bridges: {"trades": B|null, "orders": B|null}`, where B is
-  `{"published", "acked", "rejected", "failed", "rejectedByPartition": [P numbers]}`. `null` means
+  `{"published", "acked", "rejected", "failed", "replayed", "gaps", "rejectedByPartition": [P numbers],
+  "queuedByPartition": [P numbers]}`. `queuedByPartition` is each lane queue's depth now (capacity 65,536). `null` means
   the bridges are not enabled. `rejectedByPartition` SHALL have exactly P entries summing to `rejected`, and
-  entry p SHALL count only rejections of messages published on partition p. A follower SHALL report
-  zeros. The counters are per process and start at 0 on restart.
+  entry p SHALL count only rejections of messages published on partition p. A member that has
+  never led SHALL report zeros for `published`, `acked`, `rejected` and `failed`. The counters are per process and start at 0 on restart.
 - FR-DRS-14: Each member's `/metrics` SHALL expose the counters `traderx_bridge_published`,
   `traderx_bridge_dropped` and `traderx_bridge_ingest_rejected`, with labels `member` and
   `bridge="trades"|"orders"`. `traderx_bridge_ingest_rejected` SHALL equal `/health`
@@ -328,6 +330,16 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   sends sides 5..10, SIGKILLs it, starts it again and books 11..14. Before this rule the stream held 1..4 and 11..14.
   `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed ids, and
   `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` the gap.
+  A record the lane's full queue refuses never reaches the ring, so no catch-up can republish it. The lane SHALL
+  count it as a gap with an ALERT: at the next catch-up if it is after the stream's last message (a follower's drop
+  that a promotion would otherwise publish around), or at once while leading. It still counts in
+  `traderx_bridge_dropped`. `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp` fills a follower's
+  queue of 8 with 12 sides and promotes it; before this rule `gaps` stayed 0.
+  The queue fills when a lane publishes slower than the apply thread offers. Measured locally (2026-11-08, P=6,
+  0 to 400K sides/s in one step on a JVM 3 s old): the publish path is still interpreted, the lanes run at 33-42K
+  sides/s each against 67K/s offered, and the queues fill in 1-2.6 s unless the JIT finishes first. One cold run in 18 on
+  this build dropped 50,338 sides and one in 12 on the build before it (9728ba51) dropped 583; six runs after a 4 s
+  warm-up at 100K/s peaked at 1,649 queued. A member promoted under full load publishes with the same cold path.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

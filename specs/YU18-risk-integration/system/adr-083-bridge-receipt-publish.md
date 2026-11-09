@@ -94,6 +94,29 @@ Process CPU was 26.0-28.3 s against 23.8-25.5 s, GC 208-217 ms against 141-156 m
 51-57 MB. At 400K sides/s the local NATS refused 50-75% at ingest (429) in both arms, so that rate is measured on the
 bench, not here.
 
+11. **A queue drop is a gap.** A record the lane's full queue refuses never reaches the ring. The lane remembers the
+    newest one and counts a gap with an ALERT: at the next catch-up if it is after the stream's last, or at once
+    while leading. `/health` adds `queuedByPartition`, each lane queue's depth.
+
+The 50,338 sides one local 400K run dropped were queue drops at a cold start, not a reconnect or the ring. With the
+publish path still interpreted, a lane ran at 33-42K sides/s against 67K/s offered until the JIT compiled it, 0.4 s to
+5.8 s into the load in three logged runs. The build before this change (9728ba51) backs up the same way (6 of 10 runs
+past 10K queued, one dropping 583). After a 4 s warm-up at 100K/s the queues peaked at 1,649 in six runs.
+
+Warmed A/B against 9728ba51 (three runs per arm and rate, 15 s, P=6 trade lanes, Docker NATS). No run in either arm
+dropped a side or reconnected.
+
+| | this build | 9728ba51 |
+|---|---|---|
+| 200K sides/s: CPU | 24.3-25.2 s | 22.3-23.1 s |
+| 200K sides/s: GC | 138-236 ms | 154-169 ms |
+| 200K sides/s: heap at end | 124-175 MB | 44-64 MB |
+| 200K sides/s: peak queue | 297-393 | 180-2,298 |
+| 400K sides/s: CPU | 32.1-33.5 s | 28.2-29.8 s |
+| 400K sides/s: GC | 345-467 ms | 132-321 ms |
+| 400K sides/s: heap at end | 115-156 MB | 103-560 MB |
+| 400K sides/s: peak queue | 786-2,162 | 247-3,359 |
+
 **Rejected:**
 
 - *Async JetStream publish acks with a bounded in-flight window.* The receipts are already per-message acks

@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
 
@@ -51,7 +52,8 @@ import java.util.function.ToIntFunction;
  * A connection is dropped and replaced when NATS closes it, a publish throws, or no receipt arrives for 5 s with
  * publishes outstanding. Past the ring: if the newest record the lane no longer keeps is after the stream's last, the
  * stream is missing records nobody can resend - the catch-up counts a gap ({@code gaps} on /health), logs an ALERT
- * and still publishes what it kept, in order.
+ * and still publishes what it kept, in order. A record the lane's full queue refused never reaches the ring, so it is
+ * a gap the same way: at the next catch-up if it is after the stream's last, or at once while leading.
  */
 final class ReceiptLanes<R extends ReceiptLanes.Record> {
     interface Encoder<R> { byte[] encode(StringBuilder sb, R r); }
@@ -87,6 +89,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     private final int retain;
     private final AtomicLong replayed = new AtomicLong();
     private final AtomicLong gaps = new AtomicLong();
+    private final AtomicReferenceArray<R> lastDropped; // per lane: the newest record its full queue refused
     private volatile boolean leader = true; // a caller that never sets a role keeps leader-only publishing
     private volatile boolean running = true;
 
@@ -115,6 +118,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         this.threads = new Thread[n];
         this.connections = new Connection[n];
         this.replyPrefix = new int[n];
+        this.lastDropped = new AtomicReferenceArray<>(n);
     }
 
     int lanes() { return subjects.length; }
@@ -126,7 +130,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
      *  False = that lane is full (caller counts). */
     boolean offer(final R r) {
         r.leader = leader;
-        return queues[BridgePartitions.index(account.applyAsInt(r), subjects.length)].offer(r);
+        final int lane = BridgePartitions.index(account.applyAsInt(r), subjects.length);
+        if (queues[lane].offer(r)) { return true; }
+        lastDropped.set(lane, r); // never reaches the ring: the lane counts the hole (FR-DRS-38)
+        return false;
     }
 
     /** Verifier/test seam: the next queued record on any lane, or null. */
@@ -163,7 +170,15 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 l.caughtUp = false;
             }
             if (l.leading && !l.caughtUp) { l.catchUp(); }
-            if (l.leading && l.caughtUp) { l.pump(); }
+            if (l.leading && l.caughtUp) {
+                l.pump();
+                if (lastDropped.get(lane) != null && lastDropped.getAndSet(lane, null) != null) {
+                    gaps.incrementAndGet();
+                    System.out.println("ALERT " + name + "-nats-bridge partition " + lane + " (" + subjects[lane]
+                        + ") its full queue refused record(s) while leading: they were never published - the stream"
+                        + " is missing them (replay from the archive to repair)");
+                }
+            }
             if (r == null || (++n & 1023) == 0) { l.check(); }
             if (r == null) {
                 flushRejectedIds(lane, false);
@@ -368,12 +383,16 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 republish++;
             }
             cut = c;
-            final boolean gap = lastEvicted != null && (c == null || c.applyAsInt(lastEvicted) > 0);
+            // A record the full queue refused never reached the ring: after the stream's last, it is a hole too.
+            final R refused = lastDropped.getAndSet(i, null);
+            final boolean gap = (lastEvicted != null && (c == null || c.applyAsInt(lastEvicted) > 0))
+                || (refused != null && (c == null || c.applyAsInt(refused) > 0));
             if (gap) { gaps.incrementAndGet(); }
             System.out.println((gap ? "ALERT " : "INFO ") + name + "-nats-bridge partition " + i + " (" + subject
                 + ") catching up: publishing " + republish + " record(s) " + outcome + ", skipped " + skipped
-                + " already stored" + (gap ? "; records older than the " + retain + " this lane keeps were never"
-                + " stored - the stream is missing them (replay from the archive to repair)" : ""));
+                + " already stored" + (gap ? "; records this lane no longer keeps (older than its " + retain
+                + ", or refused by its full queue) were never stored - the stream is missing them (replay from the"
+                + " archive to repair)" : ""));
         }
     }
 
@@ -440,12 +459,15 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     /** Catch-ups that found records the stream is missing and the lane no longer kept (FR-DRS-38). */
     long gaps() { return gaps.get(); }
 
-    /** {"published":..,"acked":..,"rejected":..,"failed":..,"rejectedByPartition":[..]} for /health. */
+    /** {"published":..,"acked":..,"rejected":..,"failed":..,"replayed":..,"gaps":..,"rejectedByPartition":[..],
+     *  "queuedByPartition":[..]} for /health. */
     String json() {
         final StringBuilder b = new StringBuilder("{\"published\":").append(published()).append(",\"acked\":").append(acked())
             .append(",\"rejected\":").append(rejected()).append(",\"failed\":").append(failed())
             .append(",\"replayed\":").append(replayed()).append(",\"gaps\":").append(gaps()).append(",\"rejectedByPartition\":[");
         for (int i = 0; i < subjects.length; i++) { b.append(i == 0 ? "" : ",").append(rejected.get(i)); }
+        b.append("],\"queuedByPartition\":[");
+        for (int i = 0; i < subjects.length; i++) { b.append(i == 0 ? "" : ",").append(queues[i].size()); }
         return b.append("]}").toString();
     }
 

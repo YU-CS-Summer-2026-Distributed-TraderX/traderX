@@ -247,6 +247,32 @@ class ReceiptLanesIT {
         }
     }
 
+    /**
+     * FR-DRS-38, a record dropped at the lane queue: it never reaches the lane's ring, so a later catch-up cannot
+     * republish it. A follower's queue of 8 is offered sides 1..12 before its lane runs: 9..12 are dropped. Promoted
+     * onto an empty subject, the lane publishes 1..8 and then 13, and the hole must be a counted gap, not an INFO line.
+     */
+    @Test
+    void aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp() throws Exception {
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 8, 1);
+            trades.role(false);
+            for (int seq = 1; seq <= 12; seq++) { trade(trades, seq); }
+            assertEquals(4, trades.dropped(), "sides 9..12 did not fit the queue");
+            trades.start();
+            trades.role(true);
+            awaitStored(js.url, 8, 0);
+            trade(trades, 13);
+            awaitStored(js.url, 9, 0);
+            try (Connection nc = Nats.connect(js.url)) {
+                assertEquals(List.of("1-S", "2-B", "3-S", "4-B", "5-S", "6-B", "7-S", "8-B", "13-S"), stored(nc, "/trades", "id"));
+            }
+            assertEquals(1, trades.gaps(), "the hole left by the queue drops is counted: " + trades.json());
+            trades.stop();
+        }
+    }
+
     private static RunDescriptor descriptor(final Path dir) throws Exception {
         final Path run = dir.resolve("run.json");
         Files.writeString(run, "{\"schema\":\"traderx.run.v1\",\"epoch\":\"e9\",\"eventIdScheme\":\"epoch-v1\","
