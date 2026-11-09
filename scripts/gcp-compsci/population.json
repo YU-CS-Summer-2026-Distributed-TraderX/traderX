@@ -1,6 +1,12 @@
 {
   "schema": "traderx-compsci-population-v1",
-  "note": "ADR-096 \u00a76: every private image from one tip 1ef5e86e: aba349f8 plus trade-history-tiers through dde68069 (history-feed reads the bridges' subjects, bare at one partition; G3h refuses a subject no lane reads; the fresh-epoch reset holds history-feed; a retried fresh-epoch up reuses its own empty claims; G3 waits for the restarted trade-processor). No workload exception.",
+  "note": "ADR-096 \u00a76. The members (order-matcher-cluster) run cluster-node-member built from afc8bd6a (rig-retention): 1ef5e86e plus FR-PRG-40, the archive-purge agent and /recon/tail-state, no apply-path or snapshot-format change. Every other private image, the gateway's cluster-node included, stays on the tip 1ef5e86e.",
   "imageSourceCommit": "1ef5e86e7ec89276503ee9b1ef83b875f0521414",
-  "workloads": {}
+  "workloads": {
+    "order-matcher-cluster": {
+      "image": "cluster-node-member",
+      "component": "order-matcher",
+      "sourceCommit": "afc8bd6a9224a5803fd9ce605db72556c8b8c72e"
+    }
+  }
 }

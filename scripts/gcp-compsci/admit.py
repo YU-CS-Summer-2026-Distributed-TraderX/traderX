@@ -34,6 +34,8 @@ EXCEPTIONS=population.exceptions(POPULATION)
 # Promtail (c8c8ac31) is the ninth upstream image and the 24th container slot; each exception adds an image, not a slot.
 # FR-THT-02 adds history-feed (private) and ClickHouse (upstream), one slot each.
 PRIVATE_IMAGES, UPSTREAM_IMAGES, SLOTS = 13+len(EXCEPTIONS), 10, 26
+# FR-PRG-40: prepare.py --archive-purge adds the members' archive-purge agent, a slot on the member's own image.
+OPTIONAL_SLOTS = {'traderx/StatefulSet/order-matcher-cluster/containers/archive-purge'}
 TARGET = {'context':'gke_project-compsci-484414_us-east1-b_traderx-demo',
           'project':'project-compsci-484414','location':'us-east1-b',
           'cluster':'traderx-demo','namespace':'traderx'}
@@ -198,7 +200,7 @@ def validate(root, rendered, plan, artifacts, evidence, receipt, current_source_
             require(ref in plan.get('upstreamReferences',[]),'unreviewed upstream image')
             checked.append({'reference':ref,'provider':provider,'layers':len(layer_ids)})
         else:require(False,'unsupported artifact producer')
-    require(len(checked)==PRIVATE_IMAGES+UPSTREAM_IMAGES and len(actual_slots)==SLOTS,'unexpected CompSci image population')
+    require(len(checked)==PRIVATE_IMAGES+UPSTREAM_IMAGES and len(set(actual_slots)-OPTIONAL_SLOTS)==SLOTS,'unexpected CompSci image population')
     return {'schema':'traderx-compsci-image-admission-v1','verdict':'admitted-offline',
             'target':TARGET,'state':plan['state'],'renderedSha256':plan['renderedSha256'],
             'sourceInputsSha256':current_source_hash,'imageSourceCommit':plan['imageSourceCommit'],

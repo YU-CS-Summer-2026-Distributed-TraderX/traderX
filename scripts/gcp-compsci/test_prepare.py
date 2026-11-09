@@ -787,7 +787,8 @@ class ArchivePurge(unittest.TestCase):
         def unheld(docs): agent(docs)['env']=[e for e in agent(docs)['env'] if e['name']!='ARCHIVE_PURGE_HOLD_FILE']
         def unnamed(docs): agent(docs)['env']=[e for e in agent(docs)['env'] if e['name']!='ARCHIVE_PURGE_DISCARD_HISTORY']
         def both(docs): agent(docs)['env'].append({'name':'ARCHIVE_PURGE_OFFLOAD_URI','value':'gs://b/p'})
-        def other_image(docs): agent(docs)['image']=module.REGISTRY+'cluster-node:another-build'
+        # another tag of the member's own repository, so only FR-PRG-40 (not the population, ADR-096 §6) can refuse it
+        def other_image(docs): agent(docs)['image']=agent(docs)['image'].rsplit(':',1)[0]+':another-build'
         def burstable(docs): agent(docs)['resources']['limits']['cpu']='1'
         module.validate(copy.deepcopy(self.docs))   # control
         for change in (unheld,unnamed,both,other_image,burstable):
