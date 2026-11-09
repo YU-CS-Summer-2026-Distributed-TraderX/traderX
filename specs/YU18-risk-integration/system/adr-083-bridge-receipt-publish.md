@@ -70,6 +70,40 @@ and keeps up to 65,536 per lane per bridge.
 - *Replay from the Aeron archive at a promotion.* It is correct, but a shadow replay of the log is seconds of work
   on the new leader's critical path, and the kept tail already holds every record that can be missing.
 
+## Amendment, 2026-11-08: a NATS restart runs the same catch-up (FR-DRS-38)
+
+Decision 7 ran only at a promotion. When NATS restarted under a steady leader, whatever was in flight at the kill
+(in its buffers or ingest queue, not yet stored) was lost, and jnats' reconnect then carried on after the hole. On
+kind (2026-11-08) the stream was missing 952 sides that all three members had applied.
+
+8. **Every lane keeps its tail in every role.** The ring of the last `capacityPerLane` records (Decision 6) is now
+   kept on the leader too, with a pointer to the next record to publish.
+9. **The lane owns its reconnect.** The connection is opened with `noReconnect`. It is replaced when NATS closes it,
+   when a publish throws, or when no receipt (Decision 1) arrives for 5 s with publishes outstanding. On every new
+   connection while leading, the lane runs Decision 7. The read waits for the subject's last message to hold still
+   for 200 ms, and a stream it cannot read is retried on the next connection.
+10. **Past the ring is loud.** If the newest record the ring evicted is after the stream's last, the catch-up counts
+    a gap (`bridges.*.gaps` on `/health`), logs an ALERT, and publishes what it kept, in order. Repair is the archive
+    replay (Decision 4).
+
+Cost: the leader now retains the records it publishes for as long as a follower already did, one array store per
+record. A record is held for one ring's length, about 1 s at 400K/s and P=6, instead of until its publish. There is
+no new per-message NATS traffic: the receipts already flow. Measured locally against 9728ba51, with P=6 trade lanes,
+200K sides/s for 15 s, and Docker NATS (two runs per arm). Both arms published and stored every side with no drops.
+Process CPU was 26.0-28.3 s against 23.8-25.5 s, GC 208-217 ms against 141-156 ms, and heap 78-112 MB against
+51-57 MB. At 400K sides/s the local NATS refused 50-75% at ingest (429) in both arms, so that rate is measured on the
+bench, not here.
+
+**Rejected:**
+
+- *Async JetStream publish acks with a bounded in-flight window.* The receipts are already per-message acks
+  (Decision 1), and a window bounded by the same ring cannot recover more than the ring holds. It would only move
+  where an over-long outage loses records, from unacknowledged to unsent, and add a hold path to the lane.
+- *Keep jnats' reconnect and catch up on its RECONNECTED event.* jnats flushes its buffered publishes to the new
+  server before the event, racing the stream read, so a record can be stored twice.
+- *A larger ring sized for a NATS pod restart at 400K/s.* A trade record is about 64 B and an order record about
+  130 B, so ten seconds at 400K orders/s is over 1 GiB of member heap. The archive replay already repairs a gap this rare.
+
 - *Synchronous JetStream publish with retry.* It waits on every ack (~350K msgs/s ceiling on the bench),
   and its retry reorders the partition.
 - *Retrying 429s from the lane.* It reorders the partition (Decision 4).

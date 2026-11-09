@@ -21,7 +21,8 @@ added `commandType` and one added egress ack kind on the existing templates.
     submitting-session-only). Leader-only (no follower dupes); at-least-once, keyed by `tradeSeq`+side so
     `trade-processor` (Trade JPA id) dedups. Enabled by `TRADE_BRIDGE_NATS_URL`. See ADR-048. YU18
     (FR-DRS-37): a promoted leader first publishes the sides its predecessor applied but the stream does not
-    hold, after the subject's last stored side.
+    hold, after the subject's last stored side. FR-DRS-38: the same catch-up runs on every new NATS connection,
+    so a NATS restart under a steady leader does not lose the sides that were in flight.
   - consumer: `trade-processor`
   - delivery: `point-to-point`
   - wildcard: `no`
@@ -229,6 +230,7 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   on its lane's own inbox. The trade bridge uses `_INBOX.<lane id>.<trade id>` and the order bridge
   uses the bare inbox. Only the stream answers: a PubAck when it stored the message, a 429 when ingest
   dropped it. Core subscribers ignore the reply subject.
-- Bridge catch-up (FR-DRS-37): at a promotion each lane makes one JetStream API read, the last message on its
-  subject (`$JS.API.STREAM.NAMES`, then `$JS.API.STREAM.MSG.GET.<stream>`). A NATS user that may only publish
-  would refuse it, and the lane would ALERT and skip the catch-up.
+- Bridge catch-up (FR-DRS-37, FR-DRS-38): at a promotion, and on every new NATS connection while leading, each lane
+  reads the last message on its subject until two reads agree (`$JS.API.STREAM.NAMES`, then
+  `$JS.API.STREAM.MSG.GET.<stream>`). A NATS user that may only publish would be refused. The lane would then
+  WARN and retry on a new connection, publishing nothing on that partition until the read is granted.

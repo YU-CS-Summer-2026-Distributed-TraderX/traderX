@@ -232,6 +232,60 @@ class ThreeMemberClusterTest {
         }
     }
 
+    /**
+     * FR-DRS-38: NATS restarts mid-load under a steady leader (kind's OOM-killed NATS, run 1 of 2026-11-08: 952
+     * sides missing from the stream that all three members applied). NATS freezes while the leader's bridge sends
+     * sides 5..10 into its socket and is then SIGKILLed and started again; sides 11..14 follow. The stream must hold
+     * sides 1..14 exactly once, in order.
+     */
+    @Test
+    void tradesInFlightAtANatsRestartReachTheStreamExactlyOnce() throws Exception {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "needs Docker for NATS JetStream");
+        try (RestartableNats nats = new RestartableNats()) {
+            nats.addFeedStream();
+            bridgeUrl = nats.url;
+            for (int i = 0; i < 3; i++) {
+                launch(i, true);
+            }
+            awaitLeader(-1);
+            connectClient();
+            offerSymbolRegister("AAA");
+            offerSymbolRegister("IBM");
+            offerAccountControl(ACCOUNT, true);
+            offerAccountControl(COUNTER, true);
+            offerSecurityControl(SECURITY, true);
+            offerPriceTick(150 * PX);
+
+            offerNewOrder(100 * PX);
+            offerNewOrder(100 * PX);
+            offerSellOrder(COUNTER, 100 * PX, 20);
+            awaitEgress(() -> countKind(OutputEvent.KIND_TRADE_BOOKED) == 4);
+            try (Connection nc = Nats.connect(nats.url)) {
+                assertEquals(4, streamTradeIds(nc, 4).size(), "the leader published round 1");
+            }
+
+            nats.pause();
+            offerNewOrder(100 * PX);
+            offerNewOrder(100 * PX);
+            offerNewOrder(100 * PX);
+            offerSellOrder(COUNTER, 100 * PX, 30);
+            awaitEgress(() -> countKind(OutputEvent.KIND_TRADE_BOOKED) == 10);
+            Thread.sleep(300); // the bridge sends 5..10 into the frozen socket
+            nats.killAndStart();
+
+            offerNewOrder(100 * PX);
+            offerNewOrder(100 * PX);
+            offerSellOrder(COUNTER, 100 * PX, 20);
+            awaitEgress(() -> countKind(OutputEvent.KIND_TRADE_BOOKED) == 14);
+            try (Connection nc = Nats.connect(nats.url)) {
+                final List<String> ids = streamTradeIds(nc, 14);
+                assertEquals(java.util.stream.LongStream.rangeClosed(1, 14).boxed().toList(),
+                    ids.stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList(),
+                    "every applied trade side on the stream exactly once, in order: " + ids);
+            }
+        }
+    }
+
     /** The trade ids on {@code /trades} in stream order, read once {@code want} are stored (or 20 s
      *  pass) and a further second has gone by, so a late duplicate is counted too. */
     private static List<String> streamTradeIds(final Connection nc, final int want) throws Exception {

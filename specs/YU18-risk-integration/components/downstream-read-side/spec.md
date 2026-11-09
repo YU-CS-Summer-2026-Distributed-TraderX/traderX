@@ -297,14 +297,37 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   new leader after its role change that the old leader had stored is skipped. A trade side's position is its
   `tradeSeq` (one per side). An order event's is (`consensusSequence`, `outputOrdinal`). A message of another epoch
   or id scheme means none of this run's records is stored. When the subject is empty, everything kept is published.
-  With no stream capturing the subject, an unreachable stream after 10 attempts, or a legacy order message that
-  carries no position, the lane logs an ALERT and publishes nothing kept. Eviction past the cut is logged as an ALERT
-  that names the count. `/health` `bridges` reports `replayed`. Found on production 2026-11-08 (epoch e1108): the
+  With no stream capturing the subject, or a legacy order message that carries no position, the lane logs an ALERT
+  and publishes nothing kept. A stream it cannot read is retried on a new connection (FR-DRS-38). Eviction past the
+  cut is logged as an ALERT and counted (FR-DRS-38). `/health` `bridges` reports `replayed`. Found on production 2026-11-08 (epoch e1108): the
   members agreed at 80,888 trades, and `/trades`, the read model and the history store held 80,884. Sides
   16169..16172 were applied in the second after the leader was killed; e1107b showed 81,146 against 81,140.
   `ThreeMemberClusterTest#tradesInFlightAtALeaderKillReachTheStreamExactlyOnce` stops the leader's bridge, books
   three more matches and kills the leader. Before this rule the stream held sides 1..4 of 1..10. `ReceiptLanesIT`
   holds the cut on both bridges with managed ids, including the records applied after the promotion.
+- FR-DRS-38: The same exactly-once, in-order guarantee SHALL hold across a NATS restart under a steady leader. The
+  bridges publish without waiting for the stream's confirmation, so what was in flight when NATS died is not stored.
+  A lane therefore keeps its last `capacityPerLane` records (65,536) in every role, not only while following, and
+  replaces its own connection instead of using jnats' reconnect, which would resend jnats' buffer to the restarted
+  server and race the stream read. A connection is replaced when NATS closes it, when a publish throws, or when no
+  receipt (ADR-083) arrives for 5 s with publishes outstanding. On every new connection while leading, the lane runs
+  the FR-DRS-37 catch-up: it reads the subject's last stored message and publishes the kept records after it, in
+  order, before anything new. Before reading, it waits until two reads 200 ms apart agree, so a message the server is
+  still storing from the old connection is not sent twice. If the stream cannot be read, the lane retries on a new
+  connection while the ring keeps absorbing records. A failed publish is retried this way and is no longer counted as
+  dropped.
+  Past the ring: an outage longer than the ring holds loses the oldest records. If the newest record the lane no
+  longer keeps is after the stream's last, the catch-up logs an ALERT, increments `/health` `bridges.*.gaps`, and still
+  publishes what it kept, in order. At P=6 and 400K orders/s a trade lane fills its ring in about 1 s, and an order
+  lane in about 0.5 s. So a NATS pod restart at full rate is a loud gap, repaired from the archive. At kind's rate
+  in run 2 (about 1,200 sides/s and 2,400 order events/s) the rings cover about 55 s and 27 s.
+  Found on kind 2026-11-08 (trade-history lane, run 1). NATS was OOM-killed three times at its 768Mi limit. The
+  members agreed at 1,846,840 sides, and the stream and the history store both held 1,845,888: sides
+  1,259,773..1,260,724 were missing.
+  `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` freezes NATS while the leader
+  sends sides 5..10, SIGKILLs it, starts it again and books 11..14. Before this rule the stream held 1..4 and 11..14.
+  `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed ids, and
+  `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` the gap.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

@@ -772,7 +772,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public int runPhase() {return runPhase;}
     /** YU18 (§7.9): the bridges' publish counters - published, queue drops, and NATS ingest drops (429
      *  receipts) per partition. Per-process and off-consensus: only the leader publishes, so followers read 0;
-     *  "replayed" counts what a promotion published for the previous leader (FR-DRS-37). */
+     *  "replayed" counts what a catch-up republished (FR-DRS-37/38), "gaps" the catch-ups that found records the
+     *  stream is missing beyond the lane's ring (FR-DRS-38). */
     public String bridgeJson() {
         return "{\"trades\":" + (tradeBridge == null ? "null" : tradeBridge.json())
             + ",\"orders\":" + (orderBridge == null ? "null" : orderBridge.json()) + "}";

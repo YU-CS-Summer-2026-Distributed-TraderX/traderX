@@ -162,6 +162,116 @@ class ReceiptLanesIT {
         }
     }
 
+    /**
+     * FR-DRS-38: NATS restarts under a steady leader. Trade sides 1..4 and order events (10,*) are stored; then NATS
+     * freezes, the bridges send sides 5..9 and (11,*), (12,0) into the frozen socket, and NATS is SIGKILLed and
+     * started again, so none of those was stored. On its new connection each lane reads the stream's last message
+     * and republishes what follows it before anything new: each subject reads back every record once, in order.
+     */
+    @Test
+    void aNatsRestartRepublishesWhatTheStreamLost(@TempDir final Path dir) throws Exception {
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final RunDescriptor d = descriptor(dir);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", d, 1024, 1);
+            final OrderNatsPublisher orders = new OrderNatsPublisher(js.url, "/orders", "e9", d, 1024, 1);
+            trades.start();
+            orders.start();
+            for (int seq = 1; seq <= 4; seq++) { trade(trades, seq); }
+            order(orders, 10, 0);
+            order(orders, 10, 1);
+            awaitStored(js.url, 4, 2);
+
+            js.pause();
+            for (int seq = 5; seq <= 9; seq++) { trade(trades, seq); }
+            order(orders, 11, 0);
+            order(orders, 11, 1);
+            order(orders, 12, 0);
+            final long sent = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while ((trades.published() < 9 || orders.published() < 5) && System.nanoTime() < sent) { Thread.sleep(20); }
+            Thread.sleep(200); // into the frozen socket
+            js.killAndStart();
+
+            for (int seq = 10; seq <= 12; seq++) { trade(trades, seq); }
+            order(orders, 13, 0);
+            awaitStored(js.url, 12, 6);
+            Thread.sleep(500); // a duplicate would land after the counts are reached
+
+            try (Connection nc = Nats.connect(js.url)) {
+                final List<String> want = new ArrayList<>();
+                for (int seq = 1; seq <= 12; seq++) { want.add("e1-e9-" + seq + ((seq & 1) == 1 ? "-S" : "-B")); }
+                assertEquals(want, stored(nc, "/trades", "id"), "each trade side once, in apply order");
+                assertEquals(List.of("10/0", "10/1", "11/0", "11/1", "12/0", "13/0"), positions(nc),
+                    "each order event once, in apply order");
+            }
+            assertEquals(5, trades.replayed(), "sides 5..9 were republished on the new connection");
+            assertEquals(3, orders.replayed());
+            assertEquals(0, trades.gaps());
+            trades.stop();
+            orders.stop();
+        }
+    }
+
+    /**
+     * FR-DRS-38, past the ring: a lane keeps only its last {@code capacityPerLane} records, so an outage longer than
+     * that loses the older ones - loudly. Sides 1..4 are stored, NATS freezes, sides 5..24 are applied into a ring of
+     * 8, and NATS restarts: the lane counts a gap (newest evicted side 16 is past the stream's last, 4), still
+     * republishes the 8 it kept, in order, and then 25.
+     */
+    @Test
+    void aNatsOutageLongerThanTheRingIsALoudGap() throws Exception {
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 8, 1);
+            trades.start();
+            for (int seq = 1; seq <= 4; seq++) { trade(trades, seq); }
+            awaitStored(js.url, 4, 0);
+            js.pause();
+            for (int seq = 5; seq <= 24; seq++) { trade(trades, seq); Thread.sleep(5); }
+            Thread.sleep(300);
+            js.killAndStart();
+            final long caught = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+            while (trades.gaps() == 0 && System.nanoTime() < caught) { Thread.sleep(20); }
+            trade(trades, 25); // after the catch-up, so the ring it read held 17..24
+            awaitStored(js.url, 13, 0);
+            Thread.sleep(500);
+            try (Connection nc = Nats.connect(js.url)) {
+                final List<Long> seqs = stored(nc, "/trades", "id").stream()
+                    .map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList();
+                assertEquals(List.of(1L, 2L, 3L, 4L, 17L, 18L, 19L, 20L, 21L, 22L, 23L, 24L, 25L), seqs,
+                    "the kept sides, in order, after the gap");
+            }
+            assertEquals(1, trades.gaps(), "the gap is counted");
+            assertTrue(trades.json().contains("\"gaps\":1"), "and on /health: " + trades.json());
+            trades.stop();
+        }
+    }
+
+    private static RunDescriptor descriptor(final Path dir) throws Exception {
+        final Path run = dir.resolve("run.json");
+        Files.writeString(run, "{\"schema\":\"traderx.run.v1\",\"epoch\":\"e9\",\"eventIdScheme\":\"epoch-v1\","
+            + "\"storageLineage\":\"l\",\"projectionScope\":\"s\",\"adoptionEvidenceSha256\":null}");
+        return RunDescriptor.read(run);
+    }
+
+    private static void awaitStored(final String url, final int trades, final int orders) throws Exception {
+        final long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        try (Connection nc = Nats.connect(url)) {
+            while ((stored(nc, "/trades", "id").size() < trades || stored(nc, "/orders", "outputOrdinal").size() < orders)
+                && System.nanoTime() < deadline) {
+                Thread.sleep(100);
+            }
+        }
+    }
+
+    private static List<String> positions(final Connection nc) throws Exception {
+        final List<String> out = new ArrayList<>();
+        final List<String> seqs = stored(nc, "/orders", "consensusSequence");
+        final List<String> ordinals = stored(nc, "/orders", "outputOrdinal");
+        for (int i = 0; i < seqs.size(); i++) { out.add(seqs.get(i) + "/" + ordinals.get(i)); }
+        return out;
+    }
+
     private static void trade(final TradeNatsPublisher bridge, final int seq) {
         bridge.offer(seq, 7, "IBM", (byte) (seq & 1), 1, 100_000_000L, seq, 0L);
     }

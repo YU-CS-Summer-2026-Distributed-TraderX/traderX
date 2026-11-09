@@ -340,9 +340,14 @@ final class OrderNatsPublisher {
         return lanes.published();
     }
 
-    /** Lost before NATS: the lane's queue was full, or the publish call failed. */
+    /** Republished at a catch-up (promotion or a new NATS connection): missing from the stream. */
+    long replayed() {
+        return lanes.replayed();
+    }
+
+    /** Lost before NATS: the lane's queue was full. A failed publish is not lost: the lane reconnects and catches up. */
     long dropped() {
-        return dropped.get() + lanes.failed();
+        return dropped.get();
     }
 
     /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */

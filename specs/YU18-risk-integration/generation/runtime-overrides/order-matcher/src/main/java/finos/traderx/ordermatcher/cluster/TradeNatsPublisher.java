@@ -19,7 +19,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * lose trades. The apply stream is the complete, ordered, deterministic source of every booked
  * trade; only the leader publishes so followers never duplicate. Every member offers every trade, tagged with
  * its role (FR-DRS-37): a follower keeps its trades, and a promoted member publishes the ones the stream does not
- * hold - those the dying leader applied but never got stored - before anything new.
+ * hold - those the dying leader applied but never got stored - before anything new. The same catch-up runs on every
+ * new NATS connection while leading (FR-DRS-38), so a NATS restart does not lose what was in flight.
  *
  * <p>Delivery is best-effort: queue overflow or an unavailable consumer can lose publication.
  * Stable descriptor-derived IDs make identical replay idempotent in trade-processor, but do not
@@ -215,14 +216,19 @@ final class TradeNatsPublisher {
         return lanes.published();
     }
 
-    /** Published at a promotion: applied under the previous leader, missing from the stream. */
+    /** Republished at a catch-up (promotion or a new NATS connection): missing from the stream. */
     long replayed() {
         return lanes.replayed();
     }
 
-    /** Lost before NATS: the lane's queue was full, or the publish call failed. */
+    /** Catch-ups that found sides the stream is missing beyond the lane's ring (FR-DRS-38). */
+    long gaps() {
+        return lanes.gaps();
+    }
+
+    /** Lost before NATS: the lane's queue was full. A failed publish is not lost: the lane reconnects and catches up. */
     long dropped() {
-        return dropped.get() + lanes.failed();
+        return dropped.get();
     }
 
     /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
