@@ -1798,7 +1798,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GFS-17` | LIVE |  |  | added 2026-11-06: reset against a stored later day not driven. FixSessionPersistenceIT |
 | YU18 | `FR-GFS-18` | CI |  |  | added 2026-11-06: group commit ordering. FixBarrierLossTest, FixFenceProbeTest |
 | YU18 | `FR-HST-01` | LIVE |  |  | added 2026-11-06. RowsTest (id_prefix/order_epoch 2026-11-08); the 4 history-feed ITs on the new columns; kind traderx-cut 2026-11-08 (kind-history-store G3h PASS with delete/duplicate controls, blotter ids rebuilt from the columns) |
-| YU18 | `FR-HST-02` | CI + local (docker) |  |  | added 2026-11-06: lane/batch mechanics. 2026-11-07: HistoryFeedSubjectsIT (P=1 bare subjects stored; a mismatched feed stores 0 and /health names the unread subjects; fails with the old always-suffixed rule); RowsTest pins subjectFor and unowned |
+| YU18 | `FR-HST-02` | CI + local (docker) |  |  | added 2026-11-06: lane/batch mechanics. 2026-11-07: HistoryFeedSubjectsIT (P=1 bare subjects stored; a mismatched feed stores 0 and /health names the unread subjects; fails with the old always-suffixed rule); RowsTest pins subjectFor and unowned. 2026-11-08: maxAckPending granted >= batch (FR-THT-10, HistoryFeedRateIT) |
 | YU18 | `FR-HST-03` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
 | YU18 | `FR-HST-04` | CI |  |  | added 2026-11-06: ClickHouse write shape |
 | YU18 | `FR-HST-05` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedKillIT |
@@ -1806,6 +1806,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-HST-07` | LIVE |  |  | added 2026-11-06: no live proof. HistoryFeedIncarnationIT |
 | YU18 | `FR-THT-01` | LIVE | yu18-projection-effect-end |  | revised 2026-11-08 (ADR-102 cutover): no booked side in SQL trades, exceptions only. kind traderx-cut: 0 SQL rows for the cross, kind-cutover-check 0 booked rows; A/B: the pre-cutover trade-processor (gap18-s17b) fails the proof ("SQL trades holds 2 row(s)"). TradeViewTest, TradeSnapshotStoreConcurrencyIT. Not on GKE/production |
 | YU18 | `FR-THT-09` | LIVE | yu18-projection-effect-end |  | added 2026-11-08: kind traderx-cut, blotter ids = the store's (effect-end step 3, kind-cutover-check over every account), extract = history store = SQL positions, live forced settlement and TCA on booked ids (200 / 403 foreign / 404 unknown), yu05-auth-entitlements PASS. TradeRepositoryTest, SettlementServiceTest, HistoryStoreTest, test_prepare (NetworkPolicy, T+N parity). Not on GKE/production |
+| YU18 | `FR-THT-10` | CI + local (docker) |  |  | added 2026-11-08: HistoryFeedRateIT (P=1, production defaults: 1M-message backlog drained in 2.9 s, granted maxAckPending >= batch; with the old consumer it times out at 60 s); test_rig history_wait_secs (600 s + backlog / 20,000). Local drain of 5M messages: 1,450 rows/s per lane before, ~13 s after. Kind proof below; not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

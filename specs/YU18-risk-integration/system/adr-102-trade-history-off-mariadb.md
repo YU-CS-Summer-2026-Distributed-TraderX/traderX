@@ -74,6 +74,12 @@ kept.
 - **One epoch per store**: refs restart at a fresh epoch (ADR-101), so the history tables must be archived with the
   epoch (FR-THT-08: `rig.sh` `archive_read_model`, 2026-11-08).
 
+## Ingest rate, 2026-11-08
+
+The store is the trade system of record only if it keeps up. On production e1108b history-feed ingested about
+1,500 rows/s, because NATS stored the lanes' `maxAckPending(-1)` as 1000. That is fixed, with a scaled G3h wait, in
+FR-THT-10 (ADR-098 amendment 2026-11-08). The cutover's rollout needs that history-feed image with it.
+
 ## Cutover, 2026-11-08 (kind)
 
 Decided by yaakov (2026-11-08, through the EOD integration coordinator): ClickHouse becomes the trade system of record

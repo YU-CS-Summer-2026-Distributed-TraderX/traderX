@@ -64,3 +64,11 @@ against it in `RowsTest`), and `/health` names any stream subject no lane reads,
 FR-THT-06). Tests: `HistoryFeedSubjectsIT` (NATS 2.14 + ClickHouse 25.8: P=1 bare subjects stored, `unowned {}`; a
 2-partition feed over them stores 0 and reports `{"/orders":3,"/trades":6}`; with the old always-suffixed rule the first
 half times out) and `test_rig.Up.test_a_stream_subject_no_lane_reads_is_refused`.
+
+**Amendment 2026-11-08 (production e1108b, `tip-1ef5e86e-j21`):** the feed ingested about 1,500 rows/s. Its consumers
+asked for `maxAckPending(-1)`, and NATS 2.14 stored the server default, 1000. The ack follows the INSERT, so a lane held
+1000 unacked, each fetch waited out its 100 ms expiry, and the batch flushed on its 500 ms timer. A 9.66M-trade load
+left 3.07M trades in the store and 16.2M order events queued, and G3h timed out after 600 s. The bake-off never hit
+this: it acked to a store-reported watermark (FR-HST-02) instead. A lane now asks for 2 x batch + fetch, reads the
+granted value back, and does not start below one batch. G3h's wait is 600 s plus the backlog at 20,000 rows/s
+(FR-THT-10). Locally the same 5M backlog now drains in about 13 s at P=1, against about 30 minutes before.

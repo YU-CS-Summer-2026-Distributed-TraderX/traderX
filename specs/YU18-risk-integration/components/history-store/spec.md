@@ -19,7 +19,7 @@ ClickHouse 25.8. Chosen over QuestDB 9.1.0 and KDB-X Community 5f by the bake-of
   and a minmax index on `trade_seq` serves the forced settlement's lookup by trade id.
 - FR-HST-02: The feed SHALL run one lane per (feed, partition) on a durable pull consumer, `history-<feed>-p<p>`
   on the partition's stream (`<stream>_P<p>` with `PROJECTION_FEED_STREAM_LAYOUT=partition`, the single stream
-  otherwise, the same naming as trade-processor's `JetStreamFeed.streamFor`), AckPolicy.All, ackWait 60 s. Its filter
+  otherwise, the same naming as trade-processor's `JetStreamFeed.streamFor`), AckPolicy.All, ackWait 60 s, `maxAckPending` at least one batch as the server grants it (FR-THT-10). Its filter
   SHALL be the bridges' subject (`JetStreamFeed.subject`, `BridgePartitions`): bare `/<feed>` at one partition,
   `/<feed>.<p>` otherwise (production e1107b, 2026-11-07: lanes on `/trades.0` over a P=1 stream of `/trades` stored
   nothing). `/health` SHALL report `unowned`, every `/trades*` or `/orders*` subject the lanes' streams hold with

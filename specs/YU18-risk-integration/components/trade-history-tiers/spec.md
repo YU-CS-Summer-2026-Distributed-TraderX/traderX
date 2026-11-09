@@ -92,6 +92,19 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   `SettlementService.forceSettle` / `SettlementController` (trade-processor, `SettlementServiceTest`), prepare.py
   `HISTORY_CLIENTS` and `validate_history_store` (`test_prepare`). Proven on kind `traderx-cut`
   (`kind-cutover-check.sh`, yu18-projection-effect-end, a live forced settlement); not on GKE or production.
+- FR-THT-10: The history feed SHALL keep up with production load (2026-11-08). A lane's consumer SHALL be granted an
+  unacked window of at least one batch (`maxAckPending` 2 x `HISTORY_BATCH_ROWS` + `HISTORY_FETCH`), read back from
+  the server, and a lane granted less SHALL NOT start. Production e1108b, 2026-11-08 (`tip-1ef5e86e-j21`): the lanes
+  asked for -1, NATS 2.14 stored its default 1000, and the ack waits for the INSERT, so each lane moved 1000 rows per
+  500 ms flush, about 1,500 rows/s. A 12-minute load of 9,657,584 trades left 3.07M in the store and 16.2M order
+  events queued, and G3h timed out. G3h's wait SHALL be 600 s plus the lanes' backlog at `HISTORY_DRAIN_FLOOR` rows/s
+  (20,000, the production order rate): a backlog gets time in proportion, and a feed slower than the floor still
+  refuses. Measured locally (NATS 2.14, ClickHouse 25.8, the feed on 2 CPUs, P=1, production defaults): 1,450
+  rows/s per lane before; a 5M-message backlog drained in about 13 s after (about 200K rows/s per lane, 1M in 2.9 s
+  in `HistoryFeedRateIT`). One partition is about 10x the 20K orders/s rate (about 35K messages/s). The bench's 400K
+  orders/s (about 700K messages/s) needs the partitioned layout (P=4, 730K rows/s in the bake-off), not yet in the
+  production render. Tests: `HistoryFeedRateIT` (fails with the old consumer, times out at 60 s),
+  `test_rig.Up.test_the_history_wait_scales_with_the_backlog`.
 - FR-THT-07: Either store SHALL be rebuildable from the capture streams from its cursor 0, with the result equal to
   the store it replaces (count and hash, FR-THT-06).
 
