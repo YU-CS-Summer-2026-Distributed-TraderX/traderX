@@ -43,6 +43,16 @@
 - [x] A promoted member publishes the trades and orders its predecessor applied but the stream does not hold, after
       the subject's last stored message, exactly once and in order (FR-DRS-37; production e1108 sides 16169..16172).
       `ThreeMemberClusterTest#tradesInFlightAtALeaderKillReachTheStreamExactlyOnce`, `ReceiptLanesIT`.
+- [x] A NATS restart under a steady leader: each lane replaces its connection and runs the same catch-up, so the
+      sides that were in flight at the kill are stored once, in order. An outage past the ring is a counted, ALERTed
+      gap (FR-DRS-38; kind 2026-11-08, 952 sides). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce`,
+      `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost`, `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap`.
+- [x] A record refused by a full lane queue is a counted gap with an ALERT, at the catch-up or at once while leading
+      (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog.
+      `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
+- [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
+      promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
+      `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.
 
 ## Still open
 

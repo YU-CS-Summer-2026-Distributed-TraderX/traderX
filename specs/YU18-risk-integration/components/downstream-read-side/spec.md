@@ -69,14 +69,16 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   in apply order.
 - FR-DRS-12: When `TRADERX_FEED` captures the bridge subjects, every published message SHALL get exactly
   one outcome. Once quiet, for each bridge, `published = acked + rejected` and `acked` equals the number
-  of that bridge's messages the stream stored. Messages that never reached NATS (lane queue full, or a
-  failed publish call) SHALL count in `traderx_bridge_dropped`, never in `published`.
+  of that bridge's messages the stream stored. Messages that never reached NATS because the lane queue
+  was full SHALL count in `traderx_bridge_dropped`, never in `published`. A failed publish call is retried on a new
+  connection (FR-DRS-38) and counts in `failed` only.
 - FR-DRS-13: Each member's `GET /health` SHALL carry
   `bridges: {"trades": B|null, "orders": B|null}`, where B is
-  `{"published", "acked", "rejected", "failed", "rejectedByPartition": [P numbers]}`. `null` means
+  `{"published", "acked", "rejected", "failed", "replayed", "gaps", "rejectedByPartition": [P numbers],
+  "queuedByPartition": [P numbers]}`. `queuedByPartition` is each lane queue's depth now (capacity 65,536). `null` means
   the bridges are not enabled. `rejectedByPartition` SHALL have exactly P entries summing to `rejected`, and
-  entry p SHALL count only rejections of messages published on partition p. A follower SHALL report
-  zeros. The counters are per process and start at 0 on restart.
+  entry p SHALL count only rejections of messages published on partition p. A member that has
+  never led SHALL report zeros for `published`, `acked`, `rejected` and `failed`. The counters are per process and start at 0 on restart.
 - FR-DRS-14: Each member's `/metrics` SHALL expose the counters `traderx_bridge_published`,
   `traderx_bridge_dropped` and `traderx_bridge_ingest_rejected`, with labels `member` and
   `bridge="trades"|"orders"`. `traderx_bridge_ingest_rejected` SHALL equal `/health`
@@ -297,14 +299,60 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   new leader after its role change that the old leader had stored is skipped. A trade side's position is its
   `tradeSeq` (one per side). An order event's is (`consensusSequence`, `outputOrdinal`). A message of another epoch
   or id scheme means none of this run's records is stored. When the subject is empty, everything kept is published.
-  With no stream capturing the subject, an unreachable stream after 10 attempts, or a legacy order message that
-  carries no position, the lane logs an ALERT and publishes nothing kept. Eviction past the cut is logged as an ALERT
-  that names the count. `/health` `bridges` reports `replayed`. Found on production 2026-11-08 (epoch e1108): the
+  With no stream capturing the subject, or a legacy order message that carries no position, the lane logs an ALERT
+  and publishes nothing kept. A stream it cannot read is retried on a new connection (FR-DRS-38). Eviction past the
+  cut is logged as an ALERT and counted (FR-DRS-38). `/health` `bridges` reports `replayed`. Found on production 2026-11-08 (epoch e1108): the
   members agreed at 80,888 trades, and `/trades`, the read model and the history store held 80,884. Sides
   16169..16172 were applied in the second after the leader was killed; e1107b showed 81,146 against 81,140.
   `ThreeMemberClusterTest#tradesInFlightAtALeaderKillReachTheStreamExactlyOnce` stops the leader's bridge, books
   three more matches and kills the leader. Before this rule the stream held sides 1..4 of 1..10. `ReceiptLanesIT`
   holds the cut on both bridges with managed ids, including the records applied after the promotion.
+- FR-DRS-38: The same exactly-once, in-order guarantee SHALL hold across a NATS restart under a steady leader. The
+  bridges publish without waiting for the stream's confirmation, so what was in flight when NATS died is not stored.
+  A lane therefore keeps its last `capacityPerLane` records (65,536) in every role, not only while following, and
+  replaces its own connection instead of using jnats' reconnect, which would resend jnats' buffer to the restarted
+  server and race the stream read. A connection is replaced when NATS closes it, when a publish throws, or when no
+  receipt (ADR-083) arrives for 5 s with publishes outstanding. On every new connection while leading, the lane runs
+  the FR-DRS-37 catch-up: it reads the subject's last stored message and publishes the kept records after it, in
+  order, before anything new. Before reading, it waits until two reads 200 ms apart agree, so a message the server is
+  still storing from the old connection is not sent twice. If the stream cannot be read, the lane retries on a new
+  connection while the ring keeps absorbing records. A failed publish is retried this way and is no longer counted as
+  dropped.
+  Past the ring: an outage longer than the ring holds loses the oldest records. If the newest record the lane no
+  longer keeps is after the stream's last, the catch-up logs an ALERT, increments `/health` `bridges.*.gaps`, and still
+  publishes what it kept, in order. At P=6 and 400K orders/s a trade lane fills its ring in about 1 s, and an order
+  lane in about 0.5 s. So a NATS pod restart at full rate is a loud gap, repaired from the archive. At kind's rate
+  in run 2 (about 1,200 sides/s and 2,400 order events/s) the rings cover about 55 s and 27 s.
+  Found on kind 2026-11-08 (trade-history lane, run 1). NATS was OOM-killed three times at its 768Mi limit. The
+  members agreed at 1,846,840 sides, and the stream and the history store both held 1,845,888: sides
+  1,259,773..1,260,724 were missing.
+  `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` freezes NATS while the leader
+  sends sides 5..10, SIGKILLs it, starts it again and books 11..14. Before this rule the stream held 1..4 and 11..14.
+  `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed ids, and
+  `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` the gap.
+  A record the lane's full queue refuses never reaches the ring, so no catch-up can republish it. The lane SHALL
+  count it as a gap with an ALERT: at the next catch-up if it is after the stream's last message (a follower's drop
+  that a promotion would otherwise publish around), or at once while leading. It still counts in
+  `traderx_bridge_dropped`. `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp` fills a follower's
+  queue of 8 with 12 sides and promotes it; before this rule `gaps` stayed 0.
+  The queue fills when a lane publishes slower than the apply thread offers. Measured locally (2026-11-08, P=6,
+  0 to 400K sides/s in one step on a JVM 3 s old): the publish path is still interpreted, the lanes run at 33-42K
+  sides/s each against 67K/s offered, and the queues fill in 1-2.6 s unless the JIT finishes first. One cold run in 18 on
+  this build dropped 50,338 sides and one in 12 on the build before it (9728ba51) dropped 583; six runs after a 4 s
+  warm-up at 100K/s peaked at 1,649 queued. A member promoted under full load publishes with the same cold path.
+- FR-DRS-39: Before a lane takes its first record it SHALL run its own encode-and-publish path on 20,000 sample
+  records, so the JIT has compiled that path when load arrives: at a member's first load, and on a follower promoted
+  under load, which until then has only kept records. The samples go to the scratch subject `_bridge.warm.trade` or
+  `_bridge.warm.order`, which no stream captures and nothing subscribes to, so NATS discards them. They are stored
+  nowhere and counted in no bridge counter. The warm-up runs once per lane, on its lane thread, after its first
+  connection; a failure stops it with a WARN and the lane carries on.
+  Measured locally (2026-11-09, the FR-DRS-38 cold start: P=6, 0 to 400K sides/s in one step, 2 s after the bridge
+  starts). In three runs with a JIT log, `encode`, the lane's `send` and jnats' `publishInternal` were all C2-compiled
+  0.9-1.7 s before the load began; without the warm-up `encode` reached C2 0.4-5.8 s into it. Over 10 runs the queues
+  peaked at 3,674 in the first 3 s, and no run dropped a side. Without the warm-up the worst of 10 runs reached 56,512
+  of 65,536, and one of 18 dropped 50,338.
+  `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes` counts both bridges' samples on the
+  scratch subjects, and checks that the stream and the counters hold only the real record.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

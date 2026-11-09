@@ -70,6 +70,74 @@ and keeps up to 65,536 per lane per bridge.
 - *Replay from the Aeron archive at a promotion.* It is correct, but a shadow replay of the log is seconds of work
   on the new leader's critical path, and the kept tail already holds every record that can be missing.
 
+## Amendment, 2026-11-08: a NATS restart runs the same catch-up (FR-DRS-38)
+
+Decision 7 ran only at a promotion. When NATS restarted under a steady leader, whatever was in flight at the kill
+(in its buffers or ingest queue, not yet stored) was lost, and jnats' reconnect then carried on after the hole. On
+kind (2026-11-08) the stream was missing 952 sides that all three members had applied.
+
+8. **Every lane keeps its tail in every role.** The ring of the last `capacityPerLane` records (Decision 6) is now
+   kept on the leader too, with a pointer to the next record to publish.
+9. **The lane owns its reconnect.** The connection is opened with `noReconnect`. It is replaced when NATS closes it,
+   when a publish throws, or when no receipt (Decision 1) arrives for 5 s with publishes outstanding. On every new
+   connection while leading, the lane runs Decision 7. The read waits for the subject's last message to hold still
+   for 200 ms, and a stream it cannot read is retried on the next connection.
+10. **Past the ring is loud.** If the newest record the ring evicted is after the stream's last, the catch-up counts
+    a gap (`bridges.*.gaps` on `/health`), logs an ALERT, and publishes what it kept, in order. Repair is the archive
+    replay (Decision 4).
+
+Cost: the leader now retains the records it publishes for as long as a follower already did, one array store per
+record. A record is held for one ring's length, about 1 s at 400K/s and P=6, instead of until its publish. There is
+no new per-message NATS traffic: the receipts already flow. Measured locally against 9728ba51, with P=6 trade lanes,
+200K sides/s for 15 s, and Docker NATS (two runs per arm). Both arms published and stored every side with no drops.
+Process CPU was 26.0-28.3 s against 23.8-25.5 s, GC 208-217 ms against 141-156 ms, and heap 78-112 MB against
+51-57 MB. At 400K sides/s the local NATS refused 50-75% at ingest (429) in both arms, so that rate is measured on the
+bench, not here.
+
+11. **A queue drop is a gap.** A record the lane's full queue refuses never reaches the ring. The lane remembers the
+    newest one and counts a gap with an ALERT: at the next catch-up if it is after the stream's last, or at once
+    while leading. `/health` adds `queuedByPartition`, each lane queue's depth.
+
+The 50,338 sides one local 400K run dropped were queue drops at a cold start, not a reconnect or the ring. With the
+publish path still interpreted, a lane ran at 33-42K sides/s against 67K/s offered until the JIT compiled it, 0.4 s to
+5.8 s into the load in three logged runs. The build before this change (9728ba51) backs up the same way (6 of 10 runs
+past 10K queued, one dropping 583). After a 4 s warm-up at 100K/s the queues peaked at 1,649 in six runs.
+
+Warmed A/B against 9728ba51 (three runs per arm and rate, 15 s, P=6 trade lanes, Docker NATS). No run in either arm
+dropped a side or reconnected.
+
+| | this build | 9728ba51 |
+|---|---|---|
+| 200K sides/s: CPU | 24.3-25.2 s | 22.3-23.1 s |
+| 200K sides/s: GC | 138-236 ms | 154-169 ms |
+| 200K sides/s: heap at end | 124-175 MB | 44-64 MB |
+| 200K sides/s: peak queue | 297-393 | 180-2,298 |
+| 400K sides/s: CPU | 32.1-33.5 s | 28.2-29.8 s |
+| 400K sides/s: GC | 345-467 ms | 132-321 ms |
+| 400K sides/s: heap at end | 115-156 MB | 103-560 MB |
+| 400K sides/s: peak queue | 786-2,162 | 247-3,359 |
+
+12. **A lane warms its publish path before its first record (FR-DRS-39).** It sends 20,000 sample records through
+    the same encode-and-publish code to `_bridge.warm.<bridge>`, a subject with no stream and no subscriber. The
+    samples vary as real records do (side, status, the optional keys), so the compiled code keeps those branches.
+    With it, the path was C2-compiled 0.9-1.7 s before a 0-to-400K step in three logged runs, and the startup
+    backlog over 10 runs peaked at 3,674 (56,512 without). Cost: about 1 s of each lane thread at start, and
+    20,000 discarded messages per lane, per bridge, per member.
+
+**Rejected:**
+
+- *A follower keeps the path warm by encoding a share of what it keeps.* Not built. The start-up warm-up covers a
+  follower for as long as its JVM keeps the compiled code, and a promotion after hours of following has not been
+  measured. `queuedByPartition` on the new leader shows it if the path has gone cold.
+- *A larger lane queue.* It buys seconds of a cold lane, not a compiled one, and costs member heap.
+- *Async JetStream publish acks with a bounded in-flight window.* The receipts are already per-message acks
+  (Decision 1), and a window bounded by the same ring cannot recover more than the ring holds. It would only move
+  where an over-long outage loses records, from unacknowledged to unsent, and add a hold path to the lane.
+- *Keep jnats' reconnect and catch up on its RECONNECTED event.* jnats flushes its buffered publishes to the new
+  server before the event, racing the stream read, so a record can be stored twice.
+- *A larger ring sized for a NATS pod restart at 400K/s.* A trade record is about 64 B and an order record about
+  130 B, so ten seconds at 400K orders/s is over 1 GiB of member heap. The archive replay already repairs a gap this rare.
+
 - *Synchronous JetStream publish with retry.* It waits on every ack (~350K msgs/s ceiling on the bench),
   and its retry reorders the partition.
 - *Retrying 429s from the lane.* It reorders the partition (Decision 4).
