@@ -340,6 +340,19 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   sides/s each against 67K/s offered, and the queues fill in 1-2.6 s unless the JIT finishes first. One cold run in 18 on
   this build dropped 50,338 sides and one in 12 on the build before it (9728ba51) dropped 583; six runs after a 4 s
   warm-up at 100K/s peaked at 1,649 queued. A member promoted under full load publishes with the same cold path.
+- FR-DRS-39: Before a lane takes its first record it SHALL run its own encode-and-publish path on 20,000 sample
+  records, so the JIT has compiled that path when load arrives: at a member's first load, and on a follower promoted
+  under load, which until then has only kept records. The samples go to the scratch subject `_bridge.warm.trade` or
+  `_bridge.warm.order`, which no stream captures and nothing subscribes to, so NATS discards them. They are stored
+  nowhere and counted in no bridge counter. The warm-up runs once per lane, on its lane thread, after its first
+  connection; a failure stops it with a WARN and the lane carries on.
+  Measured locally (2026-11-09, the FR-DRS-38 cold start: P=6, 0 to 400K sides/s in one step, 2 s after the bridge
+  starts). In three runs with a JIT log, `encode`, the lane's `send` and jnats' `publishInternal` were all C2-compiled
+  0.9-1.7 s before the load began; without the warm-up `encode` reached C2 0.4-5.8 s into it. Over 10 runs the queues
+  peaked at 3,674 in the first 3 s, and no run dropped a side. Without the warm-up the worst of 10 runs reached 56,512
+  of 65,536, and one of 18 dropped 50,338.
+  `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes` counts both bridges' samples on the
+  scratch subjects, and checks that the stream and the counters hold only the real record.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows.

@@ -50,6 +50,9 @@
 - [x] A record refused by a full lane queue is a counted gap with an ALERT, at the catch-up or at once while leading
       (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog.
       `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
+- [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
+      promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
+      `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.
 
 ## Still open
 

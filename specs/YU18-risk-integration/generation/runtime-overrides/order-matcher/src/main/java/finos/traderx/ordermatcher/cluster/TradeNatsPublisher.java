@@ -87,13 +87,27 @@ final class TradeNatsPublisher {
         this.subject = subject;
         this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor!=null ? descriptor.epoch() : epoch == null || epoch.isBlank() ? "0" : epoch;
-        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf, this::cut);
+        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf, this::cut, TradeNatsPublisher::sample);
     }
 
     /** Apply thread: the member's role (FR-DRS-37). Every member offers every trade; a follower's are kept for
      *  the catch-up it publishes if it becomes leader. */
     void role(final boolean leader) {
         lanes.role(leader);
+    }
+
+    /** FR-DRS-39: the k-th warm-up record. Shapes vary as real sides do (side, a ticket's missing order). */
+    private static Rec sample(final int k) {
+        final Rec r = new Rec();
+        r.tradeSeq = k + 1;
+        r.consensusSequence = k + 1;
+        r.accountId = k;
+        r.security = "WARM";
+        r.side = (byte) (k & 1);
+        r.qty = 1 + k % 100;
+        r.tradePx = 1_000_000L + k;
+        r.orderRef = (k & 7) == 0 ? 0 : k;
+        return r;
     }
 
     /** FR-DRS-37: a stored trade side's position is its tradeSeq (one per side, in apply order). An id this

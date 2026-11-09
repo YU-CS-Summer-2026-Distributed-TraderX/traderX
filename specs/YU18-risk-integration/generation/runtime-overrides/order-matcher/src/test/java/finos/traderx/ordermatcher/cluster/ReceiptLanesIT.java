@@ -273,6 +273,40 @@ class ReceiptLanesIT {
         }
     }
 
+    /**
+     * FR-DRS-39: before a lane takes its first record it sends sample records through its own encode-and-publish
+     * path to a scratch subject, so the JIT compiles that path before real load arrives (a cold lane ran at half the
+     * 400K offer rate and overflowed its queue). The samples reach NATS, are stored by no stream and counted by no
+     * counter, and the first real record is then published as usual.
+     */
+    @Test
+    void aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes(@TempDir final Path dir) throws Exception {
+        try (RestartableNats js = new RestartableNats(); Connection nc = Nats.connect(js.url)) {
+            js.addFeedStream();
+            final java.util.concurrent.atomic.AtomicLong warmTrades = new java.util.concurrent.atomic.AtomicLong();
+            final java.util.concurrent.atomic.AtomicLong warmOrders = new java.util.concurrent.atomic.AtomicLong();
+            nc.createDispatcher(m -> (m.getSubject().endsWith(".trade") ? warmTrades : warmOrders).incrementAndGet())
+                .subscribe(ReceiptLanes.WARM_SUBJECT + ".>");
+            nc.flush(Duration.ofSeconds(5));
+            final RunDescriptor d = descriptor(dir);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", d, 1024, 1);
+            final OrderNatsPublisher orders = new OrderNatsPublisher(js.url, "/orders", "e9", d, 1024, 1);
+            trades.start();
+            orders.start();
+            trade(trades, 1);
+            order(orders, 10, 0);
+            awaitStored(js.url, 1, 1);
+            assertEquals(ReceiptLanes.WARM_PUBLISHES, warmTrades.get(), "the trade lane's samples, all before its first record");
+            assertEquals(ReceiptLanes.WARM_PUBLISHES, warmOrders.get(), "the order lane's samples");
+            assertEquals(List.of("e1-e9-1-S"), stored(nc, "/trades", "id"), "no sample is stored");
+            assertEquals(List.of("10/0"), positions(nc));
+            assertEquals(1, trades.published(), "no sample is counted: " + trades.json());
+            assertEquals(1, orders.published());
+            trades.stop();
+            orders.stop();
+        }
+    }
+
     private static RunDescriptor descriptor(final Path dir) throws Exception {
         final Path run = dir.resolve("run.json");
         Files.writeString(run, "{\"schema\":\"traderx.run.v1\",\"epoch\":\"e9\",\"eventIdScheme\":\"epoch-v1\","

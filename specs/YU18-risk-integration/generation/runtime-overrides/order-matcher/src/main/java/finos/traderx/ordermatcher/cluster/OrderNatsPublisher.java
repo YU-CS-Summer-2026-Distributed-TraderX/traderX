@@ -92,12 +92,34 @@ final class OrderNatsPublisher {
         this.subject = subject;
         this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor==null ? epoch : descriptor.epoch();
-        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId, null, this::cut);
+        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId, null, this::cut, OrderNatsPublisher::sample);
     }
 
     /** Apply thread: the member's role (FR-DRS-37); see TradeNatsPublisher#role. */
     void role(final boolean leader) {
         lanes.role(leader);
+    }
+
+    /** FR-DRS-39: the k-th warm-up record. Untyped orders in every status, with and without the optional keys. */
+    private static Rec sample(final int k) {
+        final Rec r = new Rec();
+        r.orderRef = k + 1;
+        r.consensusSequence = k + 1;
+        r.outputOrdinal = k & 3;
+        r.accountId = k;
+        r.security = "WARM";
+        r.side = (byte) (k & 1);
+        r.quantity = 100;
+        r.remainingQty = k % 100;
+        r.limitPx = 1_000_000L + k;
+        r.status = (byte) (k & 7);
+        r.lastExecPx = (k & 1) == 0 ? 0 : 1_000_000L + k;
+        r.lastFillQty = k % 10;
+        r.createdAtMillis = 1;
+        r.updatedAtMillis = 1;
+        r.traceKey = (k & 3) == 0 ? 0 : k;
+        r.clientOrderKey = (k & 3) == 1 ? k : 0;
+        return r;
     }
 
     /** FR-DRS-37: a stored order event's position is (consensusSequence, outputOrdinal), total in apply order.

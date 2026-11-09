@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.function.ToIntFunction;
 
 /**
@@ -54,6 +55,11 @@ import java.util.function.ToIntFunction;
  * stream is missing records nobody can resend - the catch-up counts a gap ({@code gaps} on /health), logs an ALERT
  * and still publishes what it kept, in order. A record the lane's full queue refused never reaches the ring, so it is
  * a gap the same way: at the next catch-up if it is after the stream's last, or at once while leading.
+ *
+ * <p>Warm-up (FR-DRS-39): the queue overflows when the lane publishes slower than the apply thread offers, and a lane
+ * whose encode-and-publish path the JIT has not compiled yet does: a member's first load, or a follower promoted under
+ * load, which has only ever kept records. So each lane first sends {@link #WARM_PUBLISHES} sample records through
+ * that path to a scratch subject no stream captures.
  */
 final class ReceiptLanes<R extends ReceiptLanes.Record> {
     interface Encoder<R> { byte[] encode(StringBuilder sb, R r); }
@@ -80,12 +86,16 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     private static final int ID_BATCH = 500;
     /** Publishes outstanding and no receipt for this long: the connection is presumed dead (FR-DRS-38). */
     private static final long STALL_NANOS = 5_000_000_000L;
+    /** FR-DRS-39: the scratch subject prefix and how many samples a lane sends on it before its first record. */
+    static final String WARM_SUBJECT = "_bridge.warm";
+    static final int WARM_PUBLISHES = 20_000;
     private final OneToOneConcurrentArrayQueue<R>[] queues;
     private final AtomicLongArray published, rejected, acked, failed;
     private final Thread[] threads;
     private final Connection[] connections;
     private final int[] replyPrefix;
     private final Catchup<R> catchup;
+    private final IntFunction<R> sample; // FR-DRS-39: the k-th warm-up record; null = no warm-up
     private final int retain;
     private final AtomicLong replayed = new AtomicLong();
     private final AtomicLong gaps = new AtomicLong();
@@ -96,9 +106,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     @SuppressWarnings("unchecked")
     ReceiptLanes(final String name, final String url, final String[] subjects, final int capacityPerLane,
                  final Encoder<R> encoder, final ToIntFunction<R> account, final Function<R, String> key,
-                 final Catchup<R> catchup) {
+                 final Catchup<R> catchup, final IntFunction<R> sample) {
         this.key = key;
         this.catchup = catchup;
+        this.sample = sample;
         this.retain = capacityPerLane;
         this.rejectedIds = new StringBuilder[subjects.length];
         this.rejectedFlushedAt = new long[subjects.length];
@@ -158,6 +169,8 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         final Lane l = new Lane(lane);
         final OneToOneConcurrentArrayQueue<R> q = queues[lane];
         long n = 0;
+        if (!l.connect()) { return; }
+        l.warm();
         while (running) {
             if (l.nc == null && !l.connect()) { return; }
             final R r = q.poll();
@@ -280,9 +293,30 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             }
         }
 
+        /** The one encode-and-publish path, for real records and warm-up samples alike. */
+        void send(final String to, final R r) {
+            nc.publish(to, key == null ? inbox : inbox + "." + key.apply(r), encoder.encode(sb, r));
+        }
+
+        /**
+         * FR-DRS-39: run the publish path on samples before the first record, so it is compiled when load arrives.
+         * Interpreted, a lane publishes about half of what the apply thread offers at 400K orders/s and its queue
+         * overflows within seconds. The scratch subject has no stream and no subscriber: NATS discards the samples.
+         */
+        void warm() {
+            if (sample == null) { return; }
+            final String scratch = WARM_SUBJECT + "." + name;
+            try {
+                for (int k = 0; k < WARM_PUBLISHES && running; k++) { send(scratch, sample.apply(k)); }
+            } catch (final Exception e) {
+                System.out.println("WARN " + name + "-nats-bridge partition " + i + " (" + subject
+                    + ") warm-up stopped early: " + e);
+            }
+        }
+
         boolean publish(final R r) {
             try {
-                nc.publish(subject, key == null ? inbox : inbox + "." + key.apply(r), encoder.encode(sb, r));
+                send(subject, r);
             } catch (final Exception e) {
                 final long n = failed.incrementAndGet(i);
                 if (n == 1 || n % 10_000 == 0) {

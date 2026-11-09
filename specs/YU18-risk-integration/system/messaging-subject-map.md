@@ -230,6 +230,8 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   on its lane's own inbox. The trade bridge uses `_INBOX.<lane id>.<trade id>` and the order bridge
   uses the bare inbox. Only the stream answers: a PubAck when it stored the message, a 429 when ingest
   dropped it. Core subscribers ignore the reply subject.
+- Bridge warm-up (FR-DRS-39): at start each lane publishes 20,000 sample records to `_bridge.warm.trade` or
+  `_bridge.warm.order`. No stream may capture `_bridge.warm.>` and nothing subscribes to it; NATS discards them.
 - Bridge catch-up (FR-DRS-37, FR-DRS-38): at a promotion, and on every new NATS connection while leading, each lane
   reads the last message on its subject until two reads agree (`$JS.API.STREAM.NAMES`, then
   `$JS.API.STREAM.MSG.GET.<stream>`). A NATS user that may only publish would be refused. The lane would then
