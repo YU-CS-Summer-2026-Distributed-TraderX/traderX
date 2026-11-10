@@ -70,6 +70,12 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   nothing pending, then refuses unless history-feed's `unowned` is `{}` (FR-HST-02): nothing pending is also true of a
   lane whose filter matches nothing, and on production e1107b (2026-11-07) G3h passed that way on an empty epoch while
   the store held 0 of the next 6 sides. A health without `unowned` (an older image) refuses too.
+  At volume the check SHALL run one query per partition (2026-11-10): `SELECT DISTINCT part`, then the same check row
+  for `WHERE part = p`, so `uniqExact`'s set is one partition's and never the table's. The one-query form (`GROUP BY
+  part` over the table) exceeded ClickHouse's 21 GiB query memory at 1.4B rows, and the 2026-11-09/10 hours at 400K and
+  464K orders/s were checked by hand (count, bounds, the two wrapped sums) in its place; a 1.0B-row store answered the
+  per-partition form in seconds. Each query has 600 s. Covered by
+  `test_rig.Up#test_the_history_check_is_one_query_per_partition`, which fails on the one-query shape.
   Mandatory since FR-THT-02 renders the store (2026-11-07): no `sts/clickhouse` is a refusal. The sums are
   order-insensitive: the order is the stream's, held by FR-HST-03's cursor, so a set check is the exact one.
 - FR-THT-08: A fresh epoch (ADR-101) SHALL archive the history tables with the read model's epoch tables

@@ -1885,7 +1885,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |
 | YU18 | `FR-THT-05` | CI |  |  | added 2026-11-06: the reader inventory is itself a test |
-| YU18 | `FR-THT-06` | LIVE |  |  | added 2026-11-06: no live proof |
+| YU18 | `FR-THT-06` | LIVE (gke) |  |  | added 2026-11-06: no live proof. 2026-11-10: G3h ran live on GKE at 235.7M, 590.2M and 830.6M sides (retest-520k-20261110 runs A-C, each once); its one-query form had exceeded the 21 GiB query memory at 1.4B rows (2026-11-09 hours checked by hand), so the check is now one query per partition (test_rig test_the_history_check_is_one_query_per_partition, fails on the whole-table shape) |
 | YU18 | `FR-THT-07` | LIVE |  |  | added 2026-11-06: no live proof |
 | YU18 | `FR-THT-08` | CI |  |  | added 2026-11-08: test_rig FreshEpoch test_a_wiped_epoch_archives_the_history_store_while_history_feed_is_stopped (trades/orders/history_cursor renamed after history-feed stops, before the stream delete; retry renames nothing, empties the cursor; non-empty live table refused; untouched when not rendered). Fails against the prior rig.sh. No live fresh epoch yet |
 | YU18 | `FR-XOC-01` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: PARTIAL, one replica, no election. IdempotencyEvictionTest |
