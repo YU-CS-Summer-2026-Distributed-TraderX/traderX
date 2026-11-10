@@ -837,6 +837,15 @@ and the Hyperdisk saturated on the discard churn (724 MB/s), the server dropped 
 lanes' 429 retries multiplied the ingest; a memory stream has no such churn. What the hour cost: the rig from 6:08 pm
 to 10:35 pm, about $65 at list prices.
 
+
+**The second hour, 464K** (11:14 pm–12:14 am ET): members moved to c4d-standard-16 (15-CPU / 40 Gi container;
+the 16 Gi limit had put the cgroup in page-cache reclaim and the cluster into elections at 520K), heartbeat/election
+timeouts 1000/500 ms, 300 s phases with 4 s pauses. 1,671,082,768 orders in 3,600 s = **464K orders/s averaged with
+the pauses in, 470–474K inside the windows**, 0 rejected, 0 unanswered, no election; store trades 1,671,136,274 =
+members' sides, 5,013,408,822 rows = published records = acked, stream 136,578,305 = published messages, history-feed
+current, G3h's checks by hand. Gateway residence at ~520K: p50 1.08 ms, p99 1.68 ms. The read model was OOMKilled and
+then fail-closed on `RETENTION_GAP` against the two-minute memory stream (RI36, FR-DRS-43).
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K

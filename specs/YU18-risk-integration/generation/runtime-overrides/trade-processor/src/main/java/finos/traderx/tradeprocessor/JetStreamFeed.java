@@ -236,6 +236,24 @@ public final class JetStreamFeed {
   /** Batches a pipelined consumer may hold unacknowledged: the one being applied, the one queued, the one in flight. */
   static final int PIPELINE_DEPTH = 4;
 
+  /**
+   * Bytes a fetch aims for (FR-DRS-43). A fetch is sized in messages, and FR-DRS-41 made a message under load 20-40
+   * records (~12 KB) where it was one (~400 B): a 1,000-message fetch per partition, 16 partitions on one connection,
+   * two or three fetches in flight, is hundreds of MB the server must buffer for this client, and it cuts the
+   * connection at 64 MB pending ("Slow Consumer Detected"; GKE 2026-11-09: 351 cuts in 5 min at 1.4M records/s, the
+   * read model 4-5M messages behind after each). The next fetch asks for as many messages as the last batch's average
+   * size fits in this, so the bytes in flight stay bounded whatever the wire's batching; at the one-record wire the
+   * count is the configured batch, as before.
+   */
+  static final long FETCH_BYTES = 1L << 20;
+
+  /** FR-DRS-43: the message count of the next fetch, from the configured {@code batch} and the last batch's bytes. */
+  static int nextFetch(int batch, long lastBytes, int lastCount) {
+    if (lastCount <= 0 || lastBytes <= 0) return batch;
+    long avg = Math.max(1, lastBytes / lastCount);
+    return (int) Math.max(1, Math.min(batch, FETCH_BYTES / avg));
+  }
+
   /** An ephemeral consumer from a stream sequence: the trade store, whose cursor is its own ack. */
   public static ConsumerConfiguration fromSequence(String filterSubject, long startSequence) {
     return fromSequence(filterSubject, startSequence, 1000);
@@ -362,6 +380,7 @@ public final class JetStreamFeed {
     long last = -1;     // stream sequence of the last message handed to the handler, -1 before the first
     long expect = 0;    // consumer sequence the next delivery must carry
     boolean started = false;
+    int want = batch;   // FR-DRS-43: the next fetch's message count, from the last batch's bytes
     long created = 0;   // FR-DRS-36: the stream this feed's sequences belong to
     while (!Thread.currentThread().isInterrupted()) {
       if (sub == null) {
@@ -400,7 +419,7 @@ public final class JetStreamFeed {
       }
       List<Message> msgs;
       try {
-        msgs = sub.fetch(batch, maxWait);
+        msgs = sub.fetch(want, maxWait);
       } catch (Exception x) {
         if (Thread.currentThread().isInterrupted()) { return; }
         // E.g. an ephemeral consumer the server deleted past its inactive threshold while the apply thread held this
@@ -411,6 +430,9 @@ public final class JetStreamFeed {
         continue;
       }
       if (!msgs.isEmpty()) {
+        long bytes = 0;
+        for (Message m : msgs) { bytes += m.getData().length; }
+        want = nextFetch(batch, bytes, msgs.size());
         long first = msgs.get(0).metaData().consumerSequence();
         long end = msgs.get(msgs.size() - 1).metaData().consumerSequence();
         if (first != expect || end - first != msgs.size() - 1) {

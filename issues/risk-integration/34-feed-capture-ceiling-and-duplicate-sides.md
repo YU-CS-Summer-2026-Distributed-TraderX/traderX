@@ -108,6 +108,27 @@ leader per-thread ticks, run logs, G3h per run). Times US Eastern.
   G3 (snapshot) was not run. NATS 4–5 cores and 142 GB RSS at its 140 GiB GOMEMLIMIT; leader 6.6 cores; archive
   113 GB of 295 at the end; ClickHouse 83 GB.
 
+- **The hour at 464K** (11:14 pm–12:14 am ET, members on c4d-standard-16 with a 15-CPU/40 Gi container, cluster
+  heartbeat/election timeouts 1000/500 ms, 8 pods × 64 sessions × 920/s, 300 s phases with 4 s pauses, 800 in
+  flight, memory-backed streams): every pod 208,885,346 orders in 3,600 s, all accepted, 0 rejected, 0 unanswered,
+  balanced at every boundary — **1,671,082,768 orders, 464K orders/s averaged over the hour with the pauses in,
+  470–474K inside the windows**; no election, no member restart. Far end: store trades 1,671,136,274 = members'
+  sides; 5,013,408,822 store rows = published records = acked, 0 rejected receipts; 136,578,305 stream messages =
+  published messages (36.7 records each); history-feed 0 pending, 0 duplicates; G3h's checks by hand hold for
+  n = 1,671,136,274. Gateway `/latency` at ~520K (take 4): residence p50 1.08 ms, p99 1.68 ms, `cluster` 1.05 ms of it.
+- **What the 16-vCPU members needed.** The first take on them (538K setting, 16 Gi container limit, 200/100 ms
+  timeouts) ran 510–527K for 17 minutes and then flapped: leadership moved, members logged `failed to join catchup
+  log`, one died on `Media Driver timeout` (its Aeron driver's heartbeat missed for 10 s). The archive's page cache
+  and the /dev/shm term buffers count against the container's memory limit; at this write rate a 16 Gi limit keeps
+  the cgroup in reclaim and a thread can stall past a 200 ms heartbeat. At 40 Gi and 1000/500 ms the hour ran without
+  an election. Production's members are c4d-standard-8 with 16 Gi: budget the page cache when sizing them.
+- **The read model died in the hour** (RI36): trade-processor was OOMKilled three times (24 Gi) — its 1,000-message
+  fetches of 12 KB messages across 16 feeds, pipeline depth 4 — and then refused to start with `RETENTION_GAP`: its
+  snapshot cursor had fallen behind the memory stream's oldest retained message (8 GB a partition is about two
+  minutes of this feed). Correct fail-closed behaviour, and a constraint: a memory-backed stream's retention must
+  cover the read model's longest restart. FR-DRS-43 (the fetch sized by bytes) bounds both the in-flight memory and
+  the slow-consumer cuts; it was proven on the rig after the hour (below).
+
 ## 2. A side the bridge publishes twice is stored twice
 
 Third attempt, 11:49-11:53 pm ET on 2026-11-08, as NATS began refusing: 1,104,397 trade sides are in the stream twice,

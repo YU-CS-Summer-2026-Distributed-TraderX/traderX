@@ -432,6 +432,17 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   empties a memory stream, which the readers' STREAM_RESET path (FR-DRS-36) and the bridges' catch-up (FR-DRS-38)
   already cover. The NATS CPU cost of s2 is small against its 44 vCPUs (4–5 cores at 400K).
 
+- FR-DRS-43: A pipelined feed (`JetStreamFeed.startPipelined`: the trade store, the order view, the SQL order
+  projection) SHALL size each fetch by bytes, not messages: the next fetch asks for as many messages as the last
+  batch's average message size fits in `FETCH_BYTES` (1 MiB), at most the configured batch. At the one-record wire
+  that is the configured batch, as before; under FR-DRS-41's batching (20–40 records, ~12 KB a message) a 1,000-message
+  fetch per partition, 16 partitions on one connection and two or three fetches in flight is hundreds of MB the server
+  buffers for the client, and NATS cuts the connection at 64 MB pending ("Slow Consumer Detected"): GKE 2026-11-09,
+  351 cuts in five minutes at 1.4M records/s, the read model 4–5M messages behind after each and unable to catch up
+  at ~7 cores. history-feed, which fetches small batches, was cut 27 times in the same window and stayed current.
+  Covered by `JetStreamFeedTest#aFetchIsSizedByTheLastBatchsBytes`. The structural follow-up (a read model sharded
+  by partition across replicas, and a cheaper per-record parse) is RI36.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.
