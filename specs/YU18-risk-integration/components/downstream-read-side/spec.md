@@ -592,7 +592,10 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` 2 GiB, `FILLS_STREAM_MAX_AGE_MINUTES` 10;
   created idempotently by trade-processor like the capture, placement per FR-DRS-44's first tag), so a gateway reads
   only its own orders' events instead of the whole feed. The view SHALL keep an order's gateway from its booking
-  event across later updates (as it keeps `clientOrderKey`), and the router SHALL publish, per view batch and per
+  event across later updates (as it keeps `clientOrderKey`), and the gateway SHALL NOT be part of the event digest
+  (`OrderProjectionService.digest` removes it as it removes `clientOrderKey`: a routing hint is not economic event
+  identity, and every event retained before the field existed must still verify — `ClientOrderKeyDigestTest`), and
+  the router SHALL publish, per view batch and per
   gateway, one message holding that gateway's records of the batch newline-joined in stream order (FR-DRS-41's
   shape), the record bytes as the capture carried them. Every update of one order reaches the one replica that owns
   its partition (FR-DRS-45), so an order's routed events are in order on its subject. An update of an order the view

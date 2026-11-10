@@ -197,6 +197,7 @@ public final class OrderProjectionService {
       // ADR-093: nor is the client's key. Leaving it in would change the digest of every event retained before the
       // field existed (the bean serializes it, as null), and recovery would refuse that history.
       tree.remove("clientOrderKey");
+      tree.remove("gateway"); // FR-FFR-14 / FR-DRS-48: a routing hint, never state — same reason as the client's key
       tree.remove("filledQuantity"); // derived by the read model (FR-DRS-27), not part of the event
       return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(tree)));
     } catch (Exception ex) {throw new IllegalArgumentException("invalid order event",ex);}

@@ -30,6 +30,15 @@ class ClientOrderKeyDigestTest {
     assertEquals(PRE_CHANGE_DIGEST, OrderProjectionService.digest(keyed));
   }
 
+  /** FR-FFR-14 / FR-DRS-48: the gateway on the booking event is a routing hint, never state, so it digests like the
+   *  client's key: an event retained before the field still verifies, and a named event digests the same. */
+  @Test void theGatewayIsNotPartOfTheDigest() throws Exception {
+    OrderUpdate named = mapper.readValue(PRE_CHANGE.replace("\"status\"", "\"gateway\":\"cluster-gateway-7c9\",\"status\""),
+        OrderUpdate.class);
+    assertEquals("cluster-gateway-7c9", named.getGateway());
+    assertEquals(PRE_CHANGE_DIGEST, OrderProjectionService.digest(named));
+  }
+
   /** The typed consumer of /orders: a field it does not know yet is ignored, never a parse failure. */
   @Test void anOrderUpdateToleratesAFieldItDoesNotKnow() throws Exception {
     OrderUpdate u = mapper.readValue(PRE_CHANGE.replace("\"status\"", "\"aFieldFromTheFuture\":1,\"status\""), OrderUpdate.class);
