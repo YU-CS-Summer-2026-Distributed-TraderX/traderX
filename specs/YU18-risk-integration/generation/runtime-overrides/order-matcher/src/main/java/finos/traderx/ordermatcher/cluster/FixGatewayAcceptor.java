@@ -48,6 +48,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -163,6 +169,52 @@ public final class FixGatewayAcceptor {
      * 2.1.4's unsynchronised interestOps update on the I/O thread and can lose OP_READ, wedging the session.
      */
     static final int INBOUND_QUEUE = Integer.parseInt(System.getenv().getOrDefault("FIX_INBOUND_QUEUE", "256"));
+
+    /**
+     * FR-BSP-02: NewOrderSingles one session may have undecided. Half the write bound, so a window's reports and its
+     * fills land inside {@link #MAX_QUEUED_WRITES} for a client that reads.
+     */
+    static final int MAX_IN_FLIGHT = Math.max(1, MAX_QUEUED_WRITES / 2);
+    private final Map<SessionID, Pipeline> pipelines = new ConcurrentHashMap<>();
+
+    /**
+     * FR-BSP-02: one session's NewOrderSingles in flight. Submitted on QuickFIX/J's session thread in arrival order,
+     * answered on the session's one report thread in completion order. A full window blocks {@code fromApp}, so
+     * QuickFIX/J stops reading the session (ADR-092). {@link #undecided} keeps the stored target below every order
+     * still undecided (FR-GFS-19): QuickFIX/J advances it when {@code fromApp} returns, before the order is decided.
+     */
+    private final class Pipeline {
+        final SessionID sid;
+        final ExecutorService reports;
+        final Semaphore slots = new Semaphore(MAX_IN_FLIGHT);
+        final Map<String, CompletableFuture<?>> byClOrdId = new ConcurrentHashMap<>();
+        private final TreeMap<Integer, Integer> undecided = new TreeMap<>();   // inbound MsgSeqNum -> orders
+
+        Pipeline(final SessionID sid) {
+            this.sid = sid;
+            this.reports = Executors.newSingleThreadExecutor(r -> {
+                final Thread t = new Thread(r, "fix-report-" + sid.getTargetCompID());
+                t.setDaemon(true);
+                return t;
+            });
+        }
+
+        synchronized void hold(final int msgSeqNum) {
+            undecided.merge(msgSeqNum, 1, Integer::sum);
+            publish();
+        }
+
+        synchronized void decided(final int msgSeqNum) {
+            undecided.computeIfPresent(msgSeqNum, (k, n) -> n == 1 ? null : n - 1);
+            publish();
+        }
+
+        private void publish() {
+            if (sessionStore != null) {
+                sessionStore.undecidedFrom(sid, undecided.isEmpty() ? Integer.MAX_VALUE : undecided.firstKey());
+            }
+        }
+    }
 
     private static final class Tracked {
         final SessionID session;
@@ -367,6 +419,7 @@ public final class FixGatewayAcceptor {
     }
 
     public void stop() {
+        pipelines.values().forEach(p -> p.reports.shutdown());
         if (acceptor != null) {
             acceptor.stop();
         }
@@ -603,11 +656,15 @@ public final class FixGatewayAcceptor {
             if (sessionStore != null) {
                 sessionStore.requestStarted(sessionId);
             }
+            boolean answeredLater = false;   // FR-BSP-02: a pipelined order's answer ends its request
             try {
                 final String msgType = message.getHeader().getString(35);
                 if ("D".equals(msgType)) {
-                    onNewOrderSingle((NewOrderSingle) message, sessionId);
-                } else if ("F".equals(msgType)) {
+                    answeredLater = onNewOrderSingle((NewOrderSingle) message, sessionId);
+                    return;
+                }
+                settle(sessionId, message, msgType);
+                if ("F".equals(msgType)) {
                     onOrderCancelRequest((OrderCancelRequest) message, sessionId);
                 } else if ("G".equals(msgType)) {
                     onOrderCancelReplaceRequest((OrderCancelReplaceRequest) message, sessionId);
@@ -619,13 +676,35 @@ public final class FixGatewayAcceptor {
             } catch (final FieldNotFound ignore) {
                 // malformed; QuickFIX/J session layer already validated structure
             } finally {
-                if (sessionStore != null) {
+                if (sessionStore != null && !answeredLater) {
                     sessionStore.requestEnded(sessionId);
                 }
             }
         }
 
-        private void onNewOrderSingle(final NewOrderSingle order, final SessionID sessionId)
+        /**
+         * FR-BSP-02: a request naming a ClOrdID this session still has in flight (F and G by OrigClOrdID, H by ClOrdID)
+         * waits for that order's answer, and AF for all of them, so each sees what it would have when orders were
+         * answered one at a time. Bounded: every in-flight order is answered within the gateway's ack deadline.
+         */
+        private void settle(final SessionID sid, final Message m, final String msgType) throws FieldNotFound {
+            final Pipeline p = pipelines.get(sid);
+            if (p == null) {
+                return;
+            }
+            if ("AF".equals(msgType)) {
+                CompletableFuture.allOf(p.byClOrdId.values().toArray(new CompletableFuture<?>[0])).join();
+                return;
+            }
+            final int tag = "H".equals(msgType) ? ClOrdID.FIELD : OrigClOrdID.FIELD;
+            final CompletableFuture<?> f = m.isSetField(tag) ? p.byClOrdId.get(m.getString(tag)) : null;
+            if (f != null) {
+                f.join();
+            }
+        }
+
+        /** True when the order was pipelined (FR-BSP-02): its answer, and the end of its request, come later. */
+        private boolean onNewOrderSingle(final NewOrderSingle order, final SessionID sessionId)
             throws FieldNotFound {
             final String clOrdId = order.getString(ClOrdID.FIELD);
             final String ticker = order.getString(Symbol.FIELD).trim().toUpperCase();
@@ -634,7 +713,7 @@ public final class FixGatewayAcceptor {
             final int accountId = accountOf(sessionId, order);
             if (accountId < 0) {   // S3: Account(1) outside this session's binding
                 sendOrderReject(sessionId, clOrdId, ticker, side, qty, "account not permitted for this session");
-                return;
+                return false;
             }
 
             // YU18 (FR-OT04): every NewOrderSingle is answered. F1 was a Price-less market order
@@ -643,8 +722,14 @@ public final class FixGatewayAcceptor {
             final Object mapped = mapOrder(order, side == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY, qty, false);
             if (mapped instanceof String error) {
                 sendOrderReject(sessionId, clOrdId, ticker, side, qty, error);
-                return;
+                return false;
             }
+            if (sessionStore == null || !sessionStore.sequenceOrders) {
+                pipeline(order, sessionId, clOrdId, accountId, ticker, side, qty, mapped);
+                return true;
+            }
+            // ADR-090 (FIX_EXACTLY_ONCE): one order at a time. FR-BSP-02 leaves its store-then-submit and FR-XOD-12
+            // catch-up unpipelined.
             // FR-XOC-06: an order the gateway reaped at a leader change is resubmitted under its key, which the engine
             // dedupes (FR-IMRG14): lost with the old leader it is booked once, committed it is restated. ADR-091 left
             // that to the client, but FIX has no "ambiguous" answer to resend on, so the client heard nothing. Only
@@ -652,28 +737,22 @@ public final class FixGatewayAcceptor {
             OrderSubmitter.ExecResult result;
             for (int attempt = 0; ; attempt++) {
                 final long elections = submitter.leaderChanges();
-                if (sessionStore != null && sessionStore.sequenceOrders) {
-                    try {
-                        final quickfix.Message.Header h = order.getHeader();
-                        final boolean mayBeResend = attempt > 0 || h.isSetField(quickfix.field.PossResend.FIELD)
-                            && h.getBoolean(quickfix.field.PossResend.FIELD)
-                            || h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD);
-                        if (mayBeResend && sessionStore.orderSeq(sessionId, accountId, clOrdId, true)
-                                == FixSessionStore.AGED_OUT) {
-                            sendAgedOut(sessionId, clOrdId);
-                            return;
-                        }
-                        result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString(),
-                            mayBeResend);
-                    } catch (final java.io.IOException e) {
-                        // FR-XOD-12: not stored, so not submitted; the store has already ended the session
-                        log.warn("FIX order {} not stored, not submitted: {}", clOrdId, e.toString());
-                        return;
+                try {
+                    final quickfix.Message.Header h = order.getHeader();
+                    final boolean mayBeResend = attempt > 0 || h.isSetField(quickfix.field.PossResend.FIELD)
+                        && h.getBoolean(quickfix.field.PossResend.FIELD)
+                        || h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD);
+                    if (mayBeResend && sessionStore.orderSeq(sessionId, accountId, clOrdId, true)
+                            == FixSessionStore.AGED_OUT) {
+                        sendAgedOut(sessionId, clOrdId);
+                        return false;
                     }
-                } else {
-                    result = mapped instanceof OrderSubmitter.TypedOrder typed
-                        ? submitter.submitTypedOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, typed)
-                        : submitter.submitOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, (Long) mapped);
+                    result = submitSequenced(sessionId, clOrdId, accountId, ticker, side, qty, mapped, order.toString(),
+                        mayBeResend);
+                } catch (final java.io.IOException e) {
+                    // FR-XOD-12: not stored, so not submitted; the store has already ended the session
+                    log.warn("FIX order {} not stored, not submitted: {}", clOrdId, e.toString());
+                    return false;
                 }
                 if (result != null || attempt == FAILOVER_RESUBMITS || submitter.leaderChanges() == elections) {
                     break;
@@ -681,6 +760,53 @@ public final class FixGatewayAcceptor {
                 log.warn("FIX order {} stranded by a leader change: resubmitted under its key", clOrdId);
             }
             answer(sessionId, clOrdId, accountId, ticker, side, qty, result);
+            return false;
+        }
+
+        /** FR-BSP-02: submit now, in arrival order; answer on the session's report thread when decided. */
+        private void pipeline(final NewOrderSingle order, final SessionID sid, final String clOrdId, final int accountId,
+                              final String ticker, final char side, final int qty, final Object mapped)
+            throws FieldNotFound {
+            final Pipeline p = pipelines.computeIfAbsent(sid, Pipeline::new);
+            final int msgSeqNum = order.getHeader().getInt(quickfix.field.MsgSeqNum.FIELD);
+            p.slots.acquireUninterruptibly();
+            p.hold(msgSeqNum);
+            final CompletableFuture<Void> done = submitNew(sid, clOrdId, accountId, ticker, side, qty, mapped, p, 0)
+                .handleAsync((result, failure) -> {
+                    try {
+                        answer(sid, clOrdId, accountId, ticker, side, qty, failure == null ? result : null);
+                    } catch (final RuntimeException e) {
+                        log.warn("FIX order {} not answered: {}", clOrdId, e.toString());
+                    } finally {
+                        p.decided(msgSeqNum);
+                        p.slots.release();
+                        if (sessionStore != null) {
+                            sessionStore.requestEnded(sid);
+                        }
+                    }
+                    return null;
+                }, p.reports);
+            p.byClOrdId.put(clOrdId, done);
+            done.whenComplete((v, e) -> p.byClOrdId.remove(clOrdId, done));
+        }
+
+        /** FR-XOC-06 for a pipelined order: stranded by a leader change, it is resubmitted under its key. */
+        private CompletableFuture<OrderSubmitter.ExecResult> submitNew(final SessionID sid, final String clOrdId,
+                                                                       final int accountId, final String ticker,
+                                                                       final char side, final int qty,
+                                                                       final Object mapped, final Pipeline p,
+                                                                       final int attempt) {
+            final long elections = submitter.leaderChanges();
+            final OrderSubmitter.TypedOrder typed = mapped instanceof OrderSubmitter.TypedOrder t ? t : null;
+            return submitter.submitOrderAsync(qualify(sid, clOrdId), accountId, ticker, side, qty,
+                    typed == null ? (Long) mapped : 0L, typed, p.reports)
+                .thenCompose(r -> {
+                    if (r != null || attempt == FAILOVER_RESUBMITS || submitter.leaderChanges() == elections) {
+                        return CompletableFuture.completedFuture(r);
+                    }
+                    log.warn("FIX order {} stranded by a leader change: resubmitted under its key", clOrdId);
+                    return submitNew(sid, clOrdId, accountId, ticker, side, qty, mapped, p, attempt + 1);
+                });
         }
 
         /** The answer to one NewOrderSingle's submit (also a stored order resubmitted by FR-XOD-12's catch-up). */

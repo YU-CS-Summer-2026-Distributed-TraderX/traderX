@@ -1,5 +1,13 @@
 # Proof coverage against the specs
 
+## FIX session pipelining on kind (2026-11-10, FR-BSP-02, NFR-BSP-02, FR-GFS-19, RI35, kind traderx-fsp, torn down)
+
+`kind-fix-pipelining.sh`, one arm per fresh rig, `fix-multi.mjs` open loop at 8,000/s for 40 s, FIX sessions in
+JetStream with group commit, egress coalescing on. 4 sessions: 7,985/s, all answered once, against the pre-fix
+gateway's 2,004/s; 16 sessions 7,982/s; 64 sessions 7,973/s and 7,984/s (pre-fix 7,947/s). G3h ok on every arm that
+reached it. One of the two new-gateway 64-session runs lost 187 committed acks at the load's start (the members'
+best-effort egress drop, uncounted; answered ambiguous); the rerun was clean. RI35 has the table and the mechanism.
+
 ## Binary session pipelining on kind (2026-11-10, FR-BSP-01, NFR-BSP-01, RI35, kind traderx-bsp, torn down)
 
 `kind-binary-pipelining.sh` on `kind-yu18-rig.py --history --binary --throughput --partitions 1`, one arm per fresh
@@ -1842,6 +1850,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-42` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109) |  | added 2026-11-09 (RI34 §1b): the stream's volume is the wall at 300–400K (pd-balanced 298 MB/s at 100% busy; Hyperdisk 684 MB/s once max_bytes deletions join the writes); s2 cut the write to 311 MB/s at 32% busy; memory streams for the hour run. StreamIdentityIT covers the stream settings. Disposable rig, torn down |
 | YU18 | `FR-DRS-43` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109/proof-fr-drs-43) |  | added 2026-11-10 (RI36): a pipelined feed's fetch sized by bytes; on the rig at 470K orders/s trade-processor was cut once in 8 min (351 in 5 min before), lag ≤ 361K messages (4–5M before), G3 and G3h ok; JetStreamFeedTest covers the sizing. Disposable rig, torn down |
 | YU18 | `FR-BSP-01` | LIVE (kind) | kind-binary-pipelining |  | added 2026-11-10 (RI35): BinaryGatewayAcceptorTest (acks in completion order, every clOrdId once, arrival order at the seam, the bound reached and never exceeded, half-close answered in full with an ambiguous answer kept ambiguous, a closed connection leaks nothing), PipelineTaskDeadlineTest (the async answer completes on the caller's executor; silence is null and retires the unstarted task). kind: 16 sessions 14,573/s = 64 sessions 14,294/s; 4 sessions 14,778/s against the pre-fix gateway's 3,349; G3h ok in every arm. NFR-BSP-01's queue p99 < 50 µs not met on kind (160–359 µs; the pre-fix gateway 84–272 µs at the same rates). Not on GKE/production |
+| YU18 | `FR-BSP-02` | LIVE (kind) | kind-fix-pipelining |  | added 2026-11-10 (RI35): FixGatewayFillReportTest (arrival order at the seam, the 1,024 bound reached and held, answers in decision order each once, an ambiguous one silent, a cancel of an order in flight waits for it), FixStoreGroupCommitIT#theStoredTargetStaysBelowAnUndecidedOrder (FR-GFS-19, both modes). kind: 4 sessions 7,985/s vs pre-fix 2,004/s; 16 7,982/s; 64 7,973/7,984/s; G3h ok where reached. One 64-session run lost 187 committed acks to the members' uncounted egress drop (T-BSP07). Not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

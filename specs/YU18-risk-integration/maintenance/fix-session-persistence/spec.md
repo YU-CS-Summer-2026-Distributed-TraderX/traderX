@@ -89,6 +89,13 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   Group commit SHALL be on only if the server accepts a probe write fenced on another subject's current revision
   and refuses the same write at a stale revision with wrong-last-sequence (10071). Otherwise, or with
   `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted, the batch in flight included.
+- FR-GFS-19: With pipelined NewOrderSingles (FR-BSP-02) the store SHALL NOT store an inbound number above the lowest
+  one whose order is undecided. QuickFIX/J's own expected number moves on; only the target in `K.seq` is held. When
+  the lowest undecided order is decided, the held number SHALL be stored without waiting for the session's next
+  message (group commit: the next batch; synchronous: one write). A session resumed with orders undecided (its
+  gateway died, or the client reconnected first) resumes at the lowest of them: the client resends from there, the
+  engine answers a committed order as a duplicate (§4 of ADR-086), and a later message that was already answered is
+  answered again, as ADR-099 already accepts for a crash before a batch.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
@@ -107,6 +114,7 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 | OrderStatus on GKE | 06 | `yu18-fix-session` step 3, `yu18-fix-resume` step 5, `test_prepare` | ExecType=I with the read model's state; render without the URL refused |
 | ExecIDs across replicas | 07 | `yu18-fix-resume` step 3 | no ExecID repeats |
 | schedule | 08 | gateway start log, `test_prepare` | `daily, 17:00:00 America/New_York`; manifest pins both |
+| order undecided while its number is passed | 19 | `FixStoreGroupCommitIT` (both modes) | `K.seq` holds the target at the undecided order; decided, it is stored at once |
 | NATS stopped mid-session | 09 | `FixSessionPersistenceIT`, `yu18-fix-store-faults` step 2 | ALERT; session closed promptly; Logon refused by name; after NATS returns, Logon continues the sequence |
 | gateway started with NATS down | 09 | `FixSessionPersistenceIT` | acceptor starts; Logon refused `store unavailable`; accepted once NATS is up |
 | unknown symbol | 12 | `yu18-fix-session` step 5 | `OrdStatus=8 rejected: UNKNOWN_SECURITY` |

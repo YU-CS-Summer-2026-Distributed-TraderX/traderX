@@ -28,5 +28,7 @@
 - [x] codeX review 2026-10-30 §17 (FR-GFS-16, ADR-099 decision 3): every acquisition fences `K.seq` in both
       modes, so an owner that only recorded orders or answered resends still breaks a stalled owner's retake.
 - [ ] Measure FR-GFS-18 on kind or GKE with the hxb FIX arm, store on.
+- [x] FR-GFS-19 (FR-BSP-02, RI35): `K.seq`'s target held below a pipelined session's undecided orders;
+      `FixStoreGroupCommitIT.theStoredTargetStaysBelowAnUndecidedOrder`, both modes.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

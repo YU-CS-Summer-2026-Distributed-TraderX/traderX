@@ -516,6 +516,34 @@ final class FixSessionStore implements MessageStoreFactory {
         }
     }
 
+    /**
+     * FR-GFS-19: inbound numbers from {@code lowest} on are not decided yet (MAX_VALUE: none are). When it rises, the
+     * held-back target is stored now rather than with the session's next message, so an idle session's reconnect
+     * does not replay orders already answered.
+     */
+    void undecidedFrom(final SessionID sid, final int lowest) {
+        final Store store = stores.get(sid);
+        if (store == null) {
+            return;
+        }
+        synchronized (store) {
+            final boolean rose = lowest > store.undecidedFrom;
+            store.undecidedFrom = lowest;
+            if (!rose || store.leaseRevision == 0 || store.durableTarget() == store.persistedTarget) {
+                return;
+            }
+            if (groupCommit) {
+                store.commit();
+                return;
+            }
+            try {
+                store.writeSeq(store.persistedSender);
+            } catch (final IOException e) {
+                log.warn("FIX session {}: target not stored after its orders were decided: {}", sid, e.toString());
+            }
+        }
+    }
+
     // ----- ADR-090 (FR-XOD-12): gateway-sequenced FIX orders -------------------------------------
 
     /** The engine stream this session's sequenced orders ride today (per account in the engine). */
@@ -738,6 +766,13 @@ final class FixSessionStore implements MessageStoreFactory {
         boolean live;
         int inFlight;
         long lastUse;
+        // FR-GFS-19: the lowest inbound number a pipelined order is still undecided at (MAX_VALUE: none). K.seq stores
+        // no target above it, so a crash resumes there and the client resends the undecided order (ADR-086 §4).
+        int undecidedFrom = Integer.MAX_VALUE;
+
+        int durableTarget() {
+            return Math.min(target, undecidedFrom);
+        }
         // ADR-090: today's order records, reloaded with the session. FR-XOD-13: the rings' ClOrdIDs and the requests
         // the engine has not answered.
         final Map<String, long[]> orderSeqs = new java.util.HashMap<>();
@@ -1067,7 +1102,7 @@ final class FixSessionStore implements MessageStoreFactory {
             failed = null;
             for (int attempt = 0; ; attempt++) {
                 try {
-                    final byte[] value = (sender + " " + target + " " + created).getBytes(StandardCharsets.UTF_8);
+                    final byte[] value = (sender + " " + durableTarget() + " " + created).getBytes(StandardCharsets.UTF_8);
                     seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)
                         : kv.update(key + ".seq", value, seqRevision);
                     return;
@@ -1088,13 +1123,13 @@ final class FixSessionStore implements MessageStoreFactory {
          */
         private void commit() {
             if (committing || failed != null || leaseRevision == 0
-                || uncommitted.isEmpty() && claim == persistedSender && target == persistedTarget) {
+                || uncommitted.isEmpty() && claim == persistedSender && durableTarget() == persistedTarget) {
                 return;
             }
             committing = true;
             final long myEpoch = epoch;
             final int claimed = claim;
-            final int tgt = target;
+            final int tgt = durableTarget();
             final String seqSubject = PREFIX + key + ".seq";
             try {
                 final Headers fenced = new Headers().put(EXPECTED_SEQ, Long.toString(seqRevision))
@@ -1195,12 +1230,13 @@ final class FixSessionStore implements MessageStoreFactory {
 
         /** The fencing write: move K.seq only from the revision this gateway last saw. */
         private void writeSeq(final int nextSender) throws IOException {
-            final byte[] value = (nextSender + " " + target + " " + created).getBytes(StandardCharsets.UTF_8);
+            final int tgt = durableTarget();
+            final byte[] value = (nextSender + " " + tgt + " " + created).getBytes(StandardCharsets.UTF_8);
             try {
                 seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)
                     : kv.update(key + ".seq", value, seqRevision);
                 persistedSender = nextSender;
-                persistedTarget = target;
+                persistedTarget = tgt;
                 claim = nextSender;   // group commit writes synchronously only once quiesced
             } catch (final JetStreamApiException e) {
                 // Someone else wrote this session since we read it: we are not its owner any more.

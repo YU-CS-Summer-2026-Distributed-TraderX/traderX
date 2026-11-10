@@ -132,6 +132,15 @@ public interface OrderSubmitter {
         return CompletableFuture.completedFuture(submitOrder(clientKey, accountId, securityId, side, qty, limitPxTicks));
     }
 
+    /** FR-BSP-02: the FIX NEW ({@link #submitTypedOrder} when {@code typed != null}) without waiting. */
+    default CompletableFuture<ExecResult> submitOrderAsync(String clOrdId, int accountId, String ticker, char side,
+                                                          int qty, long limitPxTicks, TypedOrder typed,
+                                                          Executor completions) {
+        return CompletableFuture.completedFuture(typed == null
+            ? submitOrder(clOrdId, accountId, ticker, side, qty, limitPxTicks)
+            : submitTypedOrder(clOrdId, accountId, ticker, side, qty, typed));
+    }
+
     /** FR-BSP-01: {@link #submitSequencedOrder(long, int, int, char, int, long, long, long)} without waiting. */
     default CompletableFuture<ExecResult> submitSequencedOrderAsync(long clientKey, int accountId, int securityId,
                                                                    char side, int qty, long limitPxTicks,

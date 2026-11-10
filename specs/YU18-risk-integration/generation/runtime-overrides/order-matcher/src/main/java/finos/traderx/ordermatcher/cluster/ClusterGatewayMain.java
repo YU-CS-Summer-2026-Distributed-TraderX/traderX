@@ -1258,6 +1258,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             qty, limitPxTicks, clientKey, 0, securityId), completions);
     }
 
+    /** FR-BSP-02: the FIX NEW without waiting; as {@link #submitOrder(String, int, String, char, int, long)} or,
+     *  typed, {@link #submitTypedOrder}. */
+    @Override
+    public CompletableFuture<ExecResult> submitOrderAsync(final String clOrdId, final int accountId, final String ticker,
+                                                         final char side, final int qty, final long limitPxTicks,
+                                                         final TypedOrder typed, final Executor completions) {
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, ticker, side,
+            qty, typed == null ? limitPxTicks : typed.limitPx(), clientOrderKey(clOrdId), 0);
+        p.clOrdId = clOrdId;
+        p.typed = typed;
+        return submitPipelinedAsync(p, completions);
+    }
+
     /** ADR-090 binary NEW on a sequenced stream: the pair rides the ingress tail; the engine interprets it. */
     @Override
     public ExecResult submitSequencedOrder(final long clientKey, final int accountId, final int securityId,

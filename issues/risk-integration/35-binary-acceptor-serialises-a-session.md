@@ -1,6 +1,6 @@
 # RI35: the binary acceptor serialises a session, so throughput is sessions ÷ cluster RTT
 
-Opened 2026-11-09 (trade-history-tiers lane, the GKE batching campaign, RI34 §1b). Status: **binary half fixed on `binary-acceptor-pipelining` (FR-BSP-01), unit tests and kind, 2026-11-10; not on GKE or production; FIX half open.** NFR-BSP-01's rate holds on kind; its `queue` p99 < 50 µs does not on kind, for the pre-fix gateway either (below). The hour at 400K ran with 512 sessions as the workaround.
+Opened 2026-11-09 (trade-history-tiers lane, the GKE batching campaign, RI34 §1b). Status: **both halves fixed on `binary-acceptor-pipelining`, unit tests and kind, 2026-11-10: binary (FR-BSP-01) and FIX (FR-BSP-02, FR-GFS-19); not on GKE or production.** FIX on kind: 4 sessions carry the 8,000/s offer the pre-fix gateway's 4 hold to 2,004/s; one of two 64-session runs lost 187 acks at the load's start to the members' uncounted egress drop (below), so that drop is now reachable and needs its own fix before FIX runs pipelined at rate. NFR-BSP-01's rate holds on kind; its `queue` p99 < 50 µs does not on kind, for the pre-fix gateway either (below). The hour at 400K ran with 512 sessions as the workaround.
 
 ## What
 
@@ -97,3 +97,78 @@ check that against FR-XOD and the session store (ADR-086) before turning exactly
 in-flight count as the binary connection does, by blocking `fromApp` (QuickFIX/J then stops reading that session).
 Run FIX with egress coalescing on (above).
 
+## FIX half: pipelined (2026-11-10, kind)
+
+[FR-BSP-02](../../specs/YU18-risk-integration/maintenance/binary-session-pipelining/spec.md) and FR-GFS-19
+([fix-session-persistence](../../specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md)). `fromApp`
+submits each NewOrderSingle with `OrderSubmitter.submitOrderAsync(String clOrdId, ..., typed, executor)` on
+QuickFIX/J's session thread, so arrival order holds, and one report thread per session runs `answer`: the reports,
+the ClOrdID map, fill tracking and FR-XOC-06's resubmission across a leader change. A session has at most 1,024
+NewOrderSingles undecided (half `FIX_MAX_QUEUED_WRITES`). When the window is full, `fromApp` blocks and QuickFIX/J
+stops reading the session (ADR-092). F and G (by OrigClOrdID) and H (by ClOrdID) wait for the in-flight order they
+name, and AF for all of them, so each finds what it did when orders were answered one at a time. Cancels, replaces
+and exactly-once sessions stay serial.
+
+**The inbound sequence (checked, as the handover asked).** QuickFIX/J 2.3.1 increments the target number after
+`fromApp` returns: `Session.next` calls `verify` (which calls `fromCallback`), then `incrNextTargetMsgSeqNum`
+(bytecode). A synchronous `fromApp` therefore decided the order before its number moved. With ADR-086's store, a
+gateway that died mid-order resumed below it: the client resent the order and the engine answered the duplicate.
+Pipelined, the number would move first, so a crash would leave the order unanswered with no resend to recover it.
+That matters for every persistent session, not only exactly-once, and production requires the store (`prepare.py`
+refuses a render without it). So the acceptor tells the store the lowest MsgSeqNum still undecided, and `K.seq`
+stores no target above it (FR-GFS-19). QuickFIX/J's own number moves on. When the lowest undecided order is
+decided, the store commits the target at once, so an idle session's reconnect does not replay orders already answered.
+A resume with orders undecided replays from the lowest of them: duplicates are restated, and a later message already
+answered is answered again, as ADR-099 already accepts for a crash before a batch. Exactly-once (FR-XOD-12) stays
+serial, because its store-then-submit and catch-up are per order. Pipelining it means running the catch-up on the
+report thread in stream order; not done.
+
+**kind** (`scripts/proofs/kind-fix-pipelining.sh`):
+- Rig: `kind-yu18-rig.py --history --binary --throughput --partitions 1`, one gateway at 4 guaranteed CPUs, egress
+  coalescing on, FIX sessions in JetStream with group commit. One arm per fresh rig.
+- Load: `fix-multi.mjs`, open loop at 8,000/s in total for 40 s. Sessions alternate buy and sell at one price, so
+  every order trades.
+- Images: under test `cluster-node:fsp`; pre-fix control `:bsp`, which is the binary-pipelined build with FIX
+  still serial.
+
+| sessions | gateway | rate (gateway accepted) | answered | `queue` p50 / p99 µs | `cluster` p50 ms | client p50 / p99 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 | old | 2,004 | 84,064 of 320,020 (backlog) | 3.5 / 623 | 0.94 | 14,623 / 31,631 |
+| 4 | **new** | **7,985** | all 320,016 | 1.6 / 10,011 | 5.39 | 45 / 1,047 |
+| 16 | new | 7,982 | all 320,016 | 1.5 / 55,280 | 2.57 | 14 / 1,030 |
+| 64 | old | 7,947 | all 320,128 | 1.3 / 1,397 | 1.83 | 26 / 1,934 |
+| 64 | new, run 1 | 7,973 | 319,877; **187 ambiguous** | 1.5 / 77,201 | 2.19 | 15 / 1,930 |
+| 64 | new, run 2 | 7,984 | all 320,064 | 1.4 / 34,341 | 1.73 | 11 / 1,506 |
+
+- **Rate.** A serial FIX session here carries about 500 orders/s, roughly 2 ms per order with the store's write
+  barrier. Pipelined, 4 sessions take the whole offer (4.0× the old gateway's 4), and 4, 16 and 64 sessions match.
+  NFR-BSP-02's rate half is met on kind.
+- **G3h.** ok on every arm that reached it (sides 1..N, each once). Run 1 of the new gateway at 64 stopped at its
+  clean check; the members' trade count there equals the offer (320,064).
+- **`queue` p99.** 10–77 ms on the new gateway, 0.6–1.4 ms on the old. The tail tracks how many orders arrive
+  together, not the rate.
+
+**The 187 ambiguous acks** (64 sessions, new gateway, run 1):
+- Every one was committed (the members' trades equal the offer), but its ack never reached the gateway within 12 s.
+  The deadline sweep reaped none. Each completed null, was answered ambiguous (no report, correct for FIX), and the
+  run of nulls tripped the wedge detector five times.
+- They are start-of-load orders: schedule positions 0.5–13.8 s, median 1.6 s, across 30 of the 64 sessions.
+- A rerun with CPU sampling was clean, but showed the gateway CFS-throttled for 1.1 s in the first 10 s (JIT and
+  64 logons), then about 2.3 of 4 CPUs with no throttling.
+- The members' egress is best-effort. `offerEgress` and `flushCoalesced` try 20 times, then drop the ack (a whole
+  coalesced batch), and count nothing. A gateway that lags while throttled therefore loses acks.
+- A serial session lets in 1 order at start-up; a pipelined one lets in up to 1,024. So pipelining makes that drop
+  reachable at a burst. The pre-fix gateway at 64 sessions lost none in its one run.
+- The binary half met the same drop with coalescing off (7 of 720,819); coalescing on was not enough here.
+- Fix (follow-up, member code): count every egress drop, then stop dropping committed acks to a live session.
+  Either retry until the session is closed, or give the egress publication a term large enough for a burst.
+
+**Found on the way.** `fix-multi.mjs` re-sliced its receive buffer for every message, which is quadratic. Against a
+pipelined gateway it read too slowly, and the gateway dropped 3 of 4 sessions as slow consumers (ADR-092 working as
+designed). It now slices once per chunk. Its ClOrdIDs are now unique per run: a rerun on the same rig had made
+every order a duplicate, and about 100 restatement status queries to the read model put the 2 GiB gateway out of
+heap. That is an existing exposure: a client replaying a day of ClOrdIDs can do the same.
+
+Evidence: shared notes `fix-pipelining-kind-20261110/` (per-arm run and load logs, `/latency` dumps, G3h, the
+64-session gateway log, the CPU samples, and the superseded first run). kind cluster `traderx-fsp` deleted at
+1:56 pm ET.
