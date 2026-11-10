@@ -255,16 +255,16 @@ class ReceiptLanesIT {
     }
 
     /**
-     * FR-DRS-38, past the ring: a lane keeps only its last {@code capacityPerLane} records, so an outage longer than
-     * that loses the older ones - loudly. Sides 1..4 are stored, NATS freezes, sides 5..24 are applied into a ring of
-     * 8, and NATS restarts: the lane counts a gap (newest evicted side 16 is past the stream's last, 4), still
-     * republishes the 8 it kept, in order, and then 25.
+     * FR-DRS-38, past the ring: a lane keeps only its last records once published, so an outage longer than that
+     * loses the older ones - loudly. Sides 1..4 are stored, NATS freezes, sides 5..24 are published into the frozen
+     * socket by a lane whose 16-slot ring keeps the last 8 it published, and NATS restarts: the lane counts a gap
+     * (newest evicted side 16 is past the stream's last, 4), still republishes the 8 it kept, in order, and then 25.
      */
     @Test
     void aNatsOutageLongerThanTheRingIsALoudGap() throws Exception {
         try (RestartableNats js = new RestartableNats()) {
             js.addFeedStream();
-            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 8, 1);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 16, 1);
             trades.start();
             for (int seq = 1; seq <= 4; seq++) { trade(trades, seq); }
             awaitStored(js.url, 4, 0);
@@ -290,29 +290,101 @@ class ReceiptLanesIT {
     }
 
     /**
-     * FR-DRS-38, a record dropped at the lane queue: it never reaches the lane's ring, so a later catch-up cannot
-     * republish it. A follower's queue of 8 is offered sides 1..12 before its lane runs: 9..12 are dropped. Promoted
-     * onto an empty subject, the lane publishes 1..8 and then 13, and the hole must be a counted gap, not an INFO line.
+     * FR-DRS-47 (RI37): a member promoted while the stream cannot be read keeps everything it applies meanwhile and
+     * publishes it once the read completes. The old leader stored sides 1..100 and order events (1..100, 0) and died;
+     * the new member applied the same while following. NATS freezes, the member is promoted and applies 100,000 more of
+     * each - past the 65,536 the lane's queue held before this rule, which refused the rest (GKE 2026-11-10: 22.9M sides
+     * at ~510K orders/s) - and NATS thaws. Each subject must read back every record once, in apply order, with nothing
+     * counted lost.
      */
     @Test
-    void aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp() throws Exception {
-        try (RestartableNats js = new RestartableNats()) {
+    void aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile() throws Exception {
+        final int stored = 100, more = 100_000;
+        try (RestartableNats js = new RestartableNats(); Connection nc = Nats.connect(js.url)) {
             js.addFeedStream();
-            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 8, 1);
+            final TradeNatsPublisher oldTrades = new TradeNatsPublisher(js.url, "/trades", "e9", null, 1024, 1);
+            final OrderNatsPublisher oldOrders = new OrderNatsPublisher(js.url, "/orders", "e9", null, 1024, 1);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            final OrderNatsPublisher orders = new OrderNatsPublisher(js.url, "/orders", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
             trades.role(false);
-            for (int seq = 1; seq <= 12; seq++) { trade(trades, seq); }
-            assertEquals(4, trades.dropped(), "sides 9..12 did not fit the queue");
+            orders.role(false);
+            oldTrades.start();
+            oldOrders.start();
             trades.start();
+            orders.start();
+            for (int seq = 1; seq <= stored; seq++) { trade(oldTrades, seq); order(oldOrders, seq, 0); trade(trades, seq); order(orders, seq, 0); }
+            awaitStored(js.url, stored, stored);
+            oldTrades.stop();
+            oldOrders.stop();
+            final long read = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+            while ((!trades.json().contains("\"queuedByPartition\":[0]") || !orders.json().contains("\"queuedByPartition\":[0]"))
+                && System.nanoTime() < read) { Thread.sleep(20); }
+
+            js.pause();
             trades.role(true);
-            awaitStored(js.url, 8, 0);
-            trade(trades, 13);
-            awaitStored(js.url, 9, 0);
-            try (Connection nc = Nats.connect(js.url)) {
-                assertEquals(List.of("1-S", "2-B", "3-S", "4-B", "5-S", "6-B", "7-S", "8-B", "13-S"), stored(nc, "/trades", "id"));
-            }
-            assertEquals(1, trades.gaps(), "the hole left by the queue drops is counted: " + trades.json());
+            orders.role(true);
+            for (int seq = stored + 1; seq <= stored + more; seq++) { trade(trades, seq); order(orders, seq, 0); }
+            Thread.sleep(3_000); // the lanes' stream reads time out meanwhile; the old queue was full in microseconds
+            js.unpause();
+            final long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+            while ((trades.published() < more || orders.published() < more) && System.nanoTime() < deadline) { Thread.sleep(50); }
+            awaitStored(js.url, stored + more, stored + more);
+            Thread.sleep(500); // a duplicate would land after the counts are reached
+
+            assertEquals(tradeIds(false, stored + more), stored(nc, "/trades", "id"), "each trade side once, in apply order");
+            final List<String> want = new ArrayList<>();
+            for (int seq = 1; seq <= stored + more; seq++) { want.add(seq + "/0"); }
+            assertEquals(want, positions(nc), "each order event once, in apply order");
+            assertEquals(more, trades.published(), "the new leader published only what the stream was missing");
+            assertEquals(more, orders.published());
+            assertEquals(0, trades.dropped(), "nothing lost: " + trades.json());
+            assertEquals(0, orders.dropped(), "nothing lost: " + orders.json());
+            assertEquals(0, trades.gaps() + orders.gaps());
+            assertTrue(backlog(trades.json()) > ReceiptLanes.KEEP && backlog(orders.json()) > ReceiptLanes.KEEP,
+                "the stall held more than the old queue's 65,536: " + trades.json() + " " + orders.json());
+            trades.stop();
+            orders.stop();
+        }
+    }
+
+    /**
+     * FR-DRS-47, past the ring: a stall longer than the lane's ring loses the overwritten records - loudly. A follower
+     * with a 1,024-slot ring applied sides 1..100, which the old leader stored; NATS freezes, the member is promoted and
+     * applies 101..5,100, and NATS thaws. The catch-up finds the stream's last (100) before the oldest record the ring
+     * still holds (4,077): it counts a gap and publishes the 1,024 it holds, in order.
+     */
+    @Test
+    void aPromotedLaneLappedPastItsRingIsACountedGap() throws Exception {
+        try (RestartableNats js = new RestartableNats(); Connection nc = Nats.connect(js.url)) {
+            js.addFeedStream();
+            final TradeNatsPublisher old = new TradeNatsPublisher(js.url, "/trades", "e1", null, 1024, 1);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 1024, 1);
+            trades.role(false);
+            old.start();
+            trades.start();
+            for (int seq = 1; seq <= 100; seq++) { trade(old, seq); trade(trades, seq); }
+            awaitStored(js.url, 100, 0);
+            old.stop();
+            js.pause();
+            trades.role(true);
+            for (int seq = 101; seq <= 5_100; seq++) { trade(trades, seq); }
+            Thread.sleep(3_000);
+            js.unpause();
+            awaitStored(js.url, 1_124, 0);
+            Thread.sleep(500);
+            final List<Long> want = new ArrayList<>();
+            for (long seq = 1; seq <= 100; seq++) { want.add(seq); }
+            for (long seq = 4_077; seq <= 5_100; seq++) { want.add(seq); }
+            assertEquals(want, stored(nc, "/trades", "id").stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList(),
+                "the kept sides, in order, after the gap");
+            assertEquals(1, trades.gaps(), "the hole is counted: " + trades.json());
             trades.stop();
         }
+    }
+
+    /** FR-DRS-47: /health's maxBacklog for one bridge's json. */
+    private static long backlog(final String json) {
+        return Long.parseLong(ReceiptLanes.field(json.getBytes(StandardCharsets.UTF_8), "maxBacklog"));
     }
 
     /**

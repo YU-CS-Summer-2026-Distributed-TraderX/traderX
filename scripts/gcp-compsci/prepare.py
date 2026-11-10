@@ -76,8 +76,37 @@ RIG_POOLS = {'order-matcher-cluster': ('engine-pool', 'traderx-engine'),
 MEMBER_JVM = '-XX:+UseZGC -XX:+ZGenerational -Xms12g -Xmx12g -XX:+AlwaysPreTouch -Daeron.socket.so_rcvbuf=4194304'
 MEMBER_MAX_ACTIVE_BOOKS = '1024'
 BOOK_MB_ZGC = 7
+# ADR-103 (FR-PRG-05): members on c4d-standard-16. The hour at 464K orders/s (2026-11-10) ran 15 CPU / 40Gi.
+MEMBER_CPU = '15'
+MEMBER_MEMORY = '40Gi'
 # FR-PRG-07: longer than the internal LB takes to mark a terminating gateway's node down (health check 8 s x 3).
 GATEWAY_DRAIN_DELAY_MS = '30000'
+
+
+def route_fills(c):
+    """FR-FFR-14 (ADR-084 amendment): the gateway names itself to the cluster (GATEWAY_ID = its pod name, carried as the
+    session's principal) and reads only its own fills subject, /fills.<GATEWAY_ID>, which the read model's fills router
+    (FR-DRS-48) feeds from the order events of the orders this gateway submitted. Every gateway reading the whole order
+    feed was 24 x ~400 MB/s at 450K orders/s (prod-450k-plan §5a)."""
+    c['env'] = [e for e in c.get('env', []) if e['name'] not in ('GATEWAY_ID', 'FIX_FILL_FEED')]
+    c['env'] += [{'name': 'GATEWAY_ID', 'valueFrom': {'fieldRef': {'fieldPath': 'metadata.name'}}},
+                 {'name': 'FIX_FILL_FEED', 'value': 'routed'}]
+
+
+def validate_routed_fills(docs, require):
+    """FR-FFR-14: a routed fill feed needs the gateway's name from its pod and a jetstream read model to route from."""
+    gw = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway'), None)
+    if not gw:
+        return
+    env = {e['name']: e for e in podspec(gw)['containers'][0].get('env', [])}
+    if env.get('FIX_FILL_FEED', {}).get('value') != 'routed':
+        return
+    require(env.get('GATEWAY_ID', {}).get('valueFrom', {}).get('fieldRef', {}).get('fieldPath') == 'metadata.name',
+            'FIX_FILL_FEED=routed without GATEWAY_ID from the pod name: the gateway cannot name its fills subject (FR-FFR-14)')
+    tp = read_model_workload(docs)
+    tenv = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])} if tp else {}
+    require(tenv.get('PROJECTION_FEED_MODE') == 'jetstream' and tenv.get('FILLS_ROUTE', 'true') != '0',
+            'FIX_FILL_FEED=routed needs the read model on the jetstream feed with its fills router on (FR-DRS-48)')
 
 
 def secret_env(container, name, secret, key):
@@ -113,9 +142,12 @@ def configure_private_runtime(docs):
                 {'labelSelector': {'matchLabels': {'app': 'cluster-gateway'}}, 'topologyKey': 'kubernetes.io/hostname'}]}}
         for c in pod.get('containers', []):
             if name == 'order-matcher-cluster':
-                # FR-PRG-05: generational ZGC (no G1 stop-the-world pauses), 7 CPUs for the DEDICATED driver's agents, a
-                # 4 MiB Aeron receive buffer (the engine pool's rmem_max allows it), and the book cap pinned.
-                c['resources'] = {'requests': {'cpu': '7', 'memory': '16Gi'}, 'limits': {'cpu': '7', 'memory': '16Gi'}}
+                # FR-PRG-05: generational ZGC (no G1 stop-the-world pauses), 15 CPUs for the DEDICATED driver's agents on a
+                # c4d-standard-16 (ADR-103: the c4d-standard-8 leader held 400K at 6.6 of 7 cores), a 4 MiB Aeron receive
+                # buffer (the engine pool's rmem_max allows it), and the book cap pinned. 40Gi: the archive's page cache
+                # and the /dev/shm term buffers count against the cgroup; at 16Gi and 50-65 MB/s of log the members lived
+                # in reclaim, and a stall past the heartbeat timeout was an election (RI34 §1b, 2026-11-10).
+                c['resources'] = {'requests': {'cpu': MEMBER_CPU, 'memory': MEMBER_MEMORY}, 'limits': {'cpu': MEMBER_CPU, 'memory': MEMBER_MEMORY}}
                 c['env'] = [e for e in c['env'] if e['name'] != 'MAX_ACTIVE_BOOKS']
                 c['env'].append({'name': 'MAX_ACTIVE_BOOKS', 'value': MEMBER_MAX_ACTIVE_BOOKS})
                 jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
@@ -138,10 +170,9 @@ def configure_private_runtime(docs):
                 c['readinessProbe'] = {'httpGet': {'path': '/v2/projection-feed/accounting', 'port': 18091},
                                        'periodSeconds': 5, 'timeoutSeconds': 10, 'failureThreshold': 3}
             if name == 'cluster-gateway':
-                # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
-                # misses is re-read from TRADERX_FEED rather than lost.
-                c['env'] = [e for e in c.get('env', []) if e['name'] != 'FIX_FILL_FEED']
-                c['env'].append({'name': 'FIX_FILL_FEED', 'value': 'jetstream'})
+                # FR-FIX05 (ADR-084): FIX fill reports read a durable stream, so a fill this gateway misses is re-read
+                # rather than lost. FR-FFR-14 (ADR-084 amendment): the stream is this gateway's own routed subject.
+                route_fills(c)
                 # ADR-095: a second, TLS-only socket for the external CompID. Keystore and both passwords come from
                 # Secret fix-tls (provision-fix-tls.py). Without the Secret the gateway does not start: no plaintext
                 # fallback. Nothing outside the cluster reaches the port until fix-tls-external is applied.
@@ -252,10 +283,12 @@ def archive_purge(docs):
 # takes a snapshot every 5 s (positions, settlement counts, each account's blotter window, the cursor and the exactly-
 # once accounting, FR-DRS-29); orders live in the memory-only view with its own SQL snapshot of open orders (FR-DRS-30).
 # P partitions spread both over P pull threads by account, each partition in its own stream (FR-DRS-32: one stream was
-# the ceiling). Measured (downstream-at-400k.md §7.12, +1 ms RTT): P=8 on production's nats-pool shape holds 125K
-# orders/s with every hop persisting and the exactly-once accounting exact; 150K does not, on c3-standard-8 or -22.
+# the ceiling). Measured (downstream-at-400k.md §7.12, +1 ms RTT): P=8 on the 2026-10 nats-pool shape (one c3-standard-8)
+# held 125K orders/s with every hop persisting and the exactly-once accounting exact. ADR-103: on the three-server
+# cluster with the batched wire (FR-DRS-41/42/43) the capture and the store held 464K for an hour (RI34 §1b, 2026-11-10);
+# the stream is sized to that rate, split over the servers by placement (FR-PRG-41).
 READ_MODEL_PARTITIONS = 8
-READ_MODEL_RATE = 125_000            # orders/s the sizing below holds with every hop persisting
+READ_MODEL_RATE = 450_000            # orders/s the sizing below holds with every hop persisting
 READ_MODEL_OUTAGE_MINUTES = 30       # the longest outage the stream must replay (a node replacement + a DB restart)
 STREAM_BYTES_PER_ORDER = 462 + 588 * 3 // 2   # stored: one trade side + 1.5 order updates per order (§7.7)
 READ_MODEL_POOLS = {'trade-processor': ('readmodel-pool', 'traderx-readmodel'), 'eod-price-db': ('db-pool', 'traderx-db')}
@@ -273,6 +306,22 @@ def stream_retention_bytes(rate=READ_MODEL_RATE, minutes=READ_MODEL_OUTAGE_MINUT
     return rate * STREAM_BYTES_PER_ORDER * minutes * 60
 
 
+def nats_servers(docs):
+    return next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')['spec']['replicas']
+
+
+def store_per_server_gb(retention, partitions, servers):
+    """FR-PRG-41: one server's file store holds the partitions placed on it (ceil(P/N) of P, FR-DRS-44), plus 25% for
+    the EOD streams and compaction."""
+    held = -(-partitions // servers)
+    return -(-(retention * held // partitions) * 5 // 4 // 10**9)
+
+
+def placement(servers):
+    """FR-DRS-44: the servers' tags, which are their pod names; partition p goes to tag p mod N."""
+    return ','.join(f'nats-{i}' for i in range(servers))
+
+
 def set_env(c, values):
     c['env'] = [e for e in c.get('env', []) if e['name'] not in values] + [{'name': k, 'value': v} for k, v in values.items()]
 
@@ -283,7 +332,8 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
     is a copy, not a re-create: the new claim is restored from a VolumeSnapshot of the old one (taken at 0 replicas),
     so the read model the restore gate fingerprints is the one the old disk held."""
     retention = stream_retention_bytes()
-    store_gb = -(-retention * 5 // 4 // 10**9)                  # stream + 25% for the EOD streams and compaction
+    servers = nats_servers(docs)
+    store_gb = store_per_server_gb(retention, partitions, servers)
     for doc in docs:
         name, kind = doc['metadata']['name'], doc['kind']
         pod = podspec(doc)
@@ -292,7 +342,7 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
         elif kind == 'Deployment' and name == 'trade-processor':
             c = pod['containers'][0]
             set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
-                        'PROJECTION_FEED_STREAM_LAYOUT': 'partition',
+                        'PROJECTION_FEED_STREAM_LAYOUT': 'partition', 'PROJECTION_FEED_STREAM_PLACEMENT': placement(servers),
                         'TRADE_PROJECTION_MODE': 'snapshot', 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000',
                         'PROJECTION_FEED_STREAM_MAX_BYTES': str(retention), 'PROJECTION_FEED_STREAM_MAX_AGE_HOURS': '2'})
             jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
@@ -303,8 +353,9 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
                               'limits': {'cpu': READ_MODEL_TP['cpu'], 'memory': READ_MODEL_TP['memory']}}
         elif kind == 'ConfigMap' and name == 'nats-server-config':
             doc['data']['nats.conf'] = re.sub(r'max_file_store: \S+', f'max_file_store: {store_gb}G', doc['data']['nats.conf'])
-        elif kind == 'PersistentVolumeClaim' and name == 'nats-data':
-            doc['spec']['resources']['requests']['storage'] = f'{store_gb * 11 // 10 + 1}Gi'
+        elif kind == 'StatefulSet' and name == 'nats':
+            claim = next(t for t in doc['spec']['volumeClaimTemplates'] if t['metadata']['name'] == 'data')
+            claim['spec']['resources']['requests']['storage'] = f'{store_gb * 11 // 10 + 1}Gi'
         elif kind == 'Deployment' and name == 'eod-price-db':
             c = next(x for x in pod['containers'] if x['name'] == 'mariadb')
             c['resources'] = {'requests': {'cpu': READ_MODEL_DB['cpu'], 'memory': READ_MODEL_DB['memory']},
@@ -359,10 +410,74 @@ HISTORY_COLD_TIERED = '/etc/clickhouse-server/config.d/tiered.xml'
 HISTORY_CLIENTS = ('history-feed', 'trade-processor', 'position-service')
 
 
+def read_model_workload(docs):
+    """trade-processor: one Deployment, or the StatefulSet shard_read_model renders for N replicas (FR-DRS-45); None if absent."""
+    return next((d for d in docs if d['kind'] in ('Deployment', 'StatefulSet') and d['metadata']['name'] == 'trade-processor'), None)
+
+
+READ_MODEL_REPLICAS_SERVICE = 'trade-processor-replicas'
+# RI36 / ADR-103 §3: the production read model, two partitions per replica (P = 8). 12 cores each, as the one replica had
+# (READ_MODEL_TP): at 400-520K orders/s one process read all 8 partitions at 7-10 cores with no headroom.
+READ_MODEL_REPLICAS = 4
+READ_MODEL_REPLICA_URL = 'http://{replica}.' + READ_MODEL_REPLICAS_SERVICE + ':18091'   # FR-DRS-46, {replica} = the pod name
+
+
+def shard_read_model(docs, replicas=1):
+    """FR-DRS-45: trade-processor as N replicas, each reading a disjoint block of the feed partitions. Each replica
+    claims its partitions in SQL at start and refuses a partition another live replica holds, so a rollout must stop
+    the old pod before the new one starts: one replica stays the Deployment, Recreate (under RollingUpdate the surge pod
+    is refused and the rollout never completes). N > 1 is a StatefulSet, Parallel: the pod name is the replica id, the
+    pod index picks the block (PROJECTION_FEED_PARTITIONS_OWNED=replica:<k>/<N>; P=8, N=2: 0-3 and 4-7), and the
+    headless Service trade-processor-replicas names each pod for the order-view router. The trade-processor Service
+    selects every replica: the order view's reads (/accounts/{id}/orders) need the router; a replica answers an account
+    it does not own 421."""
+    tp = read_model_workload(docs)
+    if replicas <= 1:
+        tp['spec']['strategy'] = {'type': 'Recreate'}
+        return
+    c = podspec(tp)['containers'][0]
+    partitions = int({e['name']: e.get('value') for e in c.get('env', [])}.get('PROJECTION_FEED_PARTITIONS') or 1)
+    assert replicas <= partitions, f'{replicas} read-model replicas over {partitions} partitions: a replica would own none'
+    owned = ('TP_REPLICA_INDEX', 'PROJECTION_REPLICA_ID', 'PROJECTION_FEED_PARTITIONS_OWNED', 'PROJECTION_FEED_OWNED',
+             'PROJECTION_REPLICA_URL')
+    c['env'] = [e for e in c.get('env', []) if e['name'] not in owned] + [
+        {'name': 'TP_REPLICA_INDEX', 'valueFrom': {'fieldRef': {'fieldPath': "metadata.labels['apps.kubernetes.io/pod-index']"}}},
+        {'name': 'PROJECTION_REPLICA_ID', 'valueFrom': {'fieldRef': {'fieldPath': 'metadata.name'}}},
+        {'name': 'PROJECTION_FEED_PARTITIONS_OWNED', 'value': f'replica:$(TP_REPLICA_INDEX)/{replicas}'},
+        {'name': 'PROJECTION_REPLICA_URL', 'value': READ_MODEL_REPLICA_URL}]
+    tp['kind'] = 'StatefulSet'
+    for k in ('strategy', 'progressDeadlineSeconds', 'paused'):
+        tp['spec'].pop(k, None)
+    tp['spec'].update({'replicas': replicas, 'serviceName': READ_MODEL_REPLICAS_SERVICE, 'podManagementPolicy': 'Parallel'})
+    meta = {'name': READ_MODEL_REPLICAS_SERVICE, 'labels': {'app': 'trade-processor'}}
+    if 'namespace' in tp['metadata']:
+        meta['namespace'] = tp['metadata']['namespace']
+    docs.append({'apiVersion': 'v1', 'kind': 'Service', 'metadata': meta,
+                 'spec': {'clusterIP': 'None', 'selector': {'app': 'trade-processor'},
+                          'ports': [{'name': 'http', 'port': 18091, 'targetPort': 18091}]}})
+
+
+def validate_read_model_replicas(docs, require):
+    """FR-DRS-45: what shard_read_model renders, so a hand edit cannot run two owners or a stuck rollout."""
+    tp = read_model_workload(docs)
+    if tp is None:
+        return
+    env = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])}
+    if tp['kind'] == 'Deployment':
+        require(tp['spec'].get('replicas', 1) == 1 and tp['spec'].get('strategy', {}).get('type') == 'Recreate',
+                'trade-processor as a Deployment must be one Recreate replica: a second pod is refused its partitions (FR-DRS-45)')
+        return
+    n = tp['spec'].get('replicas')
+    require(env.get('PROJECTION_FEED_PARTITIONS_OWNED') == f'replica:$(TP_REPLICA_INDEX)/{n}'
+            and tp['spec'].get('serviceName') == READ_MODEL_REPLICAS_SERVICE
+            and env.get('PROJECTION_REPLICA_URL') == READ_MODEL_REPLICA_URL,
+            f'trade-processor\'s {n} replicas must each own replica:<pod index>/{n} of the partitions and reach each other at {READ_MODEL_REPLICA_URL} (FR-DRS-45/46)')
+
+
 def history_store(docs, hot_days=0):
     """FR-THT-02: ClickHouse and history-feed sized and guaranteed, the store on its own retained class, history-feed
     on exactly trade-processor's streams. FR-THT-03 with hot_days > 0: the `tiered` policy, cold volume on GCS."""
-    tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
+    tp = read_model_workload(docs)
     feed = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])}
     full = int(feed.get('PROJECTION_FEED_PARTITIONS') or 1) > 1
     store_size, feed_size = (HISTORY_STORE_FULL_RATE, HISTORY_FEED_FULL_RATE) if full else (HISTORY_STORE, HISTORY_FEED)
@@ -422,7 +537,7 @@ def validate_history_store(docs, require):
             'the history store has no sized claim on a rendered, retained storage class (FR-THT-02)')
     require(writer['spec'].get('replicas') == 1 and writer['spec'].get('strategy', {}).get('type') == 'Recreate',
             'history-feed must be one Recreate replica: its lanes are not fenced against a second writer (ADR-098)')
-    tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
+    tp = read_model_workload(docs)
     env = lambda d: {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])}
     want = {k: env(tp).get(k) or v for k, v in HISTORY_FEED_ENV.items()}
     require({k: env(writer).get(k) or v for k, v in HISTORY_FEED_ENV.items()} == want,
@@ -442,10 +557,10 @@ def validate_history_store(docs, require):
                 'HISTORY_HOT_DAYS > 0 without the tiered policy and its cold disk on ClickHouse (FR-THT-03)')
 
 
-# FR-PRG-28: NATS's memory, as the pod and NATS itself each see it. NATS runs alone on nats-pool's c3-standard-8: 32 GiB,
-# GKE allocatable ~28.3 GiB (its reservation: 25% of the first 4 GiB, 20% of the next 4, 10% of the next 8, 6% above,
-# plus 100 MiB eviction), less ~2 GiB kept for the node's DaemonSets.
-NATS_NODE_BUDGET = 26 * 2**30
+# FR-PRG-28: NATS's memory, as the pod and NATS itself each see it. A server runs alone on one of nats-pool's
+# c4d-standard-16 (ADR-103): 62 GiB, GKE allocatable ~56 GiB (its reservation: 25% of the first 4 GiB, 20% of the next 4,
+# 10% of the next 8, 6% above, plus 100 MiB eviction), less ~2 GiB kept for the node's DaemonSets.
+NATS_NODE_BUDGET = 54 * 2**30
 
 
 def size_bytes(v):
@@ -460,7 +575,7 @@ def validate_nats_memory(docs, require):
     """FR-PRG-28: the pod's memory, the Go heap limit and NATS's own limits agree, so NATS is never OOM-killed for holding
     what it was configured to hold. 2026-10-30: limit 2Gi, NATS's memory store unset (75% of the host, 23.5 GB), and a
     1GB ingest queue under ~150K trades/s: OOM-killed 7 times, the FIX session store down with it, ~89.7M sides lost."""
-    nats = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'nats')
+    nats = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')
     c = podspec(nats)['containers'][0]
     res = c.get('resources', {})
     limit = size_bytes(res.get('limits', {}).get('memory', '0'))
@@ -479,12 +594,49 @@ def validate_nats_memory(docs, require):
             '(max_buffered_size) must fit in half the Go heap limit (FR-PRG-28)')
 
 
+def validate_nats_cluster(docs, require):
+    """FR-PRG-41 (ADR-103): three servers in one cluster, one per node, each on its own retained Hyperdisk claim, the
+    routes naming every server, and each server named and tagged by its pod, so a capture stream placed by tag
+    (PROJECTION_FEED_STREAM_PLACEMENT, FR-DRS-44) lands on a server that exists and the partitions spread over all of
+    them. One server stored ~0.4-0.5M msgs/s whatever the stream count (FR-DRS-34) and one volume saturated at 400K
+    orders/s (RI34 §1b); fewer than three cannot keep the JetStream meta group's majority through a loss."""
+    nats = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')
+    n = nats['spec']['replicas']
+    pod = podspec(nats)
+    conf = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')['data']['nats.conf']
+    require(n >= 3, 'NATS: fewer than three servers cannot keep a JetStream majority through a server loss (FR-PRG-41)')
+    routes = re.findall(r'nats://(nats-\d+)\.nats-headless\.', conf)
+    require(sorted(routes) == [f'nats-{i}' for i in range(n)] and nats['spec'].get('serviceName') == 'nats-headless',
+            'NATS: the routes must name every server of the StatefulSet through nats-headless (FR-PRG-41)')
+    require(re.search(r'^\s*server_name:\s*POD_NAME\s*$', conf, re.M) is not None
+            and re.search(r'^\s*server_tags:\s*\["POD_NAME"\]\s*$', conf, re.M) is not None
+            and 'POD_NAME' in ' '.join(pod['containers'][0].get('args', [])),
+            'NATS: a server must be named and tagged by its pod, substituted at start (FR-PRG-41)')
+    anti = pod.get('affinity', {}).get('podAntiAffinity', {}).get('requiredDuringSchedulingIgnoredDuringExecution', [])
+    require(any(t.get('topologyKey') == 'kubernetes.io/hostname' and t.get('labelSelector', {}).get('matchLabels') == {'app': 'nats'}
+                for t in anti), 'NATS: servers must be one per node (FR-PRG-41)')
+    claims = {t['metadata']['name']: t for t in nats['spec'].get('volumeClaimTemplates', [])}
+    retention = nats['spec'].get('persistentVolumeClaimRetentionPolicy', {})
+    require('data' in claims and all(v['name'] != 'data' for v in pod.get('volumes', []))
+            and retention.get('whenScaled') == 'Retain' and retention.get('whenDeleted') == 'Retain',
+            'NATS: /data is not a retained per-server claim (FR-PRG-41, FR-DRS-25)')
+    sc_name = claims.get('data', {}).get('spec', {}).get('storageClassName')
+    sc = next((d for d in docs if d['kind'] == 'StorageClass' and d['metadata']['name'] == sc_name), None)
+    require(sc is not None and sc.get('parameters', {}).get('type') == 'hyperdisk-balanced',
+            "NATS: a server's claim is not on a rendered Hyperdisk Balanced class (FR-PRG-41)")
+    tp = read_model_workload(docs)
+    env = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])} if tp else {}
+    if env.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition':
+        require(sorted((env.get('PROJECTION_FEED_STREAM_PLACEMENT') or '').split(',')) == [f'nats-{i}' for i in range(n)],
+                'NATS: the partitioned capture must be placed over every server by tag (FR-PRG-41, FR-DRS-44)')
+
+
 def validate_read_model(docs, require):
     """FR-PRG-20 preconditions: the parts of the snapshot read model only work together."""
     def env(name, kind='Deployment'):
         d = next((d for d in docs if d['kind'] == kind and d['metadata']['name'] == name), None)
         return {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])} if d else {}
-    tp, members = env('trade-processor'), env('order-matcher-cluster', 'StatefulSet')
+    tp, members = env('trade-processor', (read_model_workload(docs) or {}).get('kind')), env('order-matcher-cluster', 'StatefulSet')
     require(tp.get('TRADE_PROJECTION_MODE') == 'snapshot',
             'trade-processor must name TRADE_PROJECTION_MODE=snapshot: a default changes the read model unseen (FR-THT-01)')
     require(int(tp.get('ORDER_VIEW_SNAPSHOT_MS') or 0) > 0,
@@ -499,10 +651,13 @@ def validate_read_model(docs, require):
             "trade-processor's partitions differ from the members' BRIDGE_PARTITIONS: a partition would never be read (FR-PRG-20)")
     conf = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')['data']['nats.conf']
     store = int(re.search(r'max_file_store: (\d+)G', conf).group(1)) * 10**9
-    claim = next(d for d in docs if d['kind'] == 'PersistentVolumeClaim' and d['metadata']['name'] == 'nats-data')
-    require(int(tp.get('PROJECTION_FEED_STREAM_MAX_BYTES') or 0) < store
-            and int(claim['spec']['resources']['requests']['storage'][:-2]) * 2**30 > store,
-            'the stream limit must sit under max_file_store, and max_file_store under the NATS claim (FR-PRG-20)')
+    nats = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')
+    claim = next(t for t in nats['spec']['volumeClaimTemplates'] if t['metadata']['name'] == 'data')
+    # FR-PRG-41: the limit is the whole feed's; one server holds ceil(P/N) of the P partitions (FR-DRS-44).
+    partitions, servers = int(tp.get('PROJECTION_FEED_PARTITIONS') or 1), nats['spec']['replicas']
+    held = int(tp.get('PROJECTION_FEED_STREAM_MAX_BYTES') or 0) * (-(-partitions // servers)) // partitions
+    require(held < store and int(claim['spec']['resources']['requests']['storage'][:-2]) * 2**30 > store,
+            "a server's share of the stream limit must sit under its max_file_store, and max_file_store under its claim (FR-PRG-20, FR-PRG-41)")
     db = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'eod-price-db')
     claims = [v['persistentVolumeClaim']['claimName'] for v in podspec(db)['volumes'] if 'persistentVolumeClaim' in v]
     restored = next((d for d in docs if d['kind'] == 'PersistentVolumeClaim' and d['metadata']['name'] in claims), None)
@@ -647,8 +802,8 @@ def validate(docs, declared=None):
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
             env = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
             require(env.get('CONTROL_FEED_SUBSCRIBER') == '1', 'gateway does not subscribe to the control feed (YU04)')
-            require(env.get('FIX_FILL_FEED') == 'jetstream',
-                    'FIX fill reports not on the durable stream: a missed message loses a fill (FR-FIX05, ADR-084)')
+            require(env.get('FIX_FILL_FEED') in ('jetstream', 'routed'),
+                    'FIX fill reports not on a durable stream: a missed message loses a fill (FR-FIX05, ADR-084)')
             # ADR-086: FIX sessions resume on any replica (FR-FIX11), and status requests have a read model
             # (FR-FIX04), so a reconnecting client can recover what it missed.
             if 'FIX_ACCEPTOR_PORT' in env:
@@ -675,9 +830,9 @@ def validate(docs, declared=None):
             env = {e['name']: e.get('value') for e in pod['containers'][0].get('env', [])}
             require(env.get('PROJECTION_FEED_MODE') == 'jetstream',
                     'trade-processor on the core feed loses every side booked while it is down (FR-DRS-25)')
-        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'nats':
-            data = next((v for v in pod['volumes'] if v['name'] == 'data'), {})
-            require('persistentVolumeClaim' in data, 'NATS JetStream store is not on a PVC (FR-DRS-25)')
+        if doc['kind'] == 'StatefulSet' and doc['metadata']['name'] == 'nats':
+            require(any(t['metadata']['name'] == 'data' for t in doc['spec'].get('volumeClaimTemplates', [])),
+                    'NATS JetStream store is not on a PVC (FR-DRS-25)')
         # FR-GMR-04: a member launched through a shell (kept off PID 1 for the crash harness) must forward
         # SIGTERM to the JVM and exit with its status, or every delete/roll ends in SIGKILL after the grace.
         if doc['kind'] == 'StatefulSet':
@@ -741,13 +896,16 @@ def validate(docs, declared=None):
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
     validate_nats_memory(docs, require)
+    validate_nats_cluster(docs, require)
+    validate_routed_fills(docs, require)
     validate_read_model(docs, require)
+    validate_read_model_replicas(docs, require)
     validate_history_store(docs, require)
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
             fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None,
-            history_hot_days=0, purge=False):
+            history_hot_days=0, purge=False, read_model_replicas=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -904,6 +1062,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     if read_model == 'snapshot':
         snapshot_read_model(docs, partitions or READ_MODEL_PARTITIONS)
     history_store(docs, history_hot_days)
+    shard_read_model(docs, read_model_replicas or (min(READ_MODEL_REPLICAS, partitions or READ_MODEL_PARTITIONS)
+                                                   if read_model == 'snapshot' else 1))
     if purge:
         archive_purge(docs)
     apply_population(docs, declared, tag)
@@ -991,10 +1151,13 @@ if __name__=='__main__':
     p.add_argument('--archive-purge',action='store_true',
                    help="purge each member's archive behind its second-latest snapshot, history discarded (FR-PRG-40)")
     p.add_argument('--partitions',type=int,help=f'read-model partitions with --read-model snapshot (default {READ_MODEL_PARTITIONS})')
+    p.add_argument('--read-model-replicas',type=int,
+                   help=f'FR-DRS-45: trade-processor replicas, each owning a block of the partitions (a StatefulSet above 1;'
+                        f' default {READ_MODEL_REPLICAS} with --read-model snapshot, else 1)')
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
             args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members,args.read_model,args.partitions,
-            args.history_hot_days,args.archive_purge)
+            args.history_hot_days,args.archive_purge,args.read_model_replicas)

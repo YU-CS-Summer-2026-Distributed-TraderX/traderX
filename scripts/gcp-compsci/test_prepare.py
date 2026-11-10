@@ -67,7 +67,7 @@ class Rendering(unittest.TestCase):
         claimed={t['spec']['storageClassName'] for t in engine['spec']['volumeClaimTemplates']}
         self.assertEqual(claimed,{'order-matcher-archive'})
         sc=[d for d in self.docs if d['kind']=='StorageClass']
-        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive','clickhouse-hot'])   # + FR-THT-02's
+        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive','nats-store','clickhouse-hot'])   # + FR-PRG-41's, FR-THT-02's
         self.assertNotIn('namespace',sc[0]['metadata'])
         self.assertEqual(sc[0]['provisioner'],'pd.csi.storage.gke.io')
 
@@ -245,7 +245,7 @@ class Rendering(unittest.TestCase):
 
     def test_gateway_reports_fix_fills_from_the_stream(self):
         gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
-        self.assertIn({'name':'FIX_FILL_FEED','value':'jetstream'},module.podspec(gw)['containers'][0]['env'])
+        self.assertIn({'name':'FIX_FILL_FEED','value':'routed'},module.podspec(gw)['containers'][0]['env'])   # FR-FFR-14: its own routed subject, still durable
         for value in ('0','core','auto'):
             docs=copy.deepcopy(self.docs)
             gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
@@ -358,7 +358,8 @@ class Rendering(unittest.TestCase):
             self.assertIn(flag,jvm)
         self.assertFalse([t for t in jvm if t.startswith('-XX:MaxGCPauseMillis')])
         self.assertEqual(env['MAX_ACTIVE_BOOKS'],'1024')
-        self.assertEqual(c['resources'],{'requests':{'cpu':'7','memory':'16Gi'},'limits':{'cpu':'7','memory':'16Gi'}})
+        # ADR-103: c4d-standard-16, 15 CPU / 40Gi (the 464K hour's members; 16Gi lived in page-cache reclaim and flapped).
+        self.assertEqual(c['resources'],{'requests':{'cpu':'15','memory':'40Gi'},'limits':{'cpu':'15','memory':'40Gi'}})
         def broken(change):
             docs=copy.deepcopy(self.docs); change(module.podspec(self.workload(docs,'order-matcher-cluster'))['containers'][0]); return docs
         def jvm_is(value):
@@ -378,8 +379,8 @@ class Rendering(unittest.TestCase):
         next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_MODE')['value']='core'
         with self.assertRaises(AssertionError): module.validate(docs)
         docs=copy.deepcopy(self.docs)
-        nats=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='nats')
-        next(v for v in module.podspec(nats)['volumes'] if v['name']=='data').pop('persistentVolumeClaim')
+        nats=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='nats')
+        nats['spec']['volumeClaimTemplates']=[]
         with self.assertRaises(AssertionError): module.validate(docs)
 
     def test_all_workloads_have_complete_scheduler_requests(self):
@@ -421,7 +422,7 @@ class NatsMemory(unittest.TestCase):
     def tearDownClass(cls): cls.temp.cleanup()
 
     def nats(self,docs):
-        return module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='nats'))['containers'][0]
+        return module.podspec(next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='nats'))['containers'][0]
 
     def conf(self,docs):
         return next(d for d in docs if d['kind']=='ConfigMap' and d['metadata']['name']=='nats-server-config')['data']
@@ -454,12 +455,110 @@ class NatsMemory(unittest.TestCase):
             return change
         def request(docs): self.nats(docs)['resources']['requests']['memory']='512Mi'
         for change,message in ((limit('2Gi'),'GOMEMLIMIT'),                                  # 2026-10-30's pod
-                               (limit('30Gi'),'fit nats-pool'),
+                               (limit('60Gi'),'fit nats-pool'),                                 # past a c4d-standard-16's allocatable
                                (request,'equal the request'),
-                               (gomem(None),'GOMEMLIMIT'),(gomem('23GiB'),'85%'),
+                               (gomem(None),'GOMEMLIMIT'),(gomem('45GiB'),'85%'),                     # 45 of 48Gi leaves no page cache
                                (conf(r'\s*max_memory_store: \S+',''),'explicit'),          # NATS then takes 75% of the host
                                (conf(r'max_buffered_size: \S+','max_buffered_size: 12GB'),'ingest queue')):
             with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(change))
+
+
+class NatsCluster(unittest.TestCase):
+    """FR-PRG-41 (ADR-103): the capture stream's servers are a three-server NATS cluster, one per node, each on its own
+    retained Hyperdisk claim, named and tagged by pod; the partitioned render places the streams over every server by
+    tag (FR-DRS-44) and sizes each server's store to the partitions it holds. One server was the wall (FR-DRS-34) and one
+    volume saturated at 400K orders/s (RI34 §1b)."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'rows','test-candidate','10.93.0.10')
+        cls.rows=list(yaml.safe_load_all((Path(cls.temp.name)/'rows/candidate.yaml').read_text()))
+        module.prepare(Path(cls.temp.name)/'snap','test-candidate','10.93.0.10',read_model='snapshot')
+        cls.snap=list(yaml.safe_load_all((Path(cls.temp.name)/'snap/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def sts(self,docs): return next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='nats')
+    def conf(self,docs): return next(d for d in docs if d['kind']=='ConfigMap' and d['metadata']['name']=='nats-server-config')['data']
+    def tp_env(self,docs):
+        tp=module.read_model_workload(docs)
+        return {e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
+
+    def test_three_servers_one_per_node_each_on_its_own_hyperdisk(self):
+        sts=self.sts(self.rows); pod=module.podspec(sts); conf=self.conf(self.rows)['nats.conf']
+        self.assertEqual(sts['spec']['replicas'],3)
+        self.assertEqual(sts['spec']['serviceName'],'nats-headless')
+        self.assertEqual(sorted(re.findall(r'nats://(nats-\d)\.nats-headless\.traderx\.svc',conf)),['nats-0','nats-1','nats-2'])
+        self.assertRegex(conf,r'(?m)^\s*server_name: POD_NAME$'); self.assertRegex(conf,r'(?m)^\s*server_tags: \["POD_NAME"\]$')
+        self.assertIn('POD_NAME',' '.join(pod['containers'][0]['args']))
+        self.assertIn({'name':'POD_NAME','valueFrom':{'fieldRef':{'fieldPath':'metadata.name'}}},pod['containers'][0]['env'])
+        self.assertEqual(pod['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution'][0]['topologyKey'],'kubernetes.io/hostname')
+        self.assertEqual(sts['spec']['persistentVolumeClaimRetentionPolicy'],{'whenDeleted':'Retain','whenScaled':'Retain'})
+        claim=next(t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
+        sc=next(d for d in self.rows if d['kind']=='StorageClass' and d['metadata']['name']==claim['spec']['storageClassName'])
+        self.assertEqual(sc['parameters']['type'],'hyperdisk-balanced'); self.assertNotIn('namespace',sc['metadata'])
+        self.assertEqual(pod['nodeSelector'],{'cloud.google.com/gke-nodepool':'nats-pool'})
+        self.assertRegex(conf,r'(?m)^\s*max_pending: 256MB$')
+        self.assertNotIn('PROJECTION_FEED_STREAM_PLACEMENT',self.tp_env(self.rows))   # one stream: the server places it
+
+    def test_the_partitioned_capture_is_placed_over_every_server_and_each_store_holds_its_share(self):
+        env=self.tp_env(self.snap)
+        self.assertEqual(env['PROJECTION_FEED_STREAM_PLACEMENT'],'nats-0,nats-1,nats-2')
+        retention=int(env['PROJECTION_FEED_STREAM_MAX_BYTES'])
+        self.assertEqual(retention,module.stream_retention_bytes(450_000,30))
+        store=int(re.search(r'max_file_store: (\d+)G',self.conf(self.snap)['nats.conf']).group(1))
+        self.assertEqual(store,module.store_per_server_gb(retention,8,3))
+        self.assertGreater(store*10**9,retention*3//8)              # three of eight partitions on the fullest server
+        self.assertLess(store*10**9,retention)                      # not sized for the whole feed on one server
+        claim=next(t for t in self.sts(self.snap)['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
+        self.assertGreater(int(claim['spec']['resources']['requests']['storage'][:-2])*2**30,store*10**9)
+
+    def test_drift_is_refused(self):
+        def broken(docs,change):
+            docs=copy.deepcopy(docs); change(docs); return docs
+        def replicas(docs): self.sts(docs)['spec']['replicas']=1
+        def route(docs): d=self.conf(docs); d['nats.conf']=d['nats.conf'].replace('nats://nats-2.nats-headless','nats://nats-9.nats-headless')
+        def name(docs): d=self.conf(docs); d['nats.conf']=d['nats.conf'].replace('server_name: POD_NAME','server_name: nats')
+        def spread(docs): module.podspec(self.sts(docs)).pop('affinity')
+        def claim(docs): self.sts(docs)['spec']['persistentVolumeClaimRetentionPolicy']['whenScaled']='Delete'
+        def disk(docs):
+            next(t for t in self.sts(docs)['spec']['volumeClaimTemplates'])['spec']['storageClassName']='standard-rwo'
+        def placement(docs):
+            tp=module.read_model_workload(docs)
+            next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_STREAM_PLACEMENT')['value']='nats-0,nats-1'
+        for docs,change,message in ((self.rows,replicas,'fewer than three'),(self.rows,route,'routes must name every server'),
+                                    (self.rows,name,'named and tagged'),(self.rows,spread,'one per node'),
+                                    (self.rows,claim,'retained per-server claim'),(self.rows,disk,'Hyperdisk'),
+                                    (self.snap,placement,'placed over every server')):
+            with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(docs,change))
+
+
+class RoutedFills(unittest.TestCase):
+    """FR-FFR-14 / FR-DRS-48: the gateway names itself (GATEWAY_ID from its pod) and reads only /fills.<id>; validation
+    refuses a routed feed without the name or without a jetstream read model to route from."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10')
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def gw(self,docs): return module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway'))['containers'][0]
+
+    def test_the_gateway_names_itself_and_reads_its_own_fills(self):
+        env={e['name']:e for e in self.gw(self.docs)['env']}
+        self.assertEqual(env['FIX_FILL_FEED']['value'],'routed')
+        self.assertEqual(env['GATEWAY_ID']['valueFrom'],{'fieldRef':{'fieldPath':'metadata.name'}})
+
+    def test_a_routed_feed_without_a_name_or_a_router_is_refused(self):
+        docs=copy.deepcopy(self.docs); c=self.gw(docs); c['env']=[e for e in c['env'] if e['name']!='GATEWAY_ID']
+        with self.assertRaisesRegex(AssertionError,'GATEWAY_ID'): module.validate(docs)
+        docs=copy.deepcopy(self.docs); tp=module.read_model_workload(docs)
+        module.set_env(module.podspec(tp)['containers'][0],{'FILLS_ROUTE':'0'})
+        with self.assertRaisesRegex(AssertionError,'fills router'): module.validate(docs)
 
 
 class UiMetadata(unittest.TestCase):
@@ -706,6 +805,8 @@ class SnapshotReadModel(unittest.TestCase):
         cls.temp=tempfile.TemporaryDirectory()
         module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10',read_model='snapshot',partitions=6)
         cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+        module.prepare(Path(cls.temp.name)/'one','test-candidate','10.93.0.10',read_model='snapshot',partitions=6,read_model_replicas=1)
+        cls.one=list(yaml.safe_load_all((Path(cls.temp.name)/'one/candidate.yaml').read_text()))
 
     @classmethod
     def tearDownClass(cls): cls.temp.cleanup()
@@ -717,21 +818,21 @@ class SnapshotReadModel(unittest.TestCase):
         return {e['name']:e.get('value') for e in module.podspec(self.doc(docs,kind,name))['containers'][0]['env']}
 
     def test_every_part_is_on(self):
-        tp=self.env(self.docs,'Deployment','trade-processor')
+        tp=self.env(self.docs,'StatefulSet','trade-processor')
         self.assertEqual(self.env(self.docs,'StatefulSet','order-matcher-cluster')['BRIDGE_PARTITIONS'],'6')
         self.assertEqual({k:tp[k] for k in ('PROJECTION_FEED_MODE','PROJECTION_FEED_PARTITIONS','PROJECTION_FEED_STREAM_LAYOUT',
                                             'TRADE_PROJECTION_MODE','ORDER_FEED_PERSIST','ORDER_VIEW_SNAPSHOT_MS')},
                          {'PROJECTION_FEED_MODE':'jetstream','PROJECTION_FEED_PARTITIONS':'6','PROJECTION_FEED_STREAM_LAYOUT':'partition',
                           'TRADE_PROJECTION_MODE':'snapshot','ORDER_FEED_PERSIST':'false','ORDER_VIEW_SNAPSHOT_MS':'5000'})
-        self.assertEqual(module.podspec(self.doc(self.docs,'Deployment','trade-processor'))['containers'][0]['readinessProbe']['httpGet']['path'],
+        self.assertEqual(module.podspec(self.doc(self.docs,'StatefulSet','trade-processor'))['containers'][0]['readinessProbe']['httpGet']['path'],
                          '/v2/projection-feed/accounting')
         self.assertEqual(int(tp['PROJECTION_FEED_STREAM_MAX_BYTES']),module.stream_retention_bytes())
         self.assertIn('-XX:+ZGenerational',tp['JAVA_TOOL_OPTIONS'].split())
-        nats=module.podspec(self.doc(self.docs,'Deployment','nats'))['containers'][0]
-        self.assertEqual(nats['resources']['limits']['memory'],'24Gi')   # the base sizing, every profile (FR-PRG-28)
+        nats=module.podspec(self.doc(self.docs,'StatefulSet','nats'))['containers'][0]
+        self.assertEqual(nats['resources']['limits']['memory'],'48Gi')   # the base sizing, every profile (FR-PRG-28)
         self.assertIn({'name':'GOMEMLIMIT','value':'20GiB'},nats['env'])
-        for name,pool in (('trade-processor','readmodel-pool'),('eod-price-db','db-pool')):
-            self.assertEqual(module.podspec(self.doc(self.docs,'Deployment',name))['nodeSelector'],{'cloud.google.com/gke-nodepool':pool})
+        for kind,name,pool in (('StatefulSet','trade-processor','readmodel-pool'),('Deployment','eod-price-db','db-pool')):
+            self.assertEqual(module.podspec(self.doc(self.docs,kind,name))['nodeSelector'],{'cloud.google.com/gke-nodepool':pool})
 
     def test_the_database_moves_by_restoring_its_old_disk(self):
         db=module.podspec(self.doc(self.docs,'Deployment','eod-price-db'))
@@ -750,7 +851,7 @@ class SnapshotReadModel(unittest.TestCase):
             docs=copy.deepcopy(self.docs); change(docs); return docs
         def tp_env(name,value):
             def change(docs):
-                c=module.podspec(self.doc(docs,'Deployment','trade-processor'))['containers'][0]
+                c=module.podspec(self.doc(docs,'StatefulSet','trade-processor'))['containers'][0]
                 next(e for e in c['env'] if e['name']==name)['value']=value
             return change
         def nats_store(docs):
@@ -762,6 +863,39 @@ class SnapshotReadModel(unittest.TestCase):
                                (tp_env('PROJECTION_FEED_STREAM_LAYOUT','one'),'one capture stream'),
                                (nats_store,'max_file_store')):
             with self.assertRaisesRegex(AssertionError,message): module.validate(broken(change))
+
+    def test_one_read_model_replica_is_a_recreate_deployment(self):
+        # FR-DRS-45: a second pod is refused its partitions, so a RollingUpdate surge pod is never Ready.
+        self.assertEqual(self.doc(self.one,'Deployment','trade-processor')['spec']['strategy'],{'type':'Recreate'})
+        module.validate(self.one)
+        docs=copy.deepcopy(self.one); self.doc(docs,'Deployment','trade-processor')['spec']['strategy']={'type':'RollingUpdate'}
+        with self.assertRaisesRegex(AssertionError,'one Recreate replica'): module.validate(docs)
+
+    def test_the_read_model_is_four_replicas_each_owning_a_block_of_the_partitions(self):
+        # FR-DRS-45/46 (RI36, ADR-103 §3): the snapshot profile's default, the order view's reads routed between replicas.
+        docs=self.docs
+        self.assertEqual([d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor'],[])
+        sts=self.doc(docs,'StatefulSet','trade-processor')
+        self.assertEqual((sts['spec']['replicas'],sts['spec']['podManagementPolicy'],sts['spec']['serviceName']),
+                         (4,'Parallel','trade-processor-replicas'))
+        self.assertNotIn('strategy',sts['spec'])
+        env={e['name']:e for e in module.podspec(sts)['containers'][0]['env']}
+        self.assertEqual(env['PROJECTION_FEED_PARTITIONS_OWNED']['value'],'replica:$(TP_REPLICA_INDEX)/4')
+        self.assertEqual(env['TP_REPLICA_INDEX']['valueFrom']['fieldRef']['fieldPath'],"metadata.labels['apps.kubernetes.io/pod-index']")
+        self.assertEqual(env['PROJECTION_REPLICA_ID']['valueFrom']['fieldRef']['fieldPath'],'metadata.name')
+        self.assertEqual(env['PROJECTION_REPLICA_URL']['value'],'http://{replica}.trade-processor-replicas:18091')
+        names=[e['name'] for e in module.podspec(sts)['containers'][0]['env']]   # $(TP_REPLICA_INDEX) expands only from an earlier entry
+        self.assertLess(names.index('TP_REPLICA_INDEX'),names.index('PROJECTION_FEED_PARTITIONS_OWNED'))
+        svc=self.doc(docs,'Service','trade-processor-replicas')
+        self.assertEqual((svc['spec']['clusterIP'],svc['spec']['selector'],svc['metadata']['namespace']),
+                         ('None',{'app':'trade-processor'},sts['metadata']['namespace']))
+        self.assertEqual(self.doc(docs,'Service','trade-processor')['spec']['selector'],{'app':'trade-processor'})   # the clients' address
+        for name,value,why in (('PROJECTION_FEED_PARTITIONS_OWNED','0-5','replica:<pod index>/4'),
+                               ('PROJECTION_REPLICA_URL','http://trade-processor:18091','reach each other')):
+            broken=copy.deepcopy(docs)
+            next(e for e in module.podspec(self.doc(broken,'StatefulSet','trade-processor'))['containers'][0]['env'] if e['name']==name)['value']=value
+            with self.assertRaisesRegex(AssertionError,why): module.validate(broken)
+        with self.assertRaisesRegex(AssertionError,'would own none'): module.shard_read_model(copy.deepcopy(self.one),7)
 
 class ArchivePurge(unittest.TestCase):
     """FR-PRG-40: --archive-purge puts ArchivePurgeMain beside each member, on the member image and its /data and /dev/shm,

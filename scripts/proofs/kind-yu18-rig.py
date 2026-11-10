@@ -16,6 +16,8 @@ ADR-102 cutover (2026-11-08) the blotter reads the store, so --history also rend
 (traderx/position-service:<tag>). --eod adds the rest of the EOD chain: price-publisher (its marks) and risk-extract
 (the engine's cut, traderx/cluster-node:<tag>), credentials from the render's own Secrets. --binary adds the gateway's
 binary port (prepare.add_binary_port) for binary-load.mjs, the production load driver (FR-THT-10's drain proof).
+--tp-replicas N renders trade-processor as production's shard_read_model does (FR-DRS-45): one Recreate Deployment, or
+above 1 a StatefulSet whose pods each own a block of the --partitions (scripts/proofs/kind-tp-ownership.sh).
 --throughput sets the members as the throughput run renders them (prepare.throughput_members: egress coalescing,
 packed snapshots) and the gateway at production's 4 guaranteed CPUs: without coalescing one pipelined gateway session's
 acks overrun the members' best-effort egress, and at kind's 1-CPU limit the gateway is CFS-throttled (2026-11-10: 470 of
@@ -92,7 +94,7 @@ def history(docs, tag, hot_days, registry='', pool='', cold_bucket='', ns='trade
 
 
 def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_history=False, hot_days=0,
-           history_pool='', cold_bucket='', with_eod=False, binary=False, throughput=False):
+           history_pool='', cold_bucket='', with_eod=False, binary=False, tp_replicas=1, throughput=False):
     docs = []
     for f in ['statefulset.yaml', 'nats.yaml', 'eod-price-db.yaml', 'trade-processor.yaml', 'gateway.yaml']:
         docs += [d for d in yaml.safe_load_all((K / f).read_text()) if d]
@@ -130,7 +132,8 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
         if name == 'cluster-gateway' and d['kind'] == 'Deployment':
             d['spec']['replicas'] = gateways
             c = pod['containers'][0]
-            prep.set_env(c, {'FIX_SESSION_STORE': 'jetstream', 'ORDER_READMODEL_URL': 'http://trade-processor:18091'})
+            prep.set_env(c, {'FIX_SESSION_STORE': 'jetstream', 'ORDER_READMODEL_URL': 'http://trade-processor:18091',
+                             'FIX_SESSION_RESET_TIME': '17:00:00', 'FIX_SESSION_TIME_ZONE': 'America/New_York'})   # FR-GFS-08, as gke/gateway.yaml pins it
             c['env'] = [e for e in c['env'] if e['name'] not in ('FIX_SESSION_PASSWORD', 'FIX_SESSION_AUTH', 'RISK_CONTROL_TOKEN')]
             c['env'] += [{'name': 'FIX_SESSION_PASSWORD', 'valueFrom': {'secretKeyRef': {'name': 'auth-secrets', 'key': 'fix-session-password'}}},
                          {'name': 'FIX_SESSION_AUTH', 'value': 'CLIENT1:$(FIX_SESSION_PASSWORD):*'},
@@ -150,7 +153,7 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
     for d in docs:
         pod = prep.podspec(d)
         if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway':
-            prep.set_env(pod['containers'][0], {'FIX_FILL_FEED': 'jetstream'})
+            prep.route_fills(pod['containers'][0])   # FR-FFR-14: as production, GATEWAY_ID from the pod, routed fills
         if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'order-matcher-cluster':
             prep.set_env(pod['containers'][0], {'BRIDGE_PARTITIONS': str(partitions)})
         if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor':
@@ -168,7 +171,8 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
                                                                  'limits': {'cpu': '4', 'memory': '2Gi'}}
     if with_history:
         history(docs, tag, hot_days, registry, history_pool, cold_bucket, ns)
-        for d in docs: d['metadata']['namespace'] = ns
+    prep.shard_read_model(docs, tp_replicas)
+    for d in docs: d['metadata']['namespace'] = ns
     if registry:   # GKE: public images by their locked amd64 digest, as production pins them
         lock = json.loads((ROOT / 'scripts/gcp-compsci/public-image-lock.json').read_text())
         for d in docs:
@@ -198,6 +202,7 @@ if __name__ == '__main__':
     a.add_argument('--cold-bucket', default='', help='GKE: the GCS bucket of the cold disk, prefix <ns>/')
     a.add_argument('--eod', action='store_true', help='add price-publisher and risk-extract (the EOD extract)')
     a.add_argument('--binary', action='store_true', help='add the gateway binary port 18140 (binary-load.mjs, FR-THT-10)')
+    a.add_argument('--tp-replicas', type=int, default=1, help='trade-processor replicas, each owning a block of the partitions (FR-DRS-45)')
     a.add_argument('--throughput', action='store_true', help="the throughput run's member settings (egress coalescing; FR-BSP-01's proof)")
     o = a.parse_args()
     if o.registry and (o.history or o.history_hot_days) and not o.history_pool:
@@ -207,4 +212,4 @@ if __name__ == '__main__':
     yaml.safe_dump_all(render(o.tag, o.partitions, o.gateways, o.ns, o.registry, o.pool,
                               with_history=o.history or o.history_hot_days > 0, hot_days=o.history_hot_days,
                               history_pool=o.history_pool, cold_bucket=o.cold_bucket, with_eod=o.eod, binary=o.binary,
-                              throughput=o.throughput), sys.stdout, sort_keys=False)
+                              tp_replicas=o.tp_replicas, throughput=o.throughput), sys.stdout, sort_keys=False)

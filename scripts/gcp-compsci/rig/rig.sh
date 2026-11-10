@@ -57,9 +57,11 @@ DRY=0
 SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke reads back
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
-pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
-  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
-pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo 1;;
+# ADR-103 (FR-PRG-05, FR-PRG-41): members and NATS on c4d-standard-16, three NATS servers (one per node).
+pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-16;;
+  nats-pool) echo c4d-standard-16;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
+NATS_SERVERS=${NATS_SERVERS:-3}   # the nats StatefulSet's replicas: one server per nats-pool node
+pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo "$NATS_SERVERS";;
   gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
 # history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).
 # FR-THT-10: the partitioned (full-rate) render sizes them at 6 + 8 CPU: HISTORY_MACHINE=c4d-standard-16 creates the pool.
@@ -114,6 +116,9 @@ engine_has_sysctls(){ [ -n "$(gc container node-pools describe engine-pool --clu
 gateway_replicas(){ kc get deploy cluster-gateway -o jsonpath='{.spec.replicas}'; }
 hpa_exists(){ kc get hpa cluster-gateway >/dev/null 2>&1; }
 no_pods(){ [ -z "$(kc get pods -l "app=$1" -o name 2>/dev/null)" ]; }
+# FR-DRS-45: trade-processor is a Deployment (one replica) or a StatefulSet (N replicas, each owning a block of the
+# partitions). wl <name>: the workload kind kubectl takes, deploy or sts; only trade-processor can be a StatefulSet here.
+wl(){ if [ "$1" = trade-processor ] && [ -n "$(kc get sts trade-processor -o name 2>/dev/null)" ]; then echo sts; else echo deploy; fi; }
 # Every replica on the current template and available, whatever the Progressing condition says (FR-PRG-34).
 deploy_rolled_out(){ local v; v=$(kc get "$1" -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.spec.replicas} {.status.updatedReplicas} {.status.availableReplicas} {.status.replicas}' 2>/dev/null) || return 1
   read -r g og want upd avail total <<<"$v"; [ "$g" = "$og" ] && [ "${upd:-0}" = "$want" ] && [ "${avail:-0}" = "$want" ] && [ "${total:-0}" = "$want" ]; }
@@ -152,13 +157,14 @@ rig_pools(){
   local common=(--cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 0 --enable-autorepair
                 --service-account "$sa" --scopes "$scopes")
   if [ "$DRY" = 0 ] && pool_exists nats-pool; then
-    [ "$(gc container node-pools describe nats-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.machineType)')" = c3-standard-8 ] \
-      || die "nats-pool exists with another machine type"
+    [ "$(gc container node-pools describe nats-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.machineType)')" = "$(pool_machine nats-pool)" ] \
+      || die "nats-pool exists with another machine type (ADR-103 wants $(pool_machine nats-pool)): delete it at 0 nodes and rerun"
     note "nats-pool present"
   else
-    # c3, not c4d: NATS keeps JetStream on a pd-balanced claim (nats-data), and C4D attaches only Hyperdisk.
-    do_ gcloud container node-pools create nats-pool "${common[@]}" --machine-type c3-standard-8 \
-      --disk-type pd-balanced --disk-size 100 --node-taints traderx-nats=true:NoSchedule --node-labels traderx-role=nats \
+    # ADR-103 (FR-PRG-41): three c4d-standard-16, one NATS server each, each server's JetStream on its own Hyperdisk
+    # Balanced claim (nats-store); the c3/pd-balanced single server was the capture's wall.
+    do_ gcloud container node-pools create nats-pool "${common[@]}" --machine-type "$(pool_machine nats-pool)" \
+      --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-nats=true:NoSchedule --node-labels traderx-role=nats \
       --system-config-from-file "$HERE/node-nats.yaml"
   fi
   if [ "$DRY" = 0 ] && pool_exists gateway-pool; then
@@ -248,7 +254,7 @@ members_gated(){
 # order_status_is <account> <ref> <status> (bearer $ORDER_TOKEN, passed on stdin, never on argv): trade-processor's order read model, the one FIX status
 # requests read (FR-FIX04): the memory order view in snapshot mode (ORDER_FEED_PERSIST=false never writes SQL
 # orderbook, production 2026-11-07), the orderbook rows otherwise. One effect end for either render.
-order_status_is(){ kc exec -i deploy/trade-processor -- sh -c 'read -r t; curl -sf -m10 -H "Authorization: Bearer $t" \
+order_status_is(){ kc exec -i "$(wl trade-processor)/trade-processor" -- sh -c 'read -r t; curl -sf -m10 -H "Authorization: Bearer $t" \
     "localhost:18091/accounts/$1/orders?status=all"' sh "$1" <<<"$ORDER_TOKEN" \
   | jq -e --arg r "-$2" --arg s "$3" 'any(.[]; (.id | endswith($r)) and .status == $s)' >/dev/null; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
@@ -279,13 +285,28 @@ sql_ready(){ [ "$(sql 'select 1')" = 1 ]; }
 # snapshot; "rows" was retired and trade-processor refuses to start on it. A Deployment that cannot be read, or any
 # other value, fails, and the gate refuses.
 tp_mode(){ local v
-  v=$(kc get deploy trade-processor -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TRADE_PROJECTION_MODE")].value}') \
+  v=$(kc get "$(wl trade-processor)" trade-processor -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TRADE_PROJECTION_MODE")].value}') \
     || { echo "trade-processor's TRADE_PROJECTION_MODE cannot be read" >&2; return 1; }
   case $v in ''|snapshot) echo snapshot;; *) echo "trade-processor's TRADE_PROJECTION_MODE is '$v' (rows was retired, FR-THT-01)" >&2; return 1;; esac; }
 # FR-PRG-22: a failed or empty fetch fails (curl -f: an HTTP error is a failure, not a body to hash).
-accounting(){ local a
-  a=$(kc exec deploy/trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) && [ -n "$a" ] || return 1
-  printf '%s\n' "$a"; }
+# FR-DRS-45: with N replicas each answers for its own partitions; the accounting is their union, and a partition answered
+# by two replicas, or by none, fails it.
+accounting(){ local a i n parts=()
+  if [ "$(wl trade-processor)" = deploy ]; then
+    a=$(kc exec deploy/trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) && [ -n "$a" ] || return 1
+    printf '%s\n' "$a"; return 0
+  fi
+  n=$(kc get sts trade-processor -o jsonpath='{.spec.replicas}') && [[ $n =~ ^[1-9][0-9]*$ ]] || return 1
+  for ((i = 0; i < n; i++)); do
+    a=$(kc exec "trade-processor-$i" -c trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) \
+      && [ -n "$a" ] || return 1
+    parts+=("$a")
+  done
+  printf '%s\n' "${parts[@]}" | jq -se '.[0].partitions as $p
+    | ([.[].trades | keys[]] | sort) as $t | ([.[].orders // {} | keys[]] | sort) as $o
+    | if $t != ([range($p)] | map(tostring) | sort) or $o != $t then error("partitions answered: trades \($t), orders \($o)") else
+      {scope: .[0].scope, partitions: $p, owned: [.[].owned], streams: (map(.streams) | add),
+       trades: (map(.trades) | add), orders: (map(.orders) | add)} end'; }
 # Every partition's committed trade and order cursor at its subject's last stream message.
 accounting_caught_up(){
   accounting | jq -e '([.trades[]] + [(.orders // {})[]]) | length > 0 and all(.cursor >= .streamLast)' >/dev/null
@@ -295,24 +316,26 @@ accounting_caught_up(){
 # 2026-10-30: NATS was OOM-killed 7 times under the binary arm and came back each time. The rig looked up while the FIX
 # session store refused every Logon and ~89.7M trade sides were lost. A run is clean only if the NATS pod the rig came up
 # with is still the only one, Running, and never restarted; `up` records it (ConfigMap rig-nats), `down` checks it.
-nats_problems(){ # nats_problems <recorded pod uid, or empty>: one line per problem, nothing when intact
+# ADR-103: the servers are a StatefulSet of NATS_SERVERS pods; the record is every pod's uid, sorted and comma-joined.
+nats_problems(){ # nats_problems <recorded pod uids, or empty>: one line per problem, nothing when intact
   local pods
   pods=$(kc get pods -l app=nats -o json) || { echo "the NATS pods could not be listed"; return 0; }
-  jq -r --arg uid "$1" '(.items | length) as $n
-    | (if $n != 1 then "\($n) NATS pods, want 1: \([.items[] | "\(.metadata.name) \(.status.phase)"] | join(", "))" else empty end),
+  jq -r --arg uid "$1" --argjson want "$NATS_SERVERS" '(.items | length) as $n
+    | (if $n != $want then "\($n) NATS pods, want \($want): \([.items[] | "\(.metadata.name) \(.status.phase)"] | join(", "))" else empty end),
       (.items[] | select(.status.phase != "Running") | "\(.metadata.name) is \(.status.phase), not Running"),
       (.items[] | .metadata.name as $p | .status.containerStatuses[]? | select(.name == "nats" and .restartCount > 0)
        | "\($p) restarted \(.restartCount)x; last \(.lastState.terminated.reason // "?") (exit \(.lastState.terminated.exitCode // "?")) at \(.lastState.terminated.finishedAt // "?")"),
-      (if $uid != "" and $n == 1 and .items[0].metadata.uid != $uid
-       then "\(.items[0].metadata.name) is not the NATS pod the rig came up with: it was replaced" else empty end)' <<<"$pods"
+      (if $uid != "" and $n == $want and ([.items[].metadata.uid] | sort | join(",")) != $uid
+       then "\([.items[].metadata.name] | join(", ")) are not the NATS pods the rig came up with: one was replaced" else empty end)' <<<"$pods"
 }
 nats_uid(){ kc get configmap rig-nats -o jsonpath='{.data.uid}' 2>/dev/null || true; }
-nats_record(){ # refuse a NATS that already restarted, then record the pod `down` will check
-  step "NATS intact (FR-PRG-28): one pod, Running, never restarted; recorded for down"
-  if [ "$DRY" = 1 ]; then note "would check and record the NATS pod"; return 0; fi
+nats_uids_now(){ kc get pods -l app=nats -o jsonpath='{.items[*].metadata.uid}' | tr ' ' '\n' | sort | paste -sd, -; }
+nats_record(){ # refuse a NATS that already restarted, then record the pods `down` will check
+  step "NATS intact (FR-PRG-28): $NATS_SERVERS pods, Running, never restarted; recorded for down"
+  if [ "$DRY" = 1 ]; then note "would check and record the NATS pods"; return 0; fi
   local np; np=$(nats_problems "$1")
   [ -z "$np" ] || die "NATS (FR-PRG-28): $np"
-  kc create configmap rig-nats --from-literal=uid="$(kc get pods -l app=nats -o jsonpath='{.items[0].metadata.uid}')" \
+  kc create configmap rig-nats --from-literal=uid="$(nats_uids_now)" \
     --from-literal=at="$(date -u +%FT%TZ)" --dry-run=client -o yaml | kc apply -f - >/dev/null
   note "ok"
 }
@@ -328,7 +351,7 @@ member(){ # member <i>: applied engineApplied trades orderHash positionHash snap
 # was replaced (a failover) restarts it from 0; one shared baseline could never be passed (2026-11-06, e1106).
 snapshots_past(){ local i n b=("$@"); for i in 0 1 2; do n=$(member "$i" | cut -d' ' -f6); [ "${n:-0}" -gt "${b[$i]:-0}" ] || return 1; done; }
 admin_token(){ # minted inside trade-processor, so the master secret never leaves the cluster; never printed
-  kc exec deploy/trade-processor -- sh -c 'curl -s -m8 -X POST localhost:18091/auth/dev-token \
+  kc exec "$(wl trade-processor)/trade-processor" -- sh -c 'curl -s -m8 -X POST localhost:18091/auth/dev-token \
     -H "X-Auth-Master-Secret: $AUTH_DEV_TOKEN_MASTER_SECRET" -H "Content-Type: application/json" \
     -d "{\"subject\":\"rig-gate\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}"' \
     | python3 -c 'import sys,json
@@ -471,8 +494,18 @@ print("; ".join(bad) or f"OK {got[0]} sides")
 # of trade_seq and trade_seq^2 (UInt64 arithmetic wraps mod 2^64 as the closed form does) and the duplicates, summed and
 # compared with the closed form over the epoch's sides 1..t minus the unprojected ranges. The store is fed from cursor 0
 # (FR-THT-07), so there is no base. A deleted row breaks the count, a duplicated one is counted, a swapped one the sums.
-HISTORY_CHECK_SQL="SELECT part, count(), max(trade_seq), sum(trade_seq), sum(trade_seq * trade_seq), count() - uniqExact(trade_seq) FROM trades GROUP BY part ORDER BY part FORMAT TSV"
-history_health(){ kc exec deploy/trade-processor -- curl -sf -m15 http://history-feed:18095/health; }
+# FR-THT-06 at volume: the one-query form (GROUP BY part over the table) held every partition's uniqExact set at once and
+# exceeded ClickHouse's 21 GiB query memory at 1.4B rows (the 2026-11-09/10 hours were checked by hand). One query per
+# partition keeps the distinct set to one partition's; the rows and the verdict are unchanged.
+HISTORY_PARTS_SQL="SELECT DISTINCT part FROM trades ORDER BY part FORMAT TSV"
+history_check_sql(){ echo "SELECT part, count(), max(trade_seq), sum(trade_seq), sum(trade_seq * trade_seq), count() - uniqExact(trade_seq) FROM trades WHERE part = $1 GROUP BY part FORMAT TSV"; }
+ch_query(){ kc exec -i "$(wl trade-processor)/trade-processor" -- curl -sf -m600 --data-binary @- http://clickhouse:8123/ <<<"$1"; }
+history_rows(){ # one check row per partition present in the store; fails when any query does
+  local parts p r rows=''
+  parts=$(ch_query "$HISTORY_PARTS_SQL") || return 1
+  for p in $parts; do r=$(ch_query "$(history_check_sql "$p")") || return 1; rows+="$r"$'\n'; done
+  printf '%s' "$rows"; }
+history_health(){ kc exec "$(wl trade-processor)/trade-processor" -- curl -sf -m15 http://history-feed:18095/health; }
 # Every lane open and nothing pending: with the gateways at 0 the store then holds all the stream has.
 history_caught_up(){ history_health | jq -e '.ready and (.lanes | length > 0 and all(.pending == 0))' >/dev/null; }
 # FR-THT-10: G3h's wait is 600 s plus the backlog at the floor rate the feed must beat (HISTORY_DRAIN_FLOOR rows/s, the
@@ -512,8 +545,7 @@ g3_history(){
   unowned=$(jq -ce '.unowned | objects' <<<"$health") \
     || die "G3h: history-feed reports no unread-subject check (an image before it, or NATS unreadable: $(jq -r '.unownedError // "none"' <<<"$health"))"
   [ "$unowned" = '{}' ] || die "G3h: no history-feed lane reads $unowned on the capture stream: the store misses those messages (FR-THT-02)"
-  rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
-    || die "G3h: the history store could not be read"
+  rows=$(history_rows) || die "G3h: the history store could not be read"
   printf '%s\n' "$rows" > "$EVIDENCE/gate-history.tsv"
   ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
   verdict=$(history_verdict "$t" "$ranges" "$rows")
@@ -794,12 +826,17 @@ rig_fresh_epoch(){
 # trade store rightly refused with RETENTION_GAP. Read from NATS's monitor, deleted by one JetStream API request over the
 # client protocol (busybox nc in the nats pod: no other image). Deleting a stream deletes its consumers: trade-processor
 # recreates the stream and its tp-* durables on start, and the gateways' fill feed is an ordered (ephemeral) consumer.
+# ADR-103: a server's /jsz reports the streams IT holds (R1 streams placed by tag, FR-DRS-44), so every server is asked.
 feed_streams(){ # "<stream> <messages>" per capture stream, TRADERX_FEED or TRADERX_FEED_P<p>; fails when NATS cannot be read
-  local j; j=$(kc exec deploy/nats -c nats -- wget -qO- 'http://localhost:8222/jsz?accounts=true&streams=true') || return 1
-  jq -e 'has("streams")' <<<"$j" >/dev/null || return 1   # a JetStream report, not an error page
-  jq -r '.account_details[]?.stream_detail[]? | select(.name | test("^TRADERX_FEED(_P[0-9]+)?$")) | "\(.name) \(.state.messages)"' <<<"$j"; }
-nats_api(){ # nats_api <subject>: one JetStream API request, its JSON reply
-  kc exec deploy/nats -c nats -- sh -c '(printf "CONNECT {\"verbose\":false}\r\nSUB r 1\r\nPUB %s r 0\r\n\r\n" "$1"; sleep 2) | nc localhost 4222' sh "$1" \
+  local p j pods; pods=$(kc get pods -l app=nats -o jsonpath='{.items[*].metadata.name}') || return 1
+  [ -n "$pods" ] || return 1
+  for p in $pods; do
+    j=$(kc exec "$p" -c nats -- wget -qO- 'http://localhost:8222/jsz?accounts=true&streams=true') || return 1
+    jq -e 'has("streams")' <<<"$j" >/dev/null || return 1   # a JetStream report, not an error page
+    jq -r '.account_details[]?.stream_detail[]? | select(.name | test("^TRADERX_FEED(_P[0-9]+)?$")) | "\(.name) \(.state.messages)"' <<<"$j"
+  done | sort -u; }
+nats_api(){ # nats_api <subject>: one JetStream API request, its JSON reply (the API is cluster-wide: any server answers)
+  kc exec sts/nats -c nats -- sh -c '(printf "CONNECT {\"verbose\":false}\r\nSUB r 1\r\nPUB %s r 0\r\n\r\n" "$1"; sleep 2) | nc localhost 4222' sh "$1" \
     | grep -o '^{.*}'; }
 reset_feed(){
   local streams s n
@@ -818,24 +855,24 @@ reset_feed(){
 # count (production 2026-11-08: a refused up had left trade-processor and history-feed at 0, and the retry "restored" 0).
 HELD=traderx-rig-held-replicas
 hold(){ # hold <deploy>: record its replica count on it, once (a retry keeps the first), then stop it
-  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model archive: $1 cannot be read"
+  local r; r=$(kc get "$(wl "$1")" "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model archive: $1 cannot be read"
   if [ -z "$r" ]; then
-    r=$(kc get deploy "$1" -o jsonpath='{.spec.replicas}') || die "read-model archive: $1 cannot be read"
+    r=$(kc get "$(wl "$1")" "$1" -o jsonpath='{.spec.replicas}') || die "read-model archive: $1 cannot be read"
     [[ $r =~ ^[1-9][0-9]*$ ]] || die "read-model archive: $1 is at ${r:-no} replicas with none recorded: scale it to its rendered count, then rerun"
-    kc annotate deploy "$1" "$HELD=$r" --overwrite >/dev/null || die "read-model archive: $1's replica count cannot be recorded"
+    kc annotate "$(wl "$1")" "$1" "$HELD=$r" --overwrite >/dev/null || die "read-model archive: $1's replica count cannot be recorded"
   fi
-  kc scale "deploy/$1" --replicas=0 >/dev/null || die "read-model archive: $1 cannot be stopped"
+  kc scale "$(wl "$1")/$1" --replicas=0 >/dev/null || die "read-model archive: $1 cannot be stopped"
   wait_for 300 "$1 stopped (restarts at $r)" no_pods "$1"; }
 release(){ # release <deploy>: back to its recorded count, the record removed; with none, an earlier retry released it
-  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model restart: $1 cannot be read"
+  local r; r=$(kc get "$(wl "$1")" "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model restart: $1 cannot be read"
   if [ -z "$r" ]; then
-    r=$(kc get deploy "$1" -o jsonpath='{.spec.replicas}') && [[ $r =~ ^[1-9][0-9]*$ ]] \
+    r=$(kc get "$(wl "$1")" "$1" -o jsonpath='{.spec.replicas}') && [[ $r =~ ^[1-9][0-9]*$ ]] \
       || die "read-model restart: $1 is at ${r:-no} replicas with none recorded: scale it to its rendered count, then rerun"
     note "$1 already restarted ($r replicas)"; return 0
   fi
   [[ $r =~ ^[1-9][0-9]*$ ]] || die "read-model restart: $1's recorded replica count '$r' is not a count"
-  kc scale "deploy/$1" --replicas="$r" >/dev/null || die "read-model archive: $1 cannot be restarted"
-  kc annotate deploy "$1" "$HELD-" >/dev/null || die "read-model archive: $1's replica record cannot be removed"; }
+  kc scale "$(wl "$1")/$1" --replicas="$r" >/dev/null || die "read-model archive: $1 cannot be restarted"
+  kc annotate "$(wl "$1")" "$1" "$HELD-" >/dev/null || die "read-model archive: $1's replica record cannot be removed"; }
 
 # FR-THT-08 (production 2026-11-08, e1108): the history store is the old epoch's too. history-feed bound its lanes to the
 # deleted stream's incarnation and refused STREAM_RESET. Its tables move to arc_<label>_* while it is stopped; it
@@ -996,7 +1033,7 @@ restart_read_model(){ # FR-PRG-29: after the archive (rig-epoch archived), trade
   [ "$DRY" = 1 ] && { note "would restart: trade-processor, history-feed at their recorded counts"; return 0; }
   local hf; hf=$(kc get deploy history-feed --ignore-not-found -o name) || die "read-model restart: history-feed cannot be read"
   release trade-processor
-  kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
+  kc rollout status "$(wl trade-processor)/trade-processor" --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
   # FR-PRG-29: Ready is not listening on a render without trade-processor's readiness probe (production 2026-11-07
   # 11:01 pm ET: G3's accounting read got connection refused 10 s before it listened), so wait for what G3 reads.
   wait_for 300 "trade-processor's accounting answers (/v2/projection-feed/accounting)" accounting

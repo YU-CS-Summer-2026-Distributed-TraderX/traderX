@@ -46,13 +46,32 @@ public final class ProjectionFeedController {
 
   @org.springframework.beans.factory.annotation.Autowired(required = false)
   private finos.traderx.tradeprocessor.service.OrderViewSnapshotStore orderSnapshots;
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.PartitionOwnership ownership;
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private OrderReadRouter router;
+
+  /** FR-DRS-45: the partitions this replica reads, all of them without an ownership (a unit-test context). */
+  private int[] owned(int p) {
+    if (ownership != null) { return ownership.owned(); }
+    int[] all = new int[p];
+    for (int i = 0; i < p; i++) { all[i] = i; }
+    return all;
+  }
+
+  private void putOwnership(Map<String, Object> out, int p) {
+    out.put("replica", ownership == null ? "" : ownership.replica());
+    out.put("ownedSpec", ownership == null ? "all" : ownership.spec());
+    out.put("owned", owned(p));
+  }
 
   /**
    * FR-DRS-29/30: what the snapshot read model has COMMITTED, per partition, next to the stream it was read from, so a
    * restore gate can check exactly-once in O(P): each trade partition's cursor, side count, highest tradeSeq, wrapped
    * sums and refused duplicates; each order partition's cursor and committed open orders; and per partition subject
    * the stream's last sequence (a committed cursor below it means unprojected messages). Committed, not live: it is
-   * what a restart resumes from, and it is the same whichever replica answers.
+   * what a restart resumes from. FR-DRS-45: only this replica's OWNED partitions, named in {@code owned} with the
+   * {@code replica}; the union over the replicas is the whole read model (each partition in exactly one answer).
    */
   @GetMapping("/v2/projection-feed/accounting")
   public Map<String, Object> accounting() throws Exception {
@@ -70,8 +89,10 @@ public final class ProjectionFeedController {
     Map<String, Object> out = new LinkedHashMap<>();
     out.put("scope", trades.snapshotScope());
     out.put("partitions", p);
+    putOwnership(out, p);
+    int[] mine = owned(p);
     Map<String, Object> streams = new LinkedHashMap<>();   // FR-DRS-32: one stream, or one per partition
-    for (int i = 0; i < p; i++) {
+    for (int i : mine) {
       String name = trades.streamName(i);
       if (streams.containsKey(name)) { continue; }
       var state = nc.jetStreamManagement().getStreamInfo(name).getStreamState();
@@ -80,7 +101,7 @@ public final class ProjectionFeedController {
     out.put("streams", streams);
     Map<Integer, Map<String, Object>> committed = snapshotStore.committedAccounting(trades.snapshotScope());
     Map<String, Object> tp = new LinkedHashMap<>();
-    for (int i = 0; i < p; i++) {
+    for (int i : mine) {
       Map<String, Object> m = new LinkedHashMap<>(committed.getOrDefault(i, Map.of("cursor", 0L, "sides", 0L, "maxSeq", 0L,
           "sumSeq", "0", "sumSq", "0", "duplicates", 0L, "epoch", "")));
       m.put("stream", trades.streamName(i));
@@ -92,7 +113,7 @@ public final class ProjectionFeedController {
     if (orders != null && orderSnapshots != null && orders.viewScope() != null) {
       Map<Integer, Map<String, Object>> oc = orderSnapshots.committed(orders.viewScope());
       Map<String, Object> op = new LinkedHashMap<>();
-      for (int i = 0; i < p; i++) {
+      for (int i : mine) {
         Map<String, Object> m = new LinkedHashMap<>(oc.getOrDefault(i, Map.of("cursor", -1L, "open", 0L, "resting", 0L)));
         m.put("streamLast", finos.traderx.tradeprocessor.JetStreamFeed.lastSeq(nc, orders.streamName(i),
             finos.traderx.tradeprocessor.JetStreamFeed.subject("/orders", i, p)));
@@ -108,6 +129,11 @@ public final class ProjectionFeedController {
     Map<String, Object> out = new LinkedHashMap<>();
     for (Subscriber<?> s : subscribers) {
       if (s instanceof TradeFeedHandler t) {
+        Map<String, Object> own = new LinkedHashMap<>();   // FR-DRS-45: the partitions below are this replica's
+        putOwnership(own, t.partitionCount());
+        own.put("partitions", t.partitionCount());
+        if (router != null) { own.put("orderReads", router.counts()); }   // FR-DRS-46
+        out.put("ownership", own);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("mode", t.feedMode());
         m.put("backlog", t.backlog());
@@ -144,6 +170,7 @@ public final class ProjectionFeedController {
           m.put("viewSnapshotFailures", o.viewSnapshotFailureCount());
           m.put("committed", o.viewCommitted());
         }
+        if (o.fillsStats() != null) { m.put("fills", o.fillsStats()); }   // FR-DRS-48
         out.put("orders", m);
       }
     }

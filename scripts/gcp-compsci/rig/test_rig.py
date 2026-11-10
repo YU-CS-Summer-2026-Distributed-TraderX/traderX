@@ -35,8 +35,12 @@ read_model(){ [ -n "${RM_FAIL:-}" ] && return 1; if [ -f "$EVIDENCE/.rm" ]; then
 kubectl(){
   call "kubectl $*"
   case "$*" in
+    *"get sts trade-processor -o name"*) [ -z "${TP_STS:-}" ] || echo statefulset.apps/trade-processor;;   # TP_STS: N replicas (FR-DRS-45)
+    *"get sts trade-processor -o jsonpath={.spec.replicas}"*) echo "${TP_STS:-}";;
+    *"exec trade-processor-"*projection-feed/accounting*) n="$*"; n=${n#*exec trade-processor-}; v="ACCT_${n%% *}"; echo "${!v:-}";;
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
-    *"get pods -l app=nats -o jsonpath"*) echo u1;;
+    *"get pods -l app=nats -o jsonpath={.items[*].metadata.name}"*) echo "${NATS_NAMES:-nats-u1}";;
+    *"get pods -l app=nats -o jsonpath"*) echo "${NATS_UIDS_NOW:-u1}";;
     *"get pods -l app=nats -o json"*) [ -n "${NATS_LIST_FAIL:-}" ] && return 1; echo "${NATS_PODS:-$NATS_OK}";;
     *"get configmap rig-nats"*) echo "${NATS_UID-u1}";;
     *"get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name"*)
@@ -67,9 +71,14 @@ kubectl(){
       *"EXISTS TABLE arc_"*) echo "${CH_ARC:-0}";; *"EXISTS TABLE"*) echo "${CH_LIVE:-1}";;
       *"count() FROM arc_"*) echo 81140;; *"count() FROM"*) echo "${CH_ROWS:-0}";; esac;;
     *"history-feed:18095/health"*) echo "$HIST_HEALTH";;
-    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
+    *"clickhouse:8123"*) sql=$(cat); call "clickhouse-sql $sql"; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
       t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
-      printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
+      rows=$(printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}")
+      case "$sql" in
+        *"DISTINCT part"*) printf '%s\n' "$rows" | cut -f1;;                   # the partitions present
+        *"WHERE part = "*) k=${sql#*WHERE part = }; k=${k%% *}; printf '%s\n' "$rows" | awk -F'\t' -v k="$k" '$1 == k';;
+        *) printf '%s\n' "$rows";;                                            # the old one-query shape
+      esac;;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22   # ACCT_FAIL_N: refused (exit 7) the first N reads
       n=$(( $(cat "$EVIDENCE/.acct" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.acct"
@@ -157,7 +166,7 @@ def nats_pods(*pods):   # (uid, phase, restarts, last reason)
         for u, ph, r, why in pods]})
 
 
-GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'HIST_HEALTH': '{"ready":true,"unowned":{},"lanes":[{"pending":0},{"pending":0}]}', 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
+GOOD = {'NATS_SERVERS': '1', 'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'HIST_HEALTH': '{"ready":true,"unowned":{},"lanes":[{"pending":0},{"pending":0}]}', 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
@@ -404,6 +413,20 @@ class Up(unittest.TestCase):
                          (acct(orders=False), 'no order view snapshot')):
             self.assertIn(why, self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT=bad))
 
+    def test_n_read_model_replicas_are_checked_by_the_union_of_their_accountings(self):
+        # FR-DRS-45: each replica answers for its own partitions; G3 checks their union, each partition from exactly one.
+        import json
+        whole = json.loads(acct())
+        def replica(*parts):
+            return json.dumps({**whole, 'owned': [int(p) for p in parts], 'trades': {p: whole['trades'][p] for p in parts},
+                               'orders': {p: whole['orders'][p] for p in parts}})
+        rc, out, calls = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', TP_STS='2', ACCT_0=replica('0'), ACCT_1=replica('1'))
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3 ok: the read model booked sides 1..5, each once; 2 open orders', out)
+        self.assertIsNotNone(first(calls, r'exec trade-processor-1 .*accounting'))
+        for a0, a1 in ((replica('0', '1'), replica('1')), (replica('0'), replica('0'))):   # a partition twice; one by none
+            self.assertIn('partitions answered', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', TP_STS='2', ACCT_0=a0, ACCT_1=a1))
+
     def test_the_snapshot_check_starts_at_the_recorded_rows_era_base(self):
         # Sides 1..2 were projected as rows before the switch (rig-snapshot-base 2); the accounting holds 3..5.
         three_to_five = acct(p0=(2, 5, 8, 34, 0), p1=(1, 4, 4, 16, 0))
@@ -489,6 +512,18 @@ class Up(unittest.TestCase):
 
     def test_an_unreadable_history_store_is_refused(self):
         self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
+
+    def test_the_history_check_is_one_query_per_partition(self):
+        # FR-THT-06 at volume: GROUP BY part over the table holds every partition's uniqExact set at once and exceeded
+        # ClickHouse's 21 GiB at 1.4B rows (2026-11-09/10). The check lists the partitions, then queries each alone.
+        rc, out, calls = run('rig_up', HIST=self.HIST)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
+        self.assertIsNotNone(first(calls, r'clickhouse-sql SELECT DISTINCT part FROM trades'), out)
+        for k in (0, 1):
+            self.assertIsNotNone(first(calls, rf'clickhouse-sql SELECT part, count\(\), max\(trade_seq\).*FROM trades WHERE part = {k} GROUP BY part'), out)
+        self.assertIsNone(first(calls, r'clickhouse-sql SELECT part, count\(\).*FROM trades GROUP BY part'), 'the whole-table query')
+        self.assertIsNone(first(calls, r'clickhouse-sql .*uniqExact\(trade_seq\) FROM trades (ORDER|GROUP) BY'), 'uniqExact over the table')
 
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')
@@ -1188,6 +1223,28 @@ class Nats(unittest.TestCase):
     def test_status_reports_it(self):
         rc, out, _ = run('rig_status', NATS_PODS=nats_pods(('u1', 'Running', 2, 'OOMKilled')))
         self.assertIn('NATS: nats-u1 restarted 2x', out)
+
+    def test_three_servers_are_three_pods_each_recorded(self):
+        # ADR-103 (FR-PRG-41): the cluster's three servers; two is a loss, and a replaced one is found by its uid.
+        three = nats_pods(('u1', 'Running', 0, ''), ('u2', 'Running', 0, ''), ('u3', 'Running', 0, ''))
+        rc, out, calls = run('rig_up', NATS_SERVERS='3', NATS_PODS=three, NATS_UIDS_NOW='u1 u2 u3')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'create configmap rig-nats --from-literal=uid=u1,u2,u3'), out)
+        rc, out, _ = run('rig_up', NATS_SERVERS='3', NATS_PODS=nats_pods(('u1', 'Running', 0, ''), ('u2', 'Running', 0, '')))
+        self.assertEqual(rc, 2, out)
+        self.assertIn('2 NATS pods, want 3', out)
+        rc, out, _ = run('rig_down', NATS_SERVERS='3', NATS_UID='u1,u2,u3',
+                         NATS_PODS=nats_pods(('u1', 'Running', 0, ''), ('u2', 'Running', 0, ''), ('u4', 'Running', 0, '')))
+        self.assertEqual(rc, 3, out)
+        self.assertIn('one was replaced', out)
+        rc, out, _ = run('rig_down', NATS_SERVERS='3', NATS_UID='u1,u2,u3', NATS_PODS=three)
+        self.assertEqual(rc, 0, out)
+
+    def test_pools_creates_three_nats_nodes_on_hyperdisk(self):
+        rc, out, _ = run('DRY=1; rig_pools')
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r'would: gcloud container node-pools create nats-pool .*--machine-type c4d-standard-16 '
+                              r'.*--disk-type hyperdisk-balanced .*--node-taints traderx-nats=true:NoSchedule')
 
 
 class Clients(unittest.TestCase):

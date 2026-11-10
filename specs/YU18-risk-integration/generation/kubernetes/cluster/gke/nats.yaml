@@ -1,12 +1,20 @@
-# YU18 override of YU17's GKE NATS (scripts/gcp-compsci/prepare.py prefers this file). One change of
-# substance: JetStream lives on a PersistentVolumeClaim with a store cap, because with the trade store
-# (TRADE_PROJECTION_MODE=snapshot) the capture stream TRADERX_FEED is the system of record for trades.
-# On YU17's emptyDir a NATS restart recreated the stream at sequence 1 under the projection's cursor;
-# trade-processor now refuses that (STREAM_RESET) instead of ignoring every replayed sequence, but the
-# fix is not to lose the ledger. Sizing (docs/engineering/downstream-at-400k.md §7.7):
+# YU18 override of YU17's GKE NATS (scripts/gcp-compsci/prepare.py prefers this file). Two changes of substance:
+#  1. JetStream lives on a PersistentVolumeClaim with a store cap, because with the trade store
+#     (TRADE_PROJECTION_MODE=snapshot) the capture stream TRADERX_FEED is the system of record for trades.
+#     On YU17's emptyDir a NATS restart recreated the stream at sequence 1 under the projection's cursor;
+#     trade-processor now refuses that (STREAM_RESET) instead of ignoring every replayed sequence, but the
+#     fix is not to lose the ledger.
+#  2. ADR-103 (FR-PRG-41): three servers in one NATS cluster, a StatefulSet, each with its own Hyperdisk Balanced
+#     claim. One server stores ~0.4-0.5M msgs/s whatever the stream count (FR-DRS-34), and at 400K orders/s one
+#     volume saturated twice (pd-balanced at 298 MB/s; Hyperdisk at 684-724 MB/s once retention churn joined the
+#     writes; RI34 §1b). The per-partition capture streams (R1, FR-DRS-32) are placed one server each by tag
+#     (PROJECTION_FEED_STREAM_PLACEMENT, FR-DRS-44), so each server writes a third of the bytes and a server loss
+#     loses only its partitions' unreplayed tail, which the bridges' catch-up republishes (FR-DRS-38). The JetStream
+#     meta group keeps a majority with one server down, so the API stays up through a loss.
+# Sizing (docs/engineering/downstream-at-400k.md §7.7):
 #   retention bytes = stored bytes/message x message rate x the longest outage replayed from
 # The stream's own limits are set by trade-processor (PROJECTION_FEED_STREAM_MAX_BYTES / _MAX_AGE_HOURS);
-# max_file_store below is the server-wide ceiling and must exceed them plus the EOD streams.
+# max_file_store below is the per-server ceiling and must exceed the partitions one server holds plus the EOD streams.
 apiVersion: v1
 kind: Service
 metadata:
@@ -24,22 +32,70 @@ spec:
       port: 8081
       targetPort: 8081
 ---
+# The routes' names (nats-N.nats-headless): resolvable before the pod is Ready, or the cluster never forms.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-headless
+  labels:
+    app: nats
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: nats
+  ports:
+    - name: cluster
+      port: 6222
+      targetPort: 6222
+---
+# Hyperdisk Balanced per server (C4D attaches only Hyperdisk). Provisioned at 600 MiB/s: at 450K orders/s one
+# server writes ~100-150 MB/s of s2-compressed feed (FR-DRS-42) plus the retention deletes, well under the volume
+# but not under pd-balanced's 240 MB/s. 6,000 IOPS keeps the throughput inside Hyperdisk's IOPS:throughput band.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nats-store
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: hyperdisk-balanced
+  provisioned-throughput-on-create: "600Mi"
+  provisioned-iops-on-create: "6000"
+  csi.storage.k8s.io/fstype: ext4
+volumeBindingMode: WaitForFirstConsumer
+# The disk goes when its claim does. The claims are retained by the StatefulSet below, so a server's store is lost
+# only to an explicit `kubectl delete pvc` or a namespace delete.
+reclaimPolicy: Delete
+---
 # YU17 console: the browser blotter subscribes /accounts/{id}/trades|positions over the edge
 # proxy's /nats-ws route (which targets nats-broker:8081). A websocket listener cannot be enabled
 # by CLI flag — nats-server only accepts it from a config file — hence this ConfigMap. The
 # jetstream/http lines reproduce exactly what the args previously said; websocket is the only
 # addition. no_tls is deliberate: TLS terminates at the edge proxy, and this listener is
 # cluster-internal.
+# POD_NAME is substituted by the container's start command (the server's name and its placement tag are the pod's
+# name: nats-0, nats-1, nats-2); the routes name every member of the StatefulSet through the headless Service.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: nats-server-config
 data:
   nats.conf: |
+    server_name: POD_NAME
+    server_tags: ["POD_NAME"]
+    cluster {
+      name: traderx
+      port: 6222
+      routes: [
+        nats://nats-0.nats-headless.traderx.svc.cluster.local:6222,
+        nats://nats-1.nats-headless.traderx.svc.cluster.local:6222,
+        nats://nats-2.nats-headless.traderx.svc.cluster.local:6222
+      ]
+    }
     jetstream {
       store_dir: /data
-      # FR-PRG-28: explicit, or NATS takes 75% of the HOST's memory (23.5 GB on c3-standard-8) as its memory-store
-      # limit, which the pod cannot hold. Every stream and KV bucket here is file-backed.
+      # FR-PRG-28: explicit, or NATS takes 75% of the HOST's memory as its memory-store limit, which the pod cannot
+      # hold. Every stream and KV bucket here is file-backed.
       max_memory_store: 256MB
       max_file_store: 24G
       # The bridges core-publish; above the stream's ingest queue NATS DROPS silently ("excessive stream
@@ -48,6 +104,10 @@ data:
       max_buffered_msgs: 2000000
       max_buffered_size: 1GB
     }
+    # A reader's connection is cut as a slow consumer past this much undelivered data (default 64MB). The batched
+    # wire (FR-DRS-41) puts ~12 MB in one fetch of 1,000 messages; FR-DRS-43 sizes the fetch, this keeps a short
+    # stall from costing the connection (RI36).
+    max_pending: 256MB
     http: 8222
     websocket {
       port: 8081
@@ -55,13 +115,16 @@ data:
     }
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: nats
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate          # one RWO volume: the old pod must release it before the new one mounts it
+  replicas: 3
+  serviceName: nats-headless
+  podManagementPolicy: Parallel   # the routes wait for each other: starting the servers one at a time only delays the cluster
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
   selector:
     matchLabels:
       app: nats
@@ -70,6 +133,15 @@ spec:
       labels:
         app: nats
     spec:
+      # One server per node: the point of three servers is three disks and three NICs.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: nats
+              topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 60
       containers:
         - name: nats
           image: nats:2.14-alpine
@@ -77,12 +149,25 @@ spec:
           # JetStream is required, not optional: eod.pnl.done is a durable stream event, and the
           # producer's durable consumer is what makes a failed extract retry instead of vanish.
           # Config moved from args into nats-server-config so the websocket listener (browser
-          # blotter feed) can exist — see the ConfigMap above. YU18: /data is a PVC (nats-data), so
+          # blotter feed) can exist — see the ConfigMap above. /data is this server's claim (data), so
           # streams and durable consumers survive a pod restart.
-          args: ["-c", "/etc/nats/nats.conf"]
+          command: ["sh", "-c"]
+          args:
+            - sed "s/POD_NAME/$POD_NAME/g" /etc/nats/nats.conf > /tmp/nats.conf && exec nats-server -c /tmp/nats.conf
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # FR-PRG-28: GOMEMLIMIT holds the Go heap under the pod limit; the rest of the limit is the file store's
+            # page cache, which the cgroup reclaims before it stalls the writer (the members' 16Gi lesson, RI34 §1b).
+            - name: GOMEMLIMIT
+              value: 20GiB
           ports:
             - name: client
               containerPort: 4222
+            - name: cluster
+              containerPort: 6222
             - name: monitor
               containerPort: 8222
             - name: websocket
@@ -98,34 +183,24 @@ spec:
               mountPath: /data
             - name: config
               mountPath: /etc/nats
-          # FR-PRG-28: sized to nats-pool's c3-standard-8, where NATS runs alone (32 GiB; GKE allocatable ~28.3 GiB).
-          # 2Gi was OOM-killed 7 times on 2026-10-30 under the binary arm's ~150K trades/s bridge publish: the 1GB
-          # ingest queue plus a Go heap free to double (GOGC) outgrew it. GOMEMLIMIT holds the heap under the limit;
+          # FR-PRG-28: sized to nats-pool's c4d-standard-16, where a server runs alone (62 GiB; GKE allocatable ~56 GiB).
           # request = limit, so the kubelet never evicts it. prepare.py validates the arithmetic on every render.
-          env:
-            - name: GOMEMLIMIT
-              value: 20GiB
           resources:
             requests:
-              cpu: "4"
-              memory: 24Gi
+              cpu: "12"
+              memory: 48Gi
             limits:
-              memory: 24Gi
+              memory: 48Gi
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: nats-data
         - name: config
           configMap:
             name: nats-server-config
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: nats-data
-spec:
-  accessModes: ["ReadWriteOnce"]
-  storageClassName: standard-rwo
-  resources:
-    requests:
-      storage: 32Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: nats-store
+        resources:
+          requests:
+            storage: 32Gi

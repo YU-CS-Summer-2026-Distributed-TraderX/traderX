@@ -120,3 +120,32 @@ Adding either to the egress would be a wire change for every member and gateway.
   The 6 that filled it was published while they were gone. The client still got FILLED, LastQty 6,
   CumQty 10, exactly once. The consumers were recreated within seconds of the delete, and
   `traderx_fix_fill_reports_total{outcome="gap"}` stayed 0 on both gateways.
+
+## Amendment 2026-11-10: fills routed to the owning gateway (FR-FFR-14, FR-DRS-48)
+
+Decision 2 ("every gateway sees every update and acts only on its own orders") does not survive the rates ADR-103
+is built for. The order feed at 450K orders/s is ~675K events/s, ~400 MB/s on the wire; the campaign ran 24 gateways,
+so decision 2 is 9.6 GB/s of NATS egress for fills alone, and the cost is bytes, not the two byte scans of decision
+2. The options paper's E1 (per-account subjects) was written before FR-DRS-41: a batched bridge message has one subject
+and many accounts, so filtering by subject means a message per account, the per-message wall FR-DRS-41 removed.
+yaakov chose routing to the owning gateway over a per-partition filter (2026-11-10, "Build (b)").
+
+8. **The gateway names itself and the booking event carries the name.** `GATEWAY_ID` travels after the shared secret
+   in the cluster connect credentials; the member makes it the session's principal (`ClusterClientAuth`); the engine
+   stamps the principal on a NEW order's direct booking output only, read from the input's session at drain time —
+   the same on every member and on replay, never state — and the order bridge carries it as `gateway` on that event
+   only. A resting order's update does not need it: the read model remembers the order's gateway from its booking.
+9. **The read model routes.** The order view keeps the gateway with the order and republishes every update of such an
+   order to `/fills.<gateway>` on `TRADERX_FILLS` (minutes of retention, R1), batched per view batch per gateway in
+   FR-DRS-41's record form. The replica that owns the partition does it (FR-DRS-45), so one order's events are in
+   order on its subject.
+10. **The gateway reads its own subject only** (`FIX_FILL_FEED=routed`, the production and kind renders): one ordered
+    consumer from "new", the same `onOrderUpdate` and the same report semantics (decisions 3–7). Fan-out for fills is
+    1×; the capture's readers are unchanged. Orders submitted by a client with no principal (risk-extract, the feed
+    adapter) are not routed and need no reports.
+
+Consequences: a FIX session that reconnects to another gateway after its order was booked does not hear that order's
+later fills there (they go to the booking gateway, which no longer has the session); that is ADR-086's session-store
+concern, unchanged by this amendment, and the status request (ADR-093) still answers from the read model. The kind rig
+and the production render set `GATEWAY_ID` from the pod name; a rig without `CLUSTER_CLIENT_SECRET` on its members has
+no authenticator, no principal and no routing.

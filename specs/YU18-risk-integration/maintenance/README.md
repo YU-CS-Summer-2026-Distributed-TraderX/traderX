@@ -28,6 +28,7 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Risk capacity gauges](risk-capacity-metrics/README.md) | See pack tasks and linked RI/LR evidence |
 | [STP image provenance](stp-image-provenance/README.md) | See pack tasks and linked RI/LR evidence |
 | [Tape status, universe and identity diagnostics](tape-status/README.md) | See pack tasks and linked RI/LR evidence |
+| [Order-path latency measurement](order-path-latency/README.md) | Latency L0 measured on GKE 2026-11-10; tools only, no order-path change |
 
 | [Bounded settlement](settlement-memory/README.md) | Source and isolated retained-data proof accepted; original delivery acceptance remains separate |
 | [Engine-review hardening](engine-review-hardening/README.md) | Integrated 2026-10-27: S1–S6 (ADR-082), F1–F11 |

@@ -11,9 +11,14 @@
   (ADR-087).
 - FR-GMR-02: The kustomization and the CompSci render (`prepare.py`) SHALL both emit the StorageClass,
   cluster-scoped, with no namespace.
-- FR-GMR-03 (on the CompSci production profile, FR-PRG-05 replaces G1 with generational ZGC at the same 12 GB heap
-  and pins `MAX_ACTIVE_BOOKS=1024`; ADR-096): Members SHALL run `-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50` on G1, at a 16Gi memory
-  request equal to the limit. `statefulset.yaml` SHALL carry the same JVM flags as `statefulset-emptydir.yaml`.
+- FR-GMR-03: On the kustomization tiers (kind; the GKE `statefulset-emptydir.yaml` and `statefulset.yaml`) members
+  SHALL run `-Xms12g -Xmx12g -XX:MaxGCPauseMillis=50` on G1, at a 16Gi memory request equal to the limit, and
+  `statefulset.yaml` SHALL carry the same JVM flags as `statefulset-emptydir.yaml`. The CompSci production render is
+  not this tier: there FR-PRG-05 governs the JVM and the container, and what is deployed is generational ZGC at the
+  same 12 GB heap (`prepare.py MEMBER_JVM`: `-XX:+UseZGC -XX:+ZGenerational -Xms12g -Xmx12g -XX:+AlwaysPreTouch`, no
+  pause goal), `MAX_ACTIVE_BOOKS=1024`, and since ADR-103 15 CPU / 40Gi on c4d-standard-16 (ADR-096 §1, ADR-103 §2;
+  `test_prepare.test_members_run_generational_zgc_with_the_book_cap_pinned`). A reader of a production safepoint
+  log should expect ZGC, not G1 (L0's finding, 2026-11-10).
 - FR-GMR-04: A member SHALL exit with status 143 within the grace period on SIGTERM, after closing its
   `ShutdownSignalBarrier`, archive and media driver, and SHALL log `Cluster node down` once they are
   closed. SIGTERM is delivered to the container's PID 1. Where a shell launches the JVM (kept off PID 1

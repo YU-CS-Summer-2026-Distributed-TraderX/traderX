@@ -1,5 +1,49 @@
 # Proof coverage against the specs
 
+## Replica ownership and the read router on kind, 4 replicas (2026-11-10, FR-DRS-45/46, kind traderx-own, torn down)
+
+`kind-tp-ownership.sh` on `kind-yu18-rig.py --binary --partitions 8 --tp-replicas 4` (production's 4, two partitions
+each), run twice on one rig (11:17 and 11:23 am ET; 330,882 sides in all). Each partition read by exactly one replica,
+G3 on the union of the four accountings, order events read 661,764 = published 661,764, a third claimant refused. The
+contract: 8 accounts × 3 shapes (open, `?status=all`, `?clientOrderKey=`) read on every replica and through the
+Service each answered 200 with the owner's body (hashed in the pod; `status=all` 16 MB); each replica forwarded 21-24
+reads. `order-read-bench.mjs`, router vs fan-out-and-merge vs the owner directly: open orders at 16 concurrent,
+1,450 / 635 / 1,410 reads/s, p50 8.8 / 21.7 / 10.1 ms; `?status=all` at 2, 6 / 5 / 8 reads/s, p50 300 / 342 / 221 ms.
+
+## Replica ownership on kind (2026-11-10, FR-DRS-45, kind traderx-own, torn down)
+
+`kind-tp-ownership.sh` on `kind-yu18-rig.py --binary --partitions 8 --tp-replicas 2`: trade-processor as a StatefulSet,
+pod -0 owning partitions 0-3 and -1 owning 4-7. A 120 s binary load (168,372 orders, 168,372 sides). Each partition's
+trade and order cursors advanced on exactly one replica; G3 passed on the union of the two accountings (sides
+1..168,372 once each, 0 duplicates); the views read 336,744 order events = the bridges' 336,744 published records; a
+third trade-processor owning partition 0 exited 3 (PARTITION_OWNED), naming trade-processor-0. Discrimination is in
+`PartitionOwnershipIT`: with the guard's check removed the third process starts and the IT fails.
+
+## A promotion at rate on kind (2026-11-10, FR-DRS-47, RI37, kind traderx-ri37, torn down)
+
+`kind-bridge-failover-at-rate.sh` on `kind-yu18-rig.py --history --binary --partitions 1`. Setup: 4 x 250 orders/s
+for 300 s (120 s phases, 20 s pauses). NATS was frozen (SIGSTOP on its node) for 121 s, and the leader's JVM was
+SIGKILLed 3 s into the freeze. At this rate the parent's 65,536-record lane queue holds about 65 s of sides and 33 s
+of order events. Member image `ri37`, the class md5 checked on every member.
+
+PASS:
+
+- G3h on 231,662 sides;
+- order events 463,324 of 463,324;
+- `queueDropped` 0 and no new gap on every member;
+- history-feed left out no repeat;
+- the promoted leader held up to 95,618 sides and 191,317 order events, and published them once the stream could
+  be read.
+
+Control (`EXPECT_LOSS=1`, image `ri37base` = parent bee3320f): G3h REFUSED, 201,966 of 232,066 sides, and 338,327 of
+464,132 order events. The new leader's `queueDropped` was 30,100 sides and 125,805 events: each shortfall exactly,
+the GKE run D signature.
+
+Two earlier attempts are recorded as script fixes, not results. First, binary-load stops at a phase boundary with
+an order unanswered, so the kill now lands inside a phase. Second, the stream was judged before the leader's lanes
+drained, so the script now waits for `queuedByPartition` 0. A 90 s freeze passed everything but the vacuity check
+(63,252 < 65,536), so the freeze is now 120 s. Evidence in the shared notes, `ri37-kind-20261110/`.
+
 ## FIX session pipelining on kind (2026-11-10, FR-BSP-02, NFR-BSP-02, FR-GFS-19, RI35, kind traderx-fsp, torn down)
 
 `kind-fix-pipelining.sh`, one arm per fresh rig, `fix-multi.mjs` open loop at 8,000/s for 40 s, FIX sessions in
@@ -16,6 +60,26 @@ one (`:bat`): 4 sessions 14,778 vs 3,349 orders/s; 16 sessions 14,573 vs 13,332;
 arm clean (0 ambiguous, 0 unanswered) with G3h ok. `queue` p50 1.2–1.4 µs everywhere; p99 160–359 µs on the new
 gateway and 84–272 µs on the old one at the same rates, so NFR-BSP-01's 50 µs is not met on kind by either (RI35 has
 the table and why). Not on GKE or production.
+
+## Fills routed to the owning gateway on kind (2026-11-10, FR-FFR-14 / FR-DRS-48, kind traderx-ffr14, torn down)
+
+`yu18-fix-fill-feed.sh` with `FIX_FILL_FEED=routed` on `kind-yu18-rig.py --history --binary --partitions 8 --gateways 2`
+(images `:ffr14` from 4f507add plus the open-rig authenticator), the FIX session on one gateway and the REST aggressor
+through the other, so the resting side's fill had to be routed back. PASS 2:28 pm ET (49 s): both gateways read only
+`/fills.<their pod>`; after both routed consumers were deleted mid-cross the fill still reported once (F /
+PartiallyFilled 4 @ 50, then Filled 6, CumQty 10, AvgPx 50, two ExecIDs); `/v2/projection-feed` `orders.fills` routed
+22 / messages 14 / acked 14 / failed 0 across the two gateways; the order read model FILLED, four trade sides in the
+history store; metrics sent +2, gap +0. Evidence: shared notes `fills-routed-kind-20261110/`.
+
+Three stale checks in the proof were corrected on the way, each against the spec that amended it: FR-GFS-10 wants
+discard-old since 2026-10-28 (FR-GFS-15), the lease max age is 3 s (FR-GFS-16), and the FIX Sell's status is the
+order read model's, not an SQL `orderbook` row (ADR-097 production shape, `ORDER_FEED_PERSIST=false`). The kind rig
+now pins `FIX_SESSION_RESET_TIME` / `FIX_SESSION_TIME_ZONE` as `gke/gateway.yaml` does (FR-GFS-08).
+
+The run that failed first is the negative control: with `CLUSTER_CLIENT_SECRET` unset the member installed no
+authenticator, so no session had a principal, the bridge stamped no gateway, `TRADERX_FILLS` stayed at 0 messages
+and FR-FFR-07 timed out after 30 s while the gateway's ordered consumer had recovered. Fixed in `ClusterClientAuth.open`
+(the open rig admits every session and still names a gateway's); `ClusterClientAuthTest` 5/5.
 
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
@@ -1668,7 +1732,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-PRG-02` | CI |  |  | test_rig Down: order, ClusterTool -Xmx128m, exit-137 member still ends at zero; live down pending |
 | YU18 | `FR-PRG-03` | CI |  |  | test_rig Up: G-pre (both mark files; a refusal Aeron wrote to the service mark file is found) and G0–G4 each refuse, no member before G-pre, no gateway after a refusal; mutations (gate / G-pre removed) fail 14/18 and 10/18; live gate on the FR-ERH-F13 backport (39bc0358) pending |
 | YU18 | `FR-PRG-04` | LIVE |  |  | smoke order at the effect end (orderbook CANCELED); runs inside rig.sh up; not yet run live |
-| YU18 | `FR-PRG-05` | CI |  |  | test_prepare test_rig_tiers / test_members_run_the_bench_heap; validate() refuses the G1 12g shape |
+| YU18 | `FR-PRG-05` | LIVE (gke) |  |  | test_prepare test_rig_tiers / test_members_run_the_bench_heap; validate() refuses the G1 12g shape. Amended 2026-11-10 (ADR-103): members 15 CPU / 40Gi on c4d-standard-16 (test_members_run_generational_zgc_with_the_book_cap_pinned); rig.sh pool_machine engine-pool/nats-pool c4d-standard-16. The 520K re-test at 40Gi with 200/100 ms and a failover at rate are pending (rollout 3). Re-test 2026-11-10 (runs B, C): 520K setting at 40Gi with 200/100 ms, 20 min, zero election transitions; run D failover at ~510K: leader in ~1.1 s, members exact, but RI37 (the promoted leaders' lanes dropped 22.9M sides from the stream) keeps the failover-at-rate acceptance open |
 | YU18 | `FR-PRG-06` | CI |  |  | test_prepare test_gateways_are_one_per_node…; test_rig gateways sharing a node refused; gateways.sh shrink live pending |
 | YU18 | `FR-PRG-07` | CI |  |  | FixSessionPersistenceIT.aDrainingGateway…: answer stored after the Logout, resent on resume; negative control (old stop) fails; full-gateway drain live pending |
 | YU18 | `FR-PRG-08` | LIVE |  |  | internal LB spread across new gateways: not yet run live |
@@ -1689,6 +1753,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-PRG-36` | CI |  |  | test_rig LoadgenIdle: --pause-ms 3000 by default, LOADGEN_PAUSE_MS=8000 passed through, 50/90000/x refused before any load starts |
 | YU18 | `FR-PRG-38` | CI |  |  | test_test_data_cleanup_mariadb (real MariaDB 11.4, shipped schema, rig.sh archive_read_model for the epochs): `apply e1` deletes exactly the test account's rows from all four arc_e1 tables and keeps the demo account's and the live epoch's (each control row present before); `plan` and `--dry-run` change nothing; `--accounts` is refused while the live epoch holds a row, then succeeds after a second archive and keeps the demo account; an unknown or malformed label is refused with nothing changed |
 | YU18 | `FR-PRG-40` | CI |  |  | added 2026-11-08: ThreeMemberClusterTest.aPurgedLogIsReproducedFromTheOldestRetainedSnapshotPlusItsTail (3 real members, ArchivePurgeMain pass, restart from disk: replay from 0 refuses; /recon/tail-state equals each live digest over exactly the 2,400 orders after the oldest retained snapshot; idle tail empty and inconclusive; without the snapshot restore it fails). test_prepare ArchivePurge (agent rendered; 5 broken agents refused). test_rig Purge (6: purge held then released after rig-gate, INCONCLUSIVE never ok and refused without G4, each mismatch refused with the purge held; control: no purge, replay from 0). Kind 2026-11-08 (rig/kind-purge.sh): all three members purged; after a restart from disk g12_tail PASS over a 65,895-order tail with the purge held, INCONCLUSIVE after two idle snapshots; no trades on kind. Production 2026-11-08 (fresh epoch e1108b): 9,657,584 orders at ~20K/s, 7 segments purged per member, then G1/G2 ok by snapshot+tail on the purged log (2,037,536-message tail, all three equal to their digests); G3h timed out on history-feed ingest (~1,500 rows/s), not on the purge |
+| YU18 | `FR-PRG-41` | LIVE (gke) |  |  | added 2026-11-10 (ADR-103): test_prepare NatsCluster (StatefulSet of 3 over nats-headless, routes = the set, server_name/server_tags from the pod, one per node, retained Hyperdisk claim per server, max_pending 256MB, nats-pool; snapshot render: placement nats-0,nats-1,nats-2, retention 450K x 30 min, max_file_store = ceil(8/3)/8 of it + 25% under the claim; 7 broken renders refused), NatsMemory at the new budget, test_rig Nats (three pods recorded and checked; pools creates nats-pool as 3 x c4d-standard-16 on Hyperdisk). Pending: the cluster bench on the production render with batching, the acceptance hour (rollout 2, 5). Live 2026-11-10 (retest-520k-20261110): three servers rendered from the candidate, streams placed 3/3/2 and read back per server; 400K G3+G3h ok; ~500K for 20 min lossless at the store (G3h 1..830,602,622); the acceptance hour pending |
 | YU18 | `FR-PRG-39` | CI + local (docker) |  |  | added 2026-11-08: test_rig Retention (7): older epochs' SQL and ClickHouse arc tables and member-disk snapshots deleted, the newest and a non-member snapshot kept, no live table named; a label with no history record or not older, a malformed name, an unreadable listing, an incomplete newest archive, a live key onto an archive: REFUSED with nothing deleted; a retry after a partial delete (at each store) finishes it; up prunes between archived and the trade-processor restart. test_archive_read_model_mariadb on mariadb:11.4: only arc_e1_* dropped, live definitions unchanged, a live FK onto an archive refuses. Production 2026-11-08 3:41 pm ET (fresh epoch e1108b): every older archive deleted, e1108b kept, "ok: only epoch e1108b's archive is left", verified by the snapshot listing |
 | YU18 | `FR-PRG-37` | CI |  |  | test_prepare: the rendered eod-price-db-data claim requests 50Gi |
 | YU18 | `FR-FTL-07` | CI |  |  | test_prepare: EXTQFJ renders `*`; a binding removed is refused (mutation no-accounts). Kind 2026-11-01: a Desk account created minutes earlier (65002) traded over TLS |
@@ -1696,7 +1761,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-FTL-09` | CI |  |  | fix-web.test.mjs: only well-formed orders become fix-order.sh arguments (injection, bad side, zero qty, bad ticker, 1e9 refused). markFor: blank price = the mark, no mark refused. Production 2026-11-05: blank price rests at the mark. Kind 2026-11-01: Limit rests, Market fills at 391.4, cross-origin POST 403 |
 | YU18 | `FR-ERH-F14` | CI |  |  | GatewayCatalogFeedTest on three members: a catalog delta registers and enables a new symbol; after an operator disable, a replay by the same gateway and by a restarted one leaves it disabled on every engine. Fails against the previous gateway ("re-enabled the operator-disabled UST-BILL-20260910") |
 | YU18 | `FR-ERH-F15` | CI |  |  | MemberSecurityReadoutTest: admin-only, 404 on a child path, 503 on a cold member, each registered ticker with its applied control (an enabled-then-disabled bill reads false) |
-| YU18 | `FR-PRG-28` | CI |  |  | test_prepare NatsMemory: the rows render's NATS has request = limit = 24Gi (under the 26 GiB nats-pool budget), GOMEMLIMIT 20GiB (<= 85%), and max_memory_store + max_buffered_size within half of it; validate() refuses 2026-10-30's 2Gi pod, a limit over the node, request != limit, no or an oversized GOMEMLIMIT, an unset max_memory_store and an oversized ingest queue. test_rig Nats: `up` records the pod and refuses one that already restarted before any member starts; `down` reports an OOMKilled restart, a replaced, extra or missing pod and an unreadable listing as FAILED (exit 3) and still reaches zero; control: an intact pod passes. Both fail against the pre-fix files |
+| YU18 | `FR-PRG-28` | CI |  |  | test_prepare NatsMemory: the rows render's NATS has request = limit = 24Gi (under the 26 GiB nats-pool budget), GOMEMLIMIT 20GiB (<= 85%), and max_memory_store + max_buffered_size within half of it; validate() refuses 2026-10-30's 2Gi pod, a limit over the node, request != limit, no or an oversized GOMEMLIMIT, an unset max_memory_store and an oversized ingest queue. test_rig Nats: `up` records the pod and refuses one that already restarted before any member starts; `down` reports an OOMKilled restart, a replaced, extra or missing pod and an unreadable listing as FAILED (exit 3) and still reaches zero; control: an intact pod passes. Both fail against the pre-fix files. Amended 2026-11-10 (ADR-103): budget 54 GiB (c4d-standard-16), limit 48Gi, the pod is each server of the StatefulSet; test_rig Nats.test_three_servers_are_three_pods_each_recorded (up records u1,u2,u3; two pods refused; a replaced server FAILED at down) |
 | YU18 | `FR-DRS-33` recon | local (docker) |  |  | test_order_fill_recon_clickhouse on ClickHouse 25.8 (the mariadb test_order_fill_recon was removed with rows mode, 2026-11-06); was: test_order_fill_recon on mariadb:11.4: a ticket booking (`1-0`, no order) passes; a real order with no row (`1-10`) and a stale filled quantity are still found. Control: the unamended query 3 fails the ticket case. Production run 2026-10-30: q1 disagree 0 / 3,392,648 agree |
 | YU18 | `FR-DRS-36` migration | local (docker) |  |  | test_migrate_fr_drs_36 on mariadb:11.4: from an empty volume, the pre-FR-DRS-36 table with a cursor (kept, binding NULL), and a migrated one, applied twice, the column exists; the pre-FR-DRS-36 cursor write still works (rollback); its statements are ri06.sql's. Control: the unmigrated table refuses `SELECT stream_created_ns` |
 | YU18 | `FR-PRG-21` | CI |  |  | test_rig Up: snapshot G3 over the accounting (lost, duplicated, cross-partition doubled, beyond-members sides, open orders that differ: each REFUSED; rows-era base and unprojected window exact); control: counts-only check passes the cross-partition double and fails the test; production pending |
@@ -1819,6 +1884,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-35` | LIVE |  | yu18-store-failure-barrier | 2026-11-06 kind (snapshot): PASS; read_only=1 for 10 crosses, snapshotFailures rose, then positions +10/-10 and accounting = closed form over every booked side. NEGATIVE=1 (one side removed) fails. FeedBarrierTest, JetStreamFeedAckGapIT |
 | YU18 | `FR-FFR-12` | LIVE | yu18-fix-resume |  | added 2026-11-06: Canceled report keeps CumQty (step 5) |
 | YU18 | `FR-FFR-13` | LIVE |  |  | added 2026-11-06: fill feed per-partition streams; no live proof. FixFillFeedIT |
+| YU18 | `FR-FFR-14` | LIVE (kind) | yu18-fix-fill-feed (routed) |  | added 2026-11-10 (ADR-084 amendment): ClusterClientAuthTest (a named gateway admitted with its name as the principal; the secret alone with none; a wrong secret rejected; a non-token name refused), OrderNatsPublisherGatewayTest (gateway on the booking event only), FixFillFeedIT.routedModeReadsOnlyItsOwnSubject, test_prepare RoutedFills (GATEWAY_ID from the pod, FIX_FILL_FEED=routed; nameless or router-less routed feed refused). LIVE on kind traderx-ffr14 2026-11-10 2:28 pm ET (section "Fills routed to the owning gateway on kind" above): yu18-fix-fill-feed.sh routed across two gateways PASS |
 | YU18 | `FR-FGM-01` | LIVE |  |  | added 2026-11-06: slow consumer drop; no live proof. FixGatewayMemoryBoundTest |
 | YU18 | `FR-FGM-02` | LIVE |  |  | added 2026-11-06: inbound backpressure; no live proof. FixGatewayMemoryBoundTest |
 | YU18 | `FR-FGM-03` | CI |  |  | added 2026-11-06: lease read streams the log (heap shape) |
@@ -1850,13 +1916,18 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-41` | LIVE (gke) | kind-bridge-batching, bat-run |  | added 2026-11-09 (RI34 section 1a): ReceiptLanesIT at 1 and 64 records per message (a 64 KiB ingest queue forces 429s of batched messages; counts in records; order across records), the cut at the last record of a batched message; HistoryFeedRateIT 1M records at 1 and 64 per message (3.5 s / 2.7 s); RowsTest; FeedBarrierTest (before: the trade view booked 2 of 4). kind traderx-bat: 5.5–5.7 records per message on, 1.00 off; G3h, store = records, stream = messages in every run. Not on GKE/production |
 | YU18 | `FR-DRS-42` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109) |  | added 2026-11-09 (RI34 §1b): the stream's volume is the wall at 300–400K (pd-balanced 298 MB/s at 100% busy; Hyperdisk 684 MB/s once max_bytes deletions join the writes); s2 cut the write to 311 MB/s at 32% busy; memory streams for the hour run. StreamIdentityIT covers the stream settings. Disposable rig, torn down |
 | YU18 | `FR-DRS-43` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109/proof-fr-drs-43) |  | added 2026-11-10 (RI36): a pipelined feed's fetch sized by bytes; on the rig at 470K orders/s trade-processor was cut once in 8 min (351 in 5 min before), lag ≤ 361K messages (4–5M before), G3 and G3h ok; JetStreamFeedTest covers the sizing. Disposable rig, torn down |
+| YU18 | `FR-DRS-44` | LIVE (gke) |  |  | added 2026-11-10 (ADR-103): JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag (tag p mod n, unset places nothing, placed only when the stream carries its tag); test_prepare NatsCluster (the partitioned render names nats-0,nats-1,nats-2; a placement missing a server refused). Live placement read-back on the production render: pending (ADR-103 rollout 2). Live 2026-11-10: placement read back from each server's /jsz (nats-0: P0 P3 P6, nats-1: P1 P4 P7, nats-2: P2 P5) on the p4k rig |
+| YU18 | `FR-DRS-45` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36): kind traderx-own, P=8, 2 replicas (and 4: see FR-DRS-46's row) (StatefulSet, replica:0/2 and 1/2), 120 s binary load, 168,372 sides: each partition read by one replica, G3 on the union, order events read 336,744 = published 336,744, a third claimant of partition 0 refused (exit 3). PartitionOwnershipTest; PartitionOwnershipIT (three processes, the handover after a clean stop; fails with the guard off); test_prepare (Recreate Deployment, StatefulSet by pod index). Not on GKE/production; no router |
+| YU18 | `FR-DRS-46` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36, ADR-103 §3): kind traderx-own, 4 replicas: every load account's order read in three shapes through every replica and the Service = the owner's body; router 1,450 reads/s p50 8.8 ms vs fan-out-and-merge 635 reads/s p50 21.7 ms (open orders, 16 concurrent), even on 16 MB `status=all` reads. PartitionOwnershipIT router phase (421 on a routed read at a non-owner, 503 with no live owner). Not on GKE/production |
+| YU18 | `FR-DRS-47` | LIVE (gke) | kind-bridge-failover-at-rate, run-ri37 (shared notes ri37-gke-recipe-20261110) |  |  | added 2026-11-10 (RI37): ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile (NATS frozen across a promotion, 100,000 sides and order events: each once, in order, queueDropped 0, maxBacklog > 65,536; control on the parent at its 65,536 queue: 34,400 of 100,100 sides missing), #aPromotedLaneLappedPastItsRingIsACountedGap. kind traderx-ri37: NATS frozen 121 s across a leader kill, 231,662 of 231,662 sides and 463,324 of 463,324 order events, queueDropped 0; the parent's image lost 30,100 and 125,805 (= its queueDropped). GKE 2026-11-10 run E3 (p4k rig, run D's render, member image ri37-15d49bd7): leader killed at ~465K sides/s, G3h 1..183,194,994 each once, queueDropped 0 and gaps 0 on every member, one election, promoted lanes caught up in 201–221 ms holding ≤ 17,443 (the stall of run D did not recur, so E3 is not itself discriminating; kind and ReceiptLanesIT are). Disposable rig, torn down |
 | YU18 | `FR-BSP-01` | LIVE (kind) | kind-binary-pipelining |  | added 2026-11-10 (RI35): BinaryGatewayAcceptorTest (acks in completion order, every clOrdId once, arrival order at the seam, the bound reached and never exceeded, half-close answered in full with an ambiguous answer kept ambiguous, a closed connection leaks nothing), PipelineTaskDeadlineTest (the async answer completes on the caller's executor; silence is null and retires the unstarted task). kind: 16 sessions 14,573/s = 64 sessions 14,294/s; 4 sessions 14,778/s against the pre-fix gateway's 3,349; G3h ok in every arm. NFR-BSP-01's queue p99 < 50 µs not met on kind (160–359 µs; the pre-fix gateway 84–272 µs at the same rates). Not on GKE/production |
 | YU18 | `FR-BSP-02` | LIVE (kind) | kind-fix-pipelining |  | added 2026-11-10 (RI35): FixGatewayFillReportTest (arrival order at the seam, the 1,024 bound reached and held, answers in decision order each once, an ambiguous one silent, a cancel of an order in flight waits for it), FixStoreGroupCommitIT#theStoredTargetStaysBelowAnUndecidedOrder (FR-GFS-19, both modes). kind: 4 sessions 7,985/s vs pre-fix 2,004/s; 16 7,982/s; 64 7,973/7,984/s; G3h ok where reached. One 64-session run lost 187 committed acks to the members' uncounted egress drop (T-BSP07). Not on GKE/production |
+| YU18 | `FR-DRS-48` | LIVE (kind) | yu18-fix-fill-feed (routed) |  | added 2026-11-10 (ADR-084 amendment): FillsRouterTest (batch shape; the view keeps the gateway named at booking), FillsRouterIT (NATS 2.14: each gateway's subject holds only its own orders' events, one message per batch per gateway, acks counted, stream subject /fills.>). LIVE on kind traderx-ffr14 2026-11-10 (section "Fills routed to the owning gateway on kind"): the read model routed 22 events in 14 messages, acked 14, failed 0, to both gateways by name; the first run routed nothing (the open rig named no session) and failed FR-FFR-07, the control the fix was measured against |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |
 | YU18 | `FR-THT-05` | CI |  |  | added 2026-11-06: the reader inventory is itself a test |
-| YU18 | `FR-THT-06` | LIVE |  |  | added 2026-11-06: no live proof |
+| YU18 | `FR-THT-06` | LIVE (gke) |  |  | added 2026-11-06: no live proof. 2026-11-10: G3h ran live on GKE at 235.7M, 590.2M and 830.6M sides (retest-520k-20261110 runs A-C, each once); its one-query form had exceeded the 21 GiB query memory at 1.4B rows (2026-11-09 hours checked by hand), so the check is now one query per partition (test_rig test_the_history_check_is_one_query_per_partition, fails on the whole-table shape) |
 | YU18 | `FR-THT-07` | LIVE |  |  | added 2026-11-06: no live proof |
 | YU18 | `FR-THT-08` | CI |  |  | added 2026-11-08: test_rig FreshEpoch test_a_wiped_epoch_archives_the_history_store_while_history_feed_is_stopped (trades/orders/history_cursor renamed after history-feed stops, before the stream delete; retry renames nothing, empties the cursor; non-empty live table refused; untouched when not rendered). Fails against the prior rig.sh. No live fresh epoch yet |
 | YU18 | `FR-XOC-01` | LIVE | yu13-clordid-suppression |  | added 2026-11-06: PARTIAL, one replica, no election. IdempotencyEvictionTest |

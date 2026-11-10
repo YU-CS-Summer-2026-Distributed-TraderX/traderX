@@ -9,6 +9,7 @@ import io.nats.client.api.AckPolicy;
 import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
 import io.nats.client.api.CompressionOption;
+import io.nats.client.api.Placement;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import java.time.Duration;
@@ -45,23 +46,58 @@ public final class JetStreamFeed {
     return partitionCount <= 1 ? base : base + "." + partition;
   }
 
-  /** Owned partitions from configuration: {@code "all"} or a list such as {@code "0,2"}. */
+  /**
+   * Owned partitions from configuration (FR-DRS-45), ascending: {@code all} (or unset), a list of partitions and
+   * ranges such as {@code 0,2} or {@code 0-3}, or {@code replica:<k>/<N>}: replica k of N owns the contiguous block of
+   * partitions p with {@code p * N / P == k} (P = 8, N = 2: 0-3 and 4-7). A partition named twice, out of range, or a
+   * malformed spec is refused.
+   */
   public static int[] owned(String owned, int partitionCount) {
     int count = Math.max(1, partitionCount);
-    if (owned == null || owned.isBlank() || "all".equalsIgnoreCase(owned.trim())) {
-      int[] all = new int[count];
-      for (int i = 0; i < all.length; i++) { all[i] = i; }
-      return all;
-    }
-    String[] parts = owned.split(",");
-    int[] out = new int[parts.length];
-    for (int i = 0; i < parts.length; i++) {
-      out[i] = Integer.parseInt(parts[i].trim());
-      if (out[i] < 0 || out[i] >= count) {
-        throw new IllegalArgumentException("owned partition " + out[i] + " outside 0.." + (count - 1));
+    String s = owned == null ? "" : owned.trim();
+    java.util.TreeSet<Integer> out = new java.util.TreeSet<>();
+    try {
+      if (s.isEmpty() || s.equalsIgnoreCase("all")) {
+        for (int p = 0; p < count; p++) { out.add(p); }
+      } else if (s.startsWith("replica:")) {
+        String[] kn = s.substring("replica:".length()).split("/");
+        int k = Integer.parseInt(kn[0].trim()), n = Integer.parseInt(kn[1].trim());
+        if (kn.length != 2 || n < 1 || n > count || k < 0 || k >= n) {
+          throw new IllegalArgumentException("replica k/N needs 0 <= k < N <= " + count + " partitions");
+        }
+        for (int p = 0; p < count; p++) { if (p * n / count == k) { out.add(p); } }
+      } else {
+        for (String part : s.split(",")) {
+          String[] ab = part.trim().split("-", -1);
+          int a = Integer.parseInt(ab[0].trim()), b = ab.length == 2 ? Integer.parseInt(ab[1].trim()) : a;
+          if (ab.length > 2 || a > b) { throw new IllegalArgumentException("'" + part.trim() + "' is not a partition or a range a-b"); }
+          for (int p = a; p <= b; p++) {
+            if (p < 0 || p >= count) { throw new IllegalArgumentException("partition " + p + " outside 0.." + (count - 1)); }
+            if (!out.add(p)) { throw new IllegalArgumentException("partition " + p + " named twice"); }
+          }
+        }
       }
+    } catch (NumberFormatException | ArrayIndexOutOfBoundsException x) {
+      throw new IllegalArgumentException("PROJECTION_FEED_PARTITIONS_OWNED='" + s + "': not a partition number (" + x.getMessage() + ")");
+    } catch (IllegalArgumentException x) {
+      throw new IllegalArgumentException("PROJECTION_FEED_PARTITIONS_OWNED='" + s + "' (of " + count + " partitions): " + x.getMessage());
     }
-    return out;
+    return out.stream().mapToInt(Integer::intValue).toArray();
+  }
+
+  /**
+   * A start-up refusal (RETENTION_GAP, STREAM_RESET, PARTITION_OWNED) must stop the process. Measured: after the context
+   * fails, the other beans' NATS connections (non-daemon threads) keep the JVM up as a never-ready zombie. Exit from a
+   * thread once Spring has finished failing (System.exit inside refresh can deadlock). Not a daemon: a refusal before any
+   * other thread exists would otherwise end the JVM with exit 1, not 3.
+   */
+  public static void exitAfterRefusal(String what, String why) {
+    Thread exit = new Thread(() -> {
+      try { Thread.sleep(5000); } catch (InterruptedException ignore) { }
+      log.error("{} refused to start ({}); exiting", what, why);
+      System.exit(3);
+    }, "refusal-exit");
+    exit.start();
   }
 
   /**
@@ -78,14 +114,33 @@ public final class JetStreamFeed {
   public static void ensureStreams(Connection nc, String base, String layout, int partitionCount, long maxBytes, Duration maxAge)
       throws Exception {
     if (streamFor(base, layout, 0, partitionCount).equals(base)) { ensureStream(nc, base, maxBytes, maxAge); return; }
+    String placement = System.getenv("PROJECTION_FEED_STREAM_PLACEMENT");
     for (int p = 0; p < partitionCount; p++) {
-      ensureStream(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, "/trades." + p, "/orders." + p);
+      ensureStreamOn(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, placementTag(placement, p),
+          "/trades." + p, "/orders." + p);
     }
   }
 
   /** Idempotently create the capture stream over both feeds' subjects (bare and partitioned). */
   public static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge) throws Exception {
     ensureStream(nc, stream, maxBytes, maxAge, "/trades", "/trades.*", "/orders", "/orders.*");
+  }
+
+  /**
+   * FR-DRS-44 (ADR-103): {@code PROJECTION_FEED_STREAM_PLACEMENT} names the NATS servers' tags, comma-separated
+   * (the production render: {@code nats-0,nats-1,nats-2}); partition {@code p}'s stream is placed on tag
+   * {@code p mod n}, so a three-server cluster holds a third of the partitions each, and each server writes a third
+   * of the bytes. Unset: the server places the stream (one server, or the rig). Null for no placement.
+   */
+  static String placementTag(String placement, int partition) {
+    if (placement == null || placement.isBlank()) return null;
+    String[] tags = placement.split(",");
+    return tags[partition % tags.length].trim();
+  }
+
+  /** A stream is where it should be when it carries the tag; no tag asked for is wherever the server put it. */
+  static boolean placed(Placement have, String tag) {
+    return tag == null || (have != null && have.getTags() != null && have.getTags().contains(tag));
   }
 
   /** FR-DRS-42: {@code PROJECTION_FEED_STREAM_STORAGE=memory} keeps the capture stream in the server's RAM (the
@@ -104,6 +159,12 @@ public final class JetStreamFeed {
   }
 
   static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge, String... subjects) throws Exception {
+    ensureStreamOn(nc, stream, maxBytes, maxAge, placementTag(System.getenv("PROJECTION_FEED_STREAM_PLACEMENT"), 0), subjects);
+  }
+
+  /** The stream, placed on the server tagged {@code tag} (null: wherever the server puts it). */
+  static void ensureStreamOn(Connection nc, String stream, long maxBytes, Duration maxAge, String tag, String... subjects)
+      throws Exception {
     var jsm = nc.jetStreamManagement();
     StreamConfiguration existing = null;
     try {
@@ -111,29 +172,37 @@ public final class JetStreamFeed {
     } catch (JetStreamApiException notFound) {
       // fall through and create
     }
+    Placement placement = tag == null ? null : Placement.builder().tags(tag).build();
     if (existing != null) {
       // The retention limits are sized in the manifests (downstream-at-400k.md §7.5); a stream created
       // under older limits is brought to them, so the configured outage window is the one in force.
       // FR-DRS-42: the stream is s2-compressed on disk. A stream created before that is brought to it; compression
       // applies to the blocks written from then on.
+      // FR-DRS-44: a stream on another server is moved to its tag (a placement update is a stream move; R1 keeps
+      // its messages through it).
       if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())
-          || existing.getCompressionOption() != compression(existing.getStorageType())) {
-        jsm.updateStream(StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge)
-            .compressionOption(compression(existing.getStorageType())).build());
-        log.info("JetStream stream {} updated: maxBytes {} -> {}, maxAge {} -> {}, compression {} -> s2", stream,
-            existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge, existing.getCompressionOption());
+          || existing.getCompressionOption() != compression(existing.getStorageType())
+          || !placed(existing.getPlacement(), tag)) {
+        var b = StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge)
+            .compressionOption(compression(existing.getStorageType()));
+        if (placement != null) b.placement(placement);
+        jsm.updateStream(b.build());
+        log.info("JetStream stream {} updated: maxBytes {} -> {}, maxAge {} -> {}, compression {} -> s2, placement {} -> {}",
+            stream, existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge, existing.getCompressionOption(),
+            existing.getPlacement() == null ? null : existing.getPlacement().getTags(), tag);
       }
       return;
     }
-    jsm.addStream(StreamConfiguration.builder()
+    var b = StreamConfiguration.builder()
         .name(stream)
         .subjects(subjects)
         .storageType(storageType())
         .compressionOption(compression(storageType()))
         .maxBytes(maxBytes)
-        .maxAge(maxAge)
-        .build());
-    log.info("JetStream stream {} created (maxBytes={}, maxAge={}, {}, s2)", stream, maxBytes, maxAge, storageType());
+        .maxAge(maxAge);
+    if (placement != null) b.placement(placement);
+    jsm.addStream(b.build());
+    log.info("JetStream stream {} created (maxBytes={}, maxAge={}, {}, s2, placement={})", stream, maxBytes, maxAge, storageType(), tag);
   }
 
   /**

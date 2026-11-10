@@ -53,3 +53,9 @@ The sums wrap at 2^64 (a signed BIGINT holding the low 64 bits).
 status VARCHAR(32), payload TEXT)`, primary key `(projection_scope, partition_id, orderid)`, holds the memory-only
 order view's open orders, each as the JSON update the view holds (FR-DRS-30). Both tables come from `ri06.sql` and
 both init-configmap keys, like `projection_cursor`.
+
+`projection_partition_owner(partition_id INTEGER, replica_id VARCHAR(128), owned VARCHAR(64), partition_count INTEGER,
+heartbeat_at DATETIME(3))`, primary key `partition_id`, names the trade-processor replica that reads each feed partition
+(FR-DRS-45): its id (the pod name), that replica's whole `PROJECTION_FEED_PARTITIONS_OWNED`, the partition count it
+ran with, and its heartbeat in database time (`''` and 1970-01-02 = released). Not epoch data: it is liveness, never
+archived or reset. From `ri06.sql` and both init-configmap keys, like `projection_cursor`.

@@ -334,11 +334,11 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   sends sides 5..10, SIGKILLs it, starts it again and books 11..14. Before this rule the stream held 1..4 and 11..14.
   `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed and legacy ids, and
   `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` the gap.
-  A record the lane's full queue refuses never reaches the ring, so no catch-up can republish it. The lane SHALL
-  count it as a gap with an ALERT: at the next catch-up if it is after the stream's last message (a follower's drop
-  that a promotion would otherwise publish around), or at once while leading. It still counts in
-  `traderx_bridge_dropped`. `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp` fills a follower's
-  queue of 8 with 12 sides and promotes it; before this rule `gaps` stayed 0.
+  Superseded by FR-DRS-47 (2026-11-10): there is no lane queue to refuse a record. The apply thread writes into the
+  lane's ring, which holds what a blocked lane has not reached (`BRIDGE_LANE_RECORDS`, 1,048,576 by default), so an
+  outage that the 65,536-record queue turned into a gap after about 1 s at 400K is now held for about 16 s. A record
+  the ring overwrote before the lane reached it is a counted gap with an ALERT at the next catch-up, as eviction is;
+  `ReceiptLanesIT#aPromotedLaneLappedPastItsRingIsACountedGap` replaces `#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
   The queue fills when a lane publishes slower than the apply thread offers. Measured locally (2026-11-08, P=6,
   0 to 400K sides/s in one step on a JVM 3 s old): the publish path is still interpreted, the lanes run at 33-42K
   sides/s each against 67K/s offered, and the queues fill in 1-2.6 s unless the JIT finishes first. One cold run in 18 on
@@ -442,7 +442,169 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   at ~7 cores. history-feed, which fetches small batches, was cut 27 times in the same window and stayed current.
   Covered by `JetStreamFeedTest#aFetchIsSizedByTheLastBatchsBytes`. The structural follow-up (a read model sharded
   by partition across replicas, and a cheaper per-record parse) is RI36.
+- FR-DRS-44: The per-partition capture streams SHALL be placed on the NATS cluster's servers by tag (ADR-103):
+  `PROJECTION_FEED_STREAM_PLACEMENT` names the servers' tags, comma-separated (the production render:
+  `nats-0,nats-1,nats-2`, each server tagged with its pod's name), and partition `p`'s stream is created with
+  placement tag `p mod n`, so N servers hold ceil(P/N) partitions each and each writes its share of the bytes. A
+  stream found on another server (created before the setting, or moved) SHALL be brought to its tag by a placement
+  update, which NATS performs as a stream move; R1 keeps its messages through it. Unset or blank, the server places the
+  stream (one server; the kind rig; the throughput rig's memory streams). The single-stream layout takes the first
+  tag. The production render's per-server `max_file_store` is sized to that share (FR-PRG-41), so placement is part of
+  the capacity, not a tidy-up: an unplaced render is refused there. Measured: FR-DRS-34 (four streams per server by
+  tag, 1.00-1.25M msgs/s, 0 lost); RI34 §1b (one volume saturated at 400K). Covered by
+  `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`; the live placement is read back in the acceptance run
+  (ADR-103 rollout).
 
+- FR-DRS-45: trade-processor SHALL run as N replicas that each read a disjoint subset of the feed partitions, each
+  partition read by exactly one live replica (RI36: one process reading 8 partitions × 2 feeds had no headroom at
+  400–520K orders/s).
+  - Ownership: `PROJECTION_FEED_PARTITIONS_OWNED` (the older `PROJECTION_FEED_OWNED` still read) is `all` or unset (every
+    partition, as before), a list of partitions and ranges (`0,1`, `0-1`, `0-1,6`), or `replica:<k>/<N>`: replica k
+    of N owns the block of partitions p with `p * N / P == k` (P = 8, N = 2: 0-3 and 4-7; N = 4: two each). A
+    partition named twice or out of range, or a malformed value, SHALL refuse to start. Everything trade-processor
+    does per partition SHALL take only the owned ones: the trade store's and the order view's loads, `requireRetained`
+    and replays, pull threads and snapshot loops, the SQL order projection's consumers. Stream creation and the write
+    lock rows stay global: they are idempotent.
+  - The guard: before any feed reads, the replica SHALL claim its partitions' rows in
+    `projection_partition_owner(partition_id, replica_id, owned, partition_count, heartbeat_at)` in one transaction
+    under row locks. A row held by another replica id whose heartbeat (database time) is younger than
+    `PROJECTION_OWNER_TTL_MS` (20,000) is a live owner. The replica SHALL then re-check once after the TTL (a crashed
+    predecessor's rows expire), and, if an owner is still live, refuse to start: `PARTITION_OWNED replica <id> ...
+    partition <p> is owned by replica <owner> (owns <its ownership>, heartbeat <n> ms ago)`, exit 3, as
+    `RETENTION_GAP` does, having read nothing. The replica id is `PROJECTION_REPLICA_ID` (the pod name), else
+    `<hostname>:<pid>`; the same id reclaims its own rows at once (a restarted StatefulSet pod). The heartbeat
+    SHALL refresh the rows every TTL/4. A heartbeat that finds a row taken SHALL stop the process
+    (`PARTITION_OWNERSHIP_LOST`, exit 3). A failed heartbeat is retried, not fatal: every replica's rows go stale
+    together without the database. A clean stop SHALL release the rows, so the next owner starts without waiting the TTL.
+  - Health: `/v2/projection-feed` SHALL report `ownership` (`replica`, `ownedSpec`, `owned`, `partitions`) and only
+    the owned partitions' views. `/v2/projection-feed/accounting` SHALL report the same three fields and only the owned
+    partitions (trades, orders, their streams); the union of the replicas' answers is the whole read model, each
+    partition in exactly one; `rig.sh`'s `accounting()` takes that union, refusing a partition answered twice or by
+    none. `GET /accounts/{id}/orders` from the memory-only view SHALL answer 421 for an account another replica owns,
+    naming its partition and owner, never an empty list, when the read is not routed (FR-DRS-46). The recon sweep (ReconciliationService,
+    which reads the whole blotter against shared state and keeps one cursor per scope) SHALL run only on the owner of
+    partition 0.
+  - Deployment: one replica is the Deployment with `strategy: Recreate` (under RollingUpdate the surge pod is refused
+    and the rollout never completes). N > 1 (`prepare.py --read-model-replicas N`, `kind-yu18-rig.py --tp-replicas N`,
+    both `prepare.shard_read_model`) is a StatefulSet `trade-processor`, `podManagementPolicy: Parallel`, with
+    `PROJECTION_REPLICA_ID` the pod name and `PROJECTION_FEED_PARTITIONS_OWNED=replica:$(TP_REPLICA_INDEX)/N` from the
+    pod-index label, and a headless Service `trade-processor-replicas` naming each pod. The production snapshot profile
+    (`--read-model snapshot`) SHALL render N = 4 (two of the 8 partitions each; `min(4, P)`), each replica at the one
+    replica's measured size (12 CPU, 24Gi). `rig.sh` SHALL drive either shape (`wl trade-processor`). The order view's
+    reads are routed by FR-DRS-46; the SQL projection is shared and needs none.
+  Covered by `PartitionOwnershipTest` (the parse, the blocks cover each partition once, the guard's decision) and
+  `PartitionOwnershipIT` (three processes on one NATS and MariaDB: halves, each answering for its own; a claim on an
+  owned partition refused, exit 3, reading nothing, and passing with the guard disabled fails the IT; a released
+  partition taken at once and the union exact after the handover); `test_prepare.SnapshotReadModel` (both shapes, and
+  validation refuses a RollingUpdate Deployment or a StatefulSet whose ownership is not its pod index);
+  `test_rig.Up#test_n_read_model_replicas_are_checked_by_the_union_of_their_accountings`;
+  `scripts/proofs/kind-tp-ownership.sh` on kind (2 and 4 replicas).
+
+- FR-DRS-46: The order view's reads SHALL keep their contract for every client with N replicas (ADR-103 §3): clients call
+  the `trade-processor` Service as before, and `GET /accounts/{id}/orders` (open, `?status=all`, `?clientOrderKey=`;
+  the gateway's FIX status and the console) SHALL answer what the account's owner answers, whichever replica receives
+  it. A replica that does not own the account's partition (`accountId mod P`) SHALL forward the read, path, query and
+  `Authorization` as received, to the live owner `projection_partition_owner` names (re-read at most every 2 s, and at
+  once after a failed forward), at `PROJECTION_REPLICA_URL` with `{replica}` replaced by the owner's id (the render:
+  `http://{replica}.trade-processor-replicas:18091`), and return its status and body. A forwarded read carries
+  `X-TraderX-Routed` and SHALL NOT be forwarded again (a non-owner answers it 421). No live owner, or one that cannot be
+  reached, SHALL answer 503 naming the partition, never an empty list. `/v2/projection-feed` `ownership.orderReads`
+  counts reads answered locally, forwarded and refused. Unset `PROJECTION_REPLICA_URL` (one replica) routes nothing.
+  The SQL routes need no routing. yaakov's condition ("if this help then yes", 2026-11-10): the router is kept only if
+  it holds the contract and beats the fan-out-and-merge alternative (the caller asks every replica and merges) on
+  latency and throughput. Measured on kind (4 replicas, 8 partitions, after 330,882 sides; one 11-CPU node, so absolute
+  numbers are the laptop's): open orders at 16 concurrent reads, router 1,450 reads/s p50 8.8 ms p99 42 ms, fan-out 635
+  reads/s p50 21.7 ms p99 80 ms, asking the owner directly 1,410 reads/s p50 10.1 ms p99 34 ms: the router at the floor,
+  2.3× fan-out's throughput; `?status=all` (16 MB, 12,500 orders a read) at 2, router 6/s p50 300 ms p99 1,369 ms,
+  fan-out 5/s p50 342 ms p99 1,101 ms, owner 8/s p50 221 ms p99 802 ms: even, each paying the body once more than
+  the floor. The router is kept. Covered by `PartitionOwnershipIT` (each account in each shape through either replica =
+  its owner's; a routed read at a non-owner 421; no live owner 503; the forward count) and
+  `scripts/proofs/kind-tp-ownership.sh` steps 5-6 (`order-read-bench.mjs`).
+
+- FR-DRS-47: A leader change at rate SHALL lose nothing from the stream. Every trade side and order event the cluster
+  applies reaches its `TRADERX_FEED` subject exactly once, in apply order, while the promoted member's lanes cannot
+  read the stream or publish, for as long as their ring holds what the member applies meanwhile. A lane queue's
+  overflow is therefore not a loss: there is no queue. The apply thread SHALL write each record into its lane's ring
+  and never have it refused. The ring has `BRIDGE_LANE_RECORDS` slots per lane: 1,048,576 by default, at least
+  131,072. The lane reads the ring by index and publishes what follows the catch-up's cut. Whatever holds the lane
+  thread - the catch-up's stream read, a reconnect, a publish into a frozen socket - the records keep landing, and the
+  lane publishes the backlog in order when it resumes.
+  - A lane releases a record once it no longer needs it: read while following, or published while leading, and older
+    than the last 65,536 (FR-DRS-37/38's tail). A lane that keeps up therefore holds what it held before this rule.
+    Only a stall fills the ring.
+  - `/health` `bridges.*.maxBacklog` is the most records a leading lane has held unread or unpublished: a stall the
+    ring absorbed and recovered. `queuedByPartition` is each lane's current backlog. The catch-up's log line gives
+    how long the stream read took and how many records were applied meanwhile.
+  - `queueDropped` (and `traderx_bridge_dropped`) now counts, exactly, the records a leading lane never published
+    because it fell more than its ring behind after its catch-up. Each such lap is also a gap and an ALERT. A lap
+    during a catch-up is a counted gap (FR-DRS-38): how many of the overwritten records the old leader stored cannot
+    be told.
+  - Sizing. At 500K orders/s on 8 partitions a trade lane takes about 63K records/s and an order lane about 127K/s.
+    The queue of 65,536 held about 1 s and 0.5 s. The default ring holds about 16 s and 8 s. The slots cost 4 MiB per
+    lane, 64 MiB for 16 lanes, and records occupy the heap only while held. A full ring is about 64 MiB of trade
+    records or 130 MiB of order records per lane: 1.6 GiB if all 16 lanes fill at once, against the members' 12 GiB
+    heap.
+    Measured locally against the parent build. Setup: P=6 trade lanes, 200K sides/s for 15 s after a 3 s warm-up,
+    Docker NATS, two runs per arm. Every side was stored and none dropped in either arm.
+
+    | | this build (2^20) | parent (65,536) |
+    |---|---|---|
+    | Process CPU | 20.7–21.0 s | 20.5–20.6 s |
+    | GC | 126–141 ms | 133–169 ms |
+    | Live heap after a full GC | 78 MB | 48 MB |
+    | The apply thread's offer, record included | 24.6–25.5 ns/side | 21.8–34.8 ns/side |
+    | Peak backlog | 3,533–4,748 | n/a |
+
+    The extra live heap is the six lanes' slot arrays: 6 x 4 MiB.
+  - Found on GKE 2026-11-10 (RI37, the ADR-103 re-test run D). The leader was killed at about 510K orders/s and every
+    member agreed at 1,003,275,732 sides. The history store held 980,327,391. The new leader's
+    `trades.queueDropped` was 22,948,341, the shortfall exactly, and its `orders.queueDropped` was 46,297,224. The
+    FR-DRS-37 catch-up itself was small and correct: 6 to 24 records per lane after the stream's last. The loss was
+    the lane thread not draining its queue while blocked. That is about 45 s of each lane's flow in about three
+    episodes (`gaps` 24 over 8 trade lanes). It matches a stream read held by JetStream API stalls of 8 to 30 s under
+    this load (FR-DRS-42). A catch-up allows 10 attempts of two 2 s requests each.
+  - Tests. `ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile` freezes NATS, promotes a
+    follower and offers 100,000 sides and order events. Its catch-up blocked 3.25 s with 99,936 sides held. Every
+    record was stored once, in order, with `queueDropped` 0 and `maxBacklog` above 65,536. The control is the parent
+    build at its 65,536 queue, the same test: 65,700 of 100,100 sides stored, 34,400 missing, behind the same ALERT
+    lines as GKE. `ReceiptLanesIT#aPromotedLaneLappedPastItsRingIsACountedGap` (a 1,024-slot ring, 5,000 applied in
+    the stall): one gap, the 1,024 kept in order. On kind (2026-11-10, `scripts/proofs/kind-bridge-failover-at-rate.sh`, production's default shape,
+    one partition, 4 x 250 orders/s): NATS frozen 121 s, the leader killed 3 s in. With this rule the history store
+    held 231,662 of the members' 231,662 sides (G3h) and 463,324 of 463,324 order events, with `queueDropped` 0 and
+    no gap on every member. The promoted leader's lanes held up to 95,618 sides and 191,317 order events. The
+    control, the parent's image, is the same run. It held 201,966 of 232,066 sides and 338,327 of 464,132 order
+    events. The new leader's `queueDropped` was 30,100 and 125,805: each shortfall exactly, as on GKE. On GKE (2026-11-10, run E3: run D's render, members on this
+    rule's image only, 1:45–1:52 pm ET), the leader was killed at about 465K sides/s and member 1 led 1.81 s later,
+    with one election. The members agreed at 183,194,994 sides. The history store held 1..183,194,994, each once
+    (G3h). `queueDropped` was 0 and `gaps` 0 on every member. The promoted lanes caught up in 201–221 ms and held
+    at most 8,681 sides and 17,443 order events each (`maxBacklog` 9,254 and 18,595).
+
+    Run D's 15–45 s stall did not recur on this fresh rig: what each lane held fits inside the old queue. E3 shows
+    the failover lossless at rate on this build, but alone it does not discriminate against the old one. The kind
+    proof and `ReceiptLanesIT` do, with their stalls induced.
+  - Not caused by the bridges, and not changed by this rule: the second election 4 s after the first (member 2, then
+    member 1). The apply thread's offer never blocks, before or after this rule. Run D kept no member logs, so the
+    election's cause is open in RI37. Under this rule a second promotion is one more catch-up within the ring, not a
+    second loss window.
+
+- FR-DRS-48 (ADR-084 amendment, FR-FFR-14; 2026-11-10): The order view SHALL route each update of an order whose
+  booking event named its gateway (`gateway`, the submitting session's principal) to `/fills.<gateway>` on the
+  `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` 2 GiB, `FILLS_STREAM_MAX_AGE_MINUTES` 10;
+  created idempotently by trade-processor like the capture, placement per FR-DRS-44's first tag), so a gateway reads
+  only its own orders' events instead of the whole feed. The view SHALL keep an order's gateway from its booking
+  event across later updates (as it keeps `clientOrderKey`), and the gateway SHALL NOT be part of the event digest
+  (`OrderProjectionService.digest` removes it as it removes `clientOrderKey`: a routing hint is not economic event
+  identity, and every event retained before the field existed must still verify — `ClientOrderKeyDigestTest`), and
+  the router SHALL publish, per view batch and per
+  gateway, one message holding that gateway's records of the batch newline-joined in stream order (FR-DRS-41's
+  shape), the record bytes as the capture carried them. Every update of one order reaches the one replica that owns
+  its partition (FR-DRS-45), so an order's routed events are in order on its subject. An update of an order the view
+  never held booked is not routed (the gateway's per-order check reports the gap, ADR-084 §7). `FILLS_ROUTE=0` turns
+  the router off; with no booking event naming a gateway it publishes nothing. `/v2/projection-feed` `orders.fills`
+  SHALL report `routed` (events), `messages`, `acked`, `failed` and the per-gateway counts. Covered by
+  `FillsRouterTest` (the batch shape; the view keeps the gateway named at booking and none for an order booked
+  without one), `FillsRouterIT` (NATS: each gateway's subject holds only its own orders' events, one message per
+  batch per gateway, acks counted, the stream's subject `/fills.>`), and the kind proof of FR-FFR-14.
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

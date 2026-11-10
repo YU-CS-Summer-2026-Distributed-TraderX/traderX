@@ -1,13 +1,12 @@
 package finos.traderx.ordermatcher.cluster;
 
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Leader-side trade → NATS bridge (cluster-egress → NATS, YU12).
  *
  * <p>The deterministic service (apply) thread offers each booked trade (KIND_TRADE_BOOKED) to its
- * partition's lock-free SPSC queue; that partition's lane (YU18 {@link ReceiptLanes}: one thread and
+ * partition's ring (FR-DRS-47); that partition's lane (YU18 {@link ReceiptLanes}: one thread and
  * connection per partition, 429 receipts counted) drains it and publishes a {@code NatsEnvelope<TradeOrder>}
  * JSON onto the {@code /trades} subject that {@code trade-processor} already consumes. From there
  * trade-processor persists the Trade + updated Position to the SQL database and republishes
@@ -22,10 +21,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * hold - those the dying leader applied but never got stored - before anything new. The same catch-up runs on every
  * new NATS connection while leading (FR-DRS-38), so a NATS restart does not lose what was in flight.
  *
- * <p>Delivery is best-effort: queue overflow or an unavailable consumer can lose publication.
- * Stable descriptor-derived IDs make identical replay idempotent in trade-processor, but do not
- * provide durable NATS delivery. Frozen archive verification refuses missing projections.
- * The service thread never blocks on NATS; a full queue drops and counts.
+ * <p>Delivery is best-effort past the lane's ring: a lane more than its ring behind, or an unavailable consumer, can
+ * lose publication, counted. Stable descriptor-derived IDs make identical replay idempotent in trade-processor, but do
+ * not provide durable NATS delivery. Frozen archive verification refuses missing projections.
+ * The service thread never blocks on NATS and never has a record refused (FR-DRS-47).
  */
 final class TradeNatsPublisher {
 
@@ -53,7 +52,6 @@ final class TradeNatsPublisher {
     private final RunDescriptor descriptor;
     // YU18 (§7.9): one loss-counting publish lane per partition; see ReceiptLanes.
     private final ReceiptLanes<Rec> lanes;
-    private final AtomicLong dropped = new AtomicLong();
 
     /**
      * Pre-epoch form, kept so the ANCESTOR STATES still compile.
@@ -169,14 +167,7 @@ final class TradeNatsPublisher {
         r.side = side;
         r.qty = qty;
         r.tradePx = tradePx;
-        if (!lanes.offer(r)) {
-            final long n = dropped.incrementAndGet();
-            // YU18: was a bare counter nobody read - same throttled WARN as the order bridge.
-            if (n == 1 || n % 10_000 == 0) {
-                System.out.println("WARN trade-nats-bridge queue full: dropped=" + n
-                    + " (trade-processor will miss these trade sides; it counts them as tradeSeq gaps)");
-            }
-        }
+        lanes.offer(r);
     }
 
     /** Cold replay verifier uses the identical packing and serializer as live publication. */
@@ -250,9 +241,10 @@ final class TradeNatsPublisher {
         return lanes.gaps();
     }
 
-    /** Lost before NATS: the lane's queue was full. A failed publish is not lost: the lane reconnects and catches up. */
+    /** Lost before NATS (FR-DRS-47): sides a leading lane never published because it fell more than its ring behind.
+     *  A failed publish is not lost: the lane reconnects and catches up. */
     long dropped() {
-        return dropped.get();
+        return lanes.lost();
     }
 
     /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
@@ -270,7 +262,7 @@ final class TradeNatsPublisher {
     }
 
     String json() {
-        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + dropped.get() + ",");
+        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + lanes.lost() + ",");
     }
 
     void stop() {

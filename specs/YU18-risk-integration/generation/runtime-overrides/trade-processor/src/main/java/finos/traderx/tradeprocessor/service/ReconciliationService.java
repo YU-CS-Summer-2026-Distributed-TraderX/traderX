@@ -61,6 +61,11 @@ public class ReconciliationService {
     }
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     void snapshotStore(TradeSnapshotStore store) { this.snapshotStore = store; }
+    // FR-DRS-45: the sweep reads the engine's whole blotter against the shared stream and SQL cursors and keeps one
+    // cursor per scope, so with N replicas exactly one runs it: the owner of partition 0.
+    private PartitionOwnership ownership;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void ownership(PartitionOwnership ownership) { this.ownership = ownership; }
     private boolean onLedger() { return ledgerFeed != null && ledgerFeed.ledgerMode() && snapshotStore != null; }
 
     private void bindScope() throws IOException,InterruptedException {
@@ -149,6 +154,7 @@ public class ReconciliationService {
 
     @Scheduled(fixedDelayString = "${recon.poll.interval-ms:10000}")
     public synchronized void sweep() {
+        if (ownership != null && !ownership.owns(0)) return;
         // Fetch from one BELOW the cursor, not from the cursor: the blotter is strictly-greater-than
         // paginated, so this re-reads the single entry the cursor points at, and the engine still
         // holding it is the proof that we are counting against the epoch we counted against last

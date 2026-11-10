@@ -201,3 +201,49 @@ round trip, which the receipt publish already does not pay); a NATS cluster firs
 1M messages/s, but it leaves the leader's per-message cost and is deployment work; it remains the complement if the
 single server's byte rate at 400K, about 540 MB/s, has no margin); a compact wire first (bytes were not the wall).
 
+
+## Amendment, 2026-11-10: the apply thread writes into the lane's ring; a stalled lane publishes its backlog (FR-DRS-47)
+
+Context. On GKE (2026-11-10, RI37, ADR-103 re-test run D) the leader was killed at about 510K orders/s. The members
+agreed at 1,003,275,732 sides and the stream was short 22,948,341, the new leader's `trades.queueDropped` exactly.
+Decisions 7–11 were correct and small: each promoted lane published 6–24 records after the stream's last. The loss
+was structural. A lane was the only consumer of its 65,536-record queue, and its one thread also made the blocking
+stream reads of the catch-up and the reconnect. At 500K on 8 partitions that queue held about 1 s of trade sides and
+0.5 s of order events. A catch-up may take 10 attempts of two 2 s JetStream requests, and JetStream API stalls of
+8–30 s under this load are on record (FR-DRS-42). Whatever the queue refused never reached the ring (Decision 11), so
+no catch-up could republish it.
+
+19. **The ring is written by the apply thread.** `offer` stores the record in its lane's ring (`BRIDGE_LANE_RECORDS`
+    slots, 2^20 by default) and advances the lane's head. It never blocks and never refuses. Each record carries its
+    index, so a lane reading a slot the apply thread has since overwritten knows it was lapped. The lane reads the
+    ring in order: the role tags (Decision 6) and the publish path (Decisions 7–18) are unchanged. A stream read, a
+    reconnect or a frozen socket now holds the lane thread without losing anything the ring can hold. The lane
+    publishes the backlog after the cut when it resumes.
+20. **Release keeps the heap where it was.** The lane drops its reference to a record once it has read it while
+    following, or published it while leading, and it is older than the last 65,536 (Decisions 6 and 8). A current
+    lane therefore holds the same records as before. Only a stall holds more, up to the ring.
+21. **Counted where it is exact.** A leading lane lapped after its catch-up has lost exactly the records from its next
+    unpublished one to the oldest the ring still holds. They go in `queueDropped` (and `traderx_bridge_dropped`),
+    with a gap and an ALERT. A lap during a catch-up is Decision 10's gap. `/health` adds `maxBacklog`, the most a
+    leading lane has held unpublished. The catch-up's log line gives its duration and the records applied meanwhile.
+
+Cost. The slots are 4 MiB per lane, 64 MiB for 16 lanes, allocated at start. Per record, the apply thread does two
+ordered stores in place of a queue offer. The lane does one compare-and-set to release the record. A full ring is
+about 64 MiB of trade records or 130 MiB of order records per lane, held only while that lane is stalled. Measured
+locally (P=6, 200K sides/s, two runs per arm): process CPU 20.7–21.0 s against 20.5–20.6 s, GC 126–141 ms against
+133–169 ms, live heap after a full GC 78 MB against 48 MB (the slot arrays). The offer took 24.6–25.5 ns per side
+against 21.8–34.8. Neither arm dropped a side.
+
+Superseded rejections. "A larger lane queue" and "a larger ring sized for a NATS pod restart" (amendment of
+2026-11-08) were rejected for member heap. Both assumed the records stay resident. Under Decision 20 they stay only
+while a lane is behind.
+
+**Rejected:**
+
+- *Run the catch-up's stream read on another thread and keep the queue.* It covers the catch-up but not a reconnect
+  or a blocked publish. It still needs a bounded place for what arrives meanwhile, and that place is this ring.
+- *Back-pressure on the apply thread.* The deterministic core cannot wait on NATS (Decision 1).
+- *Re-derive refused records from the Aeron log.* The records are the engine's outputs, not its inputs. Re-deriving
+  them is the archive replay (Decision 5), not something a lane can do live.
+- *A ring sized to cover any stall.* JetStream can stall longer than any heap. Past the ring the loss is counted and
+  the repair is still the archive replay.

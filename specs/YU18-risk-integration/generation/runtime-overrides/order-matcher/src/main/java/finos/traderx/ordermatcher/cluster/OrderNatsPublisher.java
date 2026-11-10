@@ -2,7 +2,6 @@ package finos.traderx.ordermatcher.cluster;
 
 
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Leader-side order-lifecycle → NATS bridge (cluster-egress → NATS, YU13). The order-state sibling
@@ -21,8 +20,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * off-consensus but its CONTENT is a pure function of engine state + a shared constant, so every
  * member would emit the same id if promoted.
  *
- * <p>The service (apply) thread NEVER blocks on NATS: {@link #offer} is non-blocking and a full
- * queue drops+counts+WARNs (the rejection signal — this path is not allowed to drop silently, brief
+ * <p>The service (apply) thread NEVER blocks on NATS: {@link #offer} is non-blocking and never refused (FR-DRS-47);
+ * a lane more than its ring behind counts and ALERTs what it lost (this path is not allowed to drop silently, brief
  * 05 item 3). Delivery is at-least-once and the read model upserts by id, so a replay is idempotent.
  */
 final class OrderNatsPublisher {
@@ -51,6 +50,7 @@ final class OrderNatsPublisher {
         // thread, so the hex is rendered in encode() on this bridge's own thread instead.
         long traceKey;
         long clientOrderKey;   // ADR-093: set on the booking event only
+        String gateway;        // FR-FFR-14: the submitting gateway's name, on the booking event only
         // YU18 order types (FR-OT33/34). All zero for an untyped order, whose JSON is unchanged.
         byte orderType;
         byte tif;
@@ -75,7 +75,6 @@ final class OrderNatsPublisher {
     private final RunDescriptor descriptor;
     // YU18 (§7.9): one loss-counting publish lane per partition; see ReceiptLanes.
     private final ReceiptLanes<Rec> lanes;
-    private final AtomicLong dropped = new AtomicLong();
 
     OrderNatsPublisher(final String url, final String subject, final String epoch, final int capacity) {
         this(url,subject,epoch,null,capacity);
@@ -184,15 +183,7 @@ final class OrderNatsPublisher {
         r.createdAtMillis = createdAtMillis;
         r.updatedAtMillis = updatedAtMillis;
         r.traceKey = traceKey;
-        if (!lanes.offer(r)) {
-            final long n = dropped.incrementAndGet();
-            // Rejection signal (brief 05 item 3): never a silent drop. Throttled so a flood WARNs
-            // at bounded rate, but the very first drop is always visible.
-            if (n == 1 || n % 10_000 == 0) {
-                System.out.println("WARN order-nats-bridge queue full: dropped=" + n
-                    + " (read model will miss order updates until it drains)");
-            }
-        }
+        lanes.offer(r);
     }
 
     /** YU18: the full order update, typed fields and reason included. Same threading contract. */
@@ -204,6 +195,12 @@ final class OrderNatsPublisher {
         if (security == null) {
             return;
         }
+        lanes.offer(from(o, security, traceKey, ordinal));
+    }
+
+    /** The record of one output event (package-private: the encode seam is unit-testable without a lane). */
+    static Rec from(final finos.traderx.ordermatcher.lmax.OutputEvent o, final String security,
+                    final long traceKey, final int ordinal) {
         final Rec r = new Rec();
         r.orderRef = o.orderRef;
         r.consensusSequence=o.inputSeq;r.outputOrdinal=ordinal;
@@ -220,6 +217,7 @@ final class OrderNatsPublisher {
         r.updatedAtMillis = o.updatedAtMillis;
         r.traceKey = traceKey;
         r.clientOrderKey = o.clientOrderKey;
+        r.gateway = o.gateway == null || o.gateway.length == 0 ? null : new String(o.gateway, java.nio.charset.StandardCharsets.UTF_8);
         r.orderType = o.orderType;
         r.tif = o.typed.tif;
         r.stopPx = o.typed.stopPx;
@@ -233,13 +231,7 @@ final class OrderNatsPublisher {
         r.suspendReason = o.typed.suspendReason;
         r.triggered = o.typed.triggered;
         r.riskReason = o.riskReason;
-        if (!lanes.offer(r)) {
-            final long n = dropped.incrementAndGet();
-            if (n == 1 || n % 10_000 == 0) {
-                System.out.println("WARN order-nats-bridge queue full: dropped=" + n
-                    + " (read model will miss order updates until it drains)");
-            }
-        }
+        return r;
     }
 
     /** Cold replay verifier uses the identical packing and serializer as live publication. */
@@ -289,6 +281,11 @@ final class OrderNatsPublisher {
         // unsigned 64-bit value does not survive a JSON number in every reader. Omitted on every other event.
         if (r.clientOrderKey != 0L) {
             sb.append(",\"clientOrderKey\":\"").append(Long.toUnsignedString(r.clientOrderKey)).append('"');
+        }
+        // FR-FFR-14: the gateway that submitted the order, on the booking event only (a subject token, never quoted
+        // content), so the read model routes this order's fills to /fills.<gateway>.
+        if (r.gateway != null) {
+            sb.append(",\"gateway\":\"").append(r.gateway).append('"');
         }
         // YU18: the reason a venue event gave this order (DAY_EXPIRED, FOK_UNFILLABLE, a trigger
         // refusal...). Omitted when ACCEPTED, so an untyped accepted order's JSON is unchanged.
@@ -387,9 +384,10 @@ final class OrderNatsPublisher {
         return lanes.gaps();
     }
 
-    /** Lost before NATS: the lane's queue was full. A failed publish is not lost: the lane reconnects and catches up. */
+    /** Lost before NATS (FR-DRS-47): events a leading lane never published because it fell more than its ring behind.
+     *  A failed publish is not lost: the lane reconnects and catches up. */
     long dropped() {
-        return dropped.get();
+        return lanes.lost();
     }
 
     /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
@@ -398,7 +396,7 @@ final class OrderNatsPublisher {
     }
 
     String json() {
-        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + dropped.get() + ",");
+        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + lanes.lost() + ",");
     }
 
     void stop() {

@@ -835,11 +835,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // (brief 05 item 0). Managed runs use the persisted descriptor; legacy keeps its configured prefix.
             final String configuredEpoch = System.getenv("CLUSTER_EPOCH");
             final String epoch = configuredEpoch == null || configuredEpoch.isBlank() ? "1" : configuredEpoch;
-            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, 1 << 16);
+            // FR-DRS-47: each lane's ring holds what a stalled lane has not yet published (BRIDGE_LANE_RECORDS).
+            final int laneRecords = ReceiptLanes.laneRecordsFromEnv();
+            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, laneRecords);
             tradeBridge.role(role == Cluster.Role.LEADER);
             tradeBridge.start();
             orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
-                epoch, runDescriptor, 1 << 16);
+                epoch, runDescriptor, laneRecords);
             orderBridge.role(role == Cluster.Role.LEADER);
             orderBridge.start();
         }
@@ -2737,10 +2739,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // egress filter deliberately — first direct (non-resting) order-lifecycle output wins,
             // because that is the one that completes the pending; later fills under the same apply
             // are continuations of the same order and must not overwrite the verdict.
+            out.gateway = null;
             if (directAckKind == 0 && (out.flags & OutputEvent.FLAG_RESTING_UPDATE) == 0
                 && (OutputEvent.isOrderLifecycleKind(out.kind)
                     || out.kind == OutputEvent.KIND_ORDER_NOT_FOUND)) {
                 directAckKind = out.kind;
+                // FR-FFR-14: a NEW order's booking event names the gateway that submitted it (the session's
+                // principal, ClusterClientAuth), so the read model can route the order's later fills to that gateway
+                // alone. The session and its principal are cluster state: the same on every member and on replay.
+                if (event.type == InputEvent.TYPE_ORDER_NEW && session != null
+                    && OutputEvent.isOrderLifecycleKind(out.kind)) {
+                    out.gateway = session.encodedPrincipal();
+                }
             }
             // Read-side tap (YU05 recon/regulatory). Handed the reusable ring slot, so a consumer
             // copies what it needs synchronously. Placed before the role-tagged bridges on

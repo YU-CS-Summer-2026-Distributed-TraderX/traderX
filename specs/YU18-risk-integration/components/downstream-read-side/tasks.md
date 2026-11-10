@@ -48,8 +48,14 @@
       gap (FR-DRS-38; kind 2026-11-08, 952 sides). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce`,
       `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost`, `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap`.
 - [x] A record refused by a full lane queue is a counted gap with an ALERT, at the catch-up or at once while leading
-      (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog.
-      `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
+      (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog. Superseded by FR-DRS-47.
+- [x] A promotion at rate loses nothing: the apply thread writes into each lane's ring (`BRIDGE_LANE_RECORDS`,
+      2^20), never refused, and a blocked lane publishes its backlog when it resumes. `queueDropped` counts only a
+      lane more than its ring behind, exactly (FR-DRS-47, RI37: GKE 22.9M sides). `ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile`
+      (control on the parent: 34,400 of 100,100 missing), `#aPromotedLaneLappedPastItsRingIsACountedGap`,
+      `scripts/proofs/kind-bridge-failover-at-rate.sh` (kind: 231,662 of 231,662 sides with NATS frozen 121 s across a
+      leader kill; the parent's image lost 30,100). GKE run E3 (2026-11-10): G3h exact on 183,194,994 sides
+      across a leader kill at ~465K sides/s, queueDropped 0 on every member.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.
@@ -58,8 +64,17 @@
       (FR-DRS-40). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` (order events),
       `ReceiptLanesIT` under both schemes, `OrderBatchProjectionIT#aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun`.
       On kind: `scripts/proofs/kind-bridge-nats-restart.sh` (291,180 of 291,180 order events; the control lost 45).
+- [x] trade-processor as N replicas, each owning a disjoint block of the partitions; a partition with a live owner is a
+      start-up refusal (PARTITION_OWNED); health and accounting report the owned partitions and name them; the recon
+      runs on partition 0's owner; a StatefulSet render for N > 1 (FR-DRS-45, RI36). `PartitionOwnershipTest`,
+      `PartitionOwnershipIT`, `test_prepare.SnapshotReadModel`, `scripts/proofs/kind-tp-ownership.sh`.
+- [x] The order view's reads keep their contract with N replicas: a replica forwards a read of an account it does
+      not own to the owner, a routed read is never routed twice, no owner is 503; measured against fan-out-and-merge
+      (FR-DRS-46, ADR-103 §3). The production snapshot profile renders 4 replicas; `rig.sh` drives either shape.
+      `PartitionOwnershipIT`, `test_rig`, `kind-tp-ownership.sh` steps 5-6.
 
 ## Still open
+- The GKE hour at 450K on 4 read-model replicas (RI36); the readmodel-pool must hold 4 × 12 CPU.
 
 - The production render sets `PROJECTION_FEED_MODE=jetstream`, but the next rollout has not deployed it yet.
 - In snapshot mode no consumer replays a rejected trade side from the archive yet. The recon reports it
