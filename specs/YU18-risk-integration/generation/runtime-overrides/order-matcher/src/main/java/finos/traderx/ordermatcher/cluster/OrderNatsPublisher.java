@@ -2,7 +2,6 @@ package finos.traderx.ordermatcher.cluster;
 
 
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Leader-side order-lifecycle → NATS bridge (cluster-egress → NATS, YU13). The order-state sibling
@@ -21,8 +20,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * off-consensus but its CONTENT is a pure function of engine state + a shared constant, so every
  * member would emit the same id if promoted.
  *
- * <p>The service (apply) thread NEVER blocks on NATS: {@link #offer} is non-blocking and a full
- * queue drops+counts+WARNs (the rejection signal — this path is not allowed to drop silently, brief
+ * <p>The service (apply) thread NEVER blocks on NATS: {@link #offer} is non-blocking and never refused (FR-DRS-47);
+ * a lane more than its ring behind counts and ALERTs what it lost (this path is not allowed to drop silently, brief
  * 05 item 3). Delivery is at-least-once and the read model upserts by id, so a replay is idempotent.
  */
 final class OrderNatsPublisher {
@@ -75,7 +74,6 @@ final class OrderNatsPublisher {
     private final RunDescriptor descriptor;
     // YU18 (§7.9): one loss-counting publish lane per partition; see ReceiptLanes.
     private final ReceiptLanes<Rec> lanes;
-    private final AtomicLong dropped = new AtomicLong();
 
     OrderNatsPublisher(final String url, final String subject, final String epoch, final int capacity) {
         this(url,subject,epoch,null,capacity);
@@ -184,15 +182,7 @@ final class OrderNatsPublisher {
         r.createdAtMillis = createdAtMillis;
         r.updatedAtMillis = updatedAtMillis;
         r.traceKey = traceKey;
-        if (!lanes.offer(r)) {
-            final long n = dropped.incrementAndGet();
-            // Rejection signal (brief 05 item 3): never a silent drop. Throttled so a flood WARNs
-            // at bounded rate, but the very first drop is always visible.
-            if (n == 1 || n % 10_000 == 0) {
-                System.out.println("WARN order-nats-bridge queue full: dropped=" + n
-                    + " (read model will miss order updates until it drains)");
-            }
-        }
+        lanes.offer(r);
     }
 
     /** YU18: the full order update, typed fields and reason included. Same threading contract. */
@@ -233,13 +223,7 @@ final class OrderNatsPublisher {
         r.suspendReason = o.typed.suspendReason;
         r.triggered = o.typed.triggered;
         r.riskReason = o.riskReason;
-        if (!lanes.offer(r)) {
-            final long n = dropped.incrementAndGet();
-            if (n == 1 || n % 10_000 == 0) {
-                System.out.println("WARN order-nats-bridge queue full: dropped=" + n
-                    + " (read model will miss order updates until it drains)");
-            }
-        }
+        lanes.offer(r);
     }
 
     /** Cold replay verifier uses the identical packing and serializer as live publication. */
@@ -387,9 +371,10 @@ final class OrderNatsPublisher {
         return lanes.gaps();
     }
 
-    /** Lost before NATS: the lane's queue was full. A failed publish is not lost: the lane reconnects and catches up. */
+    /** Lost before NATS (FR-DRS-47): events a leading lane never published because it fell more than its ring behind.
+     *  A failed publish is not lost: the lane reconnects and catches up. */
     long dropped() {
-        return dropped.get();
+        return lanes.lost();
     }
 
     /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
@@ -398,7 +383,7 @@ final class OrderNatsPublisher {
     }
 
     String json() {
-        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + dropped.get() + ",");
+        return lanes.json().replaceFirst("\\{", "{\"queueDropped\":" + lanes.lost() + ",");
     }
 
     void stop() {
