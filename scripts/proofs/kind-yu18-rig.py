@@ -16,6 +16,8 @@ ADR-102 cutover (2026-11-08) the blotter reads the store, so --history also rend
 (traderx/position-service:<tag>). --eod adds the rest of the EOD chain: price-publisher (its marks) and risk-extract
 (the engine's cut, traderx/cluster-node:<tag>), credentials from the render's own Secrets. --binary adds the gateway's
 binary port (prepare.add_binary_port) for binary-load.mjs, the production load driver (FR-THT-10's drain proof).
+--tp-replicas N renders trade-processor as production's shard_read_model does (FR-DRS-45): one Recreate Deployment, or
+above 1 a StatefulSet whose pods each own a block of the --partitions (scripts/proofs/kind-tp-ownership.sh).
 
 Images: traderx/cluster-node:<tag> (build-cluster-image.sh) and traderx/trade-processor:<tag>
 (build-service-images.sh), loaded into the kind nodes. Secrets are random per render: nothing to leak, and
@@ -88,7 +90,7 @@ def history(docs, tag, hot_days, registry='', pool='', cold_bucket='', ns='trade
 
 
 def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_history=False, hot_days=0,
-           history_pool='', cold_bucket='', with_eod=False, binary=False):
+           history_pool='', cold_bucket='', with_eod=False, binary=False, tp_replicas=1):
     docs = []
     for f in ['statefulset.yaml', 'nats.yaml', 'eod-price-db.yaml', 'trade-processor.yaml', 'gateway.yaml']:
         docs += [d for d in yaml.safe_load_all((K / f).read_text()) if d]
@@ -158,7 +160,8 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
         prep.add_binary_port(docs, 18140)
     if with_history:
         history(docs, tag, hot_days, registry, history_pool, cold_bucket, ns)
-        for d in docs: d['metadata']['namespace'] = ns
+    prep.shard_read_model(docs, tp_replicas)
+    for d in docs: d['metadata']['namespace'] = ns
     if registry:   # GKE: public images by their locked amd64 digest, as production pins them
         lock = json.loads((ROOT / 'scripts/gcp-compsci/public-image-lock.json').read_text())
         for d in docs:
@@ -188,6 +191,7 @@ if __name__ == '__main__':
     a.add_argument('--cold-bucket', default='', help='GKE: the GCS bucket of the cold disk, prefix <ns>/')
     a.add_argument('--eod', action='store_true', help='add price-publisher and risk-extract (the EOD extract)')
     a.add_argument('--binary', action='store_true', help='add the gateway binary port 18140 (binary-load.mjs, FR-THT-10)')
+    a.add_argument('--tp-replicas', type=int, default=1, help='trade-processor replicas, each owning a block of the partitions (FR-DRS-45)')
     o = a.parse_args()
     if o.registry and (o.history or o.history_hot_days) and not o.history_pool:
         a.error('--history on GKE needs --history-pool')
@@ -195,4 +199,5 @@ if __name__ == '__main__':
         a.error('--history-hot-days on GKE needs --cold-bucket')
     yaml.safe_dump_all(render(o.tag, o.partitions, o.gateways, o.ns, o.registry, o.pool,
                               with_history=o.history or o.history_hot_days > 0, hot_days=o.history_hot_days,
-                              history_pool=o.history_pool, cold_bucket=o.cold_bucket, with_eod=o.eod, binary=o.binary), sys.stdout, sort_keys=False)
+                              history_pool=o.history_pool, cold_bucket=o.cold_bucket, with_eod=o.eod, binary=o.binary,
+                              tp_replicas=o.tp_replicas), sys.stdout, sort_keys=False)

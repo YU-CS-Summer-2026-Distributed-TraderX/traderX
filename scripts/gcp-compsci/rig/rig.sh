@@ -116,6 +116,9 @@ engine_has_sysctls(){ [ -n "$(gc container node-pools describe engine-pool --clu
 gateway_replicas(){ kc get deploy cluster-gateway -o jsonpath='{.spec.replicas}'; }
 hpa_exists(){ kc get hpa cluster-gateway >/dev/null 2>&1; }
 no_pods(){ [ -z "$(kc get pods -l "app=$1" -o name 2>/dev/null)" ]; }
+# FR-DRS-45: trade-processor is a Deployment (one replica) or a StatefulSet (N replicas, each owning a block of the
+# partitions). wl <name>: the workload kind kubectl takes, deploy or sts; only trade-processor can be a StatefulSet here.
+wl(){ if [ "$1" = trade-processor ] && [ -n "$(kc get sts trade-processor -o name 2>/dev/null)" ]; then echo sts; else echo deploy; fi; }
 # Every replica on the current template and available, whatever the Progressing condition says (FR-PRG-34).
 deploy_rolled_out(){ local v; v=$(kc get "$1" -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.spec.replicas} {.status.updatedReplicas} {.status.availableReplicas} {.status.replicas}' 2>/dev/null) || return 1
   read -r g og want upd avail total <<<"$v"; [ "$g" = "$og" ] && [ "${upd:-0}" = "$want" ] && [ "${avail:-0}" = "$want" ] && [ "${total:-0}" = "$want" ]; }
@@ -251,7 +254,7 @@ members_gated(){
 # order_status_is <account> <ref> <status> (bearer $ORDER_TOKEN, passed on stdin, never on argv): trade-processor's order read model, the one FIX status
 # requests read (FR-FIX04): the memory order view in snapshot mode (ORDER_FEED_PERSIST=false never writes SQL
 # orderbook, production 2026-11-07), the orderbook rows otherwise. One effect end for either render.
-order_status_is(){ kc exec -i deploy/trade-processor -- sh -c 'read -r t; curl -sf -m10 -H "Authorization: Bearer $t" \
+order_status_is(){ kc exec -i "$(wl trade-processor)/trade-processor" -- sh -c 'read -r t; curl -sf -m10 -H "Authorization: Bearer $t" \
     "localhost:18091/accounts/$1/orders?status=all"' sh "$1" <<<"$ORDER_TOKEN" \
   | jq -e --arg r "-$2" --arg s "$3" 'any(.[]; (.id | endswith($r)) and .status == $s)' >/dev/null; }
 sql(){ kc exec deploy/eod-price-db -c mariadb -- sh -c "mariadb -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"$1\" traderx" 2>/dev/null; }
@@ -282,13 +285,28 @@ sql_ready(){ [ "$(sql 'select 1')" = 1 ]; }
 # snapshot; "rows" was retired and trade-processor refuses to start on it. A Deployment that cannot be read, or any
 # other value, fails, and the gate refuses.
 tp_mode(){ local v
-  v=$(kc get deploy trade-processor -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TRADE_PROJECTION_MODE")].value}') \
+  v=$(kc get "$(wl trade-processor)" trade-processor -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TRADE_PROJECTION_MODE")].value}') \
     || { echo "trade-processor's TRADE_PROJECTION_MODE cannot be read" >&2; return 1; }
   case $v in ''|snapshot) echo snapshot;; *) echo "trade-processor's TRADE_PROJECTION_MODE is '$v' (rows was retired, FR-THT-01)" >&2; return 1;; esac; }
 # FR-PRG-22: a failed or empty fetch fails (curl -f: an HTTP error is a failure, not a body to hash).
-accounting(){ local a
-  a=$(kc exec deploy/trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) && [ -n "$a" ] || return 1
-  printf '%s\n' "$a"; }
+# FR-DRS-45: with N replicas each answers for its own partitions; the accounting is their union, and a partition answered
+# by two replicas, or by none, fails it.
+accounting(){ local a i n parts=()
+  if [ "$(wl trade-processor)" = deploy ]; then
+    a=$(kc exec deploy/trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) && [ -n "$a" ] || return 1
+    printf '%s\n' "$a"; return 0
+  fi
+  n=$(kc get sts trade-processor -o jsonpath='{.spec.replicas}') && [[ $n =~ ^[1-9][0-9]*$ ]] || return 1
+  for ((i = 0; i < n; i++)); do
+    a=$(kc exec "trade-processor-$i" -c trade-processor -- curl -sf -m15 localhost:18091/v2/projection-feed/accounting) \
+      && [ -n "$a" ] || return 1
+    parts+=("$a")
+  done
+  printf '%s\n' "${parts[@]}" | jq -se '.[0].partitions as $p
+    | ([.[].trades | keys[]] | sort) as $t | ([.[].orders // {} | keys[]] | sort) as $o
+    | if $t != ([range($p)] | map(tostring) | sort) or $o != $t then error("partitions answered: trades \($t), orders \($o)") else
+      {scope: .[0].scope, partitions: $p, owned: [.[].owned], streams: (map(.streams) | add),
+       trades: (map(.trades) | add), orders: (map(.orders) | add)} end'; }
 # Every partition's committed trade and order cursor at its subject's last stream message.
 accounting_caught_up(){
   accounting | jq -e '([.trades[]] + [(.orders // {})[]]) | length > 0 and all(.cursor >= .streamLast)' >/dev/null
@@ -333,7 +351,7 @@ member(){ # member <i>: applied engineApplied trades orderHash positionHash snap
 # was replaced (a failover) restarts it from 0; one shared baseline could never be passed (2026-11-06, e1106).
 snapshots_past(){ local i n b=("$@"); for i in 0 1 2; do n=$(member "$i" | cut -d' ' -f6); [ "${n:-0}" -gt "${b[$i]:-0}" ] || return 1; done; }
 admin_token(){ # minted inside trade-processor, so the master secret never leaves the cluster; never printed
-  kc exec deploy/trade-processor -- sh -c 'curl -s -m8 -X POST localhost:18091/auth/dev-token \
+  kc exec "$(wl trade-processor)/trade-processor" -- sh -c 'curl -s -m8 -X POST localhost:18091/auth/dev-token \
     -H "X-Auth-Master-Secret: $AUTH_DEV_TOKEN_MASTER_SECRET" -H "Content-Type: application/json" \
     -d "{\"subject\":\"rig-gate\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}"' \
     | python3 -c 'import sys,json
@@ -477,7 +495,7 @@ print("; ".join(bad) or f"OK {got[0]} sides")
 # compared with the closed form over the epoch's sides 1..t minus the unprojected ranges. The store is fed from cursor 0
 # (FR-THT-07), so there is no base. A deleted row breaks the count, a duplicated one is counted, a swapped one the sums.
 HISTORY_CHECK_SQL="SELECT part, count(), max(trade_seq), sum(trade_seq), sum(trade_seq * trade_seq), count() - uniqExact(trade_seq) FROM trades GROUP BY part ORDER BY part FORMAT TSV"
-history_health(){ kc exec deploy/trade-processor -- curl -sf -m15 http://history-feed:18095/health; }
+history_health(){ kc exec "$(wl trade-processor)/trade-processor" -- curl -sf -m15 http://history-feed:18095/health; }
 # Every lane open and nothing pending: with the gateways at 0 the store then holds all the stream has.
 history_caught_up(){ history_health | jq -e '.ready and (.lanes | length > 0 and all(.pending == 0))' >/dev/null; }
 # FR-THT-10: G3h's wait is 600 s plus the backlog at the floor rate the feed must beat (HISTORY_DRAIN_FLOOR rows/s, the
@@ -517,7 +535,7 @@ g3_history(){
   unowned=$(jq -ce '.unowned | objects' <<<"$health") \
     || die "G3h: history-feed reports no unread-subject check (an image before it, or NATS unreadable: $(jq -r '.unownedError // "none"' <<<"$health"))"
   [ "$unowned" = '{}' ] || die "G3h: no history-feed lane reads $unowned on the capture stream: the store misses those messages (FR-THT-02)"
-  rows=$(kc exec -i deploy/trade-processor -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
+  rows=$(kc exec -i "$(wl trade-processor)/trade-processor" -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
     || die "G3h: the history store could not be read"
   printf '%s\n' "$rows" > "$EVIDENCE/gate-history.tsv"
   ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
@@ -828,24 +846,24 @@ reset_feed(){
 # count (production 2026-11-08: a refused up had left trade-processor and history-feed at 0, and the retry "restored" 0).
 HELD=traderx-rig-held-replicas
 hold(){ # hold <deploy>: record its replica count on it, once (a retry keeps the first), then stop it
-  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model archive: $1 cannot be read"
+  local r; r=$(kc get "$(wl "$1")" "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model archive: $1 cannot be read"
   if [ -z "$r" ]; then
-    r=$(kc get deploy "$1" -o jsonpath='{.spec.replicas}') || die "read-model archive: $1 cannot be read"
+    r=$(kc get "$(wl "$1")" "$1" -o jsonpath='{.spec.replicas}') || die "read-model archive: $1 cannot be read"
     [[ $r =~ ^[1-9][0-9]*$ ]] || die "read-model archive: $1 is at ${r:-no} replicas with none recorded: scale it to its rendered count, then rerun"
-    kc annotate deploy "$1" "$HELD=$r" --overwrite >/dev/null || die "read-model archive: $1's replica count cannot be recorded"
+    kc annotate "$(wl "$1")" "$1" "$HELD=$r" --overwrite >/dev/null || die "read-model archive: $1's replica count cannot be recorded"
   fi
-  kc scale "deploy/$1" --replicas=0 >/dev/null || die "read-model archive: $1 cannot be stopped"
+  kc scale "$(wl "$1")/$1" --replicas=0 >/dev/null || die "read-model archive: $1 cannot be stopped"
   wait_for 300 "$1 stopped (restarts at $r)" no_pods "$1"; }
 release(){ # release <deploy>: back to its recorded count, the record removed; with none, an earlier retry released it
-  local r; r=$(kc get deploy "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model restart: $1 cannot be read"
+  local r; r=$(kc get "$(wl "$1")" "$1" -o jsonpath="{.metadata.annotations.$HELD}") || die "read-model restart: $1 cannot be read"
   if [ -z "$r" ]; then
-    r=$(kc get deploy "$1" -o jsonpath='{.spec.replicas}') && [[ $r =~ ^[1-9][0-9]*$ ]] \
+    r=$(kc get "$(wl "$1")" "$1" -o jsonpath='{.spec.replicas}') && [[ $r =~ ^[1-9][0-9]*$ ]] \
       || die "read-model restart: $1 is at ${r:-no} replicas with none recorded: scale it to its rendered count, then rerun"
     note "$1 already restarted ($r replicas)"; return 0
   fi
   [[ $r =~ ^[1-9][0-9]*$ ]] || die "read-model restart: $1's recorded replica count '$r' is not a count"
-  kc scale "deploy/$1" --replicas="$r" >/dev/null || die "read-model archive: $1 cannot be restarted"
-  kc annotate deploy "$1" "$HELD-" >/dev/null || die "read-model archive: $1's replica record cannot be removed"; }
+  kc scale "$(wl "$1")/$1" --replicas="$r" >/dev/null || die "read-model archive: $1 cannot be restarted"
+  kc annotate "$(wl "$1")" "$1" "$HELD-" >/dev/null || die "read-model archive: $1's replica record cannot be removed"; }
 
 # FR-THT-08 (production 2026-11-08, e1108): the history store is the old epoch's too. history-feed bound its lanes to the
 # deleted stream's incarnation and refused STREAM_RESET. Its tables move to arc_<label>_* while it is stopped; it
@@ -1006,7 +1024,7 @@ restart_read_model(){ # FR-PRG-29: after the archive (rig-epoch archived), trade
   [ "$DRY" = 1 ] && { note "would restart: trade-processor, history-feed at their recorded counts"; return 0; }
   local hf; hf=$(kc get deploy history-feed --ignore-not-found -o name) || die "read-model restart: history-feed cannot be read"
   release trade-processor
-  kc rollout status deploy/trade-processor --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
+  kc rollout status "$(wl trade-processor)/trade-processor" --timeout=600s >/dev/null || die "read-model archive: trade-processor not Ready"
   # FR-PRG-29: Ready is not listening on a render without trade-processor's readiness probe (production 2026-11-07
   # 11:01 pm ET: G3's accounting read got connection refused 10 s before it listened), so wait for what G3 reads.
   wait_for 300 "trade-processor's accounting answers (/v2/projection-feed/accounting)" accounting

@@ -455,6 +455,72 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`; the live placement is read back in the acceptance run
   (ADR-103 rollout).
 
+- FR-DRS-45: trade-processor SHALL run as N replicas that each read a disjoint subset of the feed partitions, each
+  partition read by exactly one live replica (RI36: one process reading 8 partitions × 2 feeds had no headroom at
+  400–520K orders/s).
+  - Ownership: `PROJECTION_FEED_PARTITIONS_OWNED` (the older `PROJECTION_FEED_OWNED` still read) is `all` or unset (every
+    partition, as before), a list of partitions and ranges (`0,1`, `0-1`, `0-1,6`), or `replica:<k>/<N>`: replica k
+    of N owns the block of partitions p with `p * N / P == k` (P = 8, N = 2: 0-3 and 4-7; N = 4: two each). A
+    partition named twice or out of range, or a malformed value, SHALL refuse to start. Everything trade-processor
+    does per partition SHALL take only the owned ones: the trade store's and the order view's loads, `requireRetained`
+    and replays, pull threads and snapshot loops, the SQL order projection's consumers. Stream creation and the write
+    lock rows stay global: they are idempotent.
+  - The guard: before any feed reads, the replica SHALL claim its partitions' rows in
+    `projection_partition_owner(partition_id, replica_id, owned, partition_count, heartbeat_at)` in one transaction
+    under row locks. A row held by another replica id whose heartbeat (database time) is younger than
+    `PROJECTION_OWNER_TTL_MS` (20,000) is a live owner. The replica SHALL then re-check once after the TTL (a crashed
+    predecessor's rows expire), and, if an owner is still live, refuse to start: `PARTITION_OWNED replica <id> ...
+    partition <p> is owned by replica <owner> (owns <its ownership>, heartbeat <n> ms ago)`, exit 3, as
+    `RETENTION_GAP` does, having read nothing. The replica id is `PROJECTION_REPLICA_ID` (the pod name), else
+    `<hostname>:<pid>`; the same id reclaims its own rows at once (a restarted StatefulSet pod). The heartbeat
+    SHALL refresh the rows every TTL/4. A heartbeat that finds a row taken SHALL stop the process
+    (`PARTITION_OWNERSHIP_LOST`, exit 3). A failed heartbeat is retried, not fatal: every replica's rows go stale
+    together without the database. A clean stop SHALL release the rows, so the next owner starts without waiting the TTL.
+  - Health: `/v2/projection-feed` SHALL report `ownership` (`replica`, `ownedSpec`, `owned`, `partitions`) and only
+    the owned partitions' views. `/v2/projection-feed/accounting` SHALL report the same three fields and only the owned
+    partitions (trades, orders, their streams); the union of the replicas' answers is the whole read model, each
+    partition in exactly one; `rig.sh`'s `accounting()` takes that union, refusing a partition answered twice or by
+    none. `GET /accounts/{id}/orders` from the memory-only view SHALL answer 421 for an account another replica owns,
+    naming its partition and owner, never an empty list, when the read is not routed (FR-DRS-46). The recon sweep (ReconciliationService,
+    which reads the whole blotter against shared state and keeps one cursor per scope) SHALL run only on the owner of
+    partition 0.
+  - Deployment: one replica is the Deployment with `strategy: Recreate` (under RollingUpdate the surge pod is refused
+    and the rollout never completes). N > 1 (`prepare.py --read-model-replicas N`, `kind-yu18-rig.py --tp-replicas N`,
+    both `prepare.shard_read_model`) is a StatefulSet `trade-processor`, `podManagementPolicy: Parallel`, with
+    `PROJECTION_REPLICA_ID` the pod name and `PROJECTION_FEED_PARTITIONS_OWNED=replica:$(TP_REPLICA_INDEX)/N` from the
+    pod-index label, and a headless Service `trade-processor-replicas` naming each pod. The production snapshot profile
+    (`--read-model snapshot`) SHALL render N = 4 (two of the 8 partitions each; `min(4, P)`), each replica at the one
+    replica's measured size (12 CPU, 24Gi). `rig.sh` SHALL drive either shape (`wl trade-processor`). The order view's
+    reads are routed by FR-DRS-46; the SQL projection is shared and needs none.
+  Covered by `PartitionOwnershipTest` (the parse, the blocks cover each partition once, the guard's decision) and
+  `PartitionOwnershipIT` (three processes on one NATS and MariaDB: halves, each answering for its own; a claim on an
+  owned partition refused, exit 3, reading nothing, and passing with the guard disabled fails the IT; a released
+  partition taken at once and the union exact after the handover); `test_prepare.SnapshotReadModel` (both shapes, and
+  validation refuses a RollingUpdate Deployment or a StatefulSet whose ownership is not its pod index);
+  `test_rig.Up#test_n_read_model_replicas_are_checked_by_the_union_of_their_accountings`;
+  `scripts/proofs/kind-tp-ownership.sh` on kind (2 and 4 replicas).
+
+- FR-DRS-46: The order view's reads SHALL keep their contract for every client with N replicas (ADR-103 §3): clients call
+  the `trade-processor` Service as before, and `GET /accounts/{id}/orders` (open, `?status=all`, `?clientOrderKey=`;
+  the gateway's FIX status and the console) SHALL answer what the account's owner answers, whichever replica receives
+  it. A replica that does not own the account's partition (`accountId mod P`) SHALL forward the read, path, query and
+  `Authorization` as received, to the live owner `projection_partition_owner` names (re-read at most every 2 s, and at
+  once after a failed forward), at `PROJECTION_REPLICA_URL` with `{replica}` replaced by the owner's id (the render:
+  `http://{replica}.trade-processor-replicas:18091`), and return its status and body. A forwarded read carries
+  `X-TraderX-Routed` and SHALL NOT be forwarded again (a non-owner answers it 421). No live owner, or one that cannot be
+  reached, SHALL answer 503 naming the partition, never an empty list. `/v2/projection-feed` `ownership.orderReads`
+  counts reads answered locally, forwarded and refused. Unset `PROJECTION_REPLICA_URL` (one replica) routes nothing.
+  The SQL routes need no routing. yaakov's condition ("if this help then yes", 2026-11-10): the router is kept only if
+  it holds the contract and beats the fan-out-and-merge alternative (the caller asks every replica and merges) on
+  latency and throughput. Measured on kind (4 replicas, 8 partitions, after 330,882 sides; one 11-CPU node, so absolute
+  numbers are the laptop's): open orders at 16 concurrent reads, router 1,450 reads/s p50 8.8 ms p99 42 ms, fan-out 635
+  reads/s p50 21.7 ms p99 80 ms, asking the owner directly 1,410 reads/s p50 10.1 ms p99 34 ms: the router at the floor,
+  2.3× fan-out's throughput; `?status=all` (16 MB, 12,500 orders a read) at 2, router 6/s p50 300 ms p99 1,369 ms,
+  fan-out 5/s p50 342 ms p99 1,101 ms, owner 8/s p50 221 ms p99 802 ms: even, each paying the body once more than
+  the floor. The router is kept. Covered by `PartitionOwnershipIT` (each account in each shape through either replica =
+  its owner's; a routed read at a non-owner 421; no live owner 503; the forward count) and
+  `scripts/proofs/kind-tp-ownership.sh` steps 5-6 (`order-read-bench.mjs`).
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

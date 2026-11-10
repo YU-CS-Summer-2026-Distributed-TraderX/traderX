@@ -101,6 +101,11 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private finos.traderx.tradeprocessor.service.OrderViewSnapshotStore snapshotStore;
   @Autowired(required = false)
   private finos.traderx.tradeprocessor.service.RunRegistry runRegistry;
+  // FR-DRS-45: claimed (or refused) before this feed reads a partition, and released only after it stops.
+  @Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.PartitionOwnership ownership;
+
+  int[] owned() { return ownership != null ? ownership.owned() : JetStreamFeed.owned(ownedPartitions, partitionCount); }
 
   /**
    * One owned partition of a snapshotted view; touched only by that partition's pull thread. Memory is bounded by the
@@ -148,7 +153,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     JetStreamFeed.ensureStreams(connection(), stream, streamLayout, partitionCount, streamMaxBytes, Duration.ofHours(streamMaxAgeHours));
     if (persist && writeLock != null) { writeLock.ensurePartitions(partitionCount); }
     if (viewSnapshots()) { startSnapshottedView(); return; }
-    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
+    for (int p : owned()) {
       String subject = JetStreamFeed.subject("/orders", p, partitionCount);
       // A persisted projection resumes at its durable cursor; a memory-only view has nothing to
       // resume from, so it replays the recent window and rebuilds itself.
@@ -170,7 +175,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private void startSnapshottedView() throws Exception {
     viewScope = runRegistry == null ? finos.traderx.tradeprocessor.service.RunRegistry.UNKNOWN : runRegistry.activeScope();
     List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
-    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
+    for (int p : owned()) {
       final int partition = p;
       long cursor = Math.max(0, snapshotStore.loadCursor(viewScope, p));
       List<OrderUpdate> open = snapshotStore.load(viewScope, p);

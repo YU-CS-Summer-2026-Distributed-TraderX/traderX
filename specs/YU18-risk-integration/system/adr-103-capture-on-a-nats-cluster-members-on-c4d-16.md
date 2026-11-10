@@ -129,7 +129,11 @@ gateways, history), against ~$3–4/h before.
    The old `deploy/nats` must be gone before the StatefulSet's pods share its Service selector, and `pvc/nats-data`
    goes with the epoch's archive when FR-PRG-39 prunes it; neither is deleted by the render.
 3. **The 520K re-test** at 40Gi with 200/100 ms (then 500/250, then 1000/500 only if needed), and a failover at rate at
-   the chosen timeouts. A rig run, costed and approved before it starts.
+   the chosen timeouts. A rig run, costed and approved before it starts. **Done 2026-11-10, 9:24-10:31 am ET** (yaakov:
+   "Yes, run it"; ~$20): 200/100 ms holds (runs B and C: 20 minutes at ~495-510K/s, zero election transitions in any
+   member's log); the relaxed timeouts are not needed and NFR-GMR-01 stands. The failover at rate (run D) detected and
+   elected in ~1.1 s and the cluster stayed exact, but the promoted leader's bridge lanes dropped 22,948,341 sides
+   from the stream in the first ~45 s (RI37), so the failover-at-rate acceptance is open until RI37 is fixed.
 4. RI35 (binary, then FIX), E1, the FIX load at rate.
 5. The acceptance hour of §5, then production.
 
@@ -154,7 +158,25 @@ gateways, history), against ~$3–4/h before.
 - RI34 §1b and `downstream-at-400k.md` §7.15: the hour (11:14 pm–12:14 am ET, 2026-11-10), the volume saturations,
   the member memory finding, the read-model cuts; shared notes `bridge-batching-gke-20261109/`.
 - FR-DRS-34, `downstream-at-400k.md` §7.13: three servers, 1.00–1.25M msgs/s, 0 lost, reader lanes draining.
+- **The re-test, 2026-11-10 9:24-10:31 am ET** (shared notes `retest-520k-20261110/`), on the p4k rig rendered from this
+  ADR's production candidate (`prepare.py --read-model snapshot --partitions 8` → `p4k.py`; three NATS servers on
+  3 × c4d-standard-16 with 563Gi Hyperdisk claims at 600 MiB/s, streams placed 3/3/2 by tag and read back from each
+  server's `/jsz`; members 15 CPU / 40Gi at 200/100 ms; 24 gateways; trade-processor `bat-place1` with FR-DRS-44):
+  - Run A, 400K for 10 min: 235,661,968 orders, 0 rejected, stream +19,496,103 = bridges' messages, store
+    +706,985,904 rows = records = acked, **G3 ok and G3h ok**, caught up 28 s after the load; NATS 1.2 cores and 41%
+    disk busy per server.
+  - Run B, 520K setting for 12 min: 354,517,700 orders (~492K/s with the driver's pauses, every session at its
+    in-flight cap: the RI35 serialisation point), 0 rejected, stream = messages, 1,063,553,100 records acked, G3h ok;
+    roles L/F/F every minute and **zero election transitions in any member's log**. Run C, 8 min more: +240,422,954,
+    G3h ok 1..830,602,622 each once, no election.
+  - Run D, the failover at ~510K/s: new leader in ~1.1 s (member 2 LEADER_READY 0.17 s after the election opened; a
+    second election at +4 s made member 1 leader), the driver kept its rate with 0 rejected and 1,024 ambiguous (in
+    flight with the dead leader), the killed member rejoined in 96 s, all members at 1,003,275,732. Gateway
+    `/latency` before vs 45 s after: total p50 0.91-0.97 → 0.92-0.95 ms, p99 1.29-1.64 → 1.68-1.69, p999 1.72-1.81 →
+    1.78-2.81. **The stream lost 22,948,341 sides** to the promoted leaders' `queueDropped` (RI37).
+  - The read model (one trade-processor at 24Gi) fell behind at ~500K and was OOM-killed once after run A (RI36,
+    already in hand); it did not affect the members or the history store.
 - Render: `test_prepare.NatsCluster` (the shape and its sizing; six broken renders refused), `test_prepare.NatsMemory`
   (the memory arithmetic at the new budget), `test_rig.Nats.test_three_servers_are_three_pods_each_recorded`,
-  `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`. The live proofs (the cluster bench on the production render with
-  batching, the 520K re-test, the failover at rate, the acceptance hour) are pending and listed in the rollout.
+  `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`. The cluster on the render with batching, the 520K re-test and
+  the failover at rate ran 2026-11-10 (above); the acceptance hour is pending, after RI35, RI36 and RI37.

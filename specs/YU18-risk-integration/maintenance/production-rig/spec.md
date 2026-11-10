@@ -62,7 +62,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     else on `default-pool`;
   - run members with 15 CPU / 40Gi on c4d-standard-16 (ADR-103, 2026-11-10; was 7 CPU / 16Gi on c4d-standard-8: at
     16Gi the archive's page cache and the term buffers put the cgroup in reclaim at 50-65 MB/s of log, and a stall past
-    the heartbeat timeout was an election, RI34 §1b), generational ZGC at a 12 GB heap (`-Xms12g -Xmx12g
+    the heartbeat timeout was an election, RI34 §1b; at 40Gi the 520K step held 20 minutes with 200/100 ms and no election,
+    2026-11-10), generational ZGC at a 12 GB heap (`-Xms12g -Xmx12g
     -XX:+AlwaysPreTouch`), and a 4 MiB Aeron `so_rcvbuf`;
   - pin `MAX_ACTIVE_BOOKS` to 1,024, so the book cap (an apply-path decision, ADR-079 §6) cannot move with the heap.
   - `validate()` SHALL refuse a candidate that breaks any of these, including one whose heap cannot hold the pinned
@@ -508,5 +509,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 | members at the ADR-103 shape | 05 | `test_prepare.test_members_run_generational_zgc_with_the_book_cap_pinned` | 15 CPU / 40Gi requests = limits, flags and the pinned cap unchanged |
 | three NATS pods recorded and checked | 28, 41 | `test_rig.Nats.test_three_servers_are_three_pods_each_recorded`, `…test_pools_creates_three_nats_nodes_on_hyperdisk` | `up` records `u1,u2,u3`; two pods REFUSED ("want 3"); a replaced server FAILED at `down`; three intact pass; `pools` creates nats-pool as c4d-standard-16 on Hyperdisk |
 | a partition placed on its server's tag | DRS-44 | `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag` | p mod n; unset or blank places nothing; a stream is placed only when it carries its tag |
-| the cluster bench on the production render; the 520K re-test at 40Gi and 200/100 ms; a failover at rate; the acceptance hour | 05, 41 | rig proof, pending | ADR-103 rollout 2-3 and 5 |
+| the three-server capture on the render at 400K and ~500K | 41 | GKE 2026-11-10, `retest-520k-20261110` runs A-C | streams 3/3/2 by tag on the servers; 400K: G3 and G3h ok, 41% disk busy per server; ~495-510K for 20 min: stream = messages, records = acked, G3h ok 1..830,602,622 each once, 0 rejected |
+| 520K at 40Gi with 200/100 ms | 05 | GKE 2026-11-10, runs B-C | zero election transitions in any member's log over 20 min; NFR-GMR-01 stands |
+| failover at rate | 05, 41 | GKE 2026-11-10, run D | new leader in ~1.1 s, 0 rejected, members exact, killed member back in 96 s; latency p50/p99 unchanged; the promoted leaders' lanes dropped 22,948,341 sides from the stream (RI37) — not accepted until fixed |
+| the acceptance hour | 05, 41 | rig proof, pending | ADR-103 rollout 5, after RI35, RI36, RI37 |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |
