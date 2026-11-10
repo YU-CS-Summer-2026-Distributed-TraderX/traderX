@@ -786,6 +786,57 @@ reader splits on the newline. At 400K orders/s the stream is ~20–40K messages/
 batching on, 1.00 in the control; G3h, each order event once, store = published records and stream = published
 messages in every run. The CPU effect is below kind's noise; it needs the GKE rate (RI34 §1a).
 
+### 7.15 400K orders/s on GKE with batching (2026-11-09 evening, RI34 §1b)
+
+**Question.** With one message per drain (§7.14), where does the pipeline stop next, and can it hold 400K orders/s
+for an hour on one NATS server?
+
+**Rig.** The disposable `p4k-*` pools: 3 members c4d-standard-8, 24 gateways c4d-standard-8, NATS c3-standard-44,
+trade-processor c4d-standard-16, ClickHouse + history-feed c4d-standard-16, 8 load pods on 2 c4d-standard-8, FIX
+fill feed off. Evidence in the shared notes `bridge-batching-gke-20261109/`.
+
+**Per step** (rates average the driver's pauses in; inside a sending window the 100K/200K/300K steps ran at
+100K/200K/295–315K sides/s; records ≈ 3 × sides):
+
+| Step | sides/s | records/s | msgs/s | rec/msg | store rows/s | NATS cores | leader cores (lanes / jnats) | trade-processor | history-feed | ClickHouse |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100K | 82K | 247K | 13.1K | 18.9 | 246K | 1.56 | 2.06 (0.21 / 0.17) | 0.85 | 0.40 | 0.38 |
+| 200K | 164K | 495K | 18.1K | 27.4 | 494K | 2.16 | 3.03 (0.39 / 0.19) | 2.21 | 0.79 | 0.60 |
+| 300K | 247K | 747K | 24.0K | 31.1 | 746K | 2.82 | 4.01 (0.59 / 0.24) | 3.46 | 1.15 | 0.83 |
+| 400K (512 sessions) | 390K+ | 1.17M | 38K | 30.7 | 1.17M | 4.3 | 6.6 | 5.6 | 1.95 | 1.3 |
+| control 100K, 1/msg | 97K | 294K | 294K | 1.00 | 271K | 9.16 | 3.80 (0.44 / 1.05, GC 0.36) | 0.37 | 0.85 | 0.30 |
+| control 200K, 1/msg | 187K | 559K | 559K | 1.00 | 112K (behind) | 9.81 | — | — | — | — |
+
+**Found, in the order it stood in the way.**
+
+1. *The binary acceptor serialises a session.* One thread per TCP connection, `readFully` → `dispatch` (blocks on the
+   committed ack) → write. `GET /latency`: residence p50 553 µs, `cluster` 541 µs, `queue` 0.45 µs. Throughput is
+   sessions ÷ cluster RTT: 128 sessions ≈ 240–300K whatever the gateway count (18 and 24 gave the same), 256 ≈
+   344–374K, 512 ≈ 400–405K inside the windows. The driver's in-flight pipelining never reached the gateway. RI35.
+2. *The NATS volume.* A pd-balanced 416 GB saturated at 298 MB/s (300K); a Hyperdisk Balanced at 1,200 MB/s provisioned
+   saturated at 684 MB/s once `max_bytes` deletions joined the writes (400K). Each stall: a partition's JetStream API
+   8–30 s, the readers cut as slow consumers, the leader's publishes unacked. s2 compression (FR-DRS-42): 311 MB/s at
+   32% busy at 400K. The §7.13 sizing counted messages and bytes per second; the volume's write throughput belongs
+   next to them.
+3. *The leader at 400K is at 6.6 of 7 cores* (Aeron sender 0.73, clustered service 0.64, receiver 0.61, conductor
+   0.54, lanes 0.59, consensus 0.26 at 300K). The bridges are 15% of it; D1 is not needed. Above 400K the leader needs
+   a bigger machine or a cheaper per-order path, not a bridge change.
+4. *The archive claim.* 32 Gi filled at 259M orders (~110–125 B/order) and killed two members; the leader's unacked
+   tail (1.9M sides) was lost because nothing resends inside a leader's life (FR-DRS-33 ack gap). Production's claims
+   are 250 Gi; an hour at 400K is ~180 GB.
+5. *The readers at ~1.1–1.2M records/s* keep up on rows (trade-processor 5.6 cores of 12, history-feed 1.95,
+   ClickHouse 1.3) but are the ones NATS cuts when it stalls (jnats default 64 MB pending per subscription).
+
+**The hour.** 8:54–9:54 pm ET on memory-backed streams: 1,407,188,848 orders in 3,600 s (391K/s with the driver's
+pauses in, 387–394K in every 10-minute window, 400–405K inside the sending windows), 0 rejected orders, 0 unanswered;
+members 1,408,422,316 sides = store trades; store rows 4,225,266,948 = published records = acked; stream 136,514,103
+messages = published messages; history-feed 0 pending, 0 duplicates; G3h's checks hold by hand (its own query is too
+heavy for 1.4B rows at a 21 GiB query limit). The read model lagged 4–5M messages after one slow-consumer cut and was
+not G3'd. Two earlier takes on file-backed streams did not get there: the s2 streams reached `max_bytes` at minute 10
+and the Hyperdisk saturated on the discard churn (724 MB/s), the server dropped publishes ("IPQ size limit"), and the
+lanes' 429 retries multiplied the ingest; a memory stream has no such churn. What the hour cost: the rig from 6:08 pm
+to 10:35 pm, about $65 at list prices.
+
 ## 8. Open items and next steps
 
 1. **Failover gap.** Only the leader publishes, from a queue the apply thread fills; a leader kill loses up to 64K

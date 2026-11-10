@@ -8,6 +8,7 @@ import io.nats.client.PullSubscribeOptions;
 import io.nats.client.api.AckPolicy;
 import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
+import io.nats.client.api.CompressionOption;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import java.time.Duration;
@@ -87,6 +88,21 @@ public final class JetStreamFeed {
     ensureStream(nc, stream, maxBytes, maxAge, "/trades", "/trades.*", "/orders", "/orders.*");
   }
 
+  /** FR-DRS-42: {@code PROJECTION_FEED_STREAM_STORAGE=memory} keeps the capture stream in the server's RAM (the
+   *  throughput rig: no volume under the stream; a server restart empties it, which the readers' STREAM_RESET path
+   *  and the bridges' catch-up already cover); unset or {@code file} is the production setting. */
+  /** s2 is a file-store property; a memory stream has no compression. */
+  static CompressionOption compression(StorageType storage) {
+    return storage == StorageType.File ? CompressionOption.S2 : CompressionOption.None;
+  }
+
+  static StorageType storageType() {
+    String s = System.getenv("PROJECTION_FEED_STREAM_STORAGE");
+    if (s == null || s.isEmpty() || s.equalsIgnoreCase("file")) return StorageType.File;
+    if (s.equalsIgnoreCase("memory")) return StorageType.Memory;
+    throw new IllegalArgumentException("PROJECTION_FEED_STREAM_STORAGE must be file or memory: " + s);
+  }
+
   static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge, String... subjects) throws Exception {
     var jsm = nc.jetStreamManagement();
     StreamConfiguration existing = null;
@@ -98,21 +114,26 @@ public final class JetStreamFeed {
     if (existing != null) {
       // The retention limits are sized in the manifests (downstream-at-400k.md §7.5); a stream created
       // under older limits is brought to them, so the configured outage window is the one in force.
-      if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())) {
-        jsm.updateStream(StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge).build());
-        log.info("JetStream stream {} limits updated: maxBytes {} -> {}, maxAge {} -> {}", stream,
-            existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge);
+      // FR-DRS-42: the stream is s2-compressed on disk. A stream created before that is brought to it; compression
+      // applies to the blocks written from then on.
+      if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())
+          || existing.getCompressionOption() != compression(existing.getStorageType())) {
+        jsm.updateStream(StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge)
+            .compressionOption(compression(existing.getStorageType())).build());
+        log.info("JetStream stream {} updated: maxBytes {} -> {}, maxAge {} -> {}, compression {} -> s2", stream,
+            existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge, existing.getCompressionOption());
       }
       return;
     }
     jsm.addStream(StreamConfiguration.builder()
         .name(stream)
         .subjects(subjects)
-        .storageType(StorageType.File)
+        .storageType(storageType())
+        .compressionOption(compression(storageType()))
         .maxBytes(maxBytes)
         .maxAge(maxAge)
         .build());
-    log.info("JetStream stream {} created (maxBytes={}, maxAge={})", stream, maxBytes, maxAge);
+    log.info("JetStream stream {} created (maxBytes={}, maxAge={}, {}, s2)", stream, maxBytes, maxAge, storageType());
   }
 
   /**

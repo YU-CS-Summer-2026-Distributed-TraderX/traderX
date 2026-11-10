@@ -417,6 +417,21 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - On kind: `scripts/trade-history-tiers/kind-history-rate.sh` now checks store rows = the bridges' published records
     and stream messages = their published messages. Results in RI34.
 
+- FR-DRS-42: The capture stream (every `TRADERX_FEED*` stream trade-processor creates) SHALL be s2-compressed on
+  disk (`compression: s2`); a stream created before this rule is brought to it by the same `ensureStream` that
+  brings an older stream to its limits, and compression applies to the blocks written from then on. The bridges'
+  JSON compresses about 2–3x. Why: at 400K orders/s the batched wire is about 480 MB/s of records (downstream-at-400k.md
+  §7.15); the GKE campaign of 2026-11-09 saw the server's volume saturate twice (a 416 GB pd-balanced at 298 MB/s and
+  io-busy 100%, then a Hyperdisk Balanced provisioned at 1,200 MB/s at 684 MB/s once the streams reached `max_bytes`
+  and deleted while writing), each time stalling the JetStream API on a partition for 8–30 s, cutting the readers as
+  slow consumers and leaving the leader's publishes unacked. With s2 the same load wrote 311 MB/s at 32% busy and the
+  write fell to 311 MB/s at 32% busy, and the Hyperdisk still saturated (724 MB/s) once the streams reached
+  `max_bytes` and deleted while writing. `PROJECTION_FEED_STREAM_STORAGE=memory` keeps the stream in the server's
+  RAM with no volume under it (the throughput rig; `max_memory_store` and `PROJECTION_FEED_STREAM_MAX_BYTES` sized to
+  the machine); unset or `file` is the production setting, and a memory stream has no compression. A server restart
+  empties a memory stream, which the readers' STREAM_RESET path (FR-DRS-36) and the bridges' catch-up (FR-DRS-38)
+  already cover. The NATS CPU cost of s2 is small against its 44 vCPUs (4–5 cores at 400K).
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

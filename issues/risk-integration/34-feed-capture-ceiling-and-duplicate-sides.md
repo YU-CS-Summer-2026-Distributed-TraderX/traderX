@@ -60,6 +60,54 @@ single server; and whether the bridges should publish with acknowledgement and b
   leader still needs its bridges moved to a follower after batching; the FIX fill feed's 18x fan-out before any run
   with FIX on; the three-server NATS cluster (FR-DRS-34) if the single server's byte rate has no margin.
 
+### 1b. GKE, 2026-11-09 evening: 400K orders/s for an hour, and what stood in the way
+
+The disposable rig (`pa-proof-400k` on `traderx-demo`, the `p4k-*` pools, 3 members c4d-standard-8, 18 then 24
+gateways c4d-standard-8, NATS c3-standard-44, trade-processor and ClickHouse+history-feed on c4d-standard-16, 8 load
+pods, FIX fill feed off, batching on). Evidence: shared notes `bridge-batching-gke-20261109/` (lag.tsv, kubectl top,
+leader per-thread ticks, run logs, G3h per run). Times US Eastern.
+
+- **Batching holds.** 100K/150K/200K/300K orders/s each clean on one NATS server: 19–31 records per message, NATS
+  1.6/2.2/2.8 cores, the store 246K/494K/746K rows/s and current, every far end exact (stream = published messages,
+  store = published records, 0 rejected, G3h). The control at `BRIDGE_BATCH_MAX=1` on the same rig: NATS 9.2 cores
+  at 100K with the store 3.3M rows behind; 14.5M rejected receipts at 200K and G3h refused (42.1M of 46.9M sides).
+- **The leader does not need D1.** With batching its 16 lane threads cost 0.21 cores at 100K and 0.59 at 300K of a
+  4.0-core leader (jnats readers 0.17–0.24); per-record they were 1.5 cores at 100K. Aeron's sender/receiver/conductor
+  and the clustered service are the leader's cost; at 400K the leader runs 6.6 of its 7 cores, the next wall.
+- **The ~300K knee was the binary acceptor, not the cluster.** Accepted stayed at 285–300K from 18 to 24 gateways
+  with nothing CPU-bound, every load session at its in-flight cap. `GET /latency` on a gateway: residence p50 553 µs,
+  of which `cluster` (offer to egress) 541 µs, `queue` 0.45 µs. The acceptor is one thread per TCP connection doing
+  `readFully` → `dispatch` (blocks until the committed ack) → write, so a session carries one order at a time:
+  128 sessions / 0.54 ms ≈ 240–300K orders/s whatever the gateway count. 256 sessions gave 344–374K, 512 sessions
+  400–405K inside the sending windows (RI35: pipeline the acceptor).
+- **The NATS volume was the next wall, twice.** A 416 GB pd-balanced saturated at 298 MB/s (io-busy 100%, IO pressure
+  `full` 37%) at 300K; a Hyperdisk Balanced provisioned at 1,200 MB/s saturated at 684 MB/s once the streams reached
+  `max_bytes` and deleted while writing at 400K. Each stall blocked a partition's JetStream API 8–30 s, cut
+  trade-processor and history-feed as slow consumers (jnats 64 MB pending) and left the leader's publishes unacked.
+  s2 compression on the streams (FR-DRS-42) cut the write to 311 MB/s at 32% busy at 400K.
+- **A dead leader's unacked tail is lost.** With the first rig's 32 Gi archive claims full (259M orders), two members
+  died at once; the store ended 1,898,565 sides short, as partition tails and one hole on the partitions the stall had
+  left unacked. A lane marks a record sent when written, not acked, and only a leader change republishes from the
+  stored cut; inside one leader's life nothing resends past a receipt timeout. That is the FR-DRS-33 ack-gap item, now
+  with a measured shape. A real leader change at 240K (run 2) lost nothing: the store equalled both leaders' published
+  records.
+- **Driver.** 60 s phases and 4,000 in flight deliver the setting; the pause must cover the in-flight drain (10 s at
+  these rates, 5 s was not enough when the leader saturated); `maxPositionQuantity` (default policy) is reached inside
+  a 60 s phase at 200K+ (`POST /risk/control/policy` raised it for the rig); 512 sessions were needed for the acceptor.
+- **The hour.** 8:54–9:54 pm ET, memory-backed streams (`PROJECTION_FEED_STREAM_STORAGE=memory`, 8 × 8 GB, NATS
+  `max_memory_store` 96 GB), 8 pods × 64 sessions × 938/s (a 480K setting the leader throttles to what it accepts),
+  300 s phases with 10 s pauses: every load pod ran the full 3,600 s, 175,898,606 orders each, all accepted, 0
+  rejected, 0 unanswered, balanced at every boundary — **1,407,188,848 orders in the hour, 391K orders/s averaged
+  with the driver's pauses in, 387–394K in every 10-minute window, 400–405K inside the sending windows**. Members
+  1,408,422,316 sides. Far end: store trades 1,408,422,316 = members' sides; store rows 4,225,266,948 = the leader's
+  published records 4,225,266,948 = acked, 0 rejected; stream 136,514,103 messages = published messages (30.9
+  records per message); history-feed ready, 0 pending, 0 duplicates; G3h's checks by hand (count, 1..n, sum and
+  sum of squares mod 2^64) hold for n = 1,408,422,316 — G3h's own ClickHouse query exceeded the 21 GiB query memory
+  on 1.4B rows and must be made leaner (RI36 candidate). The read model (trade-processor) was cut once as a slow
+  consumer at 9:10 pm and finished the hour 4–5M messages behind, so the run script's catch-up wait timed out and
+  G3 (snapshot) was not run. NATS 4–5 cores and 142 GB RSS at its 140 GiB GOMEMLIMIT; leader 6.6 cores; archive
+  113 GB of 295 at the end; ClickHouse 83 GB.
+
 ## 2. A side the bridge publishes twice is stored twice
 
 Third attempt, 11:49-11:53 pm ET on 2026-11-08, as NATS began refusing: 1,104,397 trade sides are in the stream twice,
