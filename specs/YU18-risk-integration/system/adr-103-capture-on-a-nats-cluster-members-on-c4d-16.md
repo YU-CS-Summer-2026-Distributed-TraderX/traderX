@@ -145,7 +145,12 @@ gateways, history), against ~$3–4/h before.
    gaps 0 on every member, G3h 1..183,194,994 each once = the members' total, 0 rejected. The failover at rate is
    accepted on this render.
 4. RI35 (binary, then FIX), E1, the FIX load at rate.
-5. The acceptance hour of §5, then production.
+5. The acceptance hour of §5, then production. **First run 2026-11-10 4:37-4:45 pm ET (acceptance-450k lane, rig
+   `traderx-accept`, build `8741452c`, ~$22-25): stage 1 FAIL**, stages 2-4 not run. FIX topped out near 85K orders/s
+   with every session at its 1,024-order window and the gateways at 0.7 of 4 cores (the per-session answer path, RI35's),
+   and the gateways reported 13.5% of the 33.3M fills that reached them (the acceptor's early ring under FR-BSP-02's
+   answer-time tracking, RI35's). The order path, capture, read model and history store were exact at that rate. Four
+   render gaps for production came out of it; the amendment below has them.
 
 ## Consequences
 
@@ -200,3 +205,66 @@ gateways, history), against ~$3–4/h before.
   `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`. The cluster on the render with batching, the 520K re-test and
   the failover at rate ran 2026-11-10 (above), the failover at rate again with FR-DRS-47 (run E3); the acceptance hour is
   pending, after RI35 (RI36 and RI37 are merged).
+
+## Amendment 2026-11-10: the acceptance run's render gaps (trade-history-tiers lane)
+
+The first acceptance run (rollout item 5; shared notes `acceptance-450k-20261110/`) found four things the production
+render had wrong for the standing shape. Three are rendered and tested (`test_prepare.AcceptanceShape`); the fourth,
+and the hours in the second, are yaakov's decisions.
+
+### 1. Gateway placement: an HPA cannot place long-lived sessions (FR-PRG-09; decision for yaakov)
+
+§5 says "gateways keep autoscaling from a small floor via ADR-096's HPA". The run showed why that cannot be the
+standing shape: a FIX or binary session connects once and stays, so a gateway the HPA adds receives only the logons
+that come after it; at 600 sessions on 18 gateways each gateway ran 0.7 of 4 cores, so the CPU signal would never have
+fired, and the limit was per session (about 105-140 answers/s each at the window), not per gateway. The run used a
+floor of 18. The gateway count is therefore set by sessions ÷ sessions-per-gateway, and the question is how sessions
+reach a gateway that was not there when they logged on.
+
+| Option | What it is | Work | Cost and risk |
+|---|---|---|---|
+| **A. Fixed count sized to sessions** (recommended for the standing shape) | `GATEWAYS` = ceil(sessions ÷ sessions per gateway), `AUTOSCALE` unset; the per-gateway figure from stage 1's re-run after RI35's FIX fix (in this run a gateway at 33 sessions had CPU to spare; the ceiling was the session, so the figure is the FIX answer path's, not the box's) | none; a `GATEWAYS` value | every gateway node all the time: at this ADR's own c4d-standard-16 figure (≈$0.73/h) a c4d-standard-8 gateway node is ≈$0.37/h, so 18 ≈ $6.6/h on top of §5's $8-10/h, which assumed a few gateways (prices derived from §5, not re-quoted). A surge past the count queues at the per-session window; nothing reacts |
+| **B. Rebalance on scale-out** | keep the HPA (or a session-count signal) and have an overfull gateway shed its newest sessions: a FIX Logout; ADR-086's persistent session resumes on whichever gateway the ILB hashes the new connection to (1/N lands back) | a per-gateway session budget env, the shed in the acceptor, a test and a kind proof across a scale-out; the HPA's signal stays CPU unless a custom-metrics adapter (ADR-096 declined one) exposes sessions | the client sees a Logout/Logon per shed; sheds under load move in-flight orders' reports to FR-FFR-11's recovery path (see 4) |
+| **C. Client-side spread** | clients open their sessions over the gateway set themselves, one address per gateway (a per-pod Service or ILB, or a headless record) | the addresses and their allow-lists; no gateway code | in-house load clients can; the external desk session (EXTQFJ, FR-FTL) talks to one ILB address and cannot, so it stays on A for that session |
+| D. A least-connections FIX proxy | Envoy (or the edge) in TCP least-conn mode in front of the gateways | the proxy, its allow-list, its own drain | one more hop on every order's path against the FR-OPL baseline; not recommended |
+
+Recommendation: A now, with the count measured after RI35; B only if sessions arrive in surges production has not
+seen. Decision for yaakov: A or B, and (under A) the count once stage 1 is re-run.
+
+### 2. The member archive: 32Gi was four minutes at rate (FR-PRG-42; the hours are yaakov's)
+
+The pack's claim (`statefulset-emptydir.yaml`, "ponytail: 32Gi") was the kind/demo figure; the archive grows ~125 B per
+order, ~200 GB an hour at 450K, and the production render runs no purge. The acceptance rig ran 600Gi by hand. The
+render now sizes each member's claim to `MEMBER_ARCHIVE_HOURS` (3) at `READ_MODEL_RATE`, rounded up to 50Gi: 600Gi,
+and `validate()` refuses less. Three hours is an acceptance hour, its EOD stage and a margin. The alternatives, for
+yaakov: (a) more hours (each hour at rate is ~200 GB on three Hyperdisk Balanced claims; capacity is billed by the
+claim); (b) `--archive-purge` (FR-PRG-40) on the standing shape, which bounds the archive near two snapshot intervals
+(~35 GB at 450K) whatever the claim, at the agent's CPU beside each member and with the purged log discarded;
+(c) a fresh epoch before the claim fills (FR-PRG-39 keeps only the last epoch's archive; its disk snapshots are of the
+bytes used). A full claim is ENOSPC on the recorder, not an eviction, so the run that fills it stops. Production's
+rate is far below 450K outside a load, so at the demo's rates 600Gi is years; the figure is for the acceptance and
+for a standing day at rate.
+
+### 3. `TRADERX_FILLS` at 2 GiB held 24 seconds (FR-DRS-48 amended, FR-FFR-14)
+
+The code's defaults (2 GiB, 10 minutes) are the kind figure: ~5 s at 450K orders/s of FIX (~890 B per order on the
+subject, measured). The snapshot render now sets `FILLS_STREAM_MAX_BYTES` from the rate (`FILLS_WINDOW_MINUTES` 3 ×
+`READ_MODEL_RATE` × 882 B ≈ 71 GB) and `FILLS_STREAM_MAX_AGE_MINUTES` 3, and adds the stream to every server's store
+budget (it is placed on FR-DRS-44's first tag, one server, and the one ConfigMap sizes all three: 599 GB each, was
+511 GB; claims 659Gi, were 563Gi). Three minutes is a gateway's drain delay (30 s), its grace period (60 s) and a
+restart, with margin: the window its ordered consumer may fall behind by and still find its next message.
+
+What the window does not buy, and the coordinator's framing ("so a restarted gateway can resume its fills") asked
+for: a resume. The routed consumer starts from "new", and a replaced Deployment pod has a new name and so a new
+subject (`/fills.<pod>`), so the fills of orders booked through the old pod go on to a subject no gateway reads; the
+client recovers them with H/AF (FR-FFR-11), as ADR-084's amendment already states for a session that moves gateways.
+No retention makes that a resume. The options are in ADR-084 ("Open 2026-11-10"); the decision is yaakov's.
+
+### 4. The EOD extract failed closed after any load (FR-PRG-43)
+
+The image's `counterparties.csv` mapped 11 accounts and none of the load's (FIX 9900002-9900008, binary
+9900010-9900017); the extract aborts on an unmapped holding account (FR-RXT09), and the image is the CSV's only
+carrier, so the EOD stage could never have passed after stage 1. The spec CSV now carries the fifteen
+(`CPTY-TEST-<id>`, `NS-TEST-<id>`, USD), the next image build carries them, and `prepare.py` refuses to render while
+one is unmapped. The acceptance rig had mounted a ConfigMap of the same rows by hand, which the lineage's guard
+forbids in a tracked manifest.

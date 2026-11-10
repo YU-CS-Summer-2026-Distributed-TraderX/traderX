@@ -589,7 +589,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
 
 - FR-DRS-48 (ADR-084 amendment, FR-FFR-14; 2026-11-10): The order view SHALL route each update of an order whose
   booking event named its gateway (`gateway`, the submitting session's principal) to `/fills.<gateway>` on the
-  `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` 2 GiB, `FILLS_STREAM_MAX_AGE_MINUTES` 10;
+  `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` and `FILLS_STREAM_MAX_AGE_MINUTES`:
+  2 GiB / 10 min in the code, the kind figure, ~5 s at 450K orders/s — the production snapshot render sets them from
+  the rate, `FILLS_WINDOW_MINUTES` 3 at `READ_MODEL_RATE` × 882 B per order ≈ 71 GB, the window a gateway's ordered
+  consumer may fall behind by and still find its next message, a drain and an in-place restart included, and adds the
+  stream to every server's store budget since the one server holding it is any of them (FR-PRG-41;
+  `test_prepare.AcceptanceShape`; what the window does not buy is in FR-FFR-14);
   created idempotently by trade-processor like the capture, placement per FR-DRS-44's first tag), so a gateway reads
   only its own orders' events instead of the whole feed. The view SHALL keep an order's gateway from its booking
   event across later updates (as it keeps `clientOrderKey`), and the gateway SHALL NOT be part of the event digest

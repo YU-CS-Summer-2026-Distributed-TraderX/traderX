@@ -116,6 +116,12 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 
   `gateway-pool`'s cluster autoscaler SHALL run with min `GATEWAYS` and max 18. `gateways.sh N` on an autoscaled
   rig SHALL set both minimums to N.
+
+  Note (2026-11-10, the acceptance run): the HPA cannot place long-lived sessions. A FIX or binary session connects
+  once, so a gateway the HPA adds receives only the logons that come after it; at 600 sessions on 18 gateways each
+  gateway ran 0.7 of 4 cores and the HPA would not have fired, while every session sat at its window. The standing
+  shape's gateway count and how sessions reach the added gateways are open in ADR-103's amendment of 2026-11-10
+  (options A-D, yaakov's decision); `AUTOSCALE` unset and `GATEWAYS` as the count is the shape until then.
 - **FR-PRG-10:** The image population SHALL be declared in `scripts/gcp-compsci/population.json`: one default source
   commit, and per workload at most one exception (image, component, full source SHA, not the default).
   - `prepare.py`, `measure-admission.py`, `admit.py` and `admission-controls.py` SHALL refuse:
@@ -181,6 +187,21 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   server's `/jsz` reports only the streams it holds. Measured: one server stored 0.4-0.5M msgs/s whatever the stream
   count and three stored 1.00-1.25M with 0 lost (FR-DRS-34); one volume saturated at 298 MB/s (pd-balanced) and at
   684-724 MB/s (Hyperdisk, 1,200 MB/s provisioned) under retention churn at 400K orders/s (RI34 §1b).
+- **FR-PRG-42** (2026-11-10, the acceptance run): Each member's archive claim (`data`, class `order-matcher-archive`)
+  SHALL hold `MEMBER_ARCHIVE_HOURS` (3) hours at `READ_MODEL_RATE` at 125 B per order, rounded up to 50Gi: 600Gi. The
+  pack's 32Gi is the kind/demo figure (~4 minutes at 450K); the acceptance rig ran 600Gi by hand. `validate()` SHALL
+  refuse a smaller claim. The production render runs no purge, so an epoch at rate past the claim is ENOSPC on the
+  recorder (`statefulset-emptydir.yaml`, GROWTH): grow the claims first (`rig.sh member-disk`; a claim never shrinks)
+  or render `--archive-purge` (FR-PRG-40), which bounds the archive near two snapshot intervals
+  (`CLUSTER_SNAPSHOT_INTERVAL_MS` 300 s: ~35 GB at 450K) whatever the claim. FR-PRG-39's disk snapshots are of the
+  bytes used, not of the claim. The hours are yaakov's decision (ADR-103 amendment 2026-11-10); `test_prepare.AcceptanceShape`.
+- **FR-PRG-43** (2026-11-10, the acceptance run): Every load test account (FIX 9900002-9900008, binary
+  9900010-9900017) SHALL have a row in `specs/YU15-eod-risk-extract/reference-data/counterparties.csv`
+  (`CPTY-TEST-<id>`, `NS-TEST-<id>`, USD). The extract aborts on a holding account with no mapping (FR-RXT09) and the
+  image is the CSV's only carrier (`issues/risk-extract-counterparties-configmap-shadows-the-image.md`), so after any
+  load the EOD stage failed closed. `prepare.py` SHALL refuse to render while one is unmapped
+  (`unmapped_test_accounts`). A test account's positions are extracted like any other's (ADR-103 §5: the EOD extract
+  runs against the load's positions); FR-PRG-38's clean-up is unchanged. `test_prepare.AcceptanceShape`.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's

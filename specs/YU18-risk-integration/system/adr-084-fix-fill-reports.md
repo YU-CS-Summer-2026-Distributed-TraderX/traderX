@@ -149,3 +149,24 @@ later fills there (they go to the booking gateway, which no longer has the sessi
 concern, unchanged by this amendment, and the status request (ADR-093) still answers from the read model. The kind rig
 and the production render set `GATEWAY_ID` from the pod name; a rig without `CLUSTER_CLIENT_SECRET` on its members has
 no authenticator, no principal and no routing.
+
+**Open 2026-11-10 (the acceptance run): fills across a gateway replacement.** Decision 10's consumer starts from
+"new" under the pod's name, so a replaced pod (a rollout, a crash, a scale-down's drain) reads a new subject and the
+fills of the orders booked through the old pod go on to `/fills.<old pod>`, which nothing reads; the client recovers
+them with H/AF (FR-FFR-11). The stream's retention cannot change that (ADR-103 amendment 2026-11-10 §3 sizes it for
+the consumer's lag window only). Whether a replaced gateway or a moved session should hear those fills unsolicited is
+yaakov's decision; the options:
+
+- (a) As is: H/AF after a move or a roll; the retention window covers a drain and a restart's lag. No work. The
+  desk's resting orders across a gateway roll report only on request.
+- (b) Hand-over on Logon: the session record (KV_FIX_SESSIONS, ADR-086) carries the gateway that owned the session
+  and the stream sequence it had reached; the gateway a session logs on to next also reads `/fills.<previous>` from
+  that sequence, for the session's orders only, until those orders are done. The retention must then cover the
+  Logout-to-Logon gap: the render's 3 minutes covers a drain; a client away longer recovers with H/AF as today.
+  Work: the record's two fields, the second consumer, the per-session filter, a kind proof across a drain.
+- (c) Route by session (`/fills.<CompID>`) instead of by gateway: the hand-over is then free, but the router publishes
+  one message per session per view batch (600 sessions × 8 partitions × the batch rate), the message rate decision 9
+  was built to avoid. Not recommended.
+
+Recommendation: (a) for the acceptance; (b) if the desk's resting orders must report unsolicited across a gateway
+roll.
