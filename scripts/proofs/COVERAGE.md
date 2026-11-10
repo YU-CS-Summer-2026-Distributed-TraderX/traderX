@@ -44,6 +44,26 @@ an order unanswered, so the kill now lands inside a phase. Second, the stream wa
 drained, so the script now waits for `queuedByPartition` 0. A 90 s freeze passed everything but the vacuity check
 (63,252 < 65,536), so the freeze is now 120 s. Evidence in the shared notes, `ri37-kind-20261110/`.
 
+## Fills routed to the owning gateway on kind (2026-11-10, FR-FFR-14 / FR-DRS-48, kind traderx-ffr14, torn down)
+
+`yu18-fix-fill-feed.sh` with `FIX_FILL_FEED=routed` on `kind-yu18-rig.py --history --binary --partitions 8 --gateways 2`
+(images `:ffr14` from 4f507add plus the open-rig authenticator), the FIX session on one gateway and the REST aggressor
+through the other, so the resting side's fill had to be routed back. PASS 2:28 pm ET (49 s): both gateways read only
+`/fills.<their pod>`; after both routed consumers were deleted mid-cross the fill still reported once (F /
+PartiallyFilled 4 @ 50, then Filled 6, CumQty 10, AvgPx 50, two ExecIDs); `/v2/projection-feed` `orders.fills` routed
+22 / messages 14 / acked 14 / failed 0 across the two gateways; the order read model FILLED, four trade sides in the
+history store; metrics sent +2, gap +0. Evidence: shared notes `fills-routed-kind-20261110/`.
+
+Three stale checks in the proof were corrected on the way, each against the spec that amended it: FR-GFS-10 wants
+discard-old since 2026-10-28 (FR-GFS-15), the lease max age is 3 s (FR-GFS-16), and the FIX Sell's status is the
+order read model's, not an SQL `orderbook` row (ADR-097 production shape, `ORDER_FEED_PERSIST=false`). The kind rig
+now pins `FIX_SESSION_RESET_TIME` / `FIX_SESSION_TIME_ZONE` as `gke/gateway.yaml` does (FR-GFS-08).
+
+The run that failed first is the negative control: with `CLUSTER_CLIENT_SECRET` unset the member installed no
+authenticator, so no session had a principal, the bridge stamped no gateway, `TRADERX_FILLS` stayed at 0 messages
+and FR-FFR-07 timed out after 30 s while the gateway's ordered consumer had recovered. Fixed in `ClusterClientAuth.open`
+(the open rig admits every session and still names a gateway's); `ClusterClientAuthTest` 5/5.
+
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
 `kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
@@ -1846,7 +1866,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-35` | LIVE |  | yu18-store-failure-barrier | 2026-11-06 kind (snapshot): PASS; read_only=1 for 10 crosses, snapshotFailures rose, then positions +10/-10 and accounting = closed form over every booked side. NEGATIVE=1 (one side removed) fails. FeedBarrierTest, JetStreamFeedAckGapIT |
 | YU18 | `FR-FFR-12` | LIVE | yu18-fix-resume |  | added 2026-11-06: Canceled report keeps CumQty (step 5) |
 | YU18 | `FR-FFR-13` | LIVE |  |  | added 2026-11-06: fill feed per-partition streams; no live proof. FixFillFeedIT |
-| YU18 | `FR-FFR-14` | CI |  |  | added 2026-11-10 (ADR-084 amendment): ClusterClientAuthTest (a named gateway admitted with its name as the principal; the secret alone with none; a wrong secret rejected; a non-token name refused), OrderNatsPublisherGatewayTest (gateway on the booking event only), FixFillFeedIT.routedModeReadsOnlyItsOwnSubject, test_prepare RoutedFills (GATEWAY_ID from the pod, FIX_FILL_FEED=routed; nameless or router-less routed feed refused). Kind proof kind-fix-fills-routed.sh: pending the kind slot |
+| YU18 | `FR-FFR-14` | LIVE (kind) | yu18-fix-fill-feed (routed) |  | added 2026-11-10 (ADR-084 amendment): ClusterClientAuthTest (a named gateway admitted with its name as the principal; the secret alone with none; a wrong secret rejected; a non-token name refused), OrderNatsPublisherGatewayTest (gateway on the booking event only), FixFillFeedIT.routedModeReadsOnlyItsOwnSubject, test_prepare RoutedFills (GATEWAY_ID from the pod, FIX_FILL_FEED=routed; nameless or router-less routed feed refused). LIVE on kind traderx-ffr14 2026-11-10 2:28 pm ET (section "Fills routed to the owning gateway on kind" above): yu18-fix-fill-feed.sh routed across two gateways PASS |
 | YU18 | `FR-FGM-01` | LIVE |  |  | added 2026-11-06: slow consumer drop; no live proof. FixGatewayMemoryBoundTest |
 | YU18 | `FR-FGM-02` | LIVE |  |  | added 2026-11-06: inbound backpressure; no live proof. FixGatewayMemoryBoundTest |
 | YU18 | `FR-FGM-03` | CI |  |  | added 2026-11-06: lease read streams the log (heap shape) |
@@ -1882,7 +1902,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-45` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36): kind traderx-own, P=8, 2 replicas (and 4: see FR-DRS-46's row) (StatefulSet, replica:0/2 and 1/2), 120 s binary load, 168,372 sides: each partition read by one replica, G3 on the union, order events read 336,744 = published 336,744, a third claimant of partition 0 refused (exit 3). PartitionOwnershipTest; PartitionOwnershipIT (three processes, the handover after a clean stop; fails with the guard off); test_prepare (Recreate Deployment, StatefulSet by pod index). Not on GKE/production; no router |
 | YU18 | `FR-DRS-46` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36, ADR-103 §3): kind traderx-own, 4 replicas: every load account's order read in three shapes through every replica and the Service = the owner's body; router 1,450 reads/s p50 8.8 ms vs fan-out-and-merge 635 reads/s p50 21.7 ms (open orders, 16 concurrent), even on 16 MB `status=all` reads. PartitionOwnershipIT router phase (421 on a routed read at a non-owner, 503 with no live owner). Not on GKE/production |
 | YU18 | `FR-DRS-47` | LIVE (gke) | kind-bridge-failover-at-rate, run-ri37 (shared notes ri37-gke-recipe-20261110) |  |  | added 2026-11-10 (RI37): ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile (NATS frozen across a promotion, 100,000 sides and order events: each once, in order, queueDropped 0, maxBacklog > 65,536; control on the parent at its 65,536 queue: 34,400 of 100,100 sides missing), #aPromotedLaneLappedPastItsRingIsACountedGap. kind traderx-ri37: NATS frozen 121 s across a leader kill, 231,662 of 231,662 sides and 463,324 of 463,324 order events, queueDropped 0; the parent's image lost 30,100 and 125,805 (= its queueDropped). GKE 2026-11-10 run E3 (p4k rig, run D's render, member image ri37-15d49bd7): leader killed at ~465K sides/s, G3h 1..183,194,994 each once, queueDropped 0 and gaps 0 on every member, one election, promoted lanes caught up in 201–221 ms holding ≤ 17,443 (the stall of run D did not recur, so E3 is not itself discriminating; kind and ReceiptLanesIT are). Disposable rig, torn down |
-| YU18 | `FR-DRS-48` | CI |  |  | added 2026-11-10 (ADR-084 amendment): FillsRouterTest (batch shape; the view keeps the gateway named at booking), FillsRouterIT (NATS 2.14: each gateway's subject holds only its own orders' events, one message per batch per gateway, acks counted, stream subject /fills.>). Kind proof with FR-FFR-14: pending |
+| YU18 | `FR-DRS-48` | LIVE (kind) | yu18-fix-fill-feed (routed) |  | added 2026-11-10 (ADR-084 amendment): FillsRouterTest (batch shape; the view keeps the gateway named at booking), FillsRouterIT (NATS 2.14: each gateway's subject holds only its own orders' events, one message per batch per gateway, acks counted, stream subject /fills.>). LIVE on kind traderx-ffr14 2026-11-10 (section "Fills routed to the owning gateway on kind"): the read model routed 22 events in 14 messages, acked 14, failed 0, to both gateways by name; the first run routed nothing (the open rig named no session) and failed FR-FFR-07, the control the fix was measured against |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

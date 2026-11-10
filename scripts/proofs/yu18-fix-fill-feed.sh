@@ -4,12 +4,12 @@
 #
 #   0. configuration, from the rig: every FIX gateway runs FIX_FILL_FEED=jetstream (FR-FFR-09) and pins
 #      FIX_SESSION_RESET_TIME / FIX_SESSION_TIME_ZONE, and logs the schedule it runs (FR-GFS-08); the store
-#      buckets are bounded as specified: FIX_SESSIONS max age 7 d, 1 GiB, discard new; FIX_SESSION_LEASE max
-#      age 10 s (FR-GFS-10)
+#      buckets are bounded as specified: FIX_SESSIONS max age 7 d, 1 GiB, discard old (FR-GFS-15); FIX_SESSION_LEASE max
+#      age 3 s (FR-GFS-16)
 #   1-4. yu18-fix-fill-feed.mjs: a stranger's cross sends nothing (FR-FFR-04); the gateway's /orders consumers
 #      deleted mid-cross, the fill still reported exactly once (FR-FFR-07); partial then full fill with the
 #      spec's CumQty/LeavesQty/LastQty/AvgPx (FR-FFR-02/03); distinct ExecIDs (FR-GFS-07)
-#   5. effect end: SQL holds the FIX Sell FILLED and two trades on the ticker; the gateways' metrics count
+#   5. effect end: the order read model holds the FIX Sell FILLED and the history store two trades on the ticker; the gateways' metrics count
 #      exactly the two reports sent and no gap (FR-FFR-08)
 #   6. FR-GFS-12 on REST: an unknown ticker answers its reject code, not 504, and moves no gateway's no-ack
 #      streak (control: the same order on a known ticker is accepted)
@@ -56,10 +56,10 @@ ok "FR-FFR-09 jetstream; FR-GFS-08 pinned ${RT} ${TZN}, the gateway's schedule e
 pf NATSP "${NATS_TARGET:-svc/nats}" 4222 tcp
 kv() { python3 "${here}/lib-jetstream.py" info "127.0.0.1:${NATSP}" "KV_$1" | jget '" ".join(str(d.get("config",{}).get(k)) for k in ("max_age","max_bytes","discard"))'; }
 read -r age bytes disc <<<"$(kv FIX_SESSIONS)"
-[[ "${age}" == $((7*86400*1000000000)) && "${bytes}" == $((1<<30)) && "${disc}" == new ]] || fail "FR-GFS-10: KV_FIX_SESSIONS max_age=${age} max_bytes=${bytes} discard=${disc}, want 7 d, 1 GiB, new"
+[[ "${age}" == $((7*86400*1000000000)) && "${bytes}" == $((1<<30)) && "${disc}" == old ]] || fail "FR-GFS-10: KV_FIX_SESSIONS max_age=${age} max_bytes=${bytes} discard=${disc}, want 7 d, 1 GiB, old (amended 2026-10-28, FR-GFS-15)"
 read -r lage _ _ <<<"$(kv FIX_SESSION_LEASE)"
-[[ "${lage}" == $((10*1000000000)) ]] || fail "FR-GFS-10/03: KV_FIX_SESSION_LEASE max_age=${lage}, want 10 s"
-ok "FR-GFS-10: FIX_SESSIONS 7 d / 1 GiB / discard new; FIX_SESSION_LEASE 10 s"
+[[ "${lage}" == $((3*1000000000)) ]] || fail "FR-GFS-03/16: KV_FIX_SESSION_LEASE max_age=${lage}, want 3 s (renewed every 500 ms)"
+ok "FR-GFS-10: FIX_SESSIONS 7 d / 1 GiB / discard old; FIX_SESSION_LEASE 3 s (FR-GFS-16)"
 
 step "seed ${T} and ${T2} @${PX}"
 # FR-FFR-14: in routed mode the cross is made ACROSS gateways when there are two: the FIX session on the first pod
@@ -88,14 +88,17 @@ FIX_HOST=127.0.0.1 FIX_PORT="${FIXP}" FIX_PASSWORD="${PW}" TICKER="${T}" TICKER2
 (( rc == 0 )) || fail "the FIX session failed (above)"
 
 step "5. effect end"
-for i in $(seq 1 30); do [[ "$(sql "SELECT status FROM orderbook WHERE security='${T}' AND accountid=${ACCT_F}")" == FILLED ]] && break; sleep 1; done
-st="$(sql "SELECT status FROM orderbook WHERE security='${T}' AND accountid=${ACCT_F}")"; nt="$(hist "SELECT count() FROM trades WHERE security='${T}'")"
-[[ "${st}" == FILLED && "${nt}" == 4 ]] || fail "SQL: FIX Sell '${st}', ${nt} trade rows on ${T} (want FILLED, 4 = two crosses x two sides)"
+# The order's status is the order read model's (ADR-097: production's shape persists no order row in SQL,
+# ORDER_FEED_PERSIST=false); the trades are the history store's (ADR-102).
+pf TP "${TP_TARGET:-svc/trade-processor}" 18091
+ostat() { curl -s -m 10 "${TP}/accounts/${ACCT_F}/orders?status=all" | jget "next((o.get('status') for o in d if o.get('security') == '${T}'), '')"; }
+for i in $(seq 1 30); do [[ "$(ostat)" == FILLED ]] && break; sleep 1; done
+st="$(ostat)"; nt="$(hist "SELECT count() FROM trades WHERE security='${T}'")"
+[[ "${st}" == FILLED && "${nt}" == 4 ]] || fail "effect end: FIX Sell '${st}' in the order read model, ${nt} trade rows on ${T} (want FILLED, 4 = two crosses x two sides)"
 SENT1="$(gmetric sent)"; GAP1="$(gmetric gap)"
 [[ $(( SENT1 - SENT0 )) == 2 && "${GAP1}" == "${GAP0}" ]] || fail "FR-FFR-08: reports sent ${SENT0} -> ${SENT1} (want +2), gap ${GAP0} -> ${GAP1} (want +0)"
 ok "FIX Sell FILLED, 4 trade rows; metrics sent +2, gap +0"
 if [[ "${MODE}" == routed ]]; then   # FR-DRS-48: the read model routed the cross's events to the gateways by name
-  pf TP "${TP_TARGET:-svc/trade-processor}" 18091
   fills="$(curl -s -m 10 "${TP}/v2/projection-feed" | jget 'json.dumps(d.get("orders",{}).get("fills"))')"
   [[ "${fills}" != null && -n "${fills}" ]] || fail "FR-DRS-48: trade-processor reports no fills router: ${fills}"
   routed="$(jget 'd.get("routed",0)' <<<"${fills}")"; acked="$(jget 'd.get("acked",0)' <<<"${fills}")"; failed="$(jget 'd.get("failed",0)' <<<"${fills}")"

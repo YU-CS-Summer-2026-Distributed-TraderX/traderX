@@ -67,6 +67,21 @@ class ClusterClientAuthTest {
     }
 
     @Test
+    void anOpenRigAdmitsEveryoneAndStillNamesAGateway() {
+        final AtomicLong rejected = new AtomicLong();
+        final ClusterClientAuth.SharedSecret auth = (ClusterClientAuth.SharedSecret) ClusterClientAuth.open(rejected).get();
+        final Proxy named = connect(auth, 5, ClusterClientAuth.credentials(null, "cluster-gateway-7c9").encodedCredentials());
+        assertTrue(named.authenticated);
+        assertArrayEquals("cluster-gateway-7c9".getBytes(StandardCharsets.UTF_8), named.principal);
+        final Proxy nameless = connect(auth, 6, ClusterClientAuth.credentials(null, null).encodedCredentials());
+        assertTrue(nameless.authenticated);
+        assertNull(nameless.principal);
+        final Proxy none = connect(auth, 7, null);
+        assertTrue(none.authenticated);
+        assertEquals(0, rejected.get());
+    }
+
+    @Test
     void aNameThatIsNotASubjectTokenIsRefusedAtTheClient() {
         assertThrows(IllegalArgumentException.class, () -> ClusterClientAuth.credentials("s3cret", "gw/one"));
         assertThrows(IllegalArgumentException.class, () -> ClusterClientAuth.credentials("s3cret", "gw one"));

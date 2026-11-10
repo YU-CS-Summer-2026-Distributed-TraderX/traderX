@@ -128,7 +128,8 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
         if name == 'cluster-gateway' and d['kind'] == 'Deployment':
             d['spec']['replicas'] = gateways
             c = pod['containers'][0]
-            prep.set_env(c, {'FIX_SESSION_STORE': 'jetstream', 'ORDER_READMODEL_URL': 'http://trade-processor:18091'})
+            prep.set_env(c, {'FIX_SESSION_STORE': 'jetstream', 'ORDER_READMODEL_URL': 'http://trade-processor:18091',
+                             'FIX_SESSION_RESET_TIME': '17:00:00', 'FIX_SESSION_TIME_ZONE': 'America/New_York'})   # FR-GFS-08, as gke/gateway.yaml pins it
             c['env'] = [e for e in c['env'] if e['name'] not in ('FIX_SESSION_PASSWORD', 'FIX_SESSION_AUTH', 'RISK_CONTROL_TOKEN')]
             c['env'] += [{'name': 'FIX_SESSION_PASSWORD', 'valueFrom': {'secretKeyRef': {'name': 'auth-secrets', 'key': 'fix-session-password'}}},
                          {'name': 'FIX_SESSION_AUTH', 'value': 'CLIENT1:$(FIX_SESSION_PASSWORD):*'},

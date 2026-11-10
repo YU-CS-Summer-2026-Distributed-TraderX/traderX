@@ -104,10 +104,10 @@ public final class ClusterNodeMain {
         while (true) {
             final ClusterNodeConfig.Contexts contexts =
                 ClusterNodeConfig.contexts(memberId, hostnames, portBase, aeronDir, baseDir, service, false);
-            if (!clientSecret.isBlank()) {
-                contexts.consensusModule().authenticatorSupplier(
-                    ClusterClientAuth.authenticator(clientSecret, INGRESS_REJECTED));
-            }
+            // FR-FFR-14: the open rig still names its gateways' sessions, so fills route as in production.
+            contexts.consensusModule().authenticatorSupplier(clientSecret.isBlank()
+                ? ClusterClientAuth.open(INGRESS_REJECTED)
+                : ClusterClientAuth.authenticator(clientSecret, INGRESS_REJECTED));
             contexts.consensusModule().terminationHook(() -> {
                 if (STOPPING.get()) {
                     // A SIGTERM during the election (it runs on after "Cluster node up") closes the service

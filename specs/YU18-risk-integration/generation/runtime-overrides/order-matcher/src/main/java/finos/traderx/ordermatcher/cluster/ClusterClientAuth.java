@@ -81,6 +81,13 @@ final class ClusterClientAuth {
         return () -> new SharedSecret(want, rejected);
     }
 
+    /** Member side on an open dev rig ({@code CLUSTER_CLIENT_SECRET} unset, ALLOW_DEV_SECRETS): every session is
+     *  admitted, but a gateway's name still becomes its principal, so fills route the same way they do in production
+     *  (FR-FFR-14 does not depend on the ingress being closed). */
+    static AuthenticatorSupplier open(final AtomicLong rejected) {
+        return () -> new SharedSecret(null, rejected);
+    }
+
     /** The secret part of the credentials: everything before the first newline. */
     static byte[] secretOf(final byte[] credentials) {
         final int nl = newlineAt(credentials);
@@ -110,6 +117,7 @@ final class ClusterClientAuth {
     static final class SharedSecret implements Authenticator {
         private final byte[] want;
         private final AtomicLong rejected;
+        /** {@code want} null: an open rig, every session admitted (see {@link #open}). */
         /** sessionId -> the principal to authenticate with (empty: none), or null for a rejected session.
          *  Consensus-module thread only. */
         private final Map<Long, byte[]> decided = new HashMap<>();
@@ -120,7 +128,7 @@ final class ClusterClientAuth {
         }
 
         public void onConnectRequest(final long sessionId, final byte[] credentials, final long nowMs) {
-            final boolean ok = credentials != null && MessageDigest.isEqual(want, secretOf(credentials));
+            final boolean ok = want == null || (credentials != null && MessageDigest.isEqual(want, secretOf(credentials)));
             final byte[] principal = ok ? principalOf(credentials) : null;
             decided.put(sessionId, !ok ? null : principal == null ? NO_PRINCIPAL : principal);
         }

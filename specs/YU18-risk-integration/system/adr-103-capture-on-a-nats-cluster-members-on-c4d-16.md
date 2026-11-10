@@ -139,7 +139,11 @@ gateways, history), against ~$3–4/h before.
    "Yes, run it"; ~$20): 200/100 ms holds (runs B and C: 20 minutes at ~495-510K/s, zero election transitions in any
    member's log); the relaxed timeouts are not needed and NFR-GMR-01 stands. The failover at rate (run D) detected and
    elected in ~1.1 s and the cluster stayed exact, but the promoted leader's bridge lanes dropped 22,948,341 sides
-   from the stream in the first ~45 s (RI37), so the failover-at-rate acceptance is open until RI37 is fixed.
+   from the stream in the first ~45 s (RI37). **Closed 2026-11-10, run E3 (RI37's session, yaakov: "Go ahead with
+   gke")**: the same render with the FR-DRS-47 member (`cluster-node-member:ri37-15d49bd7`), leader killed at
+   1:48:02 pm ET at ~465K sides/s — one election, member 1 LEADER_READY 1.81 s after the kill, `queueDropped` 0 and
+   gaps 0 on every member, G3h 1..183,194,994 each once = the members' total, 0 rejected. The failover at rate is
+   accepted on this render.
 4. RI35 (binary, then FIX), E1, the FIX load at rate.
 5. The acceptance hour of §5, then production.
 
@@ -180,9 +184,19 @@ gateways, history), against ~$3–4/h before.
     flight with the dead leader), the killed member rejoined in 96 s, all members at 1,003,275,732. Gateway
     `/latency` before vs 45 s after: total p50 0.91-0.97 → 0.92-0.95 ms, p99 1.29-1.64 → 1.68-1.69, p999 1.72-1.81 →
     1.78-2.81. **The stream lost 22,948,341 sides** to the promoted leaders' `queueDropped` (RI37).
+  - Run E3, 2026-11-10 ~1:48 pm ET (RI37's session; shared notes `ri37-gke-run-e3/`, commit 5ee1376b): run D's render,
+    only the member image changed to FR-DRS-47 (class md5 checked on all three). Leader member 0 killed at ~465K
+    sides/s: one election, member 1 LEADER_READY 1.81 s after the kill; G3h holds 1..183,194,994 each once and the
+    members agree at 183,194,994; `queueDropped` 0 and gaps 0 on every member, trades and orders (run D: 22,948,341
+    sides and 46,297,224 order events); the promoted lanes caught up in 201-221 ms holding at most 8,681 sides /
+    17,443 events per lane; driver 163,842,900 accepted, 0 rejected, 595 ambiguous; one gateway's total p50/p99/p999
+    1.11/1.73/1.89 → 1.10/1.68/2.37 ms. Caveat: run D's 15-45 s stall of the promoted lanes' stream reads, and its
+    second election, did not recur on the fresh rig, so E3 alone does not discriminate against the parent build;
+    the kind proof and `ReceiptLanesIT` do, and what stalled run D stays open in RI37.
   - The read model (one trade-processor at 24Gi) fell behind at ~500K and was OOM-killed once after run A (RI36,
     already in hand); it did not affect the members or the history store.
 - Render: `test_prepare.NatsCluster` (the shape and its sizing; six broken renders refused), `test_prepare.NatsMemory`
   (the memory arithmetic at the new budget), `test_rig.Nats.test_three_servers_are_three_pods_each_recorded`,
   `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`. The cluster on the render with batching, the 520K re-test and
-  the failover at rate ran 2026-11-10 (above); the acceptance hour is pending, after RI35, RI36 and RI37.
+  the failover at rate ran 2026-11-10 (above), the failover at rate again with FR-DRS-47 (run E3); the acceptance hour is
+  pending, after RI35 (RI36 and RI37 are merged).
