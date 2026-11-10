@@ -931,6 +931,10 @@ def validate(docs, declared=None):
                     and int(xmx.group(1)) * 1024 >= int(books) * BOOK_MB_ZGC * 3 // 2,
                     'MAX_ACTIVE_BOOKS not pinned, or the heap cannot hold that many books under ZGC with headroom: '
                     'the derived cap would move with the heap and change BOOK_CAPACITY decisions (FR-PRG-05, ADR-079 §6)')
+    # FR-PRG-09 (ADR-103 amendment, option A, yaakov 2026-11-10): the gateway count is fixed and sized to sessions; an
+    # HPA cannot place a session that connected before it scaled.
+    require(not any(d['kind'] == 'HorizontalPodAutoscaler' and d['spec'].get('scaleTargetRef', {}).get('name') == 'cluster-gateway'
+                    for d in docs), 'an HPA on cluster-gateway: the standing shape is a fixed count sized to sessions (FR-PRG-09)')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')

@@ -209,10 +209,11 @@ gateways, history), against ~$3–4/h before.
 ## Amendment 2026-11-10: the acceptance run's render gaps (trade-history-tiers lane)
 
 The first acceptance run (rollout item 5; shared notes `acceptance-450k-20261110/`) found four things the production
-render had wrong for the standing shape. Three are rendered and tested (`test_prepare.AcceptanceShape`); the fourth,
-and the hours in the second, are yaakov's decisions.
+render had wrong for the standing shape. All four are rendered and tested (`test_prepare.AcceptanceShape`).
+**Decided 2026-11-10 ~5:30 pm ET by yaakov, via the coordinator ("All yes" to the three recommendations): gateway
+placement A, the 600Gi archive for now, fills option (a).** Design decisions; no production change is approved by them.
 
-### 1. Gateway placement: an HPA cannot place long-lived sessions (FR-PRG-09; decision for yaakov)
+### 1. Gateway placement: an HPA cannot place long-lived sessions (FR-PRG-09; decided: A)
 
 §5 says "gateways keep autoscaling from a small floor via ADR-096's HPA". The run showed why that cannot be the
 standing shape: a FIX or binary session connects once and stays, so a gateway the HPA adds receives only the logons
@@ -229,15 +230,18 @@ reach a gateway that was not there when they logged on.
 | D. A least-connections FIX proxy | Envoy (or the edge) in TCP least-conn mode in front of the gateways | the proxy, its allow-list, its own drain | one more hop on every order's path against the FR-OPL baseline; not recommended |
 
 Recommendation: A now, with the count measured after RI35; B only if sessions arrive in surges production has not
-seen. Decision for yaakov: A or B, and (under A) the count once stage 1 is re-run.
+seen. **Decided: A** (yaakov, 2026-11-10, "All yes"): a fixed gateway count sized to sessions, `AUTOSCALE` off, the
+count measured after RI35's FIX fix. The production render carries no HPA (it never did; `rig.sh` applied one only
+with `AUTOSCALE=on`), and `validate()` now refuses a candidate with one on `cluster-gateway`. §5's "gateways keep
+autoscaling from a small floor" is superseded.
 
-### 2. The member archive: 32Gi was four minutes at rate (FR-PRG-42; the hours are yaakov's)
+### 2. The member archive: 32Gi was four minutes at rate (FR-PRG-42; decided: 600Gi for now)
 
 The pack's claim (`statefulset-emptydir.yaml`, "ponytail: 32Gi") was the kind/demo figure; the archive grows ~125 B per
 order, ~200 GB an hour at 450K, and the production render runs no purge. The acceptance rig ran 600Gi by hand. The
 render now sizes each member's claim to `MEMBER_ARCHIVE_HOURS` (3) at `READ_MODEL_RATE`, rounded up to 50Gi: 600Gi,
-and `validate()` refuses less. Three hours is an acceptance hour, its EOD stage and a margin. The alternatives, for
-yaakov: (a) more hours (each hour at rate is ~200 GB on three Hyperdisk Balanced claims; capacity is billed by the
+and `validate()` refuses less. Three hours is an acceptance hour, its EOD stage and a margin. **Decided: 600Gi for
+now** (yaakov, 2026-11-10, "All yes"). The alternatives, if a standing day at rate needs more: (a) more hours (each hour at rate is ~200 GB on three Hyperdisk Balanced claims; capacity is billed by the
 claim); (b) `--archive-purge` (FR-PRG-40) on the standing shape, which bounds the archive near two snapshot intervals
 (~35 GB at 450K) whatever the claim, at the agent's CPU beside each member and with the purged log discarded;
 (c) a fresh epoch before the claim fills (FR-PRG-39 keeps only the last epoch's archive; its disk snapshots are of the
@@ -258,7 +262,8 @@ What the window does not buy, and the coordinator's framing ("so a restarted gat
 for: a resume. The routed consumer starts from "new", and a replaced Deployment pod has a new name and so a new
 subject (`/fills.<pod>`), so the fills of orders booked through the old pod go on to a subject no gateway reads; the
 client recovers them with H/AF (FR-FFR-11), as ADR-084's amendment already states for a session that moves gateways.
-No retention makes that a resume. The options are in ADR-084 ("Open 2026-11-10"); the decision is yaakov's.
+No retention makes that a resume. The options are in ADR-084 ("Open 2026-11-10"); **decided (a), as is** (yaakov,
+2026-11-10, "All yes"): the client recovers with H/AF.
 
 ### 4. The EOD extract failed closed after any load (FR-PRG-43)
 

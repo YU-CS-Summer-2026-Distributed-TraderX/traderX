@@ -119,9 +119,11 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 
   Note (2026-11-10, the acceptance run): the HPA cannot place long-lived sessions. A FIX or binary session connects
   once, so a gateway the HPA adds receives only the logons that come after it; at 600 sessions on 18 gateways each
-  gateway ran 0.7 of 4 cores and the HPA would not have fired, while every session sat at its window. The standing
-  shape's gateway count and how sessions reach the added gateways are open in ADR-103's amendment of 2026-11-10
-  (options A-D, yaakov's decision); `AUTOSCALE` unset and `GATEWAYS` as the count is the shape until then.
+  gateway ran 0.7 of 4 cores and the HPA would not have fired, while every session sat at its window. **Decided
+  2026-11-10 (yaakov, "All yes"; ADR-103 amendment §1, option A): the standing shape is a fixed gateway count sized
+  to sessions, `AUTOSCALE` off, the count measured after RI35's FIX fix.** The production candidate SHALL carry no
+  HPA on `cluster-gateway` and `validate()` SHALL refuse one (`test_prepare.AcceptanceShape`); `AUTOSCALE=on` stays a
+  rig option for a measurement, not the shape.
 - **FR-PRG-10:** The image population SHALL be declared in `scripts/gcp-compsci/population.json`: one default source
   commit, and per workload at most one exception (image, component, full source SHA, not the default).
   - `prepare.py`, `measure-admission.py`, `admit.py` and `admission-controls.py` SHALL refuse:

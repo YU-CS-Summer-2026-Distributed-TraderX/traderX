@@ -169,4 +169,6 @@ yaakov's decision; the options:
   was built to avoid. Not recommended.
 
 Recommendation: (a) for the acceptance; (b) if the desk's resting orders must report unsolicited across a gateway
-roll.
+roll. **Decided (a)** (yaakov, 2026-11-10 ~5:30 pm ET, via the coordinator: "All yes"): fills after a gateway
+restart or a session move are recovered by the client with H/AF; nothing to build. (b) stays here as the upgrade
+path if a desk client needs them unsolicited.

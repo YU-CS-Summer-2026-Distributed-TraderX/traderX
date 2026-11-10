@@ -1073,6 +1073,13 @@ class AcceptanceShape(unittest.TestCase):
         tp=module.read_model_workload(self.rows)
         self.assertNotIn('FILLS_STREAM_MAX_BYTES',{e['name'] for e in module.podspec(tp)['containers'][0]['env']})   # the rows render keeps the code's default
 
+    def test_the_gateway_count_is_fixed_not_autoscaled(self):
+        # FR-PRG-09, ADR-103 amendment option A (yaakov 2026-11-10): no HPA in the candidate, and one is refused.
+        self.assertEqual([d for d in self.rows if d['kind']=='HorizontalPodAutoscaler'],[])
+        docs=copy.deepcopy(self.rows)
+        docs.append(yaml.safe_load((Path(module.__file__).parent/'rig/gateway-hpa.yaml').read_text().replace('MIN_GATEWAYS','2').replace('CPU_TARGET','60')))
+        with self.assertRaisesRegex(AssertionError,'FR-PRG-09'): module.validate(docs)
+
     def test_every_load_account_has_a_counterparty(self):
         self.assertEqual(module.unmapped_test_accounts(),[])
         self.assertEqual(len(module.FIX_TEST_ACCOUNTS+module.BINARY_TEST_ACCOUNTS),15)
