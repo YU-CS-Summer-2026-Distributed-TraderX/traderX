@@ -835,11 +835,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // (brief 05 item 0). Managed runs use the persisted descriptor; legacy keeps its configured prefix.
             final String configuredEpoch = System.getenv("CLUSTER_EPOCH");
             final String epoch = configuredEpoch == null || configuredEpoch.isBlank() ? "1" : configuredEpoch;
-            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, 1 << 16);
+            // FR-DRS-47: each lane's ring holds what a stalled lane has not yet published (BRIDGE_LANE_RECORDS).
+            final int laneRecords = ReceiptLanes.laneRecordsFromEnv();
+            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, laneRecords);
             tradeBridge.role(role == Cluster.Role.LEADER);
             tradeBridge.start();
             orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
-                epoch, runDescriptor, 1 << 16);
+                epoch, runDescriptor, laneRecords);
             orderBridge.role(role == Cluster.Role.LEADER);
             orderBridge.start();
         }

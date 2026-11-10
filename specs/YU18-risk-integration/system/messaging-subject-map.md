@@ -238,6 +238,8 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
 - Order event position (FR-DRS-40): every `/orders` and `/orders.<p>` payload carries `consensusSequence` and
   `outputOrdinal`, with or without a run descriptor. Without one it carries no `projectionScope`, `clusterEpoch`,
   `eventIdScheme` or `runDescriptorHash`. The pair orders the events of a subject; it attributes nothing.
+- Bridge ring (FR-DRS-47): no wire change. While a lane cannot read the stream or publish, what the member applies
+  waits in the lane's ring (`BRIDGE_LANE_RECORDS`) and follows on the subject in apply order once the lane resumes.
 - Bridge catch-up (FR-DRS-37, FR-DRS-38): at a promotion, and on every new NATS connection while leading, each lane
   reads the last message on its subject until two reads agree (`$JS.API.STREAM.NAMES`, then
   `$JS.API.STREAM.MSG.GET.<stream>`). A NATS user that may only publish would be refused. The lane would then

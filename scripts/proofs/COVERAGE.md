@@ -19,6 +19,31 @@ trade and order cursors advanced on exactly one replica; G3 passed on the union 
 third trade-processor owning partition 0 exited 3 (PARTITION_OWNED), naming trade-processor-0. Discrimination is in
 `PartitionOwnershipIT`: with the guard's check removed the third process starts and the IT fails.
 
+## A promotion at rate on kind (2026-11-10, FR-DRS-47, RI37, kind traderx-ri37, torn down)
+
+`kind-bridge-failover-at-rate.sh` on `kind-yu18-rig.py --history --binary --partitions 1`. Setup: 4 x 250 orders/s
+for 300 s (120 s phases, 20 s pauses). NATS was frozen (SIGSTOP on its node) for 121 s, and the leader's JVM was
+SIGKILLed 3 s into the freeze. At this rate the parent's 65,536-record lane queue holds about 65 s of sides and 33 s
+of order events. Member image `ri37`, the class md5 checked on every member.
+
+PASS:
+
+- G3h on 231,662 sides;
+- order events 463,324 of 463,324;
+- `queueDropped` 0 and no new gap on every member;
+- history-feed left out no repeat;
+- the promoted leader held up to 95,618 sides and 191,317 order events, and published them once the stream could
+  be read.
+
+Control (`EXPECT_LOSS=1`, image `ri37base` = parent bee3320f): G3h REFUSED, 201,966 of 232,066 sides, and 338,327 of
+464,132 order events. The new leader's `queueDropped` was 30,100 sides and 125,805 events: each shortfall exactly,
+the GKE run D signature.
+
+Two earlier attempts are recorded as script fixes, not results. First, binary-load stops at a phase boundary with
+an order unanswered, so the kill now lands inside a phase. Second, the stream was judged before the leader's lanes
+drained, so the script now waits for `queuedByPartition` 0. A 90 s freeze passed everything but the vacuity check
+(63,252 < 65,536), so the freeze is now 120 s. Evidence in the shared notes, `ri37-kind-20261110/`.
+
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
 `kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
@@ -1855,6 +1880,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-44` | LIVE (gke) |  |  | added 2026-11-10 (ADR-103): JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag (tag p mod n, unset places nothing, placed only when the stream carries its tag); test_prepare NatsCluster (the partitioned render names nats-0,nats-1,nats-2; a placement missing a server refused). Live placement read-back on the production render: pending (ADR-103 rollout 2). Live 2026-11-10: placement read back from each server's /jsz (nats-0: P0 P3 P6, nats-1: P1 P4 P7, nats-2: P2 P5) on the p4k rig |
 | YU18 | `FR-DRS-45` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36): kind traderx-own, P=8, 2 replicas (and 4: see FR-DRS-46's row) (StatefulSet, replica:0/2 and 1/2), 120 s binary load, 168,372 sides: each partition read by one replica, G3 on the union, order events read 336,744 = published 336,744, a third claimant of partition 0 refused (exit 3). PartitionOwnershipTest; PartitionOwnershipIT (three processes, the handover after a clean stop; fails with the guard off); test_prepare (Recreate Deployment, StatefulSet by pod index). Not on GKE/production; no router |
 | YU18 | `FR-DRS-46` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36, ADR-103 §3): kind traderx-own, 4 replicas: every load account's order read in three shapes through every replica and the Service = the owner's body; router 1,450 reads/s p50 8.8 ms vs fan-out-and-merge 635 reads/s p50 21.7 ms (open orders, 16 concurrent), even on 16 MB `status=all` reads. PartitionOwnershipIT router phase (421 on a routed read at a non-owner, 503 with no live owner). Not on GKE/production |
+| YU18 | `FR-DRS-47` | LIVE (gke) | kind-bridge-failover-at-rate, run-ri37 (shared notes ri37-gke-recipe-20261110) |  |  | added 2026-11-10 (RI37): ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile (NATS frozen across a promotion, 100,000 sides and order events: each once, in order, queueDropped 0, maxBacklog > 65,536; control on the parent at its 65,536 queue: 34,400 of 100,100 sides missing), #aPromotedLaneLappedPastItsRingIsACountedGap. kind traderx-ri37: NATS frozen 121 s across a leader kill, 231,662 of 231,662 sides and 463,324 of 463,324 order events, queueDropped 0; the parent's image lost 30,100 and 125,805 (= its queueDropped). GKE 2026-11-10 run E3 (p4k rig, run D's render, member image ri37-15d49bd7): leader killed at ~465K sides/s, G3h 1..183,194,994 each once, queueDropped 0 and gaps 0 on every member, one election, promoted lanes caught up in 201–221 ms holding ≤ 17,443 (the stall of run D did not recur, so E3 is not itself discriminating; kind and ReceiptLanesIT are). Disposable rig, torn down |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

@@ -334,11 +334,11 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   sends sides 5..10, SIGKILLs it, starts it again and books 11..14. Before this rule the stream held 1..4 and 11..14.
   `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost` covers both bridges with managed and legacy ids, and
   `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` the gap.
-  A record the lane's full queue refuses never reaches the ring, so no catch-up can republish it. The lane SHALL
-  count it as a gap with an ALERT: at the next catch-up if it is after the stream's last message (a follower's drop
-  that a promotion would otherwise publish around), or at once while leading. It still counts in
-  `traderx_bridge_dropped`. `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp` fills a follower's
-  queue of 8 with 12 sides and promotes it; before this rule `gaps` stayed 0.
+  Superseded by FR-DRS-47 (2026-11-10): there is no lane queue to refuse a record. The apply thread writes into the
+  lane's ring, which holds what a blocked lane has not reached (`BRIDGE_LANE_RECORDS`, 1,048,576 by default), so an
+  outage that the 65,536-record queue turned into a gap after about 1 s at 400K is now held for about 16 s. A record
+  the ring overwrote before the lane reached it is a counted gap with an ALERT at the next catch-up, as eviction is;
+  `ReceiptLanesIT#aPromotedLaneLappedPastItsRingIsACountedGap` replaces `#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
   The queue fills when a lane publishes slower than the apply thread offers. Measured locally (2026-11-08, P=6,
   0 to 400K sides/s in one step on a JVM 3 s old): the publish path is still interpreted, the lanes run at 33-42K
   sides/s each against 67K/s offered, and the queues fill in 1-2.6 s unless the JIT finishes first. One cold run in 18 on
@@ -520,6 +520,72 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   the floor. The router is kept. Covered by `PartitionOwnershipIT` (each account in each shape through either replica =
   its owner's; a routed read at a non-owner 421; no live owner 503; the forward count) and
   `scripts/proofs/kind-tp-ownership.sh` steps 5-6 (`order-read-bench.mjs`).
+
+- FR-DRS-47: A leader change at rate SHALL lose nothing from the stream. Every trade side and order event the cluster
+  applies reaches its `TRADERX_FEED` subject exactly once, in apply order, while the promoted member's lanes cannot
+  read the stream or publish, for as long as their ring holds what the member applies meanwhile. A lane queue's
+  overflow is therefore not a loss: there is no queue. The apply thread SHALL write each record into its lane's ring
+  and never have it refused. The ring has `BRIDGE_LANE_RECORDS` slots per lane: 1,048,576 by default, at least
+  131,072. The lane reads the ring by index and publishes what follows the catch-up's cut. Whatever holds the lane
+  thread - the catch-up's stream read, a reconnect, a publish into a frozen socket - the records keep landing, and the
+  lane publishes the backlog in order when it resumes.
+  - A lane releases a record once it no longer needs it: read while following, or published while leading, and older
+    than the last 65,536 (FR-DRS-37/38's tail). A lane that keeps up therefore holds what it held before this rule.
+    Only a stall fills the ring.
+  - `/health` `bridges.*.maxBacklog` is the most records a leading lane has held unread or unpublished: a stall the
+    ring absorbed and recovered. `queuedByPartition` is each lane's current backlog. The catch-up's log line gives
+    how long the stream read took and how many records were applied meanwhile.
+  - `queueDropped` (and `traderx_bridge_dropped`) now counts, exactly, the records a leading lane never published
+    because it fell more than its ring behind after its catch-up. Each such lap is also a gap and an ALERT. A lap
+    during a catch-up is a counted gap (FR-DRS-38): how many of the overwritten records the old leader stored cannot
+    be told.
+  - Sizing. At 500K orders/s on 8 partitions a trade lane takes about 63K records/s and an order lane about 127K/s.
+    The queue of 65,536 held about 1 s and 0.5 s. The default ring holds about 16 s and 8 s. The slots cost 4 MiB per
+    lane, 64 MiB for 16 lanes, and records occupy the heap only while held. A full ring is about 64 MiB of trade
+    records or 130 MiB of order records per lane: 1.6 GiB if all 16 lanes fill at once, against the members' 12 GiB
+    heap.
+    Measured locally against the parent build. Setup: P=6 trade lanes, 200K sides/s for 15 s after a 3 s warm-up,
+    Docker NATS, two runs per arm. Every side was stored and none dropped in either arm.
+
+    | | this build (2^20) | parent (65,536) |
+    |---|---|---|
+    | Process CPU | 20.7–21.0 s | 20.5–20.6 s |
+    | GC | 126–141 ms | 133–169 ms |
+    | Live heap after a full GC | 78 MB | 48 MB |
+    | The apply thread's offer, record included | 24.6–25.5 ns/side | 21.8–34.8 ns/side |
+    | Peak backlog | 3,533–4,748 | n/a |
+
+    The extra live heap is the six lanes' slot arrays: 6 x 4 MiB.
+  - Found on GKE 2026-11-10 (RI37, the ADR-103 re-test run D). The leader was killed at about 510K orders/s and every
+    member agreed at 1,003,275,732 sides. The history store held 980,327,391. The new leader's
+    `trades.queueDropped` was 22,948,341, the shortfall exactly, and its `orders.queueDropped` was 46,297,224. The
+    FR-DRS-37 catch-up itself was small and correct: 6 to 24 records per lane after the stream's last. The loss was
+    the lane thread not draining its queue while blocked. That is about 45 s of each lane's flow in about three
+    episodes (`gaps` 24 over 8 trade lanes). It matches a stream read held by JetStream API stalls of 8 to 30 s under
+    this load (FR-DRS-42). A catch-up allows 10 attempts of two 2 s requests each.
+  - Tests. `ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile` freezes NATS, promotes a
+    follower and offers 100,000 sides and order events. Its catch-up blocked 3.25 s with 99,936 sides held. Every
+    record was stored once, in order, with `queueDropped` 0 and `maxBacklog` above 65,536. The control is the parent
+    build at its 65,536 queue, the same test: 65,700 of 100,100 sides stored, 34,400 missing, behind the same ALERT
+    lines as GKE. `ReceiptLanesIT#aPromotedLaneLappedPastItsRingIsACountedGap` (a 1,024-slot ring, 5,000 applied in
+    the stall): one gap, the 1,024 kept in order. On kind (2026-11-10, `scripts/proofs/kind-bridge-failover-at-rate.sh`, production's default shape,
+    one partition, 4 x 250 orders/s): NATS frozen 121 s, the leader killed 3 s in. With this rule the history store
+    held 231,662 of the members' 231,662 sides (G3h) and 463,324 of 463,324 order events, with `queueDropped` 0 and
+    no gap on every member. The promoted leader's lanes held up to 95,618 sides and 191,317 order events. The
+    control, the parent's image, is the same run. It held 201,966 of 232,066 sides and 338,327 of 464,132 order
+    events. The new leader's `queueDropped` was 30,100 and 125,805: each shortfall exactly, as on GKE. On GKE (2026-11-10, run E3: run D's render, members on this
+    rule's image only, 1:45–1:52 pm ET), the leader was killed at about 465K sides/s and member 1 led 1.81 s later,
+    with one election. The members agreed at 183,194,994 sides. The history store held 1..183,194,994, each once
+    (G3h). `queueDropped` was 0 and `gaps` 0 on every member. The promoted lanes caught up in 201–221 ms and held
+    at most 8,681 sides and 17,443 order events each (`maxBacklog` 9,254 and 18,595).
+
+    Run D's 15–45 s stall did not recur on this fresh rig: what each lane held fits inside the old queue. E3 shows
+    the failover lossless at rate on this build, but alone it does not discriminate against the old one. The kind
+    proof and `ReceiptLanesIT` do, with their stalls induced.
+  - Not caused by the bridges, and not changed by this rule: the second election 4 s after the first (member 2, then
+    member 1). The apply thread's offer never blocks, before or after this rule. Run D kept no member logs, so the
+    election's cause is open in RI37. Under this rule a second promotion is one more catch-up within the ring, not a
+    second loss window.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
