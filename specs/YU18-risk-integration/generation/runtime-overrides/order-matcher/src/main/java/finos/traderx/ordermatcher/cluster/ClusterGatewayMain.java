@@ -19,7 +19,11 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.NoOpIdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.YieldingIdleStrategy;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -390,11 +394,16 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             finos.traderx.ordermatcher.auth.DevSecrets.refuse("FIX_SESSION_AUTH", env("FIX_SESSION_AUTH", ""), allowDev);
         }
 
-        final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
+        final MediaDriver.Context driverContext = new MediaDriver.Context()
             .aeronDirectoryName(aeronDir)
             .threadingMode(ThreadingMode.SHARED)
             .termBufferSparseFile(true)
-            .dirDeleteOnStart(true));
+            .dirDeleteOnStart(true);
+        final IdleStrategy driverIdle = driverIdleStrategy(env("GATEWAY_IDLE_STRATEGY", ""));   // FR-GMR-11
+        if (driverIdle != null) {
+            driverContext.sharedIdleStrategy(driverIdle);
+        }
+        final MediaDriver driver = MediaDriver.launch(driverContext);
 
         // Owner thread: it alone connects, offers, polls egress, and reconnects.
         final Thread owner = new Thread(this::ownerLoop, "cluster-client-owner");
@@ -518,7 +527,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
         System.out.println("GATEWAY up: http=" + httpPort + " ingress=" + ingressEndpoints
             + (fixPortEnv.isEmpty() ? "" : " fix=" + fixPortEnv)
-            + (binPortEnv.isEmpty() ? "" : " bin=" + binPortEnv));
+            + (binPortEnv.isEmpty() ? "" : " bin=" + binPortEnv)
+            + " driverIdle=" + env("GATEWAY_IDLE_STRATEGY", "lowpark"));
 
         // ONE hook, not one per acceptor: the JVM runs hooks concurrently, so separate hooks closed the
         // cluster client while FIX and REST orders were still in flight (ADR-096 §4).
@@ -3683,6 +3693,24 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
         } catch (final Exception ignore) {
             // client went away
+        }
+    }
+
+    /**
+     * FR-GMR-11: the idle strategy of the gateway's shared media driver, from {@code GATEWAY_IDLE_STRATEGY}.
+     * {@code CLUSTER_IDLE_STRATEGY} reaches only the members, so the gateway ran Aeron's default backoff (parks up
+     * to 1 ms) and parked between orders at a low rate (L0, 2026-11-10: client p50 1,165 µs, 614 µs on spin).
+     * The names are {@code ClusterNodeConfig.idleOverrideSupplier}'s. Unset is {@code lowpark}, a 1 µs max park,
+     * not pure spin: spin cost 8% of capacity at saturation (more, smaller packets). {@code backoff} returns null
+     * and leaves Aeron's default untouched, so measurements before this stay reproducible.
+     */
+    static IdleStrategy driverIdleStrategy(final String name) {
+        switch (name == null || name.isBlank() ? "lowpark" : name.trim().toLowerCase()) {
+            case "lowpark": return new BackoffIdleStrategy(10, 5, 1000, 1_000L);
+            case "yielding": case "yield": return new YieldingIdleStrategy();
+            case "busyspin": case "noop": return new NoOpIdleStrategy();
+            case "backoff": return null;
+            default: throw new IllegalArgumentException("unknown GATEWAY_IDLE_STRATEGY: " + name);
         }
     }
 

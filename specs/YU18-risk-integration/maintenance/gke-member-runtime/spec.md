@@ -56,6 +56,15 @@
   action, one member at a time, behind a snapshot barrier and a full catch-up, as in the ephemeral → persistent
   migration (ADR-087 §4). Losing two disks at once is outside what the tier can survive automatically: Aeron
   can then elect an empty leader (ADR-087 §1), and recovery is the GCS restore path.
+- FR-GMR-11: The cluster gateway's media driver (one SHARED agent) SHALL take its idle strategy from
+  `GATEWAY_IDLE_STRATEGY`, with the members' names (`ClusterNodeConfig.idleOverrideSupplier`: `lowpark`,
+  `yielding`, `busyspin`, `backoff`). Unset SHALL be `lowpark` (Backoff, 1 µs max park), not pure spin.
+  `backoff` SHALL leave Aeron's default untouched (Backoff, 1 ms max park), so measurements taken before
+  2026-11-10 stay reproducible. Any other name SHALL refuse to start. The gateway's start line names the
+  strategy (`GATEWAY up: ... driverIdle=`). `CLUSTER_IDLE_STRATEGY` reaches only the members, so the gateway
+  had parked up to 1 ms between orders at low rate. L0, 2026-11-10, on GKE: client p50 1,165 µs on the default
+  against 614 µs with the gateway driver on spin, p99 2,230 → 1,041 µs; pure spin cost 8% of capacity at
+  saturation (more, smaller packets).
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the GKE tier.
 
