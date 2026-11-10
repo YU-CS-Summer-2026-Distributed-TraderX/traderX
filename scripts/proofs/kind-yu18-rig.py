@@ -148,7 +148,7 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
     for d in docs:
         pod = prep.podspec(d)
         if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway':
-            prep.set_env(pod['containers'][0], {'FIX_FILL_FEED': 'jetstream'})
+            prep.route_fills(pod['containers'][0])   # FR-FFR-14: as production, GATEWAY_ID from the pod, routed fills
         if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'order-matcher-cluster':
             prep.set_env(pod['containers'][0], {'BRIDGE_PARTITIONS': str(partitions)})
         if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor':

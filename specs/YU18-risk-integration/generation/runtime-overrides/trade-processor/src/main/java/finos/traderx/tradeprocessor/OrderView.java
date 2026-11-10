@@ -51,6 +51,7 @@ public final class OrderView {
       if (!newer(old, next)) { return old; }
       if (next.getTraceId() == null) { next.setTraceId(old.getTraceId()); }
       if (next.getClientOrderKey() == null) { next.setClientOrderKey(old.getClientOrderKey()); }
+      if (next.getGateway() == null) { next.setGateway(old.getGateway()); }   // FR-FFR-14: named at booking only
       next.setFilledQuantity(filled(next.getStatus(), next.getQuantity(), next.getRemainingQuantity(),
           old.getFilledQuantity()));
       return next;

@@ -54,11 +54,38 @@ subscription. No engine, wire, snapshot or consensus change.
   stream, or one stream per partition, `<base>_P<p>` (ADR-097). Each order subject of each stream gets its own
   ordered consumer bound to that stream, so each partition's fills arrive in order, once each. `jetstream` mode
   SHALL refuse while no such stream captures an order subject. `FixFillFeedIT.perPartitionStreamsAreEachReadThroughTheirOwnOrderedConsumer`.
+- FR-FFR-14 (ADR-084 amendment, 2026-11-10): Fills SHALL be routed to the gateway that owns the order, so no gateway
+  reads the whole order feed. Every gateway reading every order event was 24 × ~400 MB/s at 450K orders/s (the
+  2026-11-10 campaign's count), and a per-account subject cannot cut it: a batched bridge message (FR-DRS-41) has one
+  subject and many accounts. Instead:
+  - The gateway SHALL name itself to the cluster: `GATEWAY_ID` (the production render: its pod name) travels after
+    the shared secret in the connect credentials (`secret '\n' name`, `ClusterClientAuth`), and the member SHALL
+    make the name the session's encoded principal; the secret alone (risk-extract, the feed adapter, a proof client)
+    SHALL admit as before with no principal. A name that is not a subject token (`[A-Za-z0-9._-]{1,63}`) SHALL be
+    refused at the client.
+  - The engine SHALL stamp the principal on a NEW order's direct booking output only (`OutputEvent.gateway`, read
+    from the input's session at drain time, the same on every member and on replay; never engine state, never on a
+    resting update, a cancel or a replace), and the order bridge SHALL carry it as `gateway` on that event only.
+  - With `FIX_FILL_FEED=routed` the gateway SHALL read one ordered consumer on `/fills.<GATEWAY_ID>` of the read
+    model's `TRADERX_FILLS` stream (`FILLS_STREAM`), from "new", through the same `onOrderUpdate` path and the same
+    record splitting as the capture (FR-DRS-41), and SHALL refuse to start the feed without `GATEWAY_ID`; until the
+    stream exists it retries as `jetstream` mode does (FR-FGM-05). `jetstream` and `core` modes are unchanged.
+  - What reaches the subject is FR-DRS-48's: every update of an order whose booking event named this gateway, in
+    the order's own order, batched per view batch. An order the read model never saw booked (evicted, or booked
+    before the replica's first message after a restart with no snapshot of it) is not routed; the acceptor reports
+    that as a gap as before (§7).
+  Covered by `ClusterClientAuthTest` (a named gateway admitted with its name as the principal; the secret alone
+  with none; a wrong secret rejected whatever the name; a non-token name refused), `OrderNatsPublisherGatewayTest`
+  (the booking event carries `gateway`, other events do not), `FixFillFeedIT.routedModeReadsOnlyItsOwnSubject`,
+  `test_prepare.RoutedFills` (the render names the gateway from its pod and sets `routed`; a routed feed without the
+  name or without the router is refused), and the kind proof `scripts/proofs/kind-fix-fills-routed.sh` (a cross
+  between sessions on two gateways: each side's fill report at its own gateway, neither gateway on the capture).
 
 ## Acceptance
 
 | Case | FR | Test | Expected |
 | --- | --- | --- | --- |
+| fills routed to the owning gateway | 14 | `ClusterClientAuthTest`, `OrderNatsPublisherGatewayTest`, `FixFillFeedIT.routedModeReadsOnlyItsOwnSubject`, `test_prepare.RoutedFills`, `kind-fix-fills-routed.sh` | the named session's principal; `gateway` on the booking event only; a routed gateway receives its own subject's events and none of another's; the render names the gateway and refuses a nameless routed feed; on kind each side of a cross across two gateways is reported at its own gateway |
 | two sessions cross 5 @ 50 | 01, 02, 03, 05 | `FixGatewayFillReportTest.bothSidesOfACross…` | both get New, then `F` / 2, LastQty 5, LastPx 50, CumQty 5; each report reaches its own session once |
 | 10-lot filled 4 @ 50 then 6 @ 52, partial redelivered, a stranger's fill | 02, 03, 04, 08 | `…aPartialFill…` | `F` / 1 LastQty 4 leaves 6, then `F` / 2 LastQty 6 CumQty 10 AvgPx 51.2; nothing else; gap 0 |
 | the fill arrives before the ack | 01, 06 | `…aFillPublishedBeforeTheAck…` | New, then the fill |

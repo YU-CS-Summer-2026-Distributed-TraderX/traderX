@@ -74,6 +74,10 @@ public final class OutputEvent {
     public long ingressNanos;
     /** ADR-093: the client's (account-scoped) key, on the event that books a NEW order only; 0 on every other. */
     public long clientOrderKey;
+    /** FR-FFR-14: the principal of the session that submitted a NEW order (the gateway's name), on that order's
+     *  direct booking output only; null on every other. A routing hint for the order bridge, never engine state:
+     *  it is read from the input's cluster session at drain time and is the same on every member and replay. */
+    public byte[] gateway;
 
     // YU18 order types: the order's typed shape, copied from the order on every TYPED order update
     // so the read model can show it (FR-OT33/34). orderType stays inline (LEGACY = 0 means every

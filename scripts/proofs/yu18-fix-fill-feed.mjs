@@ -66,10 +66,13 @@ const rest = async (acct, bearer, side, qty, px, ticker = TICKER) => {
   const t = await r.text(); if (r.status !== 200 || !/"kind":\s*[14]/.test(t)) fail(`REST ${side} ${qty}@${px} ${ticker} for ${acct}: ${r.status} ${t.slice(0, 160)}`);
   return t;
 };
-const js = (...a) => execFileSync('python3', [E.JS, a[0], E.NATS, 'TRADERX_FEED', ...a.slice(1)]).toString().trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+// FR-FFR-14: in routed mode the gateway's ordered consumer is on TRADERX_FILLS, filter /fills.<its pod>; otherwise on
+// the capture, filter /orders or /orders.* (FR-FFR-13). Deleting it is the same test either way.
+const ROUTED = E.FILL_MODE === 'routed', FILL_STREAM = ROUTED ? 'TRADERX_FILLS' : 'TRADERX_FEED';
+const js = (...a) => execFileSync('python3', [E.JS, a[0], E.NATS, FILL_STREAM, ...a.slice(1)]).toString().trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 // The gateways' fill feed is JetStream ORDERED consumers (ephemeral). trade-processor's durable /orders
 // consumer is the read model's, not the gateways': deleting it stops the order projection, so it is spared.
-const ordersConsumers = () => js('consumers').filter((c) => !c.durable && c.filters.some((f) => f === '/orders' || f === '/orders.*' || f === '/orders.>'));
+const ordersConsumers = () => js('consumers').filter((c) => !c.durable && c.filters.some((f) => ROUTED ? f.startsWith('/fills.') : (f === '/orders' || f === '/orders.*' || f === '/orders.>')));
 
 const s = new Session(SENDER);
 await s.logon(E.FIX_PASSWORD);
@@ -92,7 +95,7 @@ ok(`FR-FFR-04: a stranger's cross on ${E.TICKER2} sent this session nothing in 5
 
 // 2. Delete every /orders consumer, then cross 4.
 const gone = ordersConsumers();
-if (!gone.length) fail('no /orders consumer on TRADERX_FEED: no gateway reads the fill feed from the stream (FR-FFR-07, FIX_FILL_FEED=jetstream)');
+if (!gone.length) fail(`no fill-feed consumer on ${FILL_STREAM}: no gateway reads the fill feed from the stream (FR-FFR-07, FIX_FILL_FEED=${E.FILL_MODE || 'jetstream'})`);
 for (const c of gone) js('cdelete', c.name);
 result('consumers_deleted', gone.length);
 await rest(E.ACCT_R, E.BEARER_R, 'Buy', 4, PX);

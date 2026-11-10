@@ -50,6 +50,7 @@ final class OrderNatsPublisher {
         // thread, so the hex is rendered in encode() on this bridge's own thread instead.
         long traceKey;
         long clientOrderKey;   // ADR-093: set on the booking event only
+        String gateway;        // FR-FFR-14: the submitting gateway's name, on the booking event only
         // YU18 order types (FR-OT33/34). All zero for an untyped order, whose JSON is unchanged.
         byte orderType;
         byte tif;
@@ -194,6 +195,12 @@ final class OrderNatsPublisher {
         if (security == null) {
             return;
         }
+        lanes.offer(from(o, security, traceKey, ordinal));
+    }
+
+    /** The record of one output event (package-private: the encode seam is unit-testable without a lane). */
+    static Rec from(final finos.traderx.ordermatcher.lmax.OutputEvent o, final String security,
+                    final long traceKey, final int ordinal) {
         final Rec r = new Rec();
         r.orderRef = o.orderRef;
         r.consensusSequence=o.inputSeq;r.outputOrdinal=ordinal;
@@ -210,6 +217,7 @@ final class OrderNatsPublisher {
         r.updatedAtMillis = o.updatedAtMillis;
         r.traceKey = traceKey;
         r.clientOrderKey = o.clientOrderKey;
+        r.gateway = o.gateway == null || o.gateway.length == 0 ? null : new String(o.gateway, java.nio.charset.StandardCharsets.UTF_8);
         r.orderType = o.orderType;
         r.tif = o.typed.tif;
         r.stopPx = o.typed.stopPx;
@@ -223,7 +231,7 @@ final class OrderNatsPublisher {
         r.suspendReason = o.typed.suspendReason;
         r.triggered = o.typed.triggered;
         r.riskReason = o.riskReason;
-        lanes.offer(r);
+        return r;
     }
 
     /** Cold replay verifier uses the identical packing and serializer as live publication. */
@@ -273,6 +281,11 @@ final class OrderNatsPublisher {
         // unsigned 64-bit value does not survive a JSON number in every reader. Omitted on every other event.
         if (r.clientOrderKey != 0L) {
             sb.append(",\"clientOrderKey\":\"").append(Long.toUnsignedString(r.clientOrderKey)).append('"');
+        }
+        // FR-FFR-14: the gateway that submitted the order, on the booking event only (a subject token, never quoted
+        // content), so the read model routes this order's fills to /fills.<gateway>.
+        if (r.gateway != null) {
+            sb.append(",\"gateway\":\"").append(r.gateway).append('"');
         }
         // YU18: the reason a venue event gave this order (DAY_EXPIRED, FOK_UNFILLABLE, a trigger
         // refusal...). Omitted when ACCEPTED, so an untyped accepted order's JSON is unchanged.

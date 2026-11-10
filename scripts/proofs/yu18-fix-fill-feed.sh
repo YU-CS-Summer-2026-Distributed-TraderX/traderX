@@ -35,7 +35,16 @@ gmetric() { # gmetric <outcome> -> sum over every gateway pod of traderx_fix_fil
 streaks() { local p o=""; for p in "${GWS[@]}"; do o+="$("${K[@]}" exec "${p}" -- sh -c 'wget -qO- localhost:18110/live 2>/dev/null || curl -s localhost:18110/live' | jget 'd.get("noAckStreak")') "; done; echo "${o% }"; }
 
 step "0. configuration the specs pin"
-[[ "$(genv FIX_FILL_FEED)" == jetstream ]] || fail "FR-FFR-09: gateway FIX_FILL_FEED='$(genv FIX_FILL_FEED)', want jetstream"
+MODE="$(genv FIX_FILL_FEED)"
+[[ "${MODE}" == jetstream || "${MODE}" == routed ]] || fail "FR-FFR-09: gateway FIX_FILL_FEED='${MODE}', want jetstream or routed"
+if [[ "${MODE}" == routed ]]; then   # FR-FFR-14: every gateway names itself from its pod and reads only /fills.<pod>
+  for p in "${GWS[@]}"; do
+    "${K[@]}" logs "${p}" 2>/dev/null | grep -q "FIX fill feed: routed, JetStream ordered consumer on /fills.${p#pod/} of" \
+      || fail "FR-FFR-14: ${p#pod/} did not subscribe /fills.${p#pod/} (routed): $("${K[@]}" logs "${p}" 2>/dev/null | grep -m1 'FIX fill feed' || echo 'no fill feed line')"
+    "${K[@]}" logs "${p}" 2>/dev/null | grep -q 'FIX fill feed: JetStream ordered consumers' && fail "FR-FFR-14: ${p#pod/} also reads the capture stream"
+  done
+  ok "FR-FFR-14: ${#GWS[@]} gateway(s) read only their own routed subject"
+fi
 RT="$(genv FIX_SESSION_RESET_TIME)"; TZN="$(genv FIX_SESSION_TIME_ZONE)"
 [[ -n "${RT}" && -n "${TZN}" ]] || fail "FR-GFS-08: the manifest does not pin FIX_SESSION_RESET_TIME ('${RT}') and FIX_SESSION_TIME_ZONE ('${TZN}')"
 logs="$("${K[@]}" logs "${GWS[0]}" 2>/dev/null)"
@@ -53,8 +62,16 @@ read -r lage _ _ <<<"$(kv FIX_SESSION_LEASE)"
 ok "FR-GFS-10: FIX_SESSIONS 7 d / 1 GiB / discard new; FIX_SESSION_LEASE 10 s"
 
 step "seed ${T} and ${T2} @${PX}"
-pf GW "${GATEWAY_TARGET:-svc/order-matcher}" "${GATEWAY_PORT:-18110}"
-pf FIXP "${FIX_TARGET:-svc/order-matcher-gw-fix}" 18130 tcp
+# FR-FFR-14: in routed mode the cross is made ACROSS gateways when there are two: the FIX session on the first pod
+# rests, the REST aggressor comes through the second, so the resting side's fill must be routed to the first pod.
+if [[ "${MODE}" == routed && ${#GWS[@]} -ge 2 ]]; then
+  pf GW "${GWS[1]}" "${GATEWAY_PORT:-18110}"; pf FIXP "${GWS[0]}" 18130 tcp
+  ok "cross across gateways: FIX on ${GWS[0]#pod/}, REST on ${GWS[1]#pod/}"
+else
+  [[ "${MODE}" != routed ]] || echo "note: one gateway; the routed cross stays on it (bring the rig up with --gateways 2 for the cross-gateway case)"
+  pf GW "${GATEWAY_TARGET:-svc/order-matcher}" "${GATEWAY_PORT:-18110}"
+  pf FIXP "${FIX_TARGET:-svc/order-matcher-gw-fix}" 18130 tcp
+fi
 PW="$(secret auth-secrets fix-session-password)"; [[ -n "${PW}" ]] || fail "auth-secrets has no fix-session-password"
 for t in "${T}" "${T2}"; do
   c="$(code -X POST "${GW}/seed" -H 'Content-Type: application/json' -H "X-Risk-Control-Token: $(operator_token)" -H 'X-Risk-Operator: yu18-fix-fill-feed' -d "{\"accountId\":${ACCT_F},\"tickers\":\"${t}\",\"price\":${PX}}")"
@@ -67,7 +84,7 @@ step "1-4. the FIX session"
 FIX_HOST=127.0.0.1 FIX_PORT="${FIXP}" FIX_PASSWORD="${PW}" TICKER="${T}" TICKER2="${T2}" PX="${PX}" GW="${GW}" \
   ACCT_F="${ACCT_F}" ACCT_R="${ACCT_R}" ACCT_X="${ACCT_X}" ACCT_Y="${ACCT_Y}" \
   BEARER_R="$(mint false "[${ACCT_R}]")" BEARER_X="$(mint false "[${ACCT_X}]")" BEARER_Y="$(mint false "[${ACCT_Y}]")" \
-  NATS="127.0.0.1:${NATSP}" JS="${here}/lib-jetstream.py" node "${here}/yu18-fix-fill-feed.mjs"; rc=$?
+  NATS="127.0.0.1:${NATSP}" JS="${here}/lib-jetstream.py" FILL_MODE="${MODE}" FILL_GW="${GWS[0]#pod/}" node "${here}/yu18-fix-fill-feed.mjs"; rc=$?
 (( rc == 0 )) || fail "the FIX session failed (above)"
 
 step "5. effect end"
@@ -77,6 +94,15 @@ st="$(sql "SELECT status FROM orderbook WHERE security='${T}' AND accountid=${AC
 SENT1="$(gmetric sent)"; GAP1="$(gmetric gap)"
 [[ $(( SENT1 - SENT0 )) == 2 && "${GAP1}" == "${GAP0}" ]] || fail "FR-FFR-08: reports sent ${SENT0} -> ${SENT1} (want +2), gap ${GAP0} -> ${GAP1} (want +0)"
 ok "FIX Sell FILLED, 4 trade rows; metrics sent +2, gap +0"
+if [[ "${MODE}" == routed ]]; then   # FR-DRS-48: the read model routed the cross's events to the gateways by name
+  pf TP "${TP_TARGET:-svc/trade-processor}" 18091
+  fills="$(curl -s -m 10 "${TP}/v2/projection-feed" | jget 'json.dumps(d.get("orders",{}).get("fills"))')"
+  [[ "${fills}" != null && -n "${fills}" ]] || fail "FR-DRS-48: trade-processor reports no fills router: ${fills}"
+  routed="$(jget 'd.get("routed",0)' <<<"${fills}")"; acked="$(jget 'd.get("acked",0)' <<<"${fills}")"; failed="$(jget 'd.get("failed",0)' <<<"${fills}")"
+  (( routed >= 2 && failed == 0 )) || fail "FR-DRS-48: fills routed=${routed} acked=${acked} failed=${failed}: ${fills}"
+  grep -q "\"${GWS[0]#pod/}\"" <<<"${fills}" || fail "FR-DRS-48: nothing routed to ${GWS[0]#pod/}: ${fills}"
+  ok "FR-DRS-48: fills routed=${routed} acked=${acked} failed=0 to $(jget 'list(d.get("gateways",{}).keys())' <<<"${fills}")"
+fi
 
 step "6. FR-GFS-12 on REST: an unknown ticker is refused by code and moves no no-ack streak"
 S0="$(streaks)"; B="$(mint false "[${ACCT_F}]")"

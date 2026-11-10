@@ -32,13 +32,35 @@ final class ClusterClientAuth {
     private ClusterClientAuth() {
     }
 
-    /** Client side: the env secret as connect credentials; none when unset (an open dev rig). */
+    /** FR-FFR-14: the name a gateway connects with, which the member makes the session's principal. */
+    static final String GATEWAY_ID = "GATEWAY_ID";
+    static final String NAME_PATTERN = "[A-Za-z0-9._-]{1,63}";
+
+    /** Client side: the env secret as connect credentials, and the gateway's name after it when {@code GATEWAY_ID}
+     *  is set; none when unset (an open dev rig). */
     static CredentialsSupplier credentialsFromEnv() {
-        return credentials(System.getenv(ENV));
+        return credentials(System.getenv(ENV), System.getenv(GATEWAY_ID));
     }
 
     static CredentialsSupplier credentials(final String secret) {
-        final byte[] bytes = secret == null ? new byte[0] : secret.getBytes(StandardCharsets.UTF_8);
+        return credentials(secret, null);
+    }
+
+    /**
+     * FR-FFR-14 (ADR-084 amendment): a gateway names itself to the cluster. The credentials are {@code secret '\n'
+     * name}; the member admits on the secret as before and makes the name the session's encoded principal, which the
+     * engine stamps on each NEW order's booking event ({@code gateway}) so the order's fills can be routed back to the
+     * gateway that owns the session ({@code /fills.<name>}), instead of every gateway reading the whole order feed. A
+     * client that sends the secret alone (risk-extract, the feed adapter, a proof client) has no principal and its
+     * orders are not routed. The name is a subject token: {@value #NAME_PATTERN}.
+     */
+    static CredentialsSupplier credentials(final String secret, final String name) {
+        final String id = name == null ? "" : name.trim();
+        if (!id.isEmpty() && !id.matches(NAME_PATTERN)) {
+            throw new IllegalArgumentException(GATEWAY_ID + " is not a subject token: " + id);
+        }
+        final String all = (secret == null ? "" : secret) + (id.isEmpty() ? "" : "\n" + id);
+        final byte[] bytes = all.getBytes(StandardCharsets.UTF_8);
         return new CredentialsSupplier() {
             public byte[] encodedCredentials() {
                 return bytes;
@@ -59,10 +81,38 @@ final class ClusterClientAuth {
         return () -> new SharedSecret(want, rejected);
     }
 
+    /** The secret part of the credentials: everything before the first newline. */
+    static byte[] secretOf(final byte[] credentials) {
+        final int nl = newlineAt(credentials);
+        return nl < 0 ? credentials : java.util.Arrays.copyOfRange(credentials, 0, nl);
+    }
+
+    /** The name after the first newline, or null when the client sent the secret alone. */
+    static byte[] principalOf(final byte[] credentials) {
+        final int nl = newlineAt(credentials);
+        return nl < 0 || nl + 1 >= credentials.length ? null : java.util.Arrays.copyOfRange(credentials, nl + 1, credentials.length);
+    }
+
+    private static int newlineAt(final byte[] credentials) {
+        if (credentials == null) {
+            return -1;
+        }
+        for (int i = 0; i < credentials.length; i++) {
+            if (credentials[i] == '\n') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static final byte[] NO_PRINCIPAL = new byte[0];
+
     static final class SharedSecret implements Authenticator {
         private final byte[] want;
         private final AtomicLong rejected;
-        private final Map<Long, Boolean> decided = new HashMap<>();   // consensus-module thread only
+        /** sessionId -> the principal to authenticate with (empty: none), or null for a rejected session.
+         *  Consensus-module thread only. */
+        private final Map<Long, byte[]> decided = new HashMap<>();
 
         SharedSecret(final byte[] want, final AtomicLong rejected) {
             this.want = want;
@@ -70,17 +120,20 @@ final class ClusterClientAuth {
         }
 
         public void onConnectRequest(final long sessionId, final byte[] credentials, final long nowMs) {
-            decided.put(sessionId, credentials != null && MessageDigest.isEqual(want, credentials));
+            final boolean ok = credentials != null && MessageDigest.isEqual(want, secretOf(credentials));
+            final byte[] principal = ok ? principalOf(credentials) : null;
+            decided.put(sessionId, !ok ? null : principal == null ? NO_PRINCIPAL : principal);
         }
 
         public void onChallengeResponse(final long sessionId, final byte[] credentials, final long nowMs) {
-            decided.put(sessionId, false);
+            decided.put(sessionId, null);
         }
 
         /** Called every duty cycle until the session is resolved, so a back-pressured authenticate retries. */
         public void onConnectedSession(final SessionProxy proxy, final long nowMs) {
-            if (Boolean.TRUE.equals(decided.get(proxy.sessionId()))) {
-                if (proxy.authenticate(null)) {
+            final byte[] principal = decided.get(proxy.sessionId());
+            if (principal != null) {
+                if (proxy.authenticate(principal.length == 0 ? null : principal)) {
                     decided.remove(proxy.sessionId());
                 }
                 return;

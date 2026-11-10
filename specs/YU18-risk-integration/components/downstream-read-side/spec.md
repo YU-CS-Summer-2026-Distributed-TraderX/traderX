@@ -579,6 +579,21 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     election's cause is open in RI37. Under this rule a second promotion is one more catch-up within the ring, not a
     second loss window.
 
+- FR-DRS-48 (ADR-084 amendment, FR-FFR-14; 2026-11-10): The order view SHALL route each update of an order whose
+  booking event named its gateway (`gateway`, the submitting session's principal) to `/fills.<gateway>` on the
+  `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` 2 GiB, `FILLS_STREAM_MAX_AGE_MINUTES` 10;
+  created idempotently by trade-processor like the capture, placement per FR-DRS-44's first tag), so a gateway reads
+  only its own orders' events instead of the whole feed. The view SHALL keep an order's gateway from its booking
+  event across later updates (as it keeps `clientOrderKey`), and the router SHALL publish, per view batch and per
+  gateway, one message holding that gateway's records of the batch newline-joined in stream order (FR-DRS-41's
+  shape), the record bytes as the capture carried them. Every update of one order reaches the one replica that owns
+  its partition (FR-DRS-45), so an order's routed events are in order on its subject. An update of an order the view
+  never held booked is not routed (the gateway's per-order check reports the gap, ADR-084 §7). `FILLS_ROUTE=0` turns
+  the router off; with no booking event naming a gateway it publishes nothing. `/v2/projection-feed` `orders.fills`
+  SHALL report `routed` (events), `messages`, `acked`, `failed` and the per-gateway counts. Covered by
+  `FillsRouterTest` (the batch shape; the view keeps the gateway named at booking and none for an order booked
+  without one), `FillsRouterIT` (NATS: each gateway's subject holds only its own orders' events, one message per
+  batch per gateway, acks counted, the stream's subject `/fills.>`), and the kind proof of FR-FFR-14.
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

@@ -212,7 +212,13 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   `/orders.*` from `TRADERX_FEED` through two ephemeral JetStream ordered (push) consumers per gateway,
   starting at "new", recreated at the last delivered sequence after a gap. Under the partition layout it opens one ordered consumer per
   `TRADERX_FEED_P<p>` on that stream's `/orders.<p>` (FR-FFR-13). `core` subscribes the same
-  two subjects without the stream.
+  two subjects without the stream. With `FIX_FILL_FEED=routed` (ADR-084 amendment 2026-11-10, FR-FFR-14; the
+  production and kind renders) the gateway reads none of these: only `/fills.<GATEWAY_ID>` below.
+- `/fills.<gateway>` on JetStream stream `TRADERX_FILLS` (R1, file, minutes of retention; trade-processor creates it,
+  FR-DRS-48): the order view republishes every update of an order whose booking event carried `gateway` (the
+  submitting gateway's name, the cluster session's principal) to that gateway's subject, batched per view batch in
+  FR-DRS-41's newline-separated record form, the record bytes as `/orders.<p>` carried them. One reader per subject:
+  the named gateway's ordered consumer.
 - `history-feed` (ADR-098, FR-HST-02/03) reads `/trades.<p>` and `/orders.<p>` (bare `/trades`, `/orders` at one
   partition, as the bridges publish) from the same stream(s) as
   trade-processor (same `PROJECTION_FEED_*` settings) with its own durable pull consumers `history-<feed>-p<p>`,

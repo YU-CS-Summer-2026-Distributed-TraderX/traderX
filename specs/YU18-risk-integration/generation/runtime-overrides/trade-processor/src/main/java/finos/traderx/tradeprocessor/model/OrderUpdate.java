@@ -37,6 +37,10 @@ public class OrderUpdate implements ScopedEvent {
   // ADR-093: the client's account-scoped key (unsigned decimal) on the booking update only; preserved across later
   // updates by the read model, and never part of the event digest.
   private String clientOrderKey;
+  // FR-FFR-14: the gateway that submitted the order, on the booking update only; preserved across later updates by
+  // the read model (like clientOrderKey) and never part of the event digest. The fills router sends every update of
+  // an order whose gateway is known to /fills.<gateway>.
+  private String gateway;
   // YU18 order types (FR-OT33/34): absent on untyped orders; the feed handler derives them.
   private String orderType;
   private String timeInForce;
@@ -162,6 +166,14 @@ public class OrderUpdate implements ScopedEvent {
 
   public void setTraceId(String traceId) {
     this.traceId = traceId;
+  }
+
+  public String getGateway() {
+    return gateway;
+  }
+
+  public void setGateway(String gateway) {
+    this.gateway = gateway;
   }
 
   public String getClientOrderKey() {
