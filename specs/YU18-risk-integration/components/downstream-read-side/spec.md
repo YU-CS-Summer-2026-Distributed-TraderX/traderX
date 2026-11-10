@@ -507,7 +507,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     held 231,662 of the members' 231,662 sides (G3h) and 463,324 of 463,324 order events, with `queueDropped` 0 and
     no gap on every member. The promoted leader's lanes held up to 95,618 sides and 191,317 order events. The
     control, the parent's image, is the same run. It held 201,966 of 232,066 sides and 338,327 of 464,132 order
-    events. The new leader's `queueDropped` was 30,100 and 125,805: each shortfall exactly, as on GKE. On GKE: RI37's rig recipe (kill the leader at 500K; `queueDropped` 0 on every member, G3h exact).
+    events. The new leader's `queueDropped` was 30,100 and 125,805: each shortfall exactly, as on GKE. On GKE (2026-11-10, run E3: run D's render, members on this
+    rule's image only, 1:45–1:52 pm ET), the leader was killed at about 465K sides/s and member 1 led 1.81 s later,
+    with one election. The members agreed at 183,194,994 sides. The history store held 1..183,194,994, each once
+    (G3h). `queueDropped` was 0 and `gaps` 0 on every member. The promoted lanes caught up in 201–221 ms and held
+    at most 8,681 sides and 17,443 order events each (`maxBacklog` 9,254 and 18,595).
+
+    Run D's 15–45 s stall did not recur on this fresh rig: what each lane held fits inside the old queue. E3 shows
+    the failover lossless at rate on this build, but alone it does not discriminate against the old one. The kind
+    proof and `ReceiptLanesIT` do, with their stalls induced.
   - Not caused by the bridges, and not changed by this rule: the second election 4 s after the first (member 2, then
     member 1). The apply thread's offer never blocks, before or after this rule. Run D kept no member logs, so the
     election's cause is open in RI37. Under this rule a second promotion is one more catch-up within the ring, not a
