@@ -54,7 +54,8 @@
       lane more than its ring behind, exactly (FR-DRS-47, RI37: GKE 22.9M sides). `ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile`
       (control on the parent: 34,400 of 100,100 missing), `#aPromotedLaneLappedPastItsRingIsACountedGap`,
       `scripts/proofs/kind-bridge-failover-at-rate.sh` (kind: 231,662 of 231,662 sides with NATS frozen 121 s across a
-      leader kill; the parent's image lost 30,100). GKE re-run: RI37's recipe, not run.
+      leader kill; the parent's image lost 30,100). GKE run E3 (2026-11-10): G3h exact on 183,194,994 sides
+      across a leader kill at ~465K sides/s, queueDropped 0 on every member.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.

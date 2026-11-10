@@ -1,8 +1,10 @@
 # RI37: a promoted leader's bridge lanes drop records for tens of seconds at rate
 
 Opened 2026-11-10 (trade-history-tiers lane, the ADR-103 re-test, shared notes `retest-520k-20261110/run-d-failover-at-rate`).
-Status: fix landed on branch `ri37-promoted-lane-ring` (FR-DRS-47, ADR-083 decisions 19–21); unit test, kind proof and their
-controls pass; the GKE re-run is pending. Blocks ADR-103's "failover at rate" acceptance until the GKE re-run passes; does not block the timeouts
+Status: fixed (FR-DRS-47, ADR-083 decisions 19–21; branch `ri37-promoted-lane-ring`, merged into trade-history-tiers).
+The unit test and the kind proof pass, and their controls fail on the parent. GKE run E3 (2026-11-10) passed:
+G3h exact across a leader kill at rate, `queueDropped` 0 on every member. Remaining open: the cause of run D's
+JetStream stall and its second election, which did not recur. Blocks ADR-103's "failover at rate" acceptance until the GKE re-run passes; does not block the timeouts
 decision (200/100 ms holds at 40Gi).
 
 ## What
@@ -111,7 +113,7 @@ On kind, `scripts/proofs/kind-bridge-failover-at-rate.sh` (2026-11-10) froze NAT
 - the control, the parent's image: 201,966 of 232,066 sides and 338,327 of 464,132 events. The new leader's
   `queueDropped` was 30,100 and 125,805, each shortfall exactly, as in run D.
 
-GKE re-run: the recipe below, **written, not run** (needs yaakov's yes).
+GKE re-run: **run E3, PASS** (2026-11-10, authorised by yaakov in the lane's chat; the result is below).
 
 ## GKE re-run recipe
 
@@ -119,3 +121,44 @@ Shared notes `ri37-gke-recipe-20261110/` (README, `run-ri37.sh`, `watch-bridges.
 FR-DRS-47 member image: kill the leader at 500K. Expect `queueDropped` 0 and `gaps` 0 on every member, and G3h
 exact. It also keeps every member's log for the election question. Cost about $20 (range $15–30): about 40 minutes
 of the 2026-11-10 rig, which cost about $20 for 67 minutes.
+
+## GKE run E3 (2026-11-10, 1:14–1:54 pm ET rig time, pa-proof-400k, torn down)
+
+Run D's render, with only the member image changed (`cluster-node-member:ri37-15d49bd7`; its `ReceiptLanes` class
+has the same md5 as the kind-proven build, checked on every member). The 520K setting (8 pods × 64 sessions), 6 min.
+The leader's JVM (member 0) was killed at 1:48:02 pm ET at about 465K sides/s.
+
+| | Run D (parent) | Run E3 (FR-DRS-47) |
+|---|---|---|
+| Promotion | member 2 after ~1.1 s, then member 1 at +4 s | member 1 after 1.81 s; one election |
+| Members' sides | 1,003,275,732 | 183,194,994 |
+| History store (G3h) | short 22,948,341 | 1..183,194,994, each once |
+| New leader `trades.queueDropped` | 22,948,341 | 0 |
+| New leader `orders.queueDropped` | 46,297,224 | 0 |
+| `gaps`, every member | 24 / 22 | 0 |
+| Promoted lanes' catch-up | not logged | 201–221 ms; held at most 8,681 sides / 17,443 events |
+| `maxBacklog`, trades / orders | n/a | 9,254 / 18,595 |
+| Driver | 0 rejected, 1,024 ambiguous | 163,842,900 accepted, 0 rejected, 595 ambiguous |
+
+Gateway latency, one gateway, 60 s before and 45 s after:
+
+| | Before the kill | After the kill |
+|---|---|---|
+| p50 | 1.11 ms | 1.10 ms |
+| p99 | 1.73 ms | 1.68 ms |
+| p999 | 1.89 ms | 2.37 ms |
+
+Reading:
+
+- E3 shows a failover at rate on this build that is lossless at the store. It does **not** reproduce run D's stall:
+  on a fresh rig the stream read took ~0.2 s, and each lane held less than the old queue's 65,536. So E3 alone
+  would also pass on the parent build. The discriminating evidence is `ReceiptLanesIT` and the kind proof, both
+  with an induced stall and a failing control.
+- Run D's second election did not recur. Its cause stays open (the members' logs of E3 are kept). So does what
+  stalled run D's stream reads. Run D followed runs A–C on the same streams; E3's streams were fresh.
+- Two earlier starts on the same rig were void: every order hit `POSITION_LIMIT` after 8,000,000 sides. A fresh
+  epoch's default policy holds about 1M per account per ticker, and `/risk/control/policy` needs both limits to
+  apply. In the first start's failover, the order lanes still published 49.4M events with `queueDropped` 0.
+
+Evidence: shared notes `ri37-gke-run-e3/` (bridges.tsv every 2 s, bridges-end, g3h, failover, latency, members' logs),
+`ri37-gke-run-e/`, `ri37-gke-run-e2/` (void).
