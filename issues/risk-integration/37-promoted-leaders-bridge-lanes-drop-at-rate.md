@@ -1,7 +1,9 @@
 # RI37: a promoted leader's bridge lanes drop records for tens of seconds at rate
 
 Opened 2026-11-10 (trade-history-tiers lane, the ADR-103 re-test, shared notes `retest-520k-20261110/run-d-failover-at-rate`).
-Status: open. Blocks ADR-103's "failover at rate" acceptance; does not block the timeouts decision (200/100 ms holds at 40Gi).
+Status: fix landed on branch `ri37-promoted-lane-ring` (FR-DRS-47, ADR-083 decisions 19–21); unit test, kind proof and their
+controls pass; the GKE re-run is pending. Blocks ADR-103's "failover at rate" acceptance until the GKE re-run passes; does not block the timeouts
+decision (200/100 ms holds at 40Gi).
 
 ## What
 
@@ -48,3 +50,72 @@ rate today needs the FR-DRS-33 recon to rebuild the stream from the members.
 Shared notes `retest-520k-20261110/run-d-failover-at-rate/`: `findings.txt`, `failover.txt`, `lat-before.txt`,
 `lat-after.txt`, `load-result.txt`, `lag.tsv`; the members' `/health` bridge counters and the ClickHouse gap query
 (gaps of 1 from 922,679,230 on) are in `findings.txt`.
+
+## Diagnosis (2026-11-10, from the code and run D's counters; run D kept no member logs)
+
+- **Structural.** A lane was the only consumer of its 65,536-record queue, and the same thread did the blocking NATS
+  work:
+  - the FR-DRS-37/38 catch-up's stream read: up to 10 attempts of `$JS.API.STREAM.NAMES` and
+    `STREAM.MSG.GET`, each with jnats' 2 s request timeout, plus the 200 ms settle;
+  - reconnects (1 s between tries);
+  - replacing a connection that has had no receipt for 5 s.
+
+  While it waited, the apply thread's offers were refused. At 500K orders/s on 8 partitions that queue held about
+  1 s of a trade lane and 0.5 s of an order lane. A refused record never reached the ring, so no catch-up could
+  republish it.
+- **Why ~45 s.** On member 1, trades `gaps` 24 over 8 lanes is about 3 drop episodes per lane, and 22.9M sides is
+  about 45 s of the whole flow (507K sides/s). The catch-ups found the stream's last inside the ring (6–24
+  published). So the lanes were not slow; they were held, about 15 s an episode. A lane that kept up only slowly
+  would drop continuously and count a gap on every pass. A held stream read fits:
+  - FR-DRS-42 records JetStream API stalls of 8–30 s on this rig under load;
+  - one catch-up can wait 10 × (2 + 2 + 0.5) s.
+
+  Cold JIT was not it: FR-DRS-39's warm-up compiles the publish path at start, and a held lane publishes nothing
+  either way. The catch-up scan competing with live flow was not it either: the scan is 65K in-memory compares.
+- **Member 2.** It led for about 4 s, published 1,368,142 sides and dropped 6,800,148 (about 13 s of flow). None of
+  those drops is in the store's shortfall, which is member 1's count exactly. So member 2's lanes were held mostly
+  after it lost the lead: a follower's lane only reads its queue and drops only when held. Its catch-up, or its
+  replacement of a receipt-stalled connection, plausibly outlived its leadership.
+- **The second election (+4 s).** Not caused by the bridges: the apply thread's offer never blocked, before or
+  after the fix. A refused offer cost one volatile store. Open questions, which the GKE recipe answers from the
+  members' logs:
+  - Did member 1 time out member 2's heartbeats at 200 ms?
+  - Or did member 2 step down?
+  - Is a cold leader path under 24 reconnecting gateways at 510K/s the cause?
+
+  Under the fix a second election is one more catch-up within the ring, not a second loss window.
+
+## Fix (FR-DRS-47)
+
+The apply thread writes each record into its lane's ring (`BRIDGE_LANE_RECORDS`, 2^20 slots) and is never
+refused. The lane reads the ring by index. A held lane publishes its backlog after the cut when it resumes:
+about 16 s of a trade lane and 8 s of an order lane at 500K.
+
+- The lane releases what it no longer needs (published or read, and older than the last 65,536), so a current lane
+  holds what it held before. The slots cost 64 MiB for 16 lanes; records stay on the heap only while held.
+- `queueDropped` now counts only a leading lane more than its ring behind, exactly.
+- `/health` adds `maxBacklog`.
+- The catch-up logs its duration and the records applied meanwhile.
+
+Proven:
+
+- `ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile`: NATS frozen 3 s across a
+  promotion, 100,000 sides and order events. All stored once, in order. The control on the parent build at 65,536
+  stored 65,700 of 100,100 sides, 34,400 missing.
+- `#aPromotedLaneLappedPastItsRingIsACountedGap`: past the ring is a counted gap.
+
+On kind, `scripts/proofs/kind-bridge-failover-at-rate.sh` (2026-11-10) froze NATS for 121 s across a leader kill at
+4 x 250 orders/s:
+
+- this build: 231,662 of 231,662 sides and 463,324 of 463,324 order events, with `queueDropped` 0;
+- the control, the parent's image: 201,966 of 232,066 sides and 338,327 of 464,132 events. The new leader's
+  `queueDropped` was 30,100 and 125,805, each shortfall exactly, as in run D.
+
+GKE re-run: the recipe below, **written, not run** (needs yaakov's yes).
+
+## GKE re-run recipe
+
+Shared notes `ri37-gke-recipe-20261110/` (README, `run-ri37.sh`, `watch-bridges.sh`). The run is run D on the
+FR-DRS-47 member image: kill the leader at 500K. Expect `queueDropped` 0 and `gaps` 0 on every member, and G3h
+exact. It also keeps every member's log for the election question. Cost about $20 (range $15–30): about 40 minutes
+of the 2026-11-10 rig, which cost about $20 for 67 minutes.

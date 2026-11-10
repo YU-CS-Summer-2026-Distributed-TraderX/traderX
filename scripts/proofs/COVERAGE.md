@@ -1,5 +1,30 @@
 # Proof coverage against the specs
 
+## A promotion at rate on kind (2026-11-10, FR-DRS-47, RI37, kind traderx-ri37, torn down)
+
+`kind-bridge-failover-at-rate.sh` on `kind-yu18-rig.py --history --binary --partitions 1`. Setup: 4 x 250 orders/s
+for 300 s (120 s phases, 20 s pauses). NATS was frozen (SIGSTOP on its node) for 121 s, and the leader's JVM was
+SIGKILLed 3 s into the freeze. At this rate the parent's 65,536-record lane queue holds about 65 s of sides and 33 s
+of order events. Member image `ri37`, the class md5 checked on every member.
+
+PASS:
+
+- G3h on 231,662 sides;
+- order events 463,324 of 463,324;
+- `queueDropped` 0 and no new gap on every member;
+- history-feed left out no repeat;
+- the promoted leader held up to 95,618 sides and 191,317 order events, and published them once the stream could
+  be read.
+
+Control (`EXPECT_LOSS=1`, image `ri37base` = parent bee3320f): G3h REFUSED, 201,966 of 232,066 sides, and 338,327 of
+464,132 order events. The new leader's `queueDropped` was 30,100 sides and 125,805 events: each shortfall exactly,
+the GKE run D signature.
+
+Two earlier attempts are recorded as script fixes, not results. First, binary-load stops at a phase boundary with
+an order unanswered, so the kill now lands inside a phase. Second, the stream was judged before the leader's lanes
+drained, so the script now waits for `queuedByPartition` 0. A 90 s freeze passed everything but the vacuity check
+(63,252 < 65,536), so the freeze is now 120 s. Evidence in the shared notes, `ri37-kind-20261110/`.
+
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
 `kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
@@ -1834,6 +1859,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-42` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109) |  | added 2026-11-09 (RI34 §1b): the stream's volume is the wall at 300–400K (pd-balanced 298 MB/s at 100% busy; Hyperdisk 684 MB/s once max_bytes deletions join the writes); s2 cut the write to 311 MB/s at 32% busy; memory streams for the hour run. StreamIdentityIT covers the stream settings. Disposable rig, torn down |
 | YU18 | `FR-DRS-43` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109/proof-fr-drs-43) |  | added 2026-11-10 (RI36): a pipelined feed's fetch sized by bytes; on the rig at 470K orders/s trade-processor was cut once in 8 min (351 in 5 min before), lag ≤ 361K messages (4–5M before), G3 and G3h ok; JetStreamFeedTest covers the sizing. Disposable rig, torn down |
 | YU18 | `FR-DRS-44` | LIVE (gke) |  |  | added 2026-11-10 (ADR-103): JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag (tag p mod n, unset places nothing, placed only when the stream carries its tag); test_prepare NatsCluster (the partitioned render names nats-0,nats-1,nats-2; a placement missing a server refused). Live placement read-back on the production render: pending (ADR-103 rollout 2). Live 2026-11-10: placement read back from each server's /jsz (nats-0: P0 P3 P6, nats-1: P1 P4 P7, nats-2: P2 P5) on the p4k rig |
+| YU18 | `FR-DRS-47` | LIVE (kind) | kind-bridge-failover-at-rate |  |  | added 2026-11-10 (RI37): ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile (NATS frozen across a promotion, 100,000 sides and order events: each once, in order, queueDropped 0, maxBacklog > 65,536; control on the parent at its 65,536 queue: 34,400 of 100,100 sides missing), #aPromotedLaneLappedPastItsRingIsACountedGap. kind traderx-ri37: NATS frozen 121 s across a leader kill, 231,662 of 231,662 sides and 463,324 of 463,324 order events, queueDropped 0; the parent's image lost 30,100 and 125,805 (= its queueDropped). GKE re-run (RI37 recipe): not run |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

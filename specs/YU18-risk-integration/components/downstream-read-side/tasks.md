@@ -48,8 +48,13 @@
       gap (FR-DRS-38; kind 2026-11-08, 952 sides). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce`,
       `ReceiptLanesIT#aNatsRestartRepublishesWhatTheStreamLost`, `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap`.
 - [x] A record refused by a full lane queue is a counted gap with an ALERT, at the catch-up or at once while leading
-      (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog.
-      `ReceiptLanesIT#aRecordDroppedAtTheQueueIsACountedGapAtTheCatchUp`.
+      (FR-DRS-38). `/health` `bridges.*.queuedByPartition` shows each lane's backlog. Superseded by FR-DRS-47.
+- [x] A promotion at rate loses nothing: the apply thread writes into each lane's ring (`BRIDGE_LANE_RECORDS`,
+      2^20), never refused, and a blocked lane publishes its backlog when it resumes. `queueDropped` counts only a
+      lane more than its ring behind, exactly (FR-DRS-47, RI37: GKE 22.9M sides). `ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile`
+      (control on the parent: 34,400 of 100,100 missing), `#aPromotedLaneLappedPastItsRingIsACountedGap`,
+      `scripts/proofs/kind-bridge-failover-at-rate.sh` (kind: 231,662 of 231,662 sides with NATS frozen 121 s across a
+      leader kill; the parent's image lost 30,100). GKE re-run: RI37's recipe, not run.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.

@@ -38,6 +38,11 @@ final class RestartableNats implements AutoCloseable {
         c.getDockerClient().pauseContainerCmd(c.getContainerId()).exec();
     }
 
+    /** FR-DRS-47: thaw a {@link #pause}d server; what it was sent meanwhile is read and stored. */
+    void unpause() {
+        c.getDockerClient().unpauseContainerCmd(c.getContainerId()).exec();
+    }
+
     /** SIGKILL (a paused server dies without reading what it was sent) and start the same container again. */
     void killAndStart() throws Exception {
         c.getDockerClient().killContainerCmd(c.getContainerId()).exec();
