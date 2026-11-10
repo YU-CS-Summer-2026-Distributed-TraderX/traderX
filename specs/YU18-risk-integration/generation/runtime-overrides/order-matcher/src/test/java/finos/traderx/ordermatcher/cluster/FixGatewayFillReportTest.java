@@ -210,6 +210,47 @@ class FixGatewayFillReportTest {
             "the New before the cancel");
     }
 
+    /**
+     * FR-FFR-15: fills that reach the gateway while their pipelined orders wait for answers are all reported once the
+     * answers come, however many other orders' fills arrive meanwhile. Falsifiable: the 4,096-slot early ring this
+     * replaced was overwritten by the 5,000 later fills, and none of the 100 was reported.
+     */
+    @Test
+    void fillsThatBeatTheirPipelinedAnswersAreReportedWhateverArrivesMeanwhile() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        final int orders = 100;
+        for (int i = 0; i < orders; i++) {
+            sendOrder(c, "e" + i, Side.BUY, 1, 50.0);
+        }
+        assertTrue(submitter.awaitArrived(orders));
+        for (int i = 0; i < orders; i++) {
+            acceptor.onOrderUpdate(feed(1 + i, (byte) 0, 1, 0, FILLED, 50.0, 1));   // the fill beats the answer
+        }
+        for (int i = 0; i < 5_000; i++) {
+            acceptor.onOrderUpdate(feed(100_001 + i, (byte) 1, 1, 0, FILLED, 50.0, 1));   // other orders' fills
+        }
+        for (int i = 0; i < orders; i++) {
+            submitter.answer("e" + i, 1 + i);
+        }
+        assertTrue(c.awaitCount(r -> exec(r) == ExecType.TRADE, orders),
+            "fill reports: " + c.count(r -> exec(r) == ExecType.TRADE) + " of " + orders);
+        assertEquals(0, acceptor.fillsLost());
+    }
+
+    /** FR-FFR-15: on the routed feed every fill is this gateway's, so one dropped from the early buffer is counted. */
+    @Test
+    void aFillLeftUnreportedOnTheRoutedFeedIsCounted() throws Exception {
+        start(new GatedSubmitter());
+        acceptor.ownFillsOnly = true;
+        final int extra = 1_000;
+        for (int i = 0; i < FixGatewayAcceptor.EARLY_CAPACITY + extra; i++) {
+            acceptor.onOrderUpdate(feed(1 + i, (byte) 0, 1, 0, FILLED, 50.0, 1));   // no order of these is ever tracked
+        }
+        assertEquals(extra, acceptor.fillsLost(), "the oldest fills past the bound are lost, and counted");
+    }
+
     private byte[] feed(final int ref, final byte side, final int qty, final int remaining, final byte status,
                         final double lastPx, final int lastQty) {
         final OrderNatsPublisher.Rec r = new OrderNatsPublisher.Rec();

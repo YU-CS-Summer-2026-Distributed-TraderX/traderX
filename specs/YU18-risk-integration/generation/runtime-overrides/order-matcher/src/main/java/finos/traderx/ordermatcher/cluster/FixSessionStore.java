@@ -368,6 +368,27 @@ final class FixSessionStore implements MessageStoreFactory {
         return gapFilled.get();
     }
 
+    // FR-GFS-20: what a session's group commit costs (ADR-099), so a store that caps sessions shows as a long cycle.
+    private final AtomicLong commitsDone = new AtomicLong();
+    private final AtomicLong commitBodies = new AtomicLong();
+    private final AtomicLong commitNanos = new AtomicLong();
+    private final AtomicLong commitMaxNanos = new AtomicLong();
+
+    private void commitStats(final long nanos, final int bodies) {
+        commitsDone.incrementAndGet();
+        commitBodies.addAndGet(bodies);
+        commitNanos.addAndGet(nanos);
+        commitMaxNanos.accumulateAndGet(nanos, Math::max);
+    }
+
+    /** FR-GFS-20: Prometheus lines; the max is since the previous scrape. */
+    String commitMetrics() {
+        return "traderx_fix_store_commits_total " + commitsDone.get()
+            + "\ntraderx_fix_store_commit_bodies_total " + commitBodies.get()
+            + "\ntraderx_fix_store_commit_seconds_total " + commitNanos.get() / 1e9
+            + "\ntraderx_fix_store_commit_max_seconds " + commitMaxNanos.getAndSet(0) / 1e9 + "\n";
+    }
+
     /** Where message {@code n} of a session lives: one of RESEND_WINDOW keys, reused in turn. */
     static String messageKey(final String key, final int n) {
         return key + ".m." + Integer.remainderUnsigned(n, RESEND_WINDOW);
@@ -1128,6 +1149,8 @@ final class FixSessionStore implements MessageStoreFactory {
             }
             committing = true;
             final long myEpoch = epoch;
+            final long startedAt = System.nanoTime();
+            final int batch = uncommitted.size();
             final int claimed = claim;
             final int tgt = durableTarget();
             final String seqSubject = PREFIX + key + ".seq";
@@ -1147,7 +1170,12 @@ final class FixSessionStore implements MessageStoreFactory {
                 uncommitted.clear();
                 CompletableFuture.allOf(bodies).thenComposeAsync(v -> js.publishAsync(seq), commits)
                     .orTimeout(COMMIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
-                    .whenCompleteAsync((ack, e) -> committed(myEpoch, ack, claimed, tgt, e), commits);
+                    .whenCompleteAsync((ack, e) -> {
+                        if (e == null) {
+                            commitStats(System.nanoTime() - startedAt, batch);
+                        }
+                        committed(myEpoch, ack, claimed, tgt, e);
+                    }, commits);
             } catch (final RuntimeException e) {
                 committing = false;
                 inFlightBodies = 0;

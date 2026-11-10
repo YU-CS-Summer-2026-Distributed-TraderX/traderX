@@ -46,8 +46,8 @@ subscription. No engine, wire, snapshot or consensus change.
   `AvgPx` this gateway last reported for the order (tracked, or rebuilt from the session store under ADR-086),
   with `LeavesQty` 0. An order canceled after a partial fill SHALL NOT be reported `CumQty` 0
   ([ADR-088](../../system/adr-088-canceled-order-fill.md)).
-- NFR-FFR-01: An update for an untracked order SHALL cost two byte scans and no JSON parse or allocation on
-  the gateway. Every gateway with FIX on receives every order update on the venue; `FIX_FILL_FEED=0` is the
+- NFR-FFR-01: An update for an untracked order SHALL cost two byte scans and no JSON parse on the gateway, and a
+  fill one early-buffer entry (FR-FFR-15; it allocated nothing in the overwritten ring that lost them). Every gateway with FIX on receives every order update on the venue; `FIX_FILL_FEED=0` is the
   opt-out for a throughput rig.
 
 - FR-FFR-13: The fill feed SHALL read every capture stream of the base name (`PROJECTION_FEED_STREAM`): the one
@@ -109,3 +109,24 @@ Without the fix: `FIX_FILL_FEED=0` reproduces suspect 8 live (New only, while me
 cross). With `onOrderUpdate` disabled the three report tests fail. With a core subscription under
 `jetstream`, `FixFillFeedIT` fails at "the stream lost the fills". With the gap counter removed, the gap test
 fails.
+- FR-FFR-15 (2026-11-10, the 450K acceptance run): A fill that reaches the gateway before its order is tracked SHALL
+  be reported once the order is. Under FR-BSP-02 an order is tracked when its pipelined answer runs, seconds after its
+  fill when a session is behind, so the 4,096-slot early ring overwritten in arrival order reported 4,501,180 of
+  33,310,198 fills (13.5%) at 85K orders/s, and counted none lost.
+  - Early fills SHALL wait by order ref, in arrival order, at most `FIX_EARLY_FILLS` (default 65,536) refs and
+    30 s each (past the ack deadline). Tracking an order SHALL take its ref's fills in one lookup, oldest first.
+  - An order answered terminal by its own ack (filled, or canceled) is never tracked: its early fills SHALL be
+    dropped then, not left to age.
+  - A fill dropped by age or count SHALL be counted: `traderx_fix_fill_reports_total{outcome="lost"}` with
+    `FIX_FILL_FEED=routed` (FR-FFR-14: every fill on that feed is one of this gateway's orders), with one
+    `ALERT FIX fill for ord-<ref> not reported` per gateway; `outcome="evicted"` on a venue-wide feed, where most
+    early fills are other gateways' orders.
+  - `FixGatewayFillReportTest.fillsThatBeatTheirPipelinedAnswersAreReportedWhateverArrivesMeanwhile` (the pre-fix
+    acceptor: 0 of 100 reported) and `#aFillLeftUnreportedOnTheRoutedFeedIsCounted` (pre-fix: 0 of 1,000 counted).
+- FR-FFR-16: A fill report SHALL be built under the feed lock and sent on its session's report thread (FR-BSP-02),
+  after that session's earlier reports: an order's New is sent there before the order is tracked, so its fills follow
+  it. Sent under the lock, one feed thread carried every fill of the gateway through QuickFIX/J and the session store
+  one at a time and held every session's tracking behind it. `FixGatewayThroughputIT` with `FIX_GW_BENCH_FILLS=1`
+  (32 sessions × 1,024, every order filled, 1 ms venue, one NATS): 4,327–4,658 fill reports/s against 130–136K answers/s
+  before; 73,184–82,735/s, every fill, after (the pre-FR-FFR-15 acceptor: 617/s, the rest lost).
+

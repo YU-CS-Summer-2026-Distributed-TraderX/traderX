@@ -28,6 +28,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ADR-099 measurement end to end: one gateway (acceptor + ADR-086 store) answering N raw FIX clients that keep
  * FIX_GW_BENCH_WINDOW orders outstanding each. The venue answers at once, so the store and QuickFIX/J are what is
  * measured. FIX_GW_BENCH=1 runs it; FIX_STORE_GROUP_COMMIT=false measures the synchronous store in the same build.
+ * FIX_GW_BENCH_NATS_DELAY_MS adds that much latency each way between the gateway and NATS (an in-process proxy), and
+ * FIX_GW_BENCH_VENUE_MS answers each order that long after its submit (the cluster round trip), so a step that waits
+ * on either once per order shows as a per-session rate near 1 / that delay. FIX_GW_BENCH_VENUE_WINDOW bounds the orders
+ * the venue holds at once, taken on the submitting thread as ClusterGatewayMain's GATEWAY_MAX_INFLIGHT is.
+ * FIX_GW_BENCH_FILLS=1 fills every order: one feed thread (the gateway's NATS consumer) delivers its FILLED update
+ * just before its answer, as the leader publishes both from one apply. FIX_GW_BENCH_GATEWAYS runs that many gateways
+ * (each with FIX_GW_BENCH_SESSIONS sessions and its own store client) on the one NATS server, as a venue's gateways
+ * share one FIX_SESSIONS bucket.
  */
 @Testcontainers
 @EnabledIfEnvironmentVariable(named = "FIX_GW_BENCH", matches = "1")
@@ -40,6 +48,59 @@ class FixGatewayThroughputIT {
 
     private static final class Venue implements OrderSubmitter {
         final AtomicInteger ref = new AtomicInteger(1);
+        final long venueMs = Long.parseLong(System.getenv().getOrDefault("FIX_GW_BENCH_VENUE_MS", "0"));
+        final java.util.concurrent.ScheduledExecutorService later =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        final int windowSize = Integer.parseInt(System.getenv().getOrDefault("FIX_GW_BENCH_VENUE_WINDOW", "0"));
+        final boolean fills = "1".equals(System.getenv("FIX_GW_BENCH_FILLS"));
+        final java.util.concurrent.ExecutorService feed = java.util.concurrent.Executors.newSingleThreadExecutor();
+        final OrderNatsPublisher encoder = new OrderNatsPublisher("", "/orders", "7", null, 16, 1);
+        volatile FixGatewayAcceptor gw;
+
+        void fill(final int ref) {
+            if (!fills) {
+                return;
+            }
+            final OrderNatsPublisher.Rec r = new OrderNatsPublisher.Rec();
+            r.orderRef = ref;
+            r.accountId = 11;
+            r.security = "IBM";
+            r.side = 1;
+            r.quantity = 10;
+            r.remainingQty = 0;
+            r.limitPx = 100_000_000L;
+            r.status = 2;   // FILLED
+            r.lastExecPx = 100_000_000L;
+            r.lastFillQty = 10;
+            final byte[] json = encoder.encode(new StringBuilder(1024), r);
+            feed.execute(() -> gw.onOrderUpdate(json));
+        }
+        final Semaphore window = windowSize > 0 ? new Semaphore(windowSize) : null;
+
+        @Override
+        public java.util.concurrent.CompletableFuture<ExecResult> submitOrderAsync(
+                final String clOrdId, final int accountId, final String ticker, final char side, final int qty,
+                final long limitPxTicks, final TypedOrder typed, final java.util.concurrent.Executor completions) {
+            if (window != null) {
+                window.acquireUninterruptibly();
+            }
+            final ExecResult r = new ExecResult(true, ref.getAndIncrement(), OutputEvent.KIND_ORDER_ACCEPTED);
+            fill(r.orderRef());
+            if (venueMs == 0) {
+                if (window != null) {
+                    window.release();
+                }
+                return java.util.concurrent.CompletableFuture.completedFuture(r);
+            }
+            final java.util.concurrent.CompletableFuture<ExecResult> f = new java.util.concurrent.CompletableFuture<>();
+            later.schedule(() -> {
+                if (window != null) {
+                    window.release();
+                }
+                f.completeAsync(() -> r, completions);
+            }, venueMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            return f;
+        }
 
         @Override
         public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker, final char side,
@@ -65,53 +126,134 @@ class FixGatewayThroughputIT {
         os.write((head + b + String.format("10=%03d\u0001", sum % 256)).getBytes(StandardCharsets.US_ASCII));
     }
 
+    /** A TCP proxy that holds every chunk {@code delayMs} before passing it on, in each direction; its local port. */
+    private static int delayProxy(final String host, final int port, final long delayMs) throws Exception {
+        final java.net.ServerSocket server = new java.net.ServerSocket(0);
+        final Thread accept = new Thread(() -> {
+            try {
+                while (true) {
+                    final Socket in = server.accept();
+                    final Socket out = new Socket(host, port);
+                    in.setTcpNoDelay(true);
+                    out.setTcpNoDelay(true);
+                    pipe(in, out, delayMs);
+                    pipe(out, in, delayMs);
+                }
+            } catch (final Exception e) {
+                // closed
+            }
+        }, "nats-delay-accept");
+        accept.setDaemon(true);
+        accept.start();
+        return server.getLocalPort();
+    }
+
+    private static void pipe(final Socket from, final Socket to, final long delayMs) {
+        final java.util.concurrent.LinkedBlockingQueue<Object[]> q = new java.util.concurrent.LinkedBlockingQueue<>();
+        final Thread read = new Thread(() -> {
+            try {
+                final byte[] buf = new byte[1 << 16];
+                for (int n; (n = from.getInputStream().read(buf)) > 0; ) {
+                    q.put(new Object[] {System.nanoTime() + delayMs * 1_000_000L, java.util.Arrays.copyOf(buf, n)});
+                }
+            } catch (final Exception e) {
+                // closed
+            }
+        }, "nats-delay-read");
+        final Thread write = new Thread(() -> {
+            try {
+                final OutputStream os = to.getOutputStream();
+                while (true) {
+                    final Object[] c = q.take();
+                    final long wait = (long) c[0] - System.nanoTime();
+                    if (wait > 0) {
+                        java.util.concurrent.locks.LockSupport.parkNanos(wait);
+                    }
+                    os.write((byte[]) c[1]);
+                }
+            } catch (final Exception e) {
+                // closed
+            }
+        }, "nats-delay-write");
+        read.setDaemon(true);
+        write.setDaemon(true);
+        read.start();
+        write.start();
+    }
+
     @Test
     void executionReportsPerSecondThroughOneGateway() throws Exception {
         final int sessions = Integer.parseInt(System.getenv().getOrDefault("FIX_GW_BENCH_SESSIONS", "33"));
         final int window = Integer.parseInt(System.getenv().getOrDefault("FIX_GW_BENCH_WINDOW", "64"));
         final int seconds = Integer.parseInt(System.getenv().getOrDefault("FIX_GW_BENCH_SECONDS", "10"));
-        final List<String> compIds = new ArrayList<>();
-        for (int s = 0; s < sessions; s++) {
-            compIds.add("C" + s);
+        final int gateways = Integer.parseInt(System.getenv().getOrDefault("FIX_GW_BENCH_GATEWAYS", "1"));
+        final long natsDelayMs = Long.parseLong(System.getenv().getOrDefault("FIX_GW_BENCH_NATS_DELAY_MS", "0"));
+        final int natsPort = natsDelayMs == 0 ? NATS.getMappedPort(4222)
+            : delayProxy(NATS.getHost(), NATS.getMappedPort(4222), natsDelayMs);
+        final List<FixSessionStore> stores = new ArrayList<>();
+        final List<FixGatewayAcceptor> gws = new ArrayList<>();
+        final List<Object[]> clients = new ArrayList<>();   // {compId, port}
+        for (int g = 0; g < gateways; g++) {
+            final List<String> compIds = new ArrayList<>();
+            for (int s = 0; s < sessions; s++) {
+                compIds.add("G" + g + "C" + s);
+            }
+            final FixSessionStore store = new FixSessionStore("nats://" + NATS.getHost() + ":" + natsPort, "gw-bench-" + g);
+            for (int i = 0; i < 100 && !store.available(); i++) {
+                Thread.sleep(100);
+            }
+            final int port;
+            try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+                port = s.getLocalPort();
+            }
+            final Venue venue = new Venue();
+            final FixGatewayAcceptor gw = new FixGatewayAcceptor(venue, null, port, "TRADERX", 11, compIds)
+                .withSessionStore(store);
+            venue.gw = gw;
+            gw.start();
+            stores.add(store);
+            gws.add(gw);
+            compIds.forEach(c -> clients.add(new Object[] {c, port}));
         }
-        final FixSessionStore store = new FixSessionStore(
-            "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222), "gw-bench");
-        for (int i = 0; i < 100 && !store.available(); i++) {
-            Thread.sleep(100);
-        }
-        final int port;
-        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
-            port = s.getLocalPort();
-        }
-        final FixGatewayAcceptor gw = new FixGatewayAcceptor(new Venue(), null, port, "TRADERX", 11, compIds)
-            .withSessionStore(store);
-        gw.start();
+        final FixSessionStore store = stores.get(0);
         final AtomicBoolean stop = new AtomicBoolean();
         final AtomicBoolean measuring = new AtomicBoolean();
         final AtomicLong reports = new AtomicLong();
+        final AtomicLong tradeReports = new AtomicLong();
         final AtomicInteger failed = new AtomicInteger();
         final List<Thread> threads = new ArrayList<>();
-        for (final String compId : compIds) {
-            final Socket socket = new Socket("127.0.0.1", port);
+        for (final Object[] client : clients) {
+            final String compId = (String) client[0];
+            final Socket socket = new Socket("127.0.0.1", (int) client[1]);
             final OutputStream os = new java.io.BufferedOutputStream(socket.getOutputStream(), 1 << 16);
             final InputStream in = socket.getInputStream();
             final Semaphore outstanding = new Semaphore(window);
             send(os, compId, 1, "A", "98=0\u0001108=30\u0001141=Y");
             os.flush();
             final Thread reader = new Thread(() -> {
-                final byte[] pattern = "\u000135=8\u0001".getBytes(StandardCharsets.US_ASCII);
+                final byte[] pattern = "\u0001150=".getBytes(StandardCharsets.US_ASCII);
                 final byte[] buf = new byte[1 << 16];
                 int matched = 0;
+                boolean typeNext = false;
                 try {
                     for (int n; !stop.get() && (n = in.read(buf)) > 0; ) {
-                        for (int i = 0; i < n; i++) {   // count "35=8" across reads
+                        for (int i = 0; i < n; i++) {   // ExecType(150) across reads: 0 answers an order, F is its fill
+                            if (typeNext) {
+                                typeNext = false;
+                                if (buf[i] == '0') {
+                                    outstanding.release();
+                                    if (measuring.get()) {
+                                        reports.incrementAndGet();
+                                    }
+                                } else if (buf[i] == 'F' && measuring.get()) {
+                                    tradeReports.incrementAndGet();
+                                }
+                                continue;
+                            }
                             matched = buf[i] == pattern[matched] ? matched + 1 : buf[i] == pattern[0] ? 1 : 0;
                             if (matched == pattern.length) {
                                 matched = 0;
-                                outstanding.release();
-                                if (measuring.get()) {
-                                    reports.incrementAndGet();
-                                }
+                                typeNext = true;
                             }
                         }
                     }
@@ -151,10 +293,15 @@ class FixGatewayThroughputIT {
         final double rate = reports.get() / ((System.nanoTime() - t0) / 1e9);
         stop.set(true);
         threads.forEach(Thread::interrupt);
-        System.out.printf("[fix-gw-bench] groupCommit=%s sessions=%d window=%d execution-reports/s=%.0f%n",
-            store.groupCommit(), sessions, window, rate);
-        gw.stop();
-        store.close();
+        System.out.printf("[fix-gw-bench] groupCommit=%s gateways=%d sessions=%d window=%d natsDelayMs=%d venueMs=%s"
+            + " venueWindow=%s fills=%s answers/s=%.0f per-session=%.0f fill-reports/s=%.0f lost=%d%n", store.groupCommit(),
+            gateways, sessions, window, natsDelayMs, System.getenv().getOrDefault("FIX_GW_BENCH_VENUE_MS", "0"),
+            System.getenv().getOrDefault("FIX_GW_BENCH_VENUE_WINDOW", "0"), System.getenv("FIX_GW_BENCH_FILLS"), rate,
+            rate / clients.size(), tradeReports.get() / ((System.nanoTime() - t0) / 1e9),
+            gws.stream().mapToLong(FixGatewayAcceptor::fillsLost).sum());
+        System.out.print("[fix-gw-bench] gateway 0 store: " + stores.get(0).commitMetrics().replace('\n', ' ') + "\n");
+        gws.forEach(FixGatewayAcceptor::stop);
+        stores.forEach(FixSessionStore::close);
         assertTrue(failed.get() == 0, failed.get() + " client(s) failed");
         assertTrue(rate > 0, "nothing answered");
     }

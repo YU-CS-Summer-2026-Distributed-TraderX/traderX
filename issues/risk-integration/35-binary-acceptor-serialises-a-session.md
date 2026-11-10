@@ -172,3 +172,48 @@ heap. That is an existing exposure: a client replaying a day of ClOrdIDs can do 
 Evidence: shared notes `fix-pipelining-kind-20261110/` (per-arm run and load logs, `/latency` dumps, G3h, the
 64-session gateway log, the CPU samples, and the superseded first run). kind cluster `traderx-fsp` deleted at
 1:56 pm ET.
+
+## After the 450K acceptance run (2026-11-10): lost fills and a per-session FIX cap
+
+The acceptance lane's stage 1 (`acceptance-450k-20261110/`, 600 FIX sessions on 18 gateways, build `8741452c`) failed
+on two findings in the FIX half.
+
+**1. Fill reports lost: fixed (FR-FFR-15, FR-FFR-16; the cause was in this lane's FR-BSP-02).**
+- **The loss:** 33,310,198 fills reached their gateways and 4,501,180 were reported, with 0 gaps counted.
+- **The cause:** a pipelined order is tracked when its answer runs, seconds after its fill when the session is
+  behind. Fills waited in a 4,096-slot ring overwritten in arrival order, and each tracking scanned all of it.
+- **Now:** early fills wait by ref, bounded by 65,536 refs and 30 s. Tracking takes an order's fills in one lookup.
+  An order terminal at its ack drops them. A fill that still goes unreported is counted as `outcome="lost"` on the
+  routed feed, with an ALERT.
+- **Tests:** `FixGatewayFillReportTest` gains two. On the pre-fix acceptor they fail: 0 of 100 reported, and
+  0 of 1,000 lost fills counted.
+
+**2. A second serial step, found by measuring: every fill report went through one thread.**
+- **What:** the feed thread built *and sent* each fill report under `feedLock`, through QuickFIX/J and the session
+  store. The sends now go to the session's report thread (FR-FFR-16); the order's New is sent there first.
+- **Measured** (`FixGatewayThroughputIT`, one gateway, 32 sessions × 1,024 window, every order filled, 1 ms venue,
+  local NATS):
+
+  | acceptor | answers/s | fill reports/s |
+  | --- | --- | --- |
+  | `8741452c` | 117,473 | 617 (the rest lost) |
+  | FR-FFR-15 only | 130–136K | 4,327–4,658 (one feed thread) |
+  | FR-FFR-15 + 16 | 80–88K | **73–83K, every fill** (the store's ~160K reports/s now shared by both) |
+
+**3. The ~140 answers/s per session cap: not reproduced off the rig; instrumented instead.**
+- **Off the rig, a session is 15–35× faster.** The same bench gives 2,000–5,000 answers/s per session. That holds
+  with 2–5 ms of injected NATS latency each way, a 1 ms venue, and a 4,096-order venue window taken on the
+  submitting thread, as `GATEWAY_MAX_INFLIGHT` is. Two and four gateways on one NATS change it little.
+- **NATS latency is on a session's report path:** per-session answers fall to 1,406/s at 20 ms each way and 642/s
+  at 50 ms, through the group-commit cycle (FR-GFS-18). Pure latency would need ~350 ms to reach 140/s, so the
+  suspect is queueing in the store under production load, for example the one `FIX_SESSIONS` stream on one server.
+  This is not proven.
+- **The run's own shape:** every load pod reached the same per-pod rate whatever its gateway held. The Service's
+  client-IP affinity put 0–3 pods (0–90 sessions) on each gateway and left 4 of 18 idle. So the cap is per session,
+  not per gateway.
+- **Instrumented:** FR-GFS-20 puts the group commit on `/metrics` (commits, bodies, seconds, max per scrape). The
+  next stage-1 run, on GKE (yaakov's yes), reads whether a session's commit cycle is the seconds that 4–9 s answers
+  imply.
+- **Fills will cost more:** with FR-FFR-15/16 every fill is reported and stored, so each traded order costs the store
+  two reports instead of ~1.1.
+
