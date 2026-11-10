@@ -18,7 +18,9 @@ leader then at 6.6 of 7 cores. Evidence: shared notes `bridge-batching-gke-20261
 ## Why it matters
 
 A client with a few sessions cannot reach the engine's rate however hard it pipelines; the earlier campaigns' "member
-ceiling" of 185–300K was this. FIX sessions go through `FixGatewayAcceptor`; check whether it has the same shape.
+ceiling" of 185–300K was this. FIX sessions have the same shape: QuickFIX/J's `fromApp` runs on one dispatcher thread per session and calls
+`submitOrder` synchronously (`FixGatewayAcceptor.java:676`), so a FIX session also carries one order at a time.
+The plan: issues/risk-integration/tasks/prod-450k-plan-20261110.md §3.
 
 ## Fix
 

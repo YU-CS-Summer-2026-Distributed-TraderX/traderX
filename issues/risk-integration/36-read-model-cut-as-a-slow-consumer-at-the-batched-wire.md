@@ -20,7 +20,7 @@ Two causes, one fixed:
    views — so any lost 100 ms is never regained. history-feed does the same volume on 1.2–1.9 cores with a batch
    INSERT per fetch.
 
-## Fix
+## Fix (the plan: issues/risk-integration/tasks/prod-450k-plan-20261110.md §4)
 
 - Shard the read model by partition across replicas (the stream is already partitioned; each replica owns a subset),
   or at least run the order view and the SQL projection in separate processes.
@@ -30,6 +30,10 @@ Two causes, one fixed:
   the cut frequency; they do not add speed.
 - The run's far end should take G3 (snapshot) after the read model drains and not gate the hour on it; the lossless
   claim is the history store's (G3h).
+- A memory-backed stream's retention must cover the read model's longest restart: the hour's trade-processor fail-closed
+  on `RETENTION_GAP` against a two-minute stream after its third restart (2026-11-09 11:26 pm ET).
+- Replica ownership: `PROJECTION_FEED_PARTITIONS_OWNED` per replica, a partition owned twice is a start-up refusal,
+  and a kind proof that every partition is read exactly once across replicas.
 
 ## Evidence
 
