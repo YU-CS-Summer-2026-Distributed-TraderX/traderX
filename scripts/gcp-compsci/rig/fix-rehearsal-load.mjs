@@ -36,13 +36,19 @@ const started = new Date();
 const RAMP = (flag('--ramp', '') || '').split(',').filter(Boolean).map(Number), STEP_MS = Number(flag('--step-secs', 300)) * 1000;
 if (!RAMP.every((f) => f > 0 && f <= 1) || !(STEP_MS > 0)) { console.log('--ramp takes fractions in (0, 1]'); process.exit(2); }
 const T0 = Date.now(), rampFactor = () => RAMP[Math.floor((Date.now() - T0) / STEP_MS)] ?? 1;
-let sending = true, closing = false;   // sending: new orders; closing: the final Logout (no reconnect after it)
+let sending = true, closing = false;
+const bits = () => ({ a: new Uint8Array(1 << 13),
+  has(i) { return i >= 0 && i < this.a.length * 8 && ((this.a[i >> 3] >> (i & 7)) & 1) === 1; },
+  add(i) { if (i < 0) return; if (i >= this.a.length * 8) { const b = new Uint8Array(Math.max(this.a.length * 2, (i >> 3) + 1)); b.set(this.a); this.a = b; }
+           this.a[i >> 3] |= 1 << (i & 7); } });   // sending: new orders; closing: the final Logout (no reconnect after it)
 
 function session(compId, { account, password }, index) {
   const s = { compId, account, sent: 0, answered: 0, resent: 0, restated: 0, rejected: 0, sessionRejects: 0,
-              duplicateAnswers: 0, reconnects: [], rejectReasons: {} };
+              duplicateAnswers: 0, filled: 0, duplicateFills: 0, reconnects: [], rejectReasons: {} };
   const open = new Map();          // ClOrdID -> fields of the NewOrderSingle, until its first ExecutionReport
-  const answered = new Set(), resting = new Set();   // resting: last status New / PartiallyFilled
+  // answered / filled: one bit per sequence of our own ClOrdIDs (RUN-index-seq), so an hour at rate stays a few MB
+  const answered = bits(), filled = bits(), resting = new Set();   // resting: last status New / PartiallyFilled
+  const mine = `${RUN}-${index}-`, seqOf = (cl) => (cl.startsWith(mine) && /^\d+$/.test(cl.slice(mine.length)) ? Number(cl.slice(mine.length)) : -1);
   let out = 1, inExpected = 1, sock = null, up = false, first = true, buf = '', next = 0, downAt = null, resendTimer = null, credit = 0;
 
   const frame = (type, fields, header = []) => {
@@ -63,9 +69,10 @@ function session(compId, { account, password }, index) {
     sock.on('connect', () => write('A', [['98', 0], ['108', 30], ['554', password], ...(first ? [['141', 'Y']] : [])]));
     sock.on('data', (chunk) => {
       buf += chunk.toString('latin1');
-      for (let e; (e = buf.indexOf(`${SOH}10=`)) >= 0;) {
+      let at = 0;   // one slice per chunk, not per message: per-message slicing is quadratic and reads too slowly at rate
+      try { for (let e; (e = buf.indexOf(`${SOH}10=`, at)) >= 0;) {
         const cut = buf.indexOf(SOH, e + 1) + 1; if (cut <= 0) break;
-        const f = parse(buf.slice(0, cut)); buf = buf.slice(cut);
+        const f = parse(buf.slice(at, cut)); at = cut;
         const seq = Number(f['34']);
         if (f['35'] === 'A') {
           if (first) { inExpected = seq + 1; first = false; }
@@ -90,15 +97,21 @@ function session(compId, { account, password }, index) {
         if (f['35'] === '5') { if (!closing) sock.destroy(); continue; }
         if (f['35'] === '8' && f['11']) {
           const orig = f['41'] || f['11'];   // a cancel's report names the order in OrigClOrdID(41)
-          if (['0', '1'].includes(f['39']) && f['150'] !== 'I') resting.add(orig); else if (['2', '4', '8', 'C'].includes(f['39'])) resting.delete(orig);
+          const n = seqOf(orig);
+          // every order is a limit of 1: Filled(39=2) is its one fill report; a restatement (150=I) is not a fill
+          if (f['39'] === '2' && f['150'] !== 'I' && n >= 0) { if (filled.has(n)) s.duplicateFills++; else { filled.add(n); s.filled++; } }
+          if (['0', '1'].includes(f['39']) && f['150'] !== 'I' && !(n >= 0 && filled.has(n))) resting.add(orig); else if (['2', '4', '8', 'C'].includes(f['39'])) resting.delete(orig);
           if (f['41'] && f['39'] === '4') { s.cancelled = (s.cancelled || 0) + 1; continue; }
+          // no OrigClOrdID: the venue cancelled a resting order of ours to stop a self-trade (ADR-057, cancel-oldest)
+          if (f['39'] === '4' && n >= 0 && answered.has(n)) s.selfTradeCancelled = (s.selfTradeCancelled || 0) + 1;
           if (f['150'] === 'I') s.restated++;
-          if (answered.has(f['11'])) { if (f['39'] === '0' && f['150'] !== 'I') s.duplicateAnswers++; continue; }
+          const m = seqOf(f['11']);
+          if (m >= 0 && answered.has(m)) { if (f['39'] === '0' && f['150'] !== 'I') s.duplicateAnswers++; continue; }
           if (!open.has(f['11'])) continue;
-          answered.add(f['11']); open.delete(f['11']); s.answered++;
+          answered.add(m); open.delete(f['11']); s.answered++;
           if (f['39'] === '8') { s.rejected++; const r = (f['58'] || '?').slice(0, 60); s.rejectReasons[r] = (s.rejectReasons[r] || 0) + 1; }
         }
-      }
+      } } finally { buf = buf.slice(at); }
     });
     sock.on('close', () => {
       up = false;
@@ -111,10 +124,12 @@ function session(compId, { account, password }, index) {
   connect();
   const tick = setInterval(() => {
     if (!sending || !up || open.size >= cfg.maxInFlight) return;
+    sock.cork();
     for (credit += cfg.rate * rampFactor() / 100; credit >= 1; credit--) {
       const cl = `${RUN}-${index}-${next++}`; const side = (next + index) % 2 ? 1 : 2;
       open.set(cl, side); order(cl, side, false); s.sent++;
     }
+    sock.uncork();
   }, 10);
   const cancelResting = () => { for (const cl of resting) write('F', [['41', cl], ['11', `${cl}-c`], ['1', account], ['55', cfg.ticker],
     ['54', (Number(cl.split('-').pop()) + index) % 2 ? 1 : 2], ['60', stamp()]]); };
@@ -128,11 +143,13 @@ const report = (final) => {
   const out = { run: RUN, startedAt: started.toISOString(), at: new Date().toISOString(), final, px: cfg.px, ramp: rampFactor(),
                 ticker: cfg.ticker, sent: sum('sent'), answered: sum('answered'), unanswered: sum('unanswered'),
                 rejected: sum('rejected'), restated: sum('restated'), duplicateAnswers: sum('duplicateAnswers'),
+                filled: sum('filled'), duplicateFills: sum('duplicateFills'),
+                selfTradeCancelled: rows.reduce((a, r) => a + (r.selfTradeCancelled || 0), 0),
                 reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), restingAtEnd: sum('restingAtEnd'),
                 cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), sessions: rows };
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
   console.log(`${out.at} ramp=${out.ramp} sent=${out.sent} answered=${out.answered} unanswered=${out.unanswered} rejected=${out.rejected} `
-    + `restated=${out.restated} dupAnswers=${out.duplicateAnswers} reconnects=${out.reconnects}`);
+    + `restated=${out.restated} dupAnswers=${out.duplicateAnswers} filled=${out.filled} dupFills=${out.duplicateFills} reconnects=${out.reconnects}`);
   return out;
 };
 const progress = setInterval(() => report(false), 10_000);
@@ -150,7 +167,7 @@ setTimeout(() => {   // stop sending, then wait for every answer (at most 60 s),
     if ((left === 0 && rest === 0) || Date.now() - t0 > cfg.drainSecs * 1000) {
       clearInterval(wait); clearInterval(progress); closing = true;
       sessions.forEach((x) => x.stop());
-      setTimeout(() => { const r = report(true); process.exit(r.unanswered === 0 && r.duplicateAnswers === 0 && r.restingAtEnd === 0 ? 0 : 1); }, 1000);
+      setTimeout(() => { const r = report(true); process.exit(r.unanswered === 0 && r.duplicateAnswers === 0 && r.duplicateFills === 0 && r.restingAtEnd === 0 ? 0 : 1); }, 1000);
     }
   }, 200);
 }, cfg.secs * 1000);

@@ -136,3 +136,31 @@ class Drain(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Fills(unittest.TestCase):
+    def test_a_fill_reported_twice_is_counted_and_fails_the_run(self):
+        # Acceptance 450K (FR-FFR-14 routed fills): every order is answered once AND filled once; a second Filled(39=2)
+        # for one ClOrdID is a duplicate fill report, which an hour at rate must show as 0.
+        srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
+        def acceptor():
+            conn, _ = srv.accept(); n = [1]; orders = [0]
+            def reply(fields):
+                conn.sendall(frame([fields[0], ('34', n[0]), ('52', '20261110-18:00:00.000')] + fields[1:])); n[0] += 1
+            for f in messages(conn):
+                if f['35'] == 'A': reply([('35', 'A')])
+                if f['35'] == 'D':
+                    orders[0] += 1
+                    reply([('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
+                    reply([('35', '8'), ('11', f['11']), ('39', '2'), ('150', 'F')])
+                    if orders[0] == 3: reply([('35', '8'), ('11', f['11']), ('39', '2'), ('150', 'F')])   # the duplicate
+                if f['35'] == '5': reply([('35', '5')]); conn.close(); return
+        threading.Thread(target=acceptor, daemon=True).start()
+        with tempfile.TemporaryDirectory() as d:
+            creds = Path(d, 'creds.json'); creds.write_text(json.dumps({'CLIENT2': {'account': '9900002', 'password': 'p'}}))
+            r = subprocess.run(['node', str(LOAD), '--creds', str(creds), '--px', '1.00', '--rate', '20', '--secs', '1',
+                                '--host', '127.0.0.1', '--port', str(srv.getsockname()[1]), '--out', str(Path(d, 'r.json'))],
+                               capture_output=True, text=True, timeout=60)
+            result = json.loads(Path(d, 'r.json').read_text())
+        self.assertEqual((result['filled'], result['duplicateFills'], result['duplicateAnswers']), (result['sent'], 1, 0))
+        self.assertEqual(r.returncode, 1, r.stdout)
