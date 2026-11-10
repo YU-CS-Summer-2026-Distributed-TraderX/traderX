@@ -1,5 +1,24 @@
 # Proof coverage against the specs
 
+## Replica ownership and the read router on kind, 4 replicas (2026-11-10, FR-DRS-45/46, kind traderx-own, torn down)
+
+`kind-tp-ownership.sh` on `kind-yu18-rig.py --binary --partitions 8 --tp-replicas 4` (production's 4, two partitions
+each), run twice on one rig (11:17 and 11:23 am ET; 330,882 sides in all). Each partition read by exactly one replica,
+G3 on the union of the four accountings, order events read 661,764 = published 661,764, a third claimant refused. The
+contract: 8 accounts × 3 shapes (open, `?status=all`, `?clientOrderKey=`) read on every replica and through the
+Service each answered 200 with the owner's body (hashed in the pod; `status=all` 16 MB); each replica forwarded 21-24
+reads. `order-read-bench.mjs`, router vs fan-out-and-merge vs the owner directly: open orders at 16 concurrent,
+1,450 / 635 / 1,410 reads/s, p50 8.8 / 21.7 / 10.1 ms; `?status=all` at 2, 6 / 5 / 8 reads/s, p50 300 / 342 / 221 ms.
+
+## Replica ownership on kind (2026-11-10, FR-DRS-45, kind traderx-own, torn down)
+
+`kind-tp-ownership.sh` on `kind-yu18-rig.py --binary --partitions 8 --tp-replicas 2`: trade-processor as a StatefulSet,
+pod -0 owning partitions 0-3 and -1 owning 4-7. A 120 s binary load (168,372 orders, 168,372 sides). Each partition's
+trade and order cursors advanced on exactly one replica; G3 passed on the union of the two accountings (sides
+1..168,372 once each, 0 duplicates); the views read 336,744 order events = the bridges' 336,744 published records; a
+third trade-processor owning partition 0 exited 3 (PARTITION_OWNED), naming trade-processor-0. Discrimination is in
+`PartitionOwnershipIT`: with the guard's check removed the third process starts and the IT fails.
+
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
 `kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
@@ -1834,6 +1853,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-42` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109) |  | added 2026-11-09 (RI34 §1b): the stream's volume is the wall at 300–400K (pd-balanced 298 MB/s at 100% busy; Hyperdisk 684 MB/s once max_bytes deletions join the writes); s2 cut the write to 311 MB/s at 32% busy; memory streams for the hour run. StreamIdentityIT covers the stream settings. Disposable rig, torn down |
 | YU18 | `FR-DRS-43` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109/proof-fr-drs-43) |  | added 2026-11-10 (RI36): a pipelined feed's fetch sized by bytes; on the rig at 470K orders/s trade-processor was cut once in 8 min (351 in 5 min before), lag ≤ 361K messages (4–5M before), G3 and G3h ok; JetStreamFeedTest covers the sizing. Disposable rig, torn down |
 | YU18 | `FR-DRS-44` | LIVE (gke) |  |  | added 2026-11-10 (ADR-103): JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag (tag p mod n, unset places nothing, placed only when the stream carries its tag); test_prepare NatsCluster (the partitioned render names nats-0,nats-1,nats-2; a placement missing a server refused). Live placement read-back on the production render: pending (ADR-103 rollout 2). Live 2026-11-10: placement read back from each server's /jsz (nats-0: P0 P3 P6, nats-1: P1 P4 P7, nats-2: P2 P5) on the p4k rig |
+| YU18 | `FR-DRS-45` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36): kind traderx-own, P=8, 2 replicas (and 4: see FR-DRS-46's row) (StatefulSet, replica:0/2 and 1/2), 120 s binary load, 168,372 sides: each partition read by one replica, G3 on the union, order events read 336,744 = published 336,744, a third claimant of partition 0 refused (exit 3). PartitionOwnershipTest; PartitionOwnershipIT (three processes, the handover after a clean stop; fails with the guard off); test_prepare (Recreate Deployment, StatefulSet by pod index). Not on GKE/production; no router |
+| YU18 | `FR-DRS-46` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36, ADR-103 §3): kind traderx-own, 4 replicas: every load account's order read in three shapes through every replica and the Service = the owner's body; router 1,450 reads/s p50 8.8 ms vs fan-out-and-merge 635 reads/s p50 21.7 ms (open orders, 16 concurrent), even on 16 MB `status=all` reads. PartitionOwnershipIT router phase (421 on a routed read at a non-owner, 503 with no live owner). Not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

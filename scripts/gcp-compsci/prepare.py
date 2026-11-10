@@ -385,10 +385,74 @@ HISTORY_COLD_TIERED = '/etc/clickhouse-server/config.d/tiered.xml'
 HISTORY_CLIENTS = ('history-feed', 'trade-processor', 'position-service')
 
 
+def read_model_workload(docs):
+    """trade-processor: one Deployment, or the StatefulSet shard_read_model renders for N replicas (FR-DRS-45); None if absent."""
+    return next((d for d in docs if d['kind'] in ('Deployment', 'StatefulSet') and d['metadata']['name'] == 'trade-processor'), None)
+
+
+READ_MODEL_REPLICAS_SERVICE = 'trade-processor-replicas'
+# RI36 / ADR-103 §3: the production read model, two partitions per replica (P = 8). 12 cores each, as the one replica had
+# (READ_MODEL_TP): at 400-520K orders/s one process read all 8 partitions at 7-10 cores with no headroom.
+READ_MODEL_REPLICAS = 4
+READ_MODEL_REPLICA_URL = 'http://{replica}.' + READ_MODEL_REPLICAS_SERVICE + ':18091'   # FR-DRS-46, {replica} = the pod name
+
+
+def shard_read_model(docs, replicas=1):
+    """FR-DRS-45: trade-processor as N replicas, each reading a disjoint block of the feed partitions. Each replica
+    claims its partitions in SQL at start and refuses a partition another live replica holds, so a rollout must stop
+    the old pod before the new one starts: one replica stays the Deployment, Recreate (under RollingUpdate the surge pod
+    is refused and the rollout never completes). N > 1 is a StatefulSet, Parallel: the pod name is the replica id, the
+    pod index picks the block (PROJECTION_FEED_PARTITIONS_OWNED=replica:<k>/<N>; P=8, N=2: 0-3 and 4-7), and the
+    headless Service trade-processor-replicas names each pod for the order-view router. The trade-processor Service
+    selects every replica: the order view's reads (/accounts/{id}/orders) need the router; a replica answers an account
+    it does not own 421."""
+    tp = read_model_workload(docs)
+    if replicas <= 1:
+        tp['spec']['strategy'] = {'type': 'Recreate'}
+        return
+    c = podspec(tp)['containers'][0]
+    partitions = int({e['name']: e.get('value') for e in c.get('env', [])}.get('PROJECTION_FEED_PARTITIONS') or 1)
+    assert replicas <= partitions, f'{replicas} read-model replicas over {partitions} partitions: a replica would own none'
+    owned = ('TP_REPLICA_INDEX', 'PROJECTION_REPLICA_ID', 'PROJECTION_FEED_PARTITIONS_OWNED', 'PROJECTION_FEED_OWNED',
+             'PROJECTION_REPLICA_URL')
+    c['env'] = [e for e in c.get('env', []) if e['name'] not in owned] + [
+        {'name': 'TP_REPLICA_INDEX', 'valueFrom': {'fieldRef': {'fieldPath': "metadata.labels['apps.kubernetes.io/pod-index']"}}},
+        {'name': 'PROJECTION_REPLICA_ID', 'valueFrom': {'fieldRef': {'fieldPath': 'metadata.name'}}},
+        {'name': 'PROJECTION_FEED_PARTITIONS_OWNED', 'value': f'replica:$(TP_REPLICA_INDEX)/{replicas}'},
+        {'name': 'PROJECTION_REPLICA_URL', 'value': READ_MODEL_REPLICA_URL}]
+    tp['kind'] = 'StatefulSet'
+    for k in ('strategy', 'progressDeadlineSeconds', 'paused'):
+        tp['spec'].pop(k, None)
+    tp['spec'].update({'replicas': replicas, 'serviceName': READ_MODEL_REPLICAS_SERVICE, 'podManagementPolicy': 'Parallel'})
+    meta = {'name': READ_MODEL_REPLICAS_SERVICE, 'labels': {'app': 'trade-processor'}}
+    if 'namespace' in tp['metadata']:
+        meta['namespace'] = tp['metadata']['namespace']
+    docs.append({'apiVersion': 'v1', 'kind': 'Service', 'metadata': meta,
+                 'spec': {'clusterIP': 'None', 'selector': {'app': 'trade-processor'},
+                          'ports': [{'name': 'http', 'port': 18091, 'targetPort': 18091}]}})
+
+
+def validate_read_model_replicas(docs, require):
+    """FR-DRS-45: what shard_read_model renders, so a hand edit cannot run two owners or a stuck rollout."""
+    tp = read_model_workload(docs)
+    if tp is None:
+        return
+    env = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])}
+    if tp['kind'] == 'Deployment':
+        require(tp['spec'].get('replicas', 1) == 1 and tp['spec'].get('strategy', {}).get('type') == 'Recreate',
+                'trade-processor as a Deployment must be one Recreate replica: a second pod is refused its partitions (FR-DRS-45)')
+        return
+    n = tp['spec'].get('replicas')
+    require(env.get('PROJECTION_FEED_PARTITIONS_OWNED') == f'replica:$(TP_REPLICA_INDEX)/{n}'
+            and tp['spec'].get('serviceName') == READ_MODEL_REPLICAS_SERVICE
+            and env.get('PROJECTION_REPLICA_URL') == READ_MODEL_REPLICA_URL,
+            f'trade-processor\'s {n} replicas must each own replica:<pod index>/{n} of the partitions and reach each other at {READ_MODEL_REPLICA_URL} (FR-DRS-45/46)')
+
+
 def history_store(docs, hot_days=0):
     """FR-THT-02: ClickHouse and history-feed sized and guaranteed, the store on its own retained class, history-feed
     on exactly trade-processor's streams. FR-THT-03 with hot_days > 0: the `tiered` policy, cold volume on GCS."""
-    tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
+    tp = read_model_workload(docs)
     feed = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])}
     full = int(feed.get('PROJECTION_FEED_PARTITIONS') or 1) > 1
     store_size, feed_size = (HISTORY_STORE_FULL_RATE, HISTORY_FEED_FULL_RATE) if full else (HISTORY_STORE, HISTORY_FEED)
@@ -448,7 +512,7 @@ def validate_history_store(docs, require):
             'the history store has no sized claim on a rendered, retained storage class (FR-THT-02)')
     require(writer['spec'].get('replicas') == 1 and writer['spec'].get('strategy', {}).get('type') == 'Recreate',
             'history-feed must be one Recreate replica: its lanes are not fenced against a second writer (ADR-098)')
-    tp = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor')
+    tp = read_model_workload(docs)
     env = lambda d: {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])}
     want = {k: env(tp).get(k) or v for k, v in HISTORY_FEED_ENV.items()}
     require({k: env(writer).get(k) or v for k, v in HISTORY_FEED_ENV.items()} == want,
@@ -535,7 +599,7 @@ def validate_nats_cluster(docs, require):
     sc = next((d for d in docs if d['kind'] == 'StorageClass' and d['metadata']['name'] == sc_name), None)
     require(sc is not None and sc.get('parameters', {}).get('type') == 'hyperdisk-balanced',
             "NATS: a server's claim is not on a rendered Hyperdisk Balanced class (FR-PRG-41)")
-    tp = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'trade-processor'), None)
+    tp = read_model_workload(docs)
     env = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])} if tp else {}
     if env.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition':
         require(sorted((env.get('PROJECTION_FEED_STREAM_PLACEMENT') or '').split(',')) == [f'nats-{i}' for i in range(n)],
@@ -547,7 +611,7 @@ def validate_read_model(docs, require):
     def env(name, kind='Deployment'):
         d = next((d for d in docs if d['kind'] == kind and d['metadata']['name'] == name), None)
         return {e['name']: e.get('value') for e in podspec(d)['containers'][0].get('env', [])} if d else {}
-    tp, members = env('trade-processor'), env('order-matcher-cluster', 'StatefulSet')
+    tp, members = env('trade-processor', (read_model_workload(docs) or {}).get('kind')), env('order-matcher-cluster', 'StatefulSet')
     require(tp.get('TRADE_PROJECTION_MODE') == 'snapshot',
             'trade-processor must name TRADE_PROJECTION_MODE=snapshot: a default changes the read model unseen (FR-THT-01)')
     require(int(tp.get('ORDER_VIEW_SNAPSHOT_MS') or 0) > 0,
@@ -809,12 +873,13 @@ def validate(docs, declared=None):
     validate_nats_memory(docs, require)
     validate_nats_cluster(docs, require)
     validate_read_model(docs, require)
+    validate_read_model_replicas(docs, require)
     validate_history_store(docs, require)
 
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
             fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None,
-            history_hot_days=0, purge=False):
+            history_hot_days=0, purge=False, read_model_replicas=None):
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -971,6 +1036,8 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     if read_model == 'snapshot':
         snapshot_read_model(docs, partitions or READ_MODEL_PARTITIONS)
     history_store(docs, history_hot_days)
+    shard_read_model(docs, read_model_replicas or (min(READ_MODEL_REPLICAS, partitions or READ_MODEL_PARTITIONS)
+                                                   if read_model == 'snapshot' else 1))
     if purge:
         archive_purge(docs)
     apply_population(docs, declared, tag)
@@ -1058,10 +1125,13 @@ if __name__=='__main__':
     p.add_argument('--archive-purge',action='store_true',
                    help="purge each member's archive behind its second-latest snapshot, history discarded (FR-PRG-40)")
     p.add_argument('--partitions',type=int,help=f'read-model partitions with --read-model snapshot (default {READ_MODEL_PARTITIONS})')
+    p.add_argument('--read-model-replicas',type=int,
+                   help=f'FR-DRS-45: trade-processor replicas, each owning a block of the partitions (a StatefulSet above 1;'
+                        f' default {READ_MODEL_REPLICAS} with --read-model snapshot, else 1)')
     args=p.parse_args()
     import ipaddress
     ipaddress.ip_address(args.dns_ip)
     assert re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',args.tag), 'invalid image tag'
     prepare(args.output.resolve(),args.tag,args.dns_ip,args.published,args.public_lock,args.population,args.exception_published,
             args.fix_test_clients,args.binary_port,args.no_bridges,args.throughput_members,args.read_model,args.partitions,
-            args.history_hot_days,args.archive_purge)
+            args.history_hot_days,args.archive_purge,args.read_model_replicas)

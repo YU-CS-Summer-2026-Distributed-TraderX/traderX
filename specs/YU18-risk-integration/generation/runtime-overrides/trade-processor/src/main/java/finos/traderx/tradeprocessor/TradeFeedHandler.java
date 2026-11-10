@@ -69,6 +69,11 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
   private TradeSnapshotStore snapshotStore;
   @Autowired(required = false)
   private RunRegistry runRegistry;
+  // FR-DRS-45: claimed (or refused) before this feed reads a partition, and released only after it stops.
+  @Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.PartitionOwnership ownership;
+
+  int[] owned() { return ownership != null ? ownership.owned() : JetStreamFeed.owned(ownedPartitions, partitionCount); }
 
   boolean jetstream() { return "jetstream".equalsIgnoreCase(feedMode); }
   boolean snapshotMode() { return "snapshot".equalsIgnoreCase(projectionMode); }
@@ -87,16 +92,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       try {
         startJetStream();
       } catch (Exception refused) {
-        // A refusal (RETENTION_GAP, STREAM_RESET) must stop the process. Measured: after the context fails,
-        // the other beans' NATS connections (non-daemon threads) keep the JVM up as a never-ready zombie.
-        // Exit from a daemon thread once Spring has finished failing (System.exit inside refresh can deadlock).
-        Thread exit = new Thread(() -> {
-          try { Thread.sleep(5000); } catch (InterruptedException ignore) { }
-          log.error("trade feed refused to start ({}); exiting", refused.getMessage());
-          System.exit(3);
-        }, "trade-feed-refusal-exit");
-        exit.setDaemon(true);
-        exit.start();
+        JetStreamFeed.exitAfterRefusal("trade feed", refused.getMessage());   // RETENTION_GAP, STREAM_RESET
         throw refused;
       }
     }
@@ -119,7 +115,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     snapshotScope = scope;
     List<Position> allPositions = snapshotStore.loadPositions(scope);
     List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
-    for (int p : JetStreamFeed.owned(ownedPartitions, partitionCount)) {
+    for (int p : owned()) {
       final int partition = p;
       TradeView view = new TradeView();
       TradeSnapshotStore.Cursor cursor = snapshotStore.loadCursor(scope, p);

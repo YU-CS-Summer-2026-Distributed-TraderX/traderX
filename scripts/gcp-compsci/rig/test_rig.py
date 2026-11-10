@@ -35,6 +35,9 @@ read_model(){ [ -n "${RM_FAIL:-}" ] && return 1; if [ -f "$EVIDENCE/.rm" ]; then
 kubectl(){
   call "kubectl $*"
   case "$*" in
+    *"get sts trade-processor -o name"*) [ -z "${TP_STS:-}" ] || echo statefulset.apps/trade-processor;;   # TP_STS: N replicas (FR-DRS-45)
+    *"get sts trade-processor -o jsonpath={.spec.replicas}"*) echo "${TP_STS:-}";;
+    *"exec trade-processor-"*projection-feed/accounting*) n="$*"; n=${n#*exec trade-processor-}; v="ACCT_${n%% *}"; echo "${!v:-}";;
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
     *"get pods -l app=nats -o jsonpath={.items[*].metadata.name}"*) echo "${NATS_NAMES:-nats-u1}";;
     *"get pods -l app=nats -o jsonpath"*) echo "${NATS_UIDS_NOW:-u1}";;
@@ -404,6 +407,20 @@ class Up(unittest.TestCase):
                          (acct(resting=(1, 0)), 'order view holds 1 open orders, the members restored 2'),
                          (acct(orders=False), 'no order view snapshot')):
             self.assertIn(why, self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', ACCT=bad))
+
+    def test_n_read_model_replicas_are_checked_by_the_union_of_their_accountings(self):
+        # FR-DRS-45: each replica answers for its own partitions; G3 checks their union, each partition from exactly one.
+        import json
+        whole = json.loads(acct())
+        def replica(*parts):
+            return json.dumps({**whole, 'owned': [int(p) for p in parts], 'trades': {p: whole['trades'][p] for p in parts},
+                               'orders': {p: whole['orders'][p] for p in parts}})
+        rc, out, calls = run('rig_up', TP_MODE='snapshot', SNAP_BASE='0', TP_STS='2', ACCT_0=replica('0'), ACCT_1=replica('1'))
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3 ok: the read model booked sides 1..5, each once; 2 open orders', out)
+        self.assertIsNotNone(first(calls, r'exec trade-processor-1 .*accounting'))
+        for a0, a1 in ((replica('0', '1'), replica('1')), (replica('0'), replica('0'))):   # a partition twice; one by none
+            self.assertIn('partitions answered', self.refused('G3', TP_MODE='snapshot', SNAP_BASE='0', TP_STS='2', ACCT_0=a0, ACCT_1=a1))
 
     def test_the_snapshot_check_starts_at_the_recorded_rows_era_base(self):
         # Sides 1..2 were projected as rows before the switch (rig-snapshot-base 2); the accounting holds 3..5.

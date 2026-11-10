@@ -93,3 +93,10 @@ CREATE TABLE IF NOT EXISTS order_view_snapshot (
  accountid INTEGER NOT NULL, status VARCHAR(32) NOT NULL, payload TEXT NOT NULL,
  PRIMARY KEY (projection_scope, partition_id, orderid)
 );
+-- FR-DRS-45: which trade-processor replica reads each feed partition. One row per partition: the replica id, that
+-- replica's whole ownership (PROJECTION_FEED_PARTITIONS_OWNED) and its heartbeat. A replica that finds another live
+-- owner (heartbeat younger than PROJECTION_OWNER_TTL_MS) for one of its partitions refuses to start (PARTITION_OWNED).
+CREATE TABLE IF NOT EXISTS projection_partition_owner (
+ partition_id INTEGER PRIMARY KEY, replica_id VARCHAR(128) NOT NULL DEFAULT '', owned VARCHAR(64) NOT NULL DEFAULT '',
+ partition_count INTEGER NOT NULL DEFAULT 0, heartbeat_at DATETIME(3) NOT NULL
+);

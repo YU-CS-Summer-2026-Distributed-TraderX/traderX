@@ -46,23 +46,58 @@ public final class JetStreamFeed {
     return partitionCount <= 1 ? base : base + "." + partition;
   }
 
-  /** Owned partitions from configuration: {@code "all"} or a list such as {@code "0,2"}. */
+  /**
+   * Owned partitions from configuration (FR-DRS-45), ascending: {@code all} (or unset), a list of partitions and
+   * ranges such as {@code 0,2} or {@code 0-3}, or {@code replica:<k>/<N>}: replica k of N owns the contiguous block of
+   * partitions p with {@code p * N / P == k} (P = 8, N = 2: 0-3 and 4-7). A partition named twice, out of range, or a
+   * malformed spec is refused.
+   */
   public static int[] owned(String owned, int partitionCount) {
     int count = Math.max(1, partitionCount);
-    if (owned == null || owned.isBlank() || "all".equalsIgnoreCase(owned.trim())) {
-      int[] all = new int[count];
-      for (int i = 0; i < all.length; i++) { all[i] = i; }
-      return all;
-    }
-    String[] parts = owned.split(",");
-    int[] out = new int[parts.length];
-    for (int i = 0; i < parts.length; i++) {
-      out[i] = Integer.parseInt(parts[i].trim());
-      if (out[i] < 0 || out[i] >= count) {
-        throw new IllegalArgumentException("owned partition " + out[i] + " outside 0.." + (count - 1));
+    String s = owned == null ? "" : owned.trim();
+    java.util.TreeSet<Integer> out = new java.util.TreeSet<>();
+    try {
+      if (s.isEmpty() || s.equalsIgnoreCase("all")) {
+        for (int p = 0; p < count; p++) { out.add(p); }
+      } else if (s.startsWith("replica:")) {
+        String[] kn = s.substring("replica:".length()).split("/");
+        int k = Integer.parseInt(kn[0].trim()), n = Integer.parseInt(kn[1].trim());
+        if (kn.length != 2 || n < 1 || n > count || k < 0 || k >= n) {
+          throw new IllegalArgumentException("replica k/N needs 0 <= k < N <= " + count + " partitions");
+        }
+        for (int p = 0; p < count; p++) { if (p * n / count == k) { out.add(p); } }
+      } else {
+        for (String part : s.split(",")) {
+          String[] ab = part.trim().split("-", -1);
+          int a = Integer.parseInt(ab[0].trim()), b = ab.length == 2 ? Integer.parseInt(ab[1].trim()) : a;
+          if (ab.length > 2 || a > b) { throw new IllegalArgumentException("'" + part.trim() + "' is not a partition or a range a-b"); }
+          for (int p = a; p <= b; p++) {
+            if (p < 0 || p >= count) { throw new IllegalArgumentException("partition " + p + " outside 0.." + (count - 1)); }
+            if (!out.add(p)) { throw new IllegalArgumentException("partition " + p + " named twice"); }
+          }
+        }
       }
+    } catch (NumberFormatException | ArrayIndexOutOfBoundsException x) {
+      throw new IllegalArgumentException("PROJECTION_FEED_PARTITIONS_OWNED='" + s + "': not a partition number (" + x.getMessage() + ")");
+    } catch (IllegalArgumentException x) {
+      throw new IllegalArgumentException("PROJECTION_FEED_PARTITIONS_OWNED='" + s + "' (of " + count + " partitions): " + x.getMessage());
     }
-    return out;
+    return out.stream().mapToInt(Integer::intValue).toArray();
+  }
+
+  /**
+   * A start-up refusal (RETENTION_GAP, STREAM_RESET, PARTITION_OWNED) must stop the process. Measured: after the context
+   * fails, the other beans' NATS connections (non-daemon threads) keep the JVM up as a never-ready zombie. Exit from a
+   * thread once Spring has finished failing (System.exit inside refresh can deadlock). Not a daemon: a refusal before any
+   * other thread exists would otherwise end the JVM with exit 1, not 3.
+   */
+  public static void exitAfterRefusal(String what, String why) {
+    Thread exit = new Thread(() -> {
+      try { Thread.sleep(5000); } catch (InterruptedException ignore) { }
+      log.error("{} refused to start ({}); exiting", what, why);
+      System.exit(3);
+    }, "refusal-exit");
+    exit.start();
   }
 
   /**
