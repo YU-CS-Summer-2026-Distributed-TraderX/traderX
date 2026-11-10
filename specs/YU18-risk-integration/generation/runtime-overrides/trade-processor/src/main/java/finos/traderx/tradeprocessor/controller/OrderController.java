@@ -43,6 +43,21 @@ public class OrderController {
   private finos.traderx.tradeprocessor.service.RunRegistry runRegistry;
   @org.springframework.beans.factory.annotation.Autowired(required = false)
   private List<Subscriber<?>> subscribers;
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private finos.traderx.tradeprocessor.service.PartitionOwnership ownership;
+
+  /**
+   * FR-DRS-45: the in-memory view holds only this replica's partitions, so an account another replica owns is answered
+   * 421 naming its partition and owner, never an empty list that reads as "no such order". With the router
+   * (OrderReadRouter, FR-DRS-46) such a read reaches here only when routing is off or it was already routed once.
+   */
+  private void requireOwned(Integer accountId) {
+    if (ownership == null || accountId == null || ownership.ownsAccount(accountId)) { return; }
+    int p = Math.floorMod(accountId, ownership.partitions());
+    throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(421),
+        "account " + accountId + " is partition " + p + ", read by replica '" + ownership.ownerOf(p) + "'; this replica ("
+            + ownership.replica() + ") owns " + ownership.spec());
+  }
 
   public OrderController(OrderRepository orderRepository) {
     this.orderRepository = orderRepository;
@@ -66,6 +81,7 @@ public class OrderController {
       @RequestParam(name = "status", required = false) String status,
       @RequestParam(name = "clientOrderKey", required = false) String clientOrderKey) {
     OrderFeedHandler memory = memoryOnlyFeed();
+    if (memory != null) { requireOwned(accountId); }
     if (clientOrderKey != null) {
       return ResponseEntity.ok(byClientKey(memory, accountId, clientOrderKey));
     }

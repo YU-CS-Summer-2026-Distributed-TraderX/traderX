@@ -58,8 +58,17 @@
       (FR-DRS-40). `ThreeMemberClusterTest#tradesInFlightAtANatsRestartReachTheStreamExactlyOnce` (order events),
       `ReceiptLanesIT` under both schemes, `OrderBatchProjectionIT#aLegacyUpdateWithAPositionIsWrittenOnBothPathsAndCountsForNoRun`.
       On kind: `scripts/proofs/kind-bridge-nats-restart.sh` (291,180 of 291,180 order events; the control lost 45).
+- [x] trade-processor as N replicas, each owning a disjoint block of the partitions; a partition with a live owner is a
+      start-up refusal (PARTITION_OWNED); health and accounting report the owned partitions and name them; the recon
+      runs on partition 0's owner; a StatefulSet render for N > 1 (FR-DRS-45, RI36). `PartitionOwnershipTest`,
+      `PartitionOwnershipIT`, `test_prepare.SnapshotReadModel`, `scripts/proofs/kind-tp-ownership.sh`.
+- [x] The order view's reads keep their contract with N replicas: a replica forwards a read of an account it does
+      not own to the owner, a routed read is never routed twice, no owner is 503; measured against fan-out-and-merge
+      (FR-DRS-46, ADR-103 §3). The production snapshot profile renders 4 replicas; `rig.sh` drives either shape.
+      `PartitionOwnershipIT`, `test_rig`, `kind-tp-ownership.sh` steps 5-6.
 
 ## Still open
+- The GKE hour at 450K on 4 read-model replicas (RI36); the readmodel-pool must hold 4 × 12 CPU.
 
 - The production render sets `PROJECTION_FEED_MODE=jetstream`, but the next rollout has not deployed it yet.
 - In snapshot mode no consumer replays a rejected trade side from the archive yet. The recon reports it
