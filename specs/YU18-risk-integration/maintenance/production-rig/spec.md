@@ -60,14 +60,18 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - place members on `engine-pool`, gateways on `gateway-pool`, NATS on `nats-pool`, and ClickHouse with history-feed
     on `history-pool` (trade-history-tiers FR-THT-02, 2026-11-07), each with its taint's toleration, and everything
     else on `default-pool`;
-  - run members with 7 CPU / 16Gi, generational ZGC at a 12 GB heap (`-Xms12g -Xmx12g -XX:+AlwaysPreTouch`), and a
-    4 MiB Aeron `so_rcvbuf`;
+  - run members with 15 CPU / 40Gi on c4d-standard-16 (ADR-103, 2026-11-10; was 7 CPU / 16Gi on c4d-standard-8: at
+    16Gi the archive's page cache and the term buffers put the cgroup in reclaim at 50-65 MB/s of log, and a stall past
+    the heartbeat timeout was an election, RI34 §1b), generational ZGC at a 12 GB heap (`-Xms12g -Xmx12g
+    -XX:+AlwaysPreTouch`), and a 4 MiB Aeron `so_rcvbuf`;
   - pin `MAX_ACTIVE_BOOKS` to 1,024, so the book cap (an apply-path decision, ADR-079 §6) cannot move with the heap.
   - `validate()` SHALL refuse a candidate that breaks any of these, including one whose heap cannot hold the pinned
     cap at ~7 MB per book with 50 % headroom.
   - `rig.sh pools` SHALL:
     - give `engine-pool` the bench sysctls (`vm.dirty_*`, `net.core.rmem_*`), and only while it has no nodes;
-    - create `nats-pool` on c3-standard-8, so that it can attach NATS's pd-balanced claim;
+    - create `nats-pool` as three c4d-standard-16 on Hyperdisk (ADR-103, FR-PRG-41; was one c3-standard-8 for a
+      pd-balanced claim), and refuse an existing `nats-pool` of another machine type, naming the ADR;
+    - `engine-pool` (operator-created) SHALL be c4d-standard-16 (ADR-103; was c4d-standard-8);
     - create `gateway-pool` on c4d-standard-8 with the static CPU manager;
     - create `history-pool` on c4d-standard-8 (Hyperdisk Balanced for the store's claim), tainted `traderx-history`;
       `up` brings it to 1 node and waits for `sts/clickhouse` with the support workloads; `down` takes it to 0.
@@ -158,6 +162,24 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - Consequence: a member whose disk is lost or wiped alone cannot rejoin a purged cluster from empty (its election
     replays the leader's log from 0, which the archive refuses; `ArchivePurgeTest` check 6). Recover it from a copy of a
     peer's disk, or take a fresh epoch, which wipes all three together.
+- **FR-PRG-41:** The capture stream's servers SHALL be a NATS cluster of three (ADR-103): a `nats` StatefulSet,
+  `podManagementPolicy: Parallel`, routes over a headless Service (`nats-headless`, not-ready addresses published)
+  naming every server, `cluster { name: traderx }`, each server's `server_name` and `server_tags` its pod's name
+  (substituted at start from the downward API), one server per node (required hostname anti-affinity on
+  `nats-pool`), each server's JetStream on its own `data` claim of a rendered Hyperdisk Balanced class (`nats-store`,
+  600 MiB/s and 6,000 IOPS provisioned), retained when the StatefulSet is scaled or deleted, `max_pending: 256MB` per
+  connection. On the partitioned (snapshot) render trade-processor SHALL carry
+  `PROJECTION_FEED_STREAM_PLACEMENT` naming every server's tag (FR-DRS-44), and each server's `max_file_store` SHALL
+  hold ceil(P/N) of the P partitions' share of `PROJECTION_FEED_STREAM_MAX_BYTES` plus 25%, under its claim; the
+  retention is sized at `READ_MODEL_RATE` = 450,000 orders/s (the 2026-11-10 hour) for the 30-minute outage. `validate()`
+  SHALL refuse fewer than three servers, a route set that is not the StatefulSet, a server not named and tagged by its
+  pod, servers not spread one per node, a `data` volume that is not a retained per-server claim, a claim off a rendered
+  Hyperdisk class, and a partitioned render whose placement does not name every server. `rig.sh pools` SHALL create
+  `nats-pool` as three c4d-standard-16 on Hyperdisk and refuse one of another machine type; `rig.sh up` SHALL expect
+  three NATS pods and record them all (FR-PRG-28), and the fresh epoch's stream listing SHALL ask every server, since a
+  server's `/jsz` reports only the streams it holds. Measured: one server stored 0.4-0.5M msgs/s whatever the stream
+  count and three stored 1.00-1.25M with 0 lost (FR-DRS-34); one volume saturated at 298 MB/s (pd-balanced) and at
+  684-724 MB/s (Hyperdisk, 1,200 MB/s provisioned) under retention churn at 400K orders/s (RI34 §1b).
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
@@ -261,11 +283,13 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   only the last epoch stays replayable from its snapshots and `arc_<label>_*` tables.
 - **FR-PRG-28:** NATS's memory SHALL agree with itself in every profile, and `validate()` SHALL refuse a render where it
   does not. The pod's memory request SHALL equal its limit, and the limit SHALL fit nats-pool's node with headroom
-  (c3-standard-8: 32 GiB, GKE allocatable ~28.3 GiB, budget 26 GiB). `GOMEMLIMIT` SHALL hold the Go heap at or under
-  85% of the limit. `max_memory_store` SHALL be explicit (unset, NATS takes 75% of the host's memory, 23.5 GB, which
-  the pod cannot hold), and it plus the ingest queue (`max_buffered_size`) SHALL fit in half of `GOMEMLIMIT`. Sizing:
-  limit 24Gi, `GOMEMLIMIT=20GiB`, `max_memory_store: 256MB` (every stream and KV bucket is file-backed), the 1GB
-  ingest queue unchanged. A run SHALL NOT look clean after NATS restarted: `rig.sh up` refuses a NATS pod that has
+  (ADR-103: c4d-standard-16, 62 GiB, GKE allocatable ~56 GiB, budget 54 GiB; was c3-standard-8, budget 26 GiB).
+  `GOMEMLIMIT` SHALL hold the Go heap at or under 85% of the limit. `max_memory_store` SHALL be explicit (unset, NATS
+  takes 75% of the host's memory, which the pod cannot hold), and it plus the ingest queue (`max_buffered_size`) SHALL
+  fit in half of `GOMEMLIMIT`. Sizing: limit 48Gi (the rest of the limit over the heap is the file store's page cache,
+  reclaimed before it stalls the writer), `GOMEMLIMIT=20GiB`, `max_memory_store: 256MB` (every stream and KV bucket is
+  file-backed), the 1GB ingest queue unchanged. The "pod" is each server of FR-PRG-41's StatefulSet; "never restarted"
+  holds per server, `rig.sh up` records every server's uid and `down` finds a replaced one by it. A run SHALL NOT look clean after NATS restarted: `rig.sh up` refuses a NATS pod that has
   already restarted and records the one it came up with (ConfigMap `rig-nats`), `rig.sh down` reports a restart, a
   replacement or a missing pod as FAILED (evidence `nats-restarts.txt`, exit 3) and still tears down to zero, and
   `rig.sh status` shows it. While the rig is up, `loadgen.sh start` SHALL refuse a NATS that restarted and
@@ -478,4 +502,11 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 | G1/G2 on a purged log | 40 | `test_rig.Purge` | purge held before any tail read and released after `rig-gate` (tail=PASS); an empty tail INCONCLUSIVE, never ok, and refused without a G4 baseline; a differing hash, applied, trades or positions, an incomplete or error answer, a failed hold, an unreadable container list: each REFUSED with the purge still held; without the purge the replay from 0 still runs. Treating an empty tail as ok fails 1, dropping the hold fails 2 |
 | purge and gate on kind | 40 | `rig/kind-purge.sh` (2026-11-08) | members rendered by `prepare.archive_purge`: all three purge (2 passes, 11 deletes each); restarted from disk, `g12_tail` PASS over a 65,895-order tail with the purge held; idle past two snapshots INCONCLUSIVE. No trades on kind (the proof client's orders rest) |
 | fresh epoch `up` and `prune-archives` | 39 | `test_rig.Retention.test_a_fresh_epoch_up_prunes…`, `…test_prune_archives_on_its_own` | archived → prune → trade-processor restart → provisioned; a refusal leaves archived and the retry prunes first; standalone needs a completed epoch; `--dry-run` deletes nothing |
+| three NATS servers rendered | 41 | `test_prepare.NatsCluster` | StatefulSet of 3 over `nats-headless`, routes = the set, name and tag from the pod, one per node, retained Hyperdisk claim per server, `max_pending` 256MB, on `nats-pool`; no placement on the one-stream render |
+| the partitioned capture placed and each store sized to its share | 41 | `test_prepare.NatsCluster.test_the_partitioned_capture_is_placed…` | `nats-0,nats-1,nats-2`; retention = 450K × 30 min; `max_file_store` = ceil(8/3)/8 of it + 25%, above three partitions' share, below the whole feed, under the claim |
+| broken NATS renders | 41 | `test_prepare.NatsCluster.test_drift_is_refused` | 1 replica, a route to a server that is not there, a fixed `server_name`, no anti-affinity, a claim deleted on scale, a pd-balanced class, a placement missing a server: each refused |
+| members at the ADR-103 shape | 05 | `test_prepare.test_members_run_generational_zgc_with_the_book_cap_pinned` | 15 CPU / 40Gi requests = limits, flags and the pinned cap unchanged |
+| three NATS pods recorded and checked | 28, 41 | `test_rig.Nats.test_three_servers_are_three_pods_each_recorded`, `…test_pools_creates_three_nats_nodes_on_hyperdisk` | `up` records `u1,u2,u3`; two pods REFUSED ("want 3"); a replaced server FAILED at `down`; three intact pass; `pools` creates nats-pool as c4d-standard-16 on Hyperdisk |
+| a partition placed on its server's tag | DRS-44 | `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag` | p mod n; unset or blank places nothing; a stream is placed only when it carries its tag |
+| the cluster bench on the production render; the 520K re-test at 40Gi and 200/100 ms; a failover at rate; the acceptance hour | 05, 41 | rig proof, pending | ADR-103 rollout 2-3 and 5 |
 | live bring-up, down, scale and autoscale | 01–09 | rig proof, pending | see tasks |

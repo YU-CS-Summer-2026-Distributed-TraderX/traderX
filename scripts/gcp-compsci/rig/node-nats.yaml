@@ -1,3 +1,12 @@
 # ADR-096 (FR-PRG-05): nats-pool. NATS alone on its node; the FIX session store's put is on the FIX order path.
+# ADR-103 (FR-PRG-41): one JetStream server per node writing ~100-150 MB/s of file store at 450K orders/s. The engine
+# pool's writeback sysctls, for the same reason: the dirty pages are flushed steadily, not in bursts that stall the
+# writer and, on a 16Gi member, the whole cluster (RI34 §1b).
 kubeletConfig:
   insecureKubeletReadonlyPortEnabled: false
+linuxConfig:
+  sysctl:
+    vm.dirty_background_bytes: '16777216'
+    vm.dirty_bytes: '268435456'
+    vm.dirty_writeback_centisecs: '100'
+    vm.dirty_expire_centisecs: '300'

@@ -442,6 +442,18 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   at ~7 cores. history-feed, which fetches small batches, was cut 27 times in the same window and stayed current.
   Covered by `JetStreamFeedTest#aFetchIsSizedByTheLastBatchsBytes`. The structural follow-up (a read model sharded
   by partition across replicas, and a cheaper per-record parse) is RI36.
+- FR-DRS-44: The per-partition capture streams SHALL be placed on the NATS cluster's servers by tag (ADR-103):
+  `PROJECTION_FEED_STREAM_PLACEMENT` names the servers' tags, comma-separated (the production render:
+  `nats-0,nats-1,nats-2`, each server tagged with its pod's name), and partition `p`'s stream is created with
+  placement tag `p mod n`, so N servers hold ceil(P/N) partitions each and each writes its share of the bytes. A
+  stream found on another server (created before the setting, or moved) SHALL be brought to its tag by a placement
+  update, which NATS performs as a stream move; R1 keeps its messages through it. Unset or blank, the server places the
+  stream (one server; the kind rig; the throughput rig's memory streams). The single-stream layout takes the first
+  tag. The production render's per-server `max_file_store` is sized to that share (FR-PRG-41), so placement is part of
+  the capacity, not a tidy-up: an unplaced render is refused there. Measured: FR-DRS-34 (four streams per server by
+  tag, 1.00-1.25M msgs/s, 0 lost); RI34 §1b (one volume saturated at 400K). Covered by
+  `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`; the live placement is read back in the acceptance run
+  (ADR-103 rollout).
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

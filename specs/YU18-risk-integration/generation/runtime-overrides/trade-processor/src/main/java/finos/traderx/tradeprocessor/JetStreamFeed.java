@@ -9,6 +9,7 @@ import io.nats.client.api.AckPolicy;
 import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
 import io.nats.client.api.CompressionOption;
+import io.nats.client.api.Placement;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import java.time.Duration;
@@ -78,14 +79,33 @@ public final class JetStreamFeed {
   public static void ensureStreams(Connection nc, String base, String layout, int partitionCount, long maxBytes, Duration maxAge)
       throws Exception {
     if (streamFor(base, layout, 0, partitionCount).equals(base)) { ensureStream(nc, base, maxBytes, maxAge); return; }
+    String placement = System.getenv("PROJECTION_FEED_STREAM_PLACEMENT");
     for (int p = 0; p < partitionCount; p++) {
-      ensureStream(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, "/trades." + p, "/orders." + p);
+      ensureStreamOn(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, placementTag(placement, p),
+          "/trades." + p, "/orders." + p);
     }
   }
 
   /** Idempotently create the capture stream over both feeds' subjects (bare and partitioned). */
   public static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge) throws Exception {
     ensureStream(nc, stream, maxBytes, maxAge, "/trades", "/trades.*", "/orders", "/orders.*");
+  }
+
+  /**
+   * FR-DRS-44 (ADR-103): {@code PROJECTION_FEED_STREAM_PLACEMENT} names the NATS servers' tags, comma-separated
+   * (the production render: {@code nats-0,nats-1,nats-2}); partition {@code p}'s stream is placed on tag
+   * {@code p mod n}, so a three-server cluster holds a third of the partitions each, and each server writes a third
+   * of the bytes. Unset: the server places the stream (one server, or the rig). Null for no placement.
+   */
+  static String placementTag(String placement, int partition) {
+    if (placement == null || placement.isBlank()) return null;
+    String[] tags = placement.split(",");
+    return tags[partition % tags.length].trim();
+  }
+
+  /** A stream is where it should be when it carries the tag; no tag asked for is wherever the server put it. */
+  static boolean placed(Placement have, String tag) {
+    return tag == null || (have != null && have.getTags() != null && have.getTags().contains(tag));
   }
 
   /** FR-DRS-42: {@code PROJECTION_FEED_STREAM_STORAGE=memory} keeps the capture stream in the server's RAM (the
@@ -104,6 +124,12 @@ public final class JetStreamFeed {
   }
 
   static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge, String... subjects) throws Exception {
+    ensureStreamOn(nc, stream, maxBytes, maxAge, placementTag(System.getenv("PROJECTION_FEED_STREAM_PLACEMENT"), 0), subjects);
+  }
+
+  /** The stream, placed on the server tagged {@code tag} (null: wherever the server puts it). */
+  static void ensureStreamOn(Connection nc, String stream, long maxBytes, Duration maxAge, String tag, String... subjects)
+      throws Exception {
     var jsm = nc.jetStreamManagement();
     StreamConfiguration existing = null;
     try {
@@ -111,29 +137,37 @@ public final class JetStreamFeed {
     } catch (JetStreamApiException notFound) {
       // fall through and create
     }
+    Placement placement = tag == null ? null : Placement.builder().tags(tag).build();
     if (existing != null) {
       // The retention limits are sized in the manifests (downstream-at-400k.md §7.5); a stream created
       // under older limits is brought to them, so the configured outage window is the one in force.
       // FR-DRS-42: the stream is s2-compressed on disk. A stream created before that is brought to it; compression
       // applies to the blocks written from then on.
+      // FR-DRS-44: a stream on another server is moved to its tag (a placement update is a stream move; R1 keeps
+      // its messages through it).
       if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())
-          || existing.getCompressionOption() != compression(existing.getStorageType())) {
-        jsm.updateStream(StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge)
-            .compressionOption(compression(existing.getStorageType())).build());
-        log.info("JetStream stream {} updated: maxBytes {} -> {}, maxAge {} -> {}, compression {} -> s2", stream,
-            existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge, existing.getCompressionOption());
+          || existing.getCompressionOption() != compression(existing.getStorageType())
+          || !placed(existing.getPlacement(), tag)) {
+        var b = StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge)
+            .compressionOption(compression(existing.getStorageType()));
+        if (placement != null) b.placement(placement);
+        jsm.updateStream(b.build());
+        log.info("JetStream stream {} updated: maxBytes {} -> {}, maxAge {} -> {}, compression {} -> s2, placement {} -> {}",
+            stream, existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge, existing.getCompressionOption(),
+            existing.getPlacement() == null ? null : existing.getPlacement().getTags(), tag);
       }
       return;
     }
-    jsm.addStream(StreamConfiguration.builder()
+    var b = StreamConfiguration.builder()
         .name(stream)
         .subjects(subjects)
         .storageType(storageType())
         .compressionOption(compression(storageType()))
         .maxBytes(maxBytes)
-        .maxAge(maxAge)
-        .build());
-    log.info("JetStream stream {} created (maxBytes={}, maxAge={}, {}, s2)", stream, maxBytes, maxAge, storageType());
+        .maxAge(maxAge);
+    if (placement != null) b.placement(placement);
+    jsm.addStream(b.build());
+    log.info("JetStream stream {} created (maxBytes={}, maxAge={}, {}, s2, placement={})", stream, maxBytes, maxAge, storageType(), tag);
   }
 
   /**
