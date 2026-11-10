@@ -1552,7 +1552,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GMR-08` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; member 2 deleted and polled every ~20 ms from member 0: 397 answers 503 through INIT/CANVASS, ready only at CLOSED with 200. ReadinessDiagnosticsTest |
 | YU18 | `FR-GMR-09` | LIVE |  |  | ready gate / negative DNS TTL: no black-box observable driven |
 | YU18 | `FR-GMR-10` | LIVE |  | yu18-member-disk-survives | PASS MODE=scale and MODE=delete (suspect 15 closed); MODE=reschedule not run (needs a spare engine node) |
-| YU18 | `FR-GMR-11` | CI |  | GatewayDriverIdleTest | added 2026-11-10: unset = lowpark (1 µs max park), backoff = Aeron's default untouched, the members' names parse, an unknown one is refused. Latency effect at 0/300K/saturation needs the L0 harness on GKE (yaakov's yes) |
+| YU18 | `FR-GMR-11` | CI + LIVE(gke) |  | GatewayDriverIdleTest; l0-baseline (claude/latency-l0) | added 2026-11-10: unset = lowpark (1 µs max park), backoff = Aeron's default untouched, the members' names parse, an unknown one is refused. GKE A/B 2026-11-10 (p4k rig, gateways only, L0 harness): idle probe p50/p99 backoff 1,101–1,145/1,777–1,805 µs, lowpark 569–572/716–725, busyspin 489–496/1,119–1,128; 300K 735–740/2,303–2,543 vs lowpark 579–581/1,690–1,815; saturation 430K / 414K / 302K. Gateways have no CFS quota; members throttled 0 periods (gke-member-runtime tasks) |
 | YU18 | `FR-GP01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
