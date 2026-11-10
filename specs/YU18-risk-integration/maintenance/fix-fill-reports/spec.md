@@ -76,6 +76,13 @@ subscription. No engine, wire, snapshot or consensus change.
     the order's own order, batched per view batch. An order the read model never saw booked (evicted, or booked
     before the replica's first message after a restart with no snapshot of it) is not routed; the acceptor reports
     that as a gap as before (§7).
+  - What the stream's retention buys (2026-11-10, the acceptance run: 2 GiB held ~24 s at 100K orders/s of FIX): the
+    window the gateway's ordered consumer may fall behind by and still find its next message, a gateway's drain and
+    in-place restart included; the production render sizes it from the rate (FR-DRS-48, `FILLS_WINDOW_MINUTES` 3). It
+    does not buy a resume: the consumer starts from "new", and a replaced pod has a new name and so a new subject, so
+    the fills of orders booked through the old pod go on to a subject no gateway reads (ADR-084 amendment's
+    consequence), and the client recovers them with H/AF (FR-FFR-11). Whether a replaced gateway or a moved session
+    should hear those fills unsolicited is open (ADR-084, "Open 2026-11-10").
   Covered by `ClusterClientAuthTest` (a named gateway admitted with its name as the principal; the secret alone
   with none; a wrong secret rejected whatever the name; a non-token name refused), `OrderNatsPublisherGatewayTest`
   (the booking event carries `gateway`, other events do not), `FixFillFeedIT.routedModeReadsOnlyItsOwnSubject`,
