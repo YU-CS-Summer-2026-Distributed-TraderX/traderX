@@ -508,8 +508,9 @@ class NatsCluster(unittest.TestCase):
         retention=int(env['PROJECTION_FEED_STREAM_MAX_BYTES'])
         self.assertEqual(retention,module.stream_retention_bytes(450_000,30))
         store=int(re.search(r'max_file_store: (\d+)G',self.conf(self.snap)['nats.conf']).group(1))
-        self.assertEqual(store,module.store_per_server_gb(retention,8,3))
-        self.assertGreater(store*10**9,retention*3//8)              # three of eight partitions on the fullest server
+        fills=int(env['FILLS_STREAM_MAX_BYTES'])
+        self.assertEqual(store,module.store_per_server_gb(retention,8,3,fills))
+        self.assertGreater(store*10**9,retention*3//8+fills)        # three of eight partitions and the fills stream on the fullest server
         self.assertLess(store*10**9,retention)                      # not sized for the whole feed on one server
         claim=next(t for t in self.sts(self.snap)['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
         self.assertGreater(int(claim['spec']['resources']['requests']['storage'][:-2])*2**30,store*10**9)
@@ -1035,5 +1036,55 @@ class HistoryStore(unittest.TestCase):
             m=module.podspec(self.doc(docs,'StatefulSet','clickhouse'))['containers'][0]['volumeMounts']
             m[:]=[x for x in m if x['name']!='tiered']
         with self.assertRaisesRegex(AssertionError,'without the tiered policy'): module.validate(self.broken(untiered,self.tiered))
+
+
+class AcceptanceShape(unittest.TestCase):
+    """The 2026-11-10 acceptance run's render gaps (ADR-103 amendment): the member archive claim holds hours at rate, not
+    the pack's 32Gi (FR-PRG-42); TRADERX_FILLS holds a gateway's drain-and-restart window at rate, not the code's 2 GiB
+    (FR-DRS-48); every load test account has a counterparty, or the EOD extract fails closed after a load (FR-PRG-43)."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'rows','test-candidate','10.93.0.10')
+        cls.rows=list(yaml.safe_load_all((Path(cls.temp.name)/'rows/candidate.yaml').read_text()))
+        module.prepare(Path(cls.temp.name)/'snap','test-candidate','10.93.0.10',read_model='snapshot')
+        cls.snap=list(yaml.safe_load_all((Path(cls.temp.name)/'snap/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def claim(self,docs):
+        sts=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+        return next(t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')['spec']['resources']['requests']
+
+    def test_the_member_archive_holds_three_hours_at_rate(self):
+        self.assertEqual(module.member_archive_gi(),600)                      # 450K × 125 B × 3 h = 566 GiB, up to 50Gi
+        self.assertGreaterEqual(600*2**30,450_000*125*3*3600)
+        for docs in (self.rows,self.snap): self.assertEqual(self.claim(docs)['storage'],'600Gi')
+        docs=copy.deepcopy(self.rows); self.claim(docs)['storage']='32Gi'
+        with self.assertRaisesRegex(AssertionError,'FR-PRG-42'): module.validate(docs)
+
+    def test_the_fills_stream_holds_a_gateway_restart_at_rate(self):
+        tp=module.read_model_workload(self.snap)
+        env={e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
+        self.assertEqual(int(env['FILLS_STREAM_MAX_BYTES']),module.fills_retention_bytes(450_000,3))
+        self.assertEqual(env['FILLS_STREAM_MAX_AGE_MINUTES'],'3')
+        self.assertGreater(int(env['FILLS_STREAM_MAX_BYTES']),450_000*882*(30+60+60))   # drain delay, grace, start
+        tp=module.read_model_workload(self.rows)
+        self.assertNotIn('FILLS_STREAM_MAX_BYTES',{e['name'] for e in module.podspec(tp)['containers'][0]['env']})   # the rows render keeps the code's default
+
+    def test_the_gateway_count_is_fixed_not_autoscaled(self):
+        # FR-PRG-09, ADR-103 amendment option A (yaakov 2026-11-10): no HPA in the candidate, and one is refused.
+        self.assertEqual([d for d in self.rows if d['kind']=='HorizontalPodAutoscaler'],[])
+        docs=copy.deepcopy(self.rows)
+        docs.append(yaml.safe_load((Path(module.__file__).parent/'rig/gateway-hpa.yaml').read_text().replace('MIN_GATEWAYS','2').replace('CPU_TARGET','60')))
+        with self.assertRaisesRegex(AssertionError,'FR-PRG-09'): module.validate(docs)
+
+    def test_every_load_account_has_a_counterparty(self):
+        self.assertEqual(module.unmapped_test_accounts(),[])
+        self.assertEqual(len(module.FIX_TEST_ACCOUNTS+module.BINARY_TEST_ACCOUNTS),15)
+        rows=[l for l in module.COUNTERPARTIES.read_text().splitlines() if not l.startswith('9900008')]
+        csv=Path(self.temp.name)/'short.csv'; csv.write_text('\n'.join(rows)+'\n')
+        self.assertEqual(module.unmapped_test_accounts(csv),['9900008'])
 
 if __name__=='__main__': unittest.main()

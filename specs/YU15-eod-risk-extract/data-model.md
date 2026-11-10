@@ -90,8 +90,10 @@ Write-once: `CREATE_NEW` on a filesystem sink, `x-goog-if-generation-match: 0` o
 
 ## Reference data (inherited from YU14, unchanged)
 
-`counterparties.csv` — `accountId,counterpartyId,nettingSetId,currency` for the seven real
-accounts. `instruments.csv` — the instrument universe. Rendered into the runtime image so the
+`counterparties.csv` — `accountId,counterpartyId,nettingSetId,currency` for the desk accounts, the three
+tape-replay accounts (900001-900003) and, since 2026-11-10, the production rig's fifteen load test accounts
+(9900002-9900008, 9900010-9900017; YU18 FR-PRG-43: the extract aborts on an unmapped holding account, so the EOD
+stage after a load needs them). `instruments.csv` — the instrument universe. Rendered into the runtime image so the
 producer reads them from the classpath directory rather than a mounted volume.
 
 ## Instrument-identifier column widths (changed)

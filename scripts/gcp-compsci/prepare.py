@@ -32,6 +32,16 @@ KDB_Q_URL = 'http://traderx-kdb.us-east1-b.c.project-compsci-484414.internal:505
 # dedicated test account; passwords from Secret fix-test-clients (provision-fix-test-clients.py). The production-rig
 # clean-up task removes them, their accounts and their trades.
 FIX_TEST_ACCOUNTS = [str(9900000 + n) for n in range(2, 9)]
+BINARY_TEST_ACCOUNTS = [str(9900010 + n) for n in range(8)]   # FR-PRG-16: rig/binary-load.mjs, disjoint from the FIX set
+# FR-PRG-43: the EOD extract aborts on a holding account with no counterparty (FR-RXT09), and the image carries this CSV
+# and nothing else (issues/risk-extract-counterparties-configmap-shadows-the-image.md). The 2026-11-10 acceptance run
+# would have failed its EOD stage on every load account; a render whose commit leaves one unmapped is refused.
+COUNTERPARTIES = ROOT / 'specs/YU15-eod-risk-extract/reference-data/counterparties.csv'
+
+
+def unmapped_test_accounts(csv=COUNTERPARTIES):
+    mapped = {line.split(',')[0] for line in csv.read_text().splitlines()[1:] if line.strip()}
+    return [a for a in FIX_TEST_ACCOUNTS + BINARY_TEST_ACCOUNTS if a not in mapped]
 
 
 def load_clients(count=7):
@@ -300,21 +310,43 @@ READ_MODEL_DB_CLASS = 'eod-price-db-fast'
 READ_MODEL_DB_CLAIM = 'eod-price-db-fast'
 READ_MODEL_DB_SIZE = '50Gi'   # FR-PRG-37; a claim only grows, so this never goes back down
 READ_MODEL_DB_SNAPSHOT = 'eod-price-db-pre-fast'   # taken of eod-price-db-data while the database is at 0
+# FR-PRG-42: the member archive grows ~125 B per order (rig.sh member-disk; the 2026-11-10 acceptance: 32Gi was ~4 min
+# at 450K) and the production render runs no purge (FR-PRG-40 is opt-in). Three hours at rate: an acceptance hour, its
+# EOD stage and a margin; a longer epoch at rate grows the claims (`rig.sh member-disk`) or renders the purge.
+ARCHIVE_BYTES_PER_ORDER = 125
+MEMBER_ARCHIVE_HOURS = 3
+# FR-DRS-48: TRADERX_FILLS carries each order's updates once more, on its gateway's subject (1.5 × 588 B, the order part of
+# STREAM_BYTES_PER_ORDER; ~890 B/order measured 2026-11-10), on the first server (FR-DRS-44's first tag). The window is
+# what the gateway's ordered consumer may fall behind by and still find its next message: a gateway's drain (30 s) and
+# restart, not a resume (the consumer starts from "new" under the pod's name; ADR-084 amendment). 2 GiB, the code's
+# default, is the kind figure: ~5 s at 450K.
+FILLS_BYTES_PER_ORDER = 588 * 3 // 2
+FILLS_WINDOW_MINUTES = 3
 
 
 def stream_retention_bytes(rate=READ_MODEL_RATE, minutes=READ_MODEL_OUTAGE_MINUTES):
     return rate * STREAM_BYTES_PER_ORDER * minutes * 60
 
 
+def fills_retention_bytes(rate=READ_MODEL_RATE, minutes=FILLS_WINDOW_MINUTES):
+    return rate * FILLS_BYTES_PER_ORDER * minutes * 60
+
+
+def member_archive_gi(rate=READ_MODEL_RATE, hours=MEMBER_ARCHIVE_HOURS):
+    """FR-PRG-42: the archive claim, rounded up to 50Gi (600Gi at 450K for three hours)."""
+    return -(-rate * ARCHIVE_BYTES_PER_ORDER * hours * 3600 // (50 * 2**30)) * 50
+
+
 def nats_servers(docs):
     return next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')['spec']['replicas']
 
 
-def store_per_server_gb(retention, partitions, servers):
+def store_per_server_gb(retention, partitions, servers, fills=0):
     """FR-PRG-41: one server's file store holds the partitions placed on it (ceil(P/N) of P, FR-DRS-44), plus 25% for
-    the EOD streams and compaction."""
+    the EOD streams and compaction, plus the fills stream (FR-DRS-48; one server holds it, every server is sized for
+    it: one ConfigMap, one claim template)."""
     held = -(-partitions // servers)
-    return -(-(retention * held // partitions) * 5 // 4 // 10**9)
+    return -(-(retention * held // partitions + fills) * 5 // 4 // 10**9)
 
 
 def placement(servers):
@@ -332,8 +364,9 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
     is a copy, not a re-create: the new claim is restored from a VolumeSnapshot of the old one (taken at 0 replicas),
     so the read model the restore gate fingerprints is the one the old disk held."""
     retention = stream_retention_bytes()
+    fills = fills_retention_bytes()
     servers = nats_servers(docs)
-    store_gb = store_per_server_gb(retention, partitions, servers)
+    store_gb = store_per_server_gb(retention, partitions, servers, fills)
     for doc in docs:
         name, kind = doc['metadata']['name'], doc['kind']
         pod = podspec(doc)
@@ -344,7 +377,8 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
             set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
                         'PROJECTION_FEED_STREAM_LAYOUT': 'partition', 'PROJECTION_FEED_STREAM_PLACEMENT': placement(servers),
                         'TRADE_PROJECTION_MODE': 'snapshot', 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000',
-                        'PROJECTION_FEED_STREAM_MAX_BYTES': str(retention), 'PROJECTION_FEED_STREAM_MAX_AGE_HOURS': '2'})
+                        'PROJECTION_FEED_STREAM_MAX_BYTES': str(retention), 'PROJECTION_FEED_STREAM_MAX_AGE_HOURS': '2',
+                        'FILLS_STREAM_MAX_BYTES': str(fills), 'FILLS_STREAM_MAX_AGE_MINUTES': str(FILLS_WINDOW_MINUTES)})
             jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
             kept = [t for t in jvm['value'].split() if not t.startswith(('-Xms', '-Xmx', '-XX:MaxRAMPercentage', '-XX:+Use',
                                                                           '-XX:+ZGenerational', '-XX:+ExitOnOutOfMemoryError'))]
@@ -851,6 +885,11 @@ def validate(docs, declared=None):
             require('data' in claims and all(v['name'] != 'data' for v in pod.get('volumes', []))
                     and retention.get('whenScaled') == 'Retain' and retention.get('whenDeleted') == 'Retain',
                     'member /data is not a retained per-member claim (FR-GMR-01, ADR-087)')
+            size = str(next((t for t in doc['spec'].get('volumeClaimTemplates', []) if t['metadata']['name'] == 'data'), {})
+                       .get('spec', {}).get('resources', {}).get('requests', {}).get('storage', ''))
+            require(size.endswith('Gi') and int(size[:-2]) >= member_archive_gi(),
+                    f'member archive claim {size or "unset"} holds less than {MEMBER_ARCHIVE_HOURS} h at '
+                    f'{READ_MODEL_RATE} orders/s (FR-PRG-42)')
         # ADR-096: each rig tier on its own pool (FR-PRG-05); gateways one per node, guaranteed whole CPUs for the
         # static CPU manager, counted by the rig, draining for longer than the LB deregisters them (FR-PRG-06/07).
         if pod and doc['metadata']['name'] in RIG_POOLS and doc['kind'] in ('Deployment', 'StatefulSet'):
@@ -892,6 +931,10 @@ def validate(docs, declared=None):
                     and int(xmx.group(1)) * 1024 >= int(books) * BOOK_MB_ZGC * 3 // 2,
                     'MAX_ACTIVE_BOOKS not pinned, or the heap cannot hold that many books under ZGC with headroom: '
                     'the derived cap would move with the heap and change BOOK_CAPACITY decisions (FR-PRG-05, ADR-079 §6)')
+    # FR-PRG-09 (ADR-103 amendment, option A, yaakov 2026-11-10): the gateway count is fixed and sized to sessions; an
+    # HPA cannot place a session that connected before it scaled.
+    require(not any(d['kind'] == 'HorizontalPodAutoscaler' and d['spec'].get('scaleTargetRef', {}).get('name') == 'cluster-gateway'
+                    for d in docs), 'an HPA on cluster-gateway: the standing shape is a fixed count sized to sessions (FR-PRG-09)')
     text = json.dumps(docs)
     require('traderx-505400' not in text, 'old project/bucket reference survived')
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
@@ -906,6 +949,8 @@ def validate(docs, declared=None):
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
             fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None,
             history_hot_days=0, purge=False, read_model_replicas=None):
+    unmapped = unmapped_test_accounts()
+    assert not unmapped, f'load test accounts with no counterparty in {COUNTERPARTIES.name}: {unmapped} (FR-PRG-43)'
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     generated = Path(os.environ.get('TRADERX_GENERATED_ROOT') or ROOT / 'generated') / 'code/target-generated'
     base = generated / 'kubernetes-runtime/manifests/base'
@@ -1039,6 +1084,10 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
         if doc['kind'] == 'PersistentVolumeClaim' and doc['metadata']['name'] == 'eod-price-db-data':
             # FR-PRG-37: 10Gi filled on 2026-11-04 after an 18.5M-order load and an epoch archive (InnoDB error 28).
             doc['spec']['resources']['requests']['storage'] = READ_MODEL_DB_SIZE
+        if doc['kind'] == 'StatefulSet' and doc['metadata']['name'] == 'order-matcher-cluster':
+            # FR-PRG-42: the archive claim holds MEMBER_ARCHIVE_HOURS at rate; the pack's 32Gi is the kind/demo figure.
+            claim = next(t for t in doc['spec']['volumeClaimTemplates'] if t['metadata']['name'] == 'data')
+            claim['spec']['resources']['requests']['storage'] = f'{member_archive_gi()}Gi'
     # Structured objects first, exact bucket substitutions second. No substring
     # image/project replacement masquerading as deployment identity validation.
     raw = yaml.safe_dump_all(docs, sort_keys=False)

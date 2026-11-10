@@ -138,16 +138,25 @@ public final class FixGatewayAcceptor {
     };
 
     /**
-     * The feed can beat the direct ack: the leader publishes both from one apply, and the ack
-     * still has to complete a future and wake the FIX thread before the order is tracked. Fill
-     * updates for untracked refs are kept here, and {@link #track} replays any for its ref.
-     * ponytail: the last 4,096 fills on the venue; at ~400k fills/s that is a 10 ms window, which
-     * an ack-to-track gap of microseconds sits well inside. Raise it if a gap ever outlasts it.
+     * FR-FFR-15: the feed beats the answer. The leader publishes the fill and the ack from one apply, but a pipelined
+     * order (FR-BSP-02) is tracked only when its answer runs on the session's report thread, seconds later when the
+     * session is behind (the 2026-11-10 acceptance run: 4–9 s). Fills for untracked refs wait here, by ref in arrival
+     * order, and {@link #track} takes its ref's. One leaves unreported only by age ({@link #EARLY_MAX_AGE_NANOS}, past
+     * the ack deadline) or count ({@link #EARLY_CAPACITY}); on the routed feed every one of those is this gateway's
+     * own order's fill, so it is counted lost and ALERTed. A 4,096-slot ring overwritten in arrival order lost 87% of
+     * the fills at 85K orders/s, uncounted.
      */
-    private static final int EARLY_CAPACITY = 4_096;
-    private final int[] earlyRef = new int[EARLY_CAPACITY];
-    private final byte[][] earlyMsg = new byte[EARLY_CAPACITY][];
-    private int earlyNext;
+    static final int EARLY_CAPACITY = Integer.parseInt(System.getenv().getOrDefault("FIX_EARLY_FILLS", "65536"));
+    static final long EARLY_MAX_AGE_NANOS = 30_000_000_000L;
+    private static final class Early {
+        final long at = System.nanoTime();
+        final List<byte[]> msgs = new java.util.ArrayList<>(1);
+    }
+    private final LinkedHashMap<Integer, Early> early = new LinkedHashMap<>(1024);
+    /** Only this gateway's own orders' fills arrive (FR-FFR-14), so a fill evicted unmatched is a lost report. */
+    boolean ownFillsOnly = "routed".equals(System.getenv("FIX_FILL_FEED"));   // not final: tests set it
+    private final AtomicLong fillsLost = new AtomicLong();
+    private final AtomicLong fillsEvicted = new AtomicLong();
     /** One lock for {@link #tracked}, the early ring and each {@link Tracked}'s counters, so a
      *  feed update and the registration of its order can never miss each other. */
     private final Object feedLock = new Object();
@@ -396,6 +405,11 @@ public final class FixGatewayAcceptor {
     /** ResendRequest messages answered by GapFill because they were past the stored window (ADR-086, FR-GFS-14). */
     long resendGapFills() {
         return sessionStore == null ? 0 : sessionStore.gapFilled();
+    }
+
+    /** FR-GFS-20: the session store's group-commit counters ("" with in-memory sessions). */
+    String storeMetrics() {
+        return sessionStore == null ? "" : sessionStore.commitMetrics();
     }
 
     /** Inbound messages waiting for session dispatchers, all sessions (ADR-092's FR-FGM-02 bound). */
@@ -838,6 +852,8 @@ public final class FixGatewayAcceptor {
             if (result.accepted() && result.kind() != OutputEvent.KIND_ORDER_CANCELED
                     && result.kind() != OutputEvent.KIND_ORDER_FILLED) {
                 track(result.orderRef(), sessionId, clOrdId, ticker, side);
+            } else if (result.accepted()) {
+                discardEarly(result.orderRef());
             }
         }
 
@@ -1452,10 +1468,35 @@ public final class FixGatewayAcceptor {
             if (t != null) {
                 applyUpdate(ref, t, json);
             } else if (indexOf(json, FILL_STATUS, 0) >= 0 || indexOf(json, PARTIAL_STATUS, 0) >= 0) {
-                earlyRef[earlyNext] = ref;
-                earlyMsg[earlyNext] = json;
-                earlyNext = (earlyNext + 1) % EARLY_CAPACITY;
+                early.computeIfAbsent(ref, r -> new Early()).msgs.add(json);
+                expireEarly();
             }
+        }
+    }
+
+    /** Under {@link #feedLock}: drop the oldest early fills past the age or count bound, and count them. */
+    private void expireEarly() {
+        final long now = System.nanoTime();
+        for (final java.util.Iterator<Map.Entry<Integer, Early>> it = early.entrySet().iterator(); it.hasNext(); ) {
+            final Map.Entry<Integer, Early> e = it.next();
+            if (early.size() <= EARLY_CAPACITY && now - e.getValue().at < EARLY_MAX_AGE_NANOS) {
+                return;
+            }
+            it.remove();
+            if (!ownFillsOnly) {
+                fillsEvicted.addAndGet(e.getValue().msgs.size());   // the venue's fills: mostly other gateways' orders
+            } else if (fillsLost.getAndAdd(e.getValue().msgs.size()) == 0) {
+                log.error("ALERT FIX fill for ord-{} not reported: its order was never tracked here within {} s or {}"
+                    + " fills (traderx_fix_fill_reports_total{outcome=\"lost\"} counts every one)", e.getKey(),
+                    EARLY_MAX_AGE_NANOS / 1_000_000_000L, EARLY_CAPACITY);
+            }
+        }
+    }
+
+    /** An order answered terminal (filled or canceled by its own ack) is never tracked: its early fills are its own. */
+    private void discardEarly(final int ref) {
+        synchronized (feedLock) {
+            early.remove(ref);
         }
     }
 
@@ -1468,13 +1509,11 @@ public final class FixGatewayAcceptor {
         }
     }
 
-    /** Under {@link #feedLock}: apply the early ring's fills for {@code ref}, oldest first. */
+    /** Under {@link #feedLock}: apply the early fills for {@code ref}, oldest first. */
     private void replayEarly(final int ref, final Tracked t) {
-        for (int i = 0; i < EARLY_CAPACITY; i++) {
-            final int k = (earlyNext + i) % EARLY_CAPACITY;
-            if (earlyRef[k] == ref && earlyMsg[k] != null) {
-                final byte[] m = earlyMsg[k];
-                earlyMsg[k] = null;
+        final Early e = early.remove(ref);
+        if (e != null) {
+            for (final byte[] m : e.msgs) {
                 applyUpdate(ref, t, m);
             }
         }
@@ -1533,14 +1572,30 @@ public final class FixGatewayAcceptor {
         }
         t.notional += lastQty * lastPx;
         t.cumQty = cum;
-        final Session session = sessionOf(t.session);
-        if (session == null) {
-            log.warn("FIX session gone before fill report for {}", t.clOrdId);
-        } else if (session.send(fillReport(t, ref, qty, cum, lastQty, lastPx))) {   // false: off-lease (ADR-086)
-            fillReports.incrementAndGet();
-        }
+        sendFill(t.session, t.clOrdId, fillReport(t, ref, qty, cum, lastQty, lastPx));
         if (leaves == 0) {
             tracked.remove(ref);
+        }
+    }
+
+    /**
+     * FR-FFR-16: a fill report is built under {@link #feedLock} and sent on its session's report thread, after the
+     * session's earlier reports (an order's New is sent there before the order is tracked). Sent here, under the lock,
+     * one feed thread carried every fill of the gateway through QuickFIX/J and the store one at a time (~4.6K/s) and
+     * held every session's {@link #track} behind it.
+     */
+    private void sendFill(final SessionID sid, final String clOrdId, final ExecutionReport report) {
+        try {
+            pipelines.computeIfAbsent(sid, Pipeline::new).reports.execute(() -> {
+                final Session session = sessionOf(sid);
+                if (session == null) {
+                    log.warn("FIX session gone before fill report for {}", clOrdId);
+                } else if (session.send(report)) {   // false: off-lease (ADR-086)
+                    fillReports.incrementAndGet();
+                }
+            });
+        } catch (final java.util.concurrent.RejectedExecutionException stopping) {
+            log.warn("FIX gateway stopping: fill report for {} not sent", clOrdId);
         }
     }
 
@@ -1575,6 +1630,16 @@ public final class FixGatewayAcceptor {
 
     public long fillGaps() {
         return fillGaps.get();
+    }
+
+    /** FR-FFR-15: fills of this gateway's own orders left unreported (routed feed), and the venue's fills dropped
+     *  unmatched from the early buffer on a venue-wide feed (mostly other gateways' orders). */
+    public long fillsLost() {
+        return fillsLost.get();
+    }
+
+    public long fillsEvicted() {
+        return fillsEvicted.get();
     }
 
     private static final byte[] ID_KEY = "\"id\":\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
