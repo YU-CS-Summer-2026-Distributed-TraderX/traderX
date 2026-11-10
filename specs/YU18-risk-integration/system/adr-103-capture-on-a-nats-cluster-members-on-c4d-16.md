@@ -85,7 +85,9 @@ The CPU count follows the node (15 of 16 for the dedicated driver's agents and t
 `CLUSTER_ELECTION_TIMEOUT_MS=500`, but NFR-AC03 bought sub-second failover detection with 200/100 ms, and the flapping may
 have been the memory alone. The 520K step is re-run at 40Gi with 200/100 ms; they stay if it holds, otherwise the
 smallest setting that holds (500/250 before 1000/500), with the failover time measured at the chosen setting (the e1108
-failover proof at rate). NFR-GMR-01 ("stays 200") stands until that run says otherwise; a change lands as its own
+failover proof at rate). yaakov's condition on a slower setting (via the coordinator, 2026-11-10): "As long as it
+doesn't negatively affect throughput and latency", so the re-test records throughput and the `/latency` segments at
+each setting it tries, side by side, and a setting that costs either is not taken. NFR-GMR-01 ("stays 200") stands until that run says otherwise; a change lands as its own
 amendment with the evidence.
 
 ### 3. The read model: FR-DRS-43 ships; the read model is sharded by partition with a router by `account mod 8`
@@ -108,7 +110,9 @@ The acceptance run is the production render (`prepare.py`, the whole service set
 price-publisher, reference-data, trade-service, accounts, people, the web front ends, observability), FIX on, one hour at
 450K, G3 on every replica, G3h, and the EOD extract run at the end against the resulting positions, with the load spread
 over enough accounts that no account meets a real limit (production's risk limits stay). This shape is the standing
-one, not a campaign shape the rig scales to: about $8–10/h on demand once RI35 sets the gateway count by CPU
+one, not a campaign shape the rig scales to ("Yes, all five" here; yaakov raised a clarifying question on this point
+in the coordinator's chat the same morning, so the standing/scale-up choice is revisited if his answer there differs;
+nothing is applied either way before the acceptance run): about $8–10/h on demand once RI35 sets the gateway count by CPU
 (3 × c4d-standard-16 members ≈ $2.2/h, 3 × c4d-standard-16 NATS ≈ $2.2/h plus three Hyperdisks ≈ $0.35/h, readers,
 gateways, history), against ~$3–4/h before.
 
