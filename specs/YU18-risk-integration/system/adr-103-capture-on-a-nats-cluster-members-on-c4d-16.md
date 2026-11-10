@@ -96,6 +96,9 @@ Decided here, implemented in RI36 (its own session): N trade-processor replicas 
 (`PROJECTION_FEED_PARTITIONS_OWNED`), a partition owned twice refused at start, the in-memory order view's HTTP reads
 routed by `account mod 8` to the owning replica so the API contract is unchanged for every client (over the console
 merging N answers, which also works at N=4 but moves the join into every reader). The SQL projection needs no routing.
+yaakov's condition (via the coordinator, 2026-11-10): "if this help then yes", so RI36's proof shows the router earning
+its place: the same API contract for every client, and its latency and throughput against the fan-out-and-merge
+alternative; if it does not help, the console merges.
 
 ### 4. FIX at rate, after RI35, with per-account fill subjects first
 
@@ -110,9 +113,9 @@ The acceptance run is the production render (`prepare.py`, the whole service set
 price-publisher, reference-data, trade-service, accounts, people, the web front ends, observability), FIX on, one hour at
 450K, G3 on every replica, G3h, and the EOD extract run at the end against the resulting positions, with the load spread
 over enough accounts that no account meets a real limit (production's risk limits stay). This shape is the standing
-one, not a campaign shape the rig scales to ("Yes, all five" here; yaakov raised a clarifying question on this point
-in the coordinator's chat the same morning, so the standing/scale-up choice is revisited if his answer there differs;
-nothing is applied either way before the acceptance run): about $8–10/h on demand once RI35 sets the gateway count by CPU
+one, not a campaign shape the rig scales to (yaakov, via the coordinator, 2026-11-10: "yes, standing capacity"; members
+on c4d-standard-16 at 40Gi and the three NATS servers "all the time"; gateways keep autoscaling from a small floor via
+ADR-096's HPA): about $8–10/h on demand once RI35 sets the gateway count by CPU
 (3 × c4d-standard-16 members ≈ $2.2/h, 3 × c4d-standard-16 NATS ≈ $2.2/h plus three Hyperdisks ≈ $0.35/h, readers,
 gateways, history), against ~$3–4/h before.
 
