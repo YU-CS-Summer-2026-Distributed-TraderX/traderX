@@ -44,6 +44,23 @@ an order unanswered, so the kill now lands inside a phase. Second, the stream wa
 drained, so the script now waits for `queuedByPartition` 0. A 90 s freeze passed everything but the vacuity check
 (63,252 < 65,536), so the freeze is now 120 s. Evidence in the shared notes, `ri37-kind-20261110/`.
 
+## FIX session pipelining on kind (2026-11-10, FR-BSP-02, NFR-BSP-02, FR-GFS-19, RI35, kind traderx-fsp, torn down)
+
+`kind-fix-pipelining.sh`, one arm per fresh rig, `fix-multi.mjs` open loop at 8,000/s for 40 s, FIX sessions in
+JetStream with group commit, egress coalescing on. 4 sessions: 7,985/s, all answered once, against the pre-fix
+gateway's 2,004/s; 16 sessions 7,982/s; 64 sessions 7,973/s and 7,984/s (pre-fix 7,947/s). G3h ok on every arm that
+reached it. One of the two new-gateway 64-session runs lost 187 committed acks at the load's start (the members'
+best-effort egress drop, uncounted; answered ambiguous); the rerun was clean. RI35 has the table and the mechanism.
+
+## Binary session pipelining on kind (2026-11-10, FR-BSP-01, NFR-BSP-01, RI35, kind traderx-bsp, torn down)
+
+`kind-binary-pipelining.sh` on `kind-yu18-rig.py --history --binary --throughput --partitions 1`, one arm per fresh
+rig, 15,000 orders/s offered and 2,048 in flight in total, 70 s. New gateway (`cluster-node:bsp`) against the pre-fix
+one (`:bat`): 4 sessions 14,778 vs 3,349 orders/s; 16 sessions 14,573 vs 13,332; 64 sessions 14,294 vs 14,181. Every
+arm clean (0 ambiguous, 0 unanswered) with G3h ok. `queue` p50 1.2–1.4 µs everywhere; p99 160–359 µs on the new
+gateway and 84–272 µs on the old one at the same rates, so NFR-BSP-01's 50 µs is not met on kind by either (RI35 has
+the table and why). Not on GKE or production.
+
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
 `kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
@@ -1579,6 +1596,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-GMR-08` | LIVE |  | yu18-readiness-diagnostics | 2026-11-06 kind: PASS; member 2 deleted and polled every ~20 ms from member 0: 397 answers 503 through INIT/CANVASS, ready only at CLOSED with 200. ReadinessDiagnosticsTest |
 | YU18 | `FR-GMR-09` | LIVE |  |  | ready gate / negative DNS TTL: no black-box observable driven |
 | YU18 | `FR-GMR-10` | LIVE |  | yu18-member-disk-survives | PASS MODE=scale and MODE=delete (suspect 15 closed); MODE=reschedule not run (needs a spare engine node) |
+| YU18 | `FR-GMR-11` | CI |  | GatewayDriverIdleTest | added 2026-11-10: unset = lowpark (1 µs max park), backoff = Aeron's default untouched, the members' names parse, an unknown one is refused. Latency effect at 0/300K/saturation needs the L0 harness on GKE (yaakov's yes) |
 | YU18 | `FR-GP01` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP02` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
 | YU18 | `FR-GP03` | CI |  |  | tooling/offline/diagnostic pack with its own tests |
@@ -1881,6 +1899,8 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-45` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36): kind traderx-own, P=8, 2 replicas (and 4: see FR-DRS-46's row) (StatefulSet, replica:0/2 and 1/2), 120 s binary load, 168,372 sides: each partition read by one replica, G3 on the union, order events read 336,744 = published 336,744, a third claimant of partition 0 refused (exit 3). PartitionOwnershipTest; PartitionOwnershipIT (three processes, the handover after a clean stop; fails with the guard off); test_prepare (Recreate Deployment, StatefulSet by pod index). Not on GKE/production; no router |
 | YU18 | `FR-DRS-46` | LIVE (kind) | kind-tp-ownership |  | added 2026-11-10 (RI36, ADR-103 §3): kind traderx-own, 4 replicas: every load account's order read in three shapes through every replica and the Service = the owner's body; router 1,450 reads/s p50 8.8 ms vs fan-out-and-merge 635 reads/s p50 21.7 ms (open orders, 16 concurrent), even on 16 MB `status=all` reads. PartitionOwnershipIT router phase (421 on a routed read at a non-owner, 503 with no live owner). Not on GKE/production |
 | YU18 | `FR-DRS-47` | LIVE (gke) | kind-bridge-failover-at-rate, run-ri37 (shared notes ri37-gke-recipe-20261110) |  |  | added 2026-11-10 (RI37): ReceiptLanesIT#aPromotedLaneThatCannotReadTheStreamKeepsWhatItAppliesMeanwhile (NATS frozen across a promotion, 100,000 sides and order events: each once, in order, queueDropped 0, maxBacklog > 65,536; control on the parent at its 65,536 queue: 34,400 of 100,100 sides missing), #aPromotedLaneLappedPastItsRingIsACountedGap. kind traderx-ri37: NATS frozen 121 s across a leader kill, 231,662 of 231,662 sides and 463,324 of 463,324 order events, queueDropped 0; the parent's image lost 30,100 and 125,805 (= its queueDropped). GKE 2026-11-10 run E3 (p4k rig, run D's render, member image ri37-15d49bd7): leader killed at ~465K sides/s, G3h 1..183,194,994 each once, queueDropped 0 and gaps 0 on every member, one election, promoted lanes caught up in 201–221 ms holding ≤ 17,443 (the stall of run D did not recur, so E3 is not itself discriminating; kind and ReceiptLanesIT are). Disposable rig, torn down |
+| YU18 | `FR-BSP-01` | LIVE (kind) | kind-binary-pipelining |  | added 2026-11-10 (RI35): BinaryGatewayAcceptorTest (acks in completion order, every clOrdId once, arrival order at the seam, the bound reached and never exceeded, half-close answered in full with an ambiguous answer kept ambiguous, a closed connection leaks nothing), PipelineTaskDeadlineTest (the async answer completes on the caller's executor; silence is null and retires the unstarted task). kind: 16 sessions 14,573/s = 64 sessions 14,294/s; 4 sessions 14,778/s against the pre-fix gateway's 3,349; G3h ok in every arm. NFR-BSP-01's queue p99 < 50 µs not met on kind (160–359 µs; the pre-fix gateway 84–272 µs at the same rates). Not on GKE/production |
+| YU18 | `FR-BSP-02` | LIVE (kind) | kind-fix-pipelining |  | added 2026-11-10 (RI35): FixGatewayFillReportTest (arrival order at the seam, the 1,024 bound reached and held, answers in decision order each once, an ambiguous one silent, a cancel of an order in flight waits for it), FixStoreGroupCommitIT#theStoredTargetStaysBelowAnUndecidedOrder (FR-GFS-19, both modes). kind: 4 sessions 7,985/s vs pre-fix 2,004/s; 16 7,982/s; 64 7,973/7,984/s; G3h ok where reached. One 64-session run lost 187 committed acks to the members' uncounted egress drop (T-BSP07). Not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |

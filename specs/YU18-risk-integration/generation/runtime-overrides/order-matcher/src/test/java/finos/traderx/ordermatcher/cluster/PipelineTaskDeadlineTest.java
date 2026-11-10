@@ -93,6 +93,27 @@ class PipelineTaskDeadlineTest {
             } finally { f.inflight.release(); f.inflight.release(); }
         }
     }
+    /** FR-BSP-01: the asynchronous submit is queued before it returns, and its answer completes on the caller's executor. */
+    @Test void asyncAckCompletesOnTheGivenExecutor() throws Exception {
+        try (var f = new Fixture(false)) {
+            var completions = new LinkedBlockingQueue<Runnable>();
+            var answer = f.async(completions::add);
+            assertNotNull(f.queue.captured.get(), "queued on the caller's thread"); assertEquals(1, f.inflight.depth());
+            f.drain(); assertEquals(1, f.offers.get()); f.ack(f.p);
+            assertFalse(answer.isDone(), "completion work runs on the given executor, never the owner");
+            completions.take().run(); assertTrue(answer.get().accepted()); assertEquals(2, f.available());
+        }
+    }
+    /** FR-BSP-01: no answer within the synchronous budget is null (ambiguous), and a task the owner never started is
+     *  retired with its slot, exactly as a timed-out synchronous waiter retires it. */
+    @Test void asyncSilenceIsNullAndRetiresTheUnstartedTask() throws Exception {
+        try (var f = new Fixture(false)) {
+            var answer = f.async(Runnable::run);
+            assertNull(answer.get(15, TimeUnit.SECONDS)); assertEquals(0, f.queue.size());
+            f.queue.captured.get().run(); assertEquals(0, f.offers.get(), "a retired task never offers");
+            assertEquals(2, f.available()); assertEquals(0, f.inflight.depth());
+        }
+    }
     private static final class Capture extends LinkedBlockingQueue<FutureTask<?>> {
         final CountDownLatch added=new CountDownLatch(1), release=new CountDownLatch(1);
         final AtomicReference<FutureTask<?>> captured=new AtomicReference<>(); final boolean pause; boolean fail;
@@ -133,6 +154,10 @@ class PipelineTaskDeadlineTest {
             catch(NoSuchMethodException old){submit=ClusterGatewayMain.class.getDeclaredMethod("submitPipelined0",ClusterGatewayMain.PendingOrder.class);parameter=false;}
             submit.setAccessible(true);final Method method=submit;final boolean explicit=parameter;
             caller=new Thread(()->{if(preInterrupted)Thread.currentThread().interrupt();try{result.set((OrderSubmitter.ExecResult)(explicit?method.invoke(gateway,p,budget):method.invoke(gateway,p)));}catch(InvocationTargetException ex){failure.set(ex.getCause());}catch(Throwable ex){failure.set(ex);}finally{done.countDown();}},"pipeline-waiter-fixture");caller.start();
+        }
+        @SuppressWarnings("unchecked") CompletableFuture<OrderSubmitter.ExecResult> async(Executor completions)throws Exception{
+            Method m=ClusterGatewayMain.class.getDeclaredMethod("submitPipelinedAsync",ClusterGatewayMain.PendingOrder.class,Executor.class);m.setAccessible(true);
+            return (CompletableFuture<OrderSubmitter.ExecResult>)m.invoke(gateway,p,completions);
         }
         void enqueued()throws Exception{assertTrue(queue.added.await(3,TimeUnit.SECONDS));assertNotNull(queue.captured.get());}
         void returned()throws Exception{assertTrue(done.await(15,TimeUnit.SECONDS),"real original budget or explicit test budget expires");caller.join(3000);assertFalse(caller.isAlive());assertNull(failure.get());}

@@ -34,6 +34,7 @@ const TICKER = process.env.TICKER || 'JPM';
 const PRICE = process.env.PRICE || '100.00';
 const QTY = process.env.QTY || '10';
 const PREFIX = process.env.COMPID_PREFIX || 'LOAD';
+const PASSWORD = process.env.FIX_PASSWORD || '';   // Password(554) for a gateway with FIX_SESSION_AUTH
 const START = Number(process.env.COMPID_START || 0);
 const LOGON_TIMEOUT_MS = Number(process.env.LOGON_TIMEOUT_MS || 12000);
 // Spread TCP connects/logons over ~CONNECT_SPREAD_MS so we don't fan 500 simultaneous logons at the
@@ -41,6 +42,7 @@ const LOGON_TIMEOUT_MS = Number(process.env.LOGON_TIMEOUT_MS || 12000);
 const CONNECT_SPREAD_MS = Number(process.env.CONNECT_SPREAD_MS || 5000);
 const WARMUP_MS = Number(process.env.WARMUP_MS || 2000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RUN = Date.now().toString(36);   // ClOrdIDs unique per run: a rerun on the same rig is not a run of duplicates
 
 // Authoritative server-side throughput: each gateway's own accepted counter (client-completed
 // under-counts when egress ERs drop under flood). Read in-cluster over the EXACT load window.
@@ -111,23 +113,27 @@ class Session {
       this.sock = sock;
       sock.setEncoding('ascii');
       sock.setNoDelay(true);
-      sock.on('connect', () => sock.write(this.frame('A', ['98=0', '108=30', '141=Y'])));
+      sock.on('connect', () => sock.write(this.frame('A', ['98=0', '108=30', '141=Y',
+        ...(PASSWORD ? [`554=${PASSWORD}`] : [])])));
       sock.on('data', (chunk) => this.onData(chunk));
       sock.on('error', () => { if (!this.loggedOn) resolve(false); });
       this.logonTimer = setTimeout(() => { if (!this.loggedOn) resolve(false); }, LOGON_TIMEOUT_MS);
     });
   }
 
+  // One slice per chunk, not per message: re-slicing the buffer per message is quadratic, and a pipelined gateway
+  // (FR-BSP-02) answers fast enough that the reader fell behind and the gateway dropped it as a slow consumer.
   onData(chunk) {
-    this.buf += chunk;
+    const buf = this.buf + chunk;
+    let start = 0;
     let i;
-    while ((i = this.buf.indexOf('10=')) >= 0) {
-      const end = this.buf.indexOf(SOH, i);
+    while ((i = buf.indexOf(`${SOH}10=`, start)) >= 0) {
+      const end = buf.indexOf(SOH, i + 4);
       if (end < 0) break;
-      const raw = this.buf.slice(0, end + 1);
-      this.buf = this.buf.slice(end + 1);
-      this.onMsg(raw);
+      this.onMsg(buf.slice(start, end + 1));
+      start = end + 1;
     }
+    this.buf = buf.slice(start);
   }
 
   onMsg(raw) {
@@ -148,18 +154,21 @@ class Session {
     if (type === '8') {                        // ExecutionReport — the committed ack for a D
       const cl = m['11'];
       const intended = this.inflight.get(cl);
-      if (intended !== undefined) {
-        this.inflight.delete(cl);
-        this.completed++;
-        stats.latencies.push(nowMs() - intended);
-        stats.perGwCompleted[this.gw]++;
+      if (intended === undefined) {   // a fill after the answer is expected; any other report is a second answer
+        if (m['150'] !== 'F') stats.unknown++;
+        return;
       }
+      this.inflight.delete(cl);
+      this.completed++;
+      if (m['39'] === '8') stats.rejected++;
+      stats.latencies.push(nowMs() - intended);
+      stats.perGwCompleted[this.gw]++;
     }
   }
 
   // Send one scheduled order whose intended time is `intendedMs`.
   fire(intendedMs) {
-    const cl = `${this.sender}-${this.k}`;
+    const cl = `${this.sender}-${RUN}-${this.k}`;
     this.inflight.set(cl, intendedMs);
     this.offered++;
     this.sock.write(this.frame('D', [
@@ -174,7 +183,7 @@ class Session {
 const hr = process.hrtime.bigint();
 const nowMs = () => Number(process.hrtime.bigint() - hr) / 1e6;
 
-const stats = { latencies: [], perGwCompleted: GATEWAYS.map(() => 0) };
+const stats = { latencies: [], perGwCompleted: GATEWAYS.map(() => 0), rejected: 0, unknown: 0 };
 
 function pct(arr, p) {
   if (!arr.length) return NaN;
@@ -270,6 +279,9 @@ async function main() {
   console.log(`latency (from intended send) p50 ${pct(stats.latencies, 50)?.toFixed(0)}ms  ` +
     `p99 ${pct(stats.latencies, 99)?.toFixed(0)}ms  max ${stats.latencies.reduce((m,x)=>x>m?x:m,0).toFixed(0)}ms`);
   console.log(`(wall incl. drain ${wall.toFixed(1)}s)`);
+  console.log('RESULT ' + JSON.stringify({ sessionsUp: up.length, offered: off, completed: cmp, inFlight: off - cmp,
+    rejected: stats.rejected, unknown: stats.unknown, serverAccepted: srvTot, serverWindowSecs: srvWin,
+    serverRate: srvTot / srvWin, p50ms: pct(stats.latencies, 50), p99ms: pct(stats.latencies, 99) }));
 
   for (const s of up) s.close();
   setTimeout(() => process.exit(0), 300);

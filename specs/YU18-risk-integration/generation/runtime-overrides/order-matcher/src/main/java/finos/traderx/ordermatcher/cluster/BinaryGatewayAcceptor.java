@@ -15,6 +15,11 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteOrder;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -30,9 +35,16 @@ import java.util.concurrent.atomic.LongAdder;
  * in-flight window, FIFO ack correlation, backpressure and failover transparency unchanged. The
  * cluster receives byte-identical {@code InputEventMessage}s whether an order arrived as FIX, REST or
  * binary — so this is a gateway/wire change with zero determinism impact (no member roll, no format
- * bump). Concurrency comes from many connections, each a thread blocking on its own committed ack —
- * the identical shape QuickFIX/J's {@code ThreadedSocketAcceptor} uses, which keeps the FIX-vs-binary
- * comparison a clean single-variable A/B.
+ * bump).
+ *
+ * <p>A connection is pipelined (FR-BSP-01, RI35). Its thread reads, decodes and submits frames without
+ * waiting ({@link OrderSubmitter#submitOrderAsync} and its siblings queue each order for the cluster
+ * before returning, so a connection's orders reach the log in the order they arrived), and its writer
+ * thread writes each ack as that order's committed decision arrives. Acks on one connection may
+ * therefore leave in a different order from their requests; the echoed {@code clOrdId} is the
+ * client's correlation. At most {@link #MAX_IN_FLIGHT} frames per connection are read and not yet
+ * acked; past that the connection thread stops reading, so TCP pushes back on the client. Before
+ * this a session carried one order at a time, and a gateway's rate was sessions ÷ cluster round trip.
  *
  * <p>Wire (all little-endian, incl. the 2-byte length prefix). Frame: {@code [u16 len][payload]};
  * {@code payload[0]} is the message type.
@@ -71,6 +83,14 @@ public final class BinaryGatewayAcceptor {
     // per-connection read buffer (a length prefix past this is a framing error, closed).
     static final int MAX_PAYLOAD = 64;
     private static final int SIDE_SELL_WIRE = InputEvent.SIDE_SELL; // 1
+    /** FR-BSP-01: frames one connection may have read and not yet acked. */
+    static final int MAX_IN_FLIGHT = 4096;
+    // A submit waits at most ACK_TIMEOUT for a window slot plus ACK_TIMEOUT + 2 s for its answer, so a closed
+    // connection's frames are all answered well inside this.
+    private static final long DRAIN_TIMEOUT_MS = 60_000;
+    /** A frame refused before any submit; identity-compared, never sent to the seam. */
+    private static final OrderSubmitter.ExecResult PROTOCOL_ERROR = new OrderSubmitter.ExecResult(false, 0, (byte) 0);
+    private static final Runnable STOP = () -> { };
 
     private final OrderSubmitter submitter;
     private final int port;
@@ -80,6 +100,7 @@ public final class BinaryGatewayAcceptor {
     /** ADR-096 §6: members older than ADR-090 cannot read a sequenced message, so BINARY_SEQUENCED=refuse answers a
      *  flagged NEW with a protocol error before anything is submitted. Unflagged NEWs are unchanged. */
     boolean refuseSequenced = "refuse".equals(System.getenv("BINARY_SEQUENCED"));
+    int maxInFlight = MAX_IN_FLIGHT; // test seam
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
@@ -135,48 +156,144 @@ public final class BinaryGatewayAcceptor {
         }
     }
 
-    /** One connection: read framed commands into a reusable buffer, decode+submit each, write its ack.
-     *  Everything reused per-connection; the decode path allocates nothing (the pipelined submit path
-     *  allocates the same PendingOrder/future/ExecResult the FIX path does — that floor is the point
-     *  of comparison, not a regression). */
+    /** One connection: read each frame into a reusable buffer, decode and submit it without waiting, and leave its
+     *  ack to the connection's writer. The decode path allocates nothing; the submit path allocates the same
+     *  PendingOrder/future/ExecResult the FIX path does, plus the completion's two queue entries. On EOF or a read
+     *  error the frames already read are still answered (a client that half-closes gets every ack it is owed)
+     *  before the socket closes. */
     private void handle(final Socket socket) {
         final byte[] reqBytes = new byte[MAX_PAYLOAD];
-        final byte[] ackBytes = new byte[2 + ACK_PAYLOAD_LEN];
         final byte[] lenBuf = new byte[2];
         final UnsafeBuffer req = new UnsafeBuffer(reqBytes);
-        final UnsafeBuffer ack = new UnsafeBuffer(ackBytes);
+        final long[] clOrdIdOut = new long[1];
         try (Socket s = socket;
              DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(s.getInputStream()));
              OutputStream out = new java.io.BufferedOutputStream(s.getOutputStream())) {
-            while (running) {
-                in.readFully(lenBuf, 0, 2);
-                final int len = (lenBuf[0] & 0xff) | ((lenBuf[1] & 0xff) << 8);
-                if (len < 1 || len > MAX_PAYLOAD) {
-                    log.warn("binary frame length {} out of range; closing", len);
-                    return;
+            final Connection conn = new Connection(out, maxInFlight);
+            final Thread writer = new Thread(conn::writeLoop, "binary-ack");
+            writer.setDaemon(true);
+            writer.start();
+            try {
+                while (running) {
+                    conn.inFlight.acquire(); // full: stop reading, so TCP pushes back on the client
+                    boolean submitted = false;
+                    try {
+                        in.readFully(lenBuf, 0, 2);
+                        final int len = (lenBuf[0] & 0xff) | ((lenBuf[1] & 0xff) << 8);
+                        if (len < 1 || len > MAX_PAYLOAD) {
+                            log.warn("binary frame length {} out of range; closing", len);
+                            break;
+                        }
+                        in.readFully(reqBytes, 0, len);
+                        decodedFrames.increment();
+                        // LATENCY-01 Phase A: one sample decision per frame, reused for this order's segments so
+                        // a sampled order is coherent. t_recv = bytes now in / decode start (gateway clock).
+                        final boolean sample = metrics != null && metrics.sample();
+                        final long tRecv = sample ? System.nanoTime() : 0L;
+                        final CompletableFuture<OrderSubmitter.ExecResult> answer =
+                            submit(req, 0, len, tRecv, clOrdIdOut, conn);
+                        final long clOrdId = clOrdIdOut[0];
+                        answer.whenCompleteAsync((r, failure) -> conn.ack(failure == null ? r : null, clOrdId, tRecv),
+                            conn);
+                        submitted = true;
+                    } finally {
+                        if (!submitted) {
+                            conn.inFlight.release(); // this slot never carried a frame
+                        }
+                    }
                 }
-                in.readFully(reqBytes, 0, len);
-                decodedFrames.increment();
-                // LATENCY-01 Phase A: one sample decision per frame, reused for this order's segments so
-                // a sampled order is coherent. t_recv = bytes now in / decode start (gateway clock).
-                final boolean sample = metrics != null && metrics.sample();
-                final long tRecv = sample ? System.nanoTime() : 0L;
-                final int ackLen = dispatch(req, 0, len, ack, tRecv);
-                // t_egress = dispatch returned = committed ack in hand, before the reply write.
-                final long tEgress = sample ? System.nanoTime() : 0L;
-                out.write(ackBytes, 0, ackLen);
-                out.flush();
-                if (sample) {
-                    final long tReply = System.nanoTime(); // reply encoded + socket write flushed
+            } catch (final EOFException eof) {
+                // clean disconnect (or half-close): answer what was read, below
+            } catch (final IOException e) {
+                log.debug("binary connection closed: {}", e.toString());
+            }
+            if (!conn.inFlight.tryAcquire(conn.bound, DRAIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                log.warn("binary connection closed with {} frames unanswered after {} ms",
+                    conn.bound - conn.inFlight.availablePermits(), DRAIN_TIMEOUT_MS);
+            }
+            conn.execute(STOP);
+            writer.join(DRAIN_TIMEOUT_MS);
+        } catch (final IOException e) {
+            log.debug("binary connection close: {}", e.toString());
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * One connection's writer, and the executor its answers complete on: the gateway's completion work (reject
+     * log, root span, wedge accounting) and then the ack write run here, off both the cluster client's owner thread
+     * and the reading thread. Acks are written as they come and flushed once the queue is empty, so a burst of
+     * answers leaves in one write; a sampled ack is flushed on its own so {@code reply} and {@code total} end at
+     * the flush. After a write fails the writer keeps running the queue (every answer still releases its slot) and
+     * writes nothing more.
+     */
+    private final class Connection implements Executor {
+        final LinkedBlockingQueue<Runnable> queue = new LinkedBlockingQueue<>();
+        final Semaphore inFlight;
+        final int bound;
+        final OutputStream out;
+        final byte[] ackBytes = new byte[2 + ACK_PAYLOAD_LEN];
+        final UnsafeBuffer ackBuf = new UnsafeBuffer(ackBytes);
+        boolean broken; // writer thread only
+
+        Connection(final OutputStream out, final int bound) {
+            this.out = out;
+            this.bound = bound;
+            this.inFlight = new Semaphore(bound);
+        }
+
+        @Override
+        public void execute(final Runnable task) {
+            queue.add(task);
+        }
+
+        void writeLoop() {
+            try {
+                for (Runnable task; (task = queue.take()) != STOP; ) {
+                    task.run();
+                    if (queue.isEmpty() && !broken) {
+                        out.flush();
+                    }
+                }
+            } catch (final IOException e) {
+                broken = true;
+                drainAfterFailure();
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void drainAfterFailure() {
+            try {
+                for (Runnable task; (task = queue.take()) != STOP; ) {
+                    task.run();
+                }
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        /** Writer thread: one frame's ack ({@code r} null = no committed decision: ambiguous), then its slot back. */
+        void ack(final OrderSubmitter.ExecResult r, final long clOrdId, final long tRecv) {
+            try {
+                if (broken) {
+                    return; // client gone: the order's outcome stands in the engine, only the ack is lost
+                }
+                final long tEgress = tRecv != 0 ? System.nanoTime() : 0L; // the answer reached this connection
+                out.write(ackBytes, 0, ackFor(ackBuf, r, clOrdId));
+                if (tRecv != 0) {
+                    out.flush();
+                    final long tReply = System.nanoTime();
                     metrics.recordReply(tReply - tEgress);
                     metrics.recordTotal(tReply - tRecv);
                 }
                 acknowledgedFrames.increment();
+            } catch (final IOException e) {
+                broken = true;
+            } finally {
+                inFlight.release();
             }
-        } catch (final EOFException eof) {
-            // clean disconnect
-        } catch (final IOException e) {
-            log.debug("binary connection closed: {}", e.toString());
         }
     }
 
@@ -189,28 +306,30 @@ public final class BinaryGatewayAcceptor {
     }
 
     /**
-     * Decode one client frame at {@code [offset, offset+len)} and submit it through the seam, writing
+     * Decode one client frame at {@code [offset, offset+len)}, submit it through the seam and wait, writing
      * the response frame (length prefix + payload) into {@code ackOut}; returns the total bytes to
-     * write. Package-private and socket-free so {@code BinaryGatewayAcceptorTest} drives it against a
-     * fake submitter. Zero-alloc: fields read via flyweight getters, no String, no boxing.
+     * write. Package-private and socket-free so {@code BinaryGatewayAcceptorTest} drives the decode against a
+     * fake submitter.
      */
     int dispatch(final DirectBuffer in, final int offset, final int len, final MutableDirectBuffer ackOut) {
-        return dispatch(in, offset, len, ackOut, 0L);
+        final long[] clOrdId = new long[1];
+        return ackFor(ackOut, submit(in, offset, len, 0L, clOrdId, Runnable::run).join(), clOrdId[0]);
     }
 
-    /** As {@link #dispatch(DirectBuffer, int, int, MutableDirectBuffer)}, but {@code tRecvNanos != 0}
-     *  means this frame is sampled: record the decode segment (t_recv &rarr; just-before-submit) on the
-     *  gateway clock. The submit call itself carries no timestamp — the owner-thread and reply segments
-     *  are timed on their own side (see {@link GatewayLatencyDecomposition}). */
-    int dispatch(final DirectBuffer in, final int offset, final int len, final MutableDirectBuffer ackOut,
-                 final long tRecvNanos) {
+    /** Decode one frame and submit it without waiting; {@code clOrdIdOut[0]} gets the clOrdId its ack echoes.
+     *  {@code tRecvNanos != 0} means this frame is sampled: record the decode segment (t_recv &rarr;
+     *  just-before-submit) on the gateway clock; the owner-thread and reply segments are timed on their own side
+     *  (see {@link GatewayLatencyDecomposition}). Zero-alloc decode: flyweight getters, no String, no boxing. */
+    CompletableFuture<OrderSubmitter.ExecResult> submit(final DirectBuffer in, final int offset, final int len,
+                                                        final long tRecvNanos, final long[] clOrdIdOut,
+                                                        final Executor completions) {
         final int msgType = in.getByte(offset) & 0xff;
         final long clOrdId;
-        final OrderSubmitter.ExecResult r;
+        clOrdIdOut[0] = 0L;
         switch (msgType) {
             case MSG_NEW: {
                 if (len < 32) {
-                    return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, 0L);
+                    return CompletableFuture.completedFuture(PROTOCOL_ERROR);
                 }
                 final char side = (in.getByte(offset + 1) == SIDE_SELL_WIRE) ? 'S' : 'B';
                 final int account = in.getInt(offset + 4, LE);
@@ -218,50 +337,56 @@ public final class BinaryGatewayAcceptor {
                 final int qty = in.getInt(offset + 12, LE);
                 final long limitPx = in.getLong(offset + 16, LE);
                 clOrdId = in.getLong(offset + 24, LE);
+                clOrdIdOut[0] = clOrdId;
                 final boolean sequenced = (in.getByte(offset + 2) & NEW_FLAG_SEQUENCED) != 0;
                 if (sequenced && refuseSequenced) {
-                    return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, clOrdId);
+                    return CompletableFuture.completedFuture(PROTOCOL_ERROR);
                 }
                 if (sequenced && (clOrdId & 0xffffffffL) == 0L) {
-                    return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, clOrdId); // seq starts at 1
+                    return CompletableFuture.completedFuture(PROTOCOL_ERROR); // seq starts at 1
                 }
                 if (tRecvNanos != 0) {
                     metrics.recordDecode(System.nanoTime() - tRecvNanos);
                 }
-                r = sequenced
-                    ? submitter.submitSequencedOrder(clOrdId, account, security, side, qty, limitPx,
-                        clOrdId >>> 32, clOrdId & 0xffffffffL)
-                    : submitter.submitOrder(clOrdId, account, security, side, qty, limitPx);
-                break;
+                return sequenced
+                    ? submitter.submitSequencedOrderAsync(clOrdId, account, security, side, qty, limitPx,
+                        clOrdId >>> 32, clOrdId & 0xffffffffL, completions)
+                    : submitter.submitOrderAsync(clOrdId, account, security, side, qty, limitPx, completions);
             }
             case MSG_CANCEL: {
                 if (len < 16) {
-                    return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, 0L);
+                    return CompletableFuture.completedFuture(PROTOCOL_ERROR);
                 }
                 final int orderRef = in.getInt(offset + 4, LE);
-                clOrdId = in.getLong(offset + 8, LE);
+                clOrdIdOut[0] = in.getLong(offset + 8, LE);
                 if (tRecvNanos != 0) {
                     metrics.recordDecode(System.nanoTime() - tRecvNanos);
                 }
-                r = submitter.submitCancel(orderRef);
-                break;
+                return submitter.submitCancelAsync(orderRef, completions);
             }
             case MSG_REPLACE: {
                 if (len < 32) {
-                    return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, 0L);
+                    return CompletableFuture.completedFuture(PROTOCOL_ERROR);
                 }
                 final int orderRef = in.getInt(offset + 4, LE);
                 final int qty = in.getInt(offset + 8, LE);
                 final long limitPx = in.getLong(offset + 16, LE);
-                clOrdId = in.getLong(offset + 24, LE);
+                final long replaceClOrdId = in.getLong(offset + 24, LE);
+                clOrdIdOut[0] = replaceClOrdId;
                 if (tRecvNanos != 0) {
                     metrics.recordDecode(System.nanoTime() - tRecvNanos);
                 }
-                r = submitter.submitReplace(orderRef, clOrdId, qty, limitPx);
-                break;
+                return submitter.submitReplaceAsync(orderRef, replaceClOrdId, qty, limitPx, completions);
             }
             default:
-                return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, 0L);
+                return CompletableFuture.completedFuture(PROTOCOL_ERROR);
+        }
+    }
+
+    /** Encode the ack for one frame's answer into {@code ackOut}; returns the bytes to write. */
+    private static int ackFor(final MutableDirectBuffer ackOut, final OrderSubmitter.ExecResult r, final long clOrdId) {
+        if (r == PROTOCOL_ERROR) {
+            return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, clOrdId);
         }
         if (r == null) {
             // Post-publish ambiguity: the command may yet commit, so the client must NOT read this as

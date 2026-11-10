@@ -42,7 +42,13 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.List;
 import java.util.Properties;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -100,6 +106,108 @@ class FixGatewayFillReportTest {
             }
             return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
+    }
+
+    /** FR-BSP-02: holds every FIX NEW until the test answers it, in whatever order the test chooses. */
+    private static final class GatedSubmitter implements OrderSubmitter {
+        final List<String> arrived = new CopyOnWriteArrayList<>();
+        final Map<String, CompletableFuture<ExecResult>> held = new ConcurrentHashMap<>();
+        final AtomicInteger cancels = new AtomicInteger();
+
+        @Override
+        public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
+                                      final char side, final int qty, final long limitPxTicks) {
+            throw new AssertionError("FR-BSP-02: a FIX NEW is submitted without waiting");
+        }
+
+        @Override
+        public CompletableFuture<ExecResult> submitOrderAsync(final String clOrdId, final int accountId,
+                                                             final String ticker, final char side, final int qty,
+                                                             final long limitPxTicks, final TypedOrder typed,
+                                                             final Executor completions) {
+            final String raw = clOrdId.substring(clOrdId.indexOf('\001') + 1);
+            final CompletableFuture<ExecResult> f = new CompletableFuture<>();
+            held.put(raw, f);
+            arrived.add(raw);
+            return f;
+        }
+
+        @Override
+        public ExecResult submitCancel(final int orderRef) {
+            cancels.incrementAndGet();
+            return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
+        }
+
+        void answer(final String clOrdId, final int ref) {
+            held.get(clOrdId).complete(ref == 0 ? null : new ExecResult(true, ref, OutputEvent.KIND_ORDER_ACCEPTED));
+        }
+
+        boolean awaitArrived(final int n) throws InterruptedException {
+            for (int i = 0; i < 200 && arrived.size() < n; i++) {
+                Thread.sleep(25);
+            }
+            return arrived.size() >= n;
+        }
+    }
+
+    /**
+     * FR-BSP-02: one session carries a window of orders at once. They reach the seam in arrival order, at most
+     * {@link FixGatewayAcceptor#MAX_IN_FLIGHT} undecided (then the session stops being read); each is answered once,
+     * in the order the engine decided them; an ambiguous one (null) gets no report and frees its slot.
+     */
+    @Test
+    void aSessionPipelinesItsOrdersUpToItsBoundAndAnswersInDecisionOrder() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        final int bound = FixGatewayAcceptor.MAX_IN_FLIGHT;
+        final int total = bound + 50;
+        final List<String> sent = new ArrayList<>();
+        for (int i = 0; i < total; i++) {
+            sent.add("p" + i);
+            sendOrder(c, "p" + i, Side.BUY, 1, 50.0);
+        }
+        assertTrue(submitter.awaitArrived(bound), "the window never filled: " + submitter.arrived.size());
+        Thread.sleep(300);
+        assertEquals(bound, submitter.arrived.size(), "a full window stops the session being read");
+        assertEquals(sent.subList(0, bound), submitter.arrived, "orders reach the seam in arrival order");
+        assertEquals(0, c.reports.size(), "nothing is answered before it is decided");
+
+        final List<String> window = new ArrayList<>(sent.subList(0, bound));
+        Collections.reverse(window);
+        for (final String id : window) {
+            submitter.answer(id, "p7".equals(id) ? 0 : Integer.parseInt(id.substring(1)) + 1);   // p7 ambiguous
+        }
+        assertTrue(submitter.awaitArrived(total), "freed slots let the rest in");
+        for (final String id : sent.subList(bound, total)) {
+            submitter.answer(id, Integer.parseInt(id.substring(1)) + 1);
+        }
+        assertTrue(c.awaitCount(r -> exec(r) == ExecType.NEW, total - 1), "reports: " + c.reports.size());
+        Thread.sleep(200);
+        final List<String> answered = c.reports.stream().map(FixGatewayFillReportTest::cl).toList();
+        assertEquals(total - 1, answered.size(), "each decided order answered once, the ambiguous one not at all");
+        final List<String> expected = new ArrayList<>(window);
+        expected.remove("p7");
+        expected.addAll(sent.subList(bound, total));
+        assertEquals(expected, answered, "answered in the order decided");
+    }
+
+    /** FR-BSP-02: a cancel by OrigClOrdID of an order still in flight waits for its answer, then finds it. */
+    @Test
+    void aCancelOfAnOrderInFlightWaitsForItsAnswer() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "w1", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(1));
+        sendCancel(c, "w1-x", "w1");
+        Thread.sleep(300);
+        assertEquals(0, submitter.cancels.get(), "the cancel waits for the order it names");
+        submitter.answer("w1", 41);
+        assertNotNull(c.await(r -> is(r, "w1-x", ExecType.CANCELED)), "the cancel resolved the order once answered");
+        assertEquals(1, submitter.cancels.get());
+        assertEquals(List.of("w1", "w1-x"), c.reports.stream().map(FixGatewayFillReportTest::cl).toList(),
+            "the New before the cancel");
     }
 
     private byte[] feed(final int ref, final byte side, final int qty, final int remaining, final byte status,

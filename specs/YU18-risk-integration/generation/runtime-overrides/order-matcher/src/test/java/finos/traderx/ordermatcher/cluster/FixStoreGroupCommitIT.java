@@ -308,6 +308,48 @@ class FixStoreGroupCommitIT {
         }
     }
 
+    /**
+     * FR-GFS-19: QuickFIX/J advances the inbound number when fromApp returns, before a pipelined order (FR-BSP-02) is
+     * decided. K.seq stores no target past the lowest undecided order, so a crash resumes there and the client
+     * resends it; once it is decided the target catches up without waiting for the session's next message.
+     * Falsifiable: without the hold K.seq stores 4, and order 2 is never resent.
+     */
+    @Test
+    void theStoredTargetStaysBelowAnUndecidedOrder() throws Exception {
+        for (final boolean group : new boolean[] {true, false}) {
+            final SessionID sid = new SessionID("FIX.4.4", "TRADERX", group ? "UNDECIDED-G" : "UNDECIDED-S");
+            try (Connection nc = Nats.connect(url(NATS))) {
+                final FixSessionStore a = start(NATS, "gw-a");
+                try {
+                    field(a, "groupCommit", group);
+                    final MessageStore ma = a.create(sid);
+                    assertTrue(a.acquire(sid));
+                    ma.incrNextTargetMsgSeqNum();             // order 1 decided
+                    a.undecidedFrom(sid, 2);                   // order 2 submitted, undecided
+                    ma.incrNextTargetMsgSeqNum();             // fromApp returned for 2...
+                    ma.incrNextTargetMsgSeqNum();             // ...and for 3
+                    ma.set(1, "8=FIX.4.4\u00019=10\u000135=8\u000134=1\u000110=000\u0001");
+                    ma.incrNextSenderMsgSeqNum();
+                    ma.get(1, 1, new ArrayList<>());          // every commit so far has landed
+                    assertEquals(4, ma.getNextTargetMsgSeqNum(), group + ": QuickFIX/J's own number moves on");
+                    assertEquals("2", storedTarget(nc, sid), group + ": K.seq holds at the undecided order");
+                    a.undecidedFrom(sid, Integer.MAX_VALUE);   // order 2 answered
+                    for (int i = 0; i < 50 && !"4".equals(storedTarget(nc, sid)); i++) {
+                        Thread.sleep(20);
+                    }
+                    assertEquals("4", storedTarget(nc, sid), group + ": decided, the target is stored at once");
+                } finally {
+                    a.close();
+                }
+            }
+        }
+    }
+
+    private static String storedTarget(final Connection nc, final SessionID sid) throws Exception {
+        return nc.keyValue(FixSessionStore.BUCKET).get(FixSessionStore.keyOf(sid) + ".seq").getValueAsString()
+            .split(" ")[1];
+    }
+
     private static Object field(final Object o, final String name) throws Exception {
         final java.lang.reflect.Field f = o.getClass().getDeclaredField(name);
         f.setAccessible(true);
