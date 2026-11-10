@@ -245,7 +245,7 @@ class Rendering(unittest.TestCase):
 
     def test_gateway_reports_fix_fills_from_the_stream(self):
         gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
-        self.assertIn({'name':'FIX_FILL_FEED','value':'jetstream'},module.podspec(gw)['containers'][0]['env'])
+        self.assertIn({'name':'FIX_FILL_FEED','value':'routed'},module.podspec(gw)['containers'][0]['env'])   # FR-FFR-14: its own routed subject, still durable
         for value in ('0','core','auto'):
             docs=copy.deepcopy(self.docs)
             gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
@@ -532,6 +532,33 @@ class NatsCluster(unittest.TestCase):
                                     (self.rows,claim,'retained per-server claim'),(self.rows,disk,'Hyperdisk'),
                                     (self.snap,placement,'placed over every server')):
             with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(docs,change))
+
+
+class RoutedFills(unittest.TestCase):
+    """FR-FFR-14 / FR-DRS-48: the gateway names itself (GATEWAY_ID from its pod) and reads only /fills.<id>; validation
+    refuses a routed feed without the name or without a jetstream read model to route from."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'candidate','test-candidate','10.93.0.10')
+        cls.docs=list(yaml.safe_load_all((Path(cls.temp.name)/'candidate/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def gw(self,docs): return module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway'))['containers'][0]
+
+    def test_the_gateway_names_itself_and_reads_its_own_fills(self):
+        env={e['name']:e for e in self.gw(self.docs)['env']}
+        self.assertEqual(env['FIX_FILL_FEED']['value'],'routed')
+        self.assertEqual(env['GATEWAY_ID']['valueFrom'],{'fieldRef':{'fieldPath':'metadata.name'}})
+
+    def test_a_routed_feed_without_a_name_or_a_router_is_refused(self):
+        docs=copy.deepcopy(self.docs); c=self.gw(docs); c['env']=[e for e in c['env'] if e['name']!='GATEWAY_ID']
+        with self.assertRaisesRegex(AssertionError,'GATEWAY_ID'): module.validate(docs)
+        docs=copy.deepcopy(self.docs); tp=module.read_model_workload(docs)
+        module.set_env(module.podspec(tp)['containers'][0],{'FILLS_ROUTE':'0'})
+        with self.assertRaisesRegex(AssertionError,'fills router'): module.validate(docs)
 
 
 class UiMetadata(unittest.TestCase):

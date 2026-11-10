@@ -83,6 +83,32 @@ MEMBER_MEMORY = '40Gi'
 GATEWAY_DRAIN_DELAY_MS = '30000'
 
 
+def route_fills(c):
+    """FR-FFR-14 (ADR-084 amendment): the gateway names itself to the cluster (GATEWAY_ID = its pod name, carried as the
+    session's principal) and reads only its own fills subject, /fills.<GATEWAY_ID>, which the read model's fills router
+    (FR-DRS-48) feeds from the order events of the orders this gateway submitted. Every gateway reading the whole order
+    feed was 24 x ~400 MB/s at 450K orders/s (prod-450k-plan §5a)."""
+    c['env'] = [e for e in c.get('env', []) if e['name'] not in ('GATEWAY_ID', 'FIX_FILL_FEED')]
+    c['env'] += [{'name': 'GATEWAY_ID', 'valueFrom': {'fieldRef': {'fieldPath': 'metadata.name'}}},
+                 {'name': 'FIX_FILL_FEED', 'value': 'routed'}]
+
+
+def validate_routed_fills(docs, require):
+    """FR-FFR-14: a routed fill feed needs the gateway's name from its pod and a jetstream read model to route from."""
+    gw = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway'), None)
+    if not gw:
+        return
+    env = {e['name']: e for e in podspec(gw)['containers'][0].get('env', [])}
+    if env.get('FIX_FILL_FEED', {}).get('value') != 'routed':
+        return
+    require(env.get('GATEWAY_ID', {}).get('valueFrom', {}).get('fieldRef', {}).get('fieldPath') == 'metadata.name',
+            'FIX_FILL_FEED=routed without GATEWAY_ID from the pod name: the gateway cannot name its fills subject (FR-FFR-14)')
+    tp = read_model_workload(docs)
+    tenv = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])} if tp else {}
+    require(tenv.get('PROJECTION_FEED_MODE') == 'jetstream' and tenv.get('FILLS_ROUTE', 'true') != '0',
+            'FIX_FILL_FEED=routed needs the read model on the jetstream feed with its fills router on (FR-DRS-48)')
+
+
 def secret_env(container, name, secret, key):
     env = container.setdefault('env', [])
     env[:] = [e for e in env if e['name'] != name]
@@ -144,10 +170,9 @@ def configure_private_runtime(docs):
                 c['readinessProbe'] = {'httpGet': {'path': '/v2/projection-feed/accounting', 'port': 18091},
                                        'periodSeconds': 5, 'timeoutSeconds': 10, 'failureThreshold': 3}
             if name == 'cluster-gateway':
-                # FR-FIX05 (ADR-084): FIX fill reports read the same durable stream, so a fill this gateway
-                # misses is re-read from TRADERX_FEED rather than lost.
-                c['env'] = [e for e in c.get('env', []) if e['name'] != 'FIX_FILL_FEED']
-                c['env'].append({'name': 'FIX_FILL_FEED', 'value': 'jetstream'})
+                # FR-FIX05 (ADR-084): FIX fill reports read a durable stream, so a fill this gateway misses is re-read
+                # rather than lost. FR-FFR-14 (ADR-084 amendment): the stream is this gateway's own routed subject.
+                route_fills(c)
                 # ADR-095: a second, TLS-only socket for the external CompID. Keystore and both passwords come from
                 # Secret fix-tls (provision-fix-tls.py). Without the Secret the gateway does not start: no plaintext
                 # fallback. Nothing outside the cluster reaches the port until fix-tls-external is applied.
@@ -777,8 +802,8 @@ def validate(docs, declared=None):
         if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
             env = {e['name']: e.get('value') for c in pod['containers'] for e in c.get('env', [])}
             require(env.get('CONTROL_FEED_SUBSCRIBER') == '1', 'gateway does not subscribe to the control feed (YU04)')
-            require(env.get('FIX_FILL_FEED') == 'jetstream',
-                    'FIX fill reports not on the durable stream: a missed message loses a fill (FR-FIX05, ADR-084)')
+            require(env.get('FIX_FILL_FEED') in ('jetstream', 'routed'),
+                    'FIX fill reports not on a durable stream: a missed message loses a fill (FR-FIX05, ADR-084)')
             # ADR-086: FIX sessions resume on any replica (FR-FIX11), and status requests have a read model
             # (FR-FIX04), so a reconnecting client can recover what it missed.
             if 'FIX_ACCEPTOR_PORT' in env:
@@ -872,6 +897,7 @@ def validate(docs, declared=None):
     require('order-matcher-journal-gcs-hmac' not in text, 'disabled restore credential survived')
     validate_nats_memory(docs, require)
     validate_nats_cluster(docs, require)
+    validate_routed_fills(docs, require)
     validate_read_model(docs, require)
     validate_read_model_replicas(docs, require)
     validate_history_store(docs, require)

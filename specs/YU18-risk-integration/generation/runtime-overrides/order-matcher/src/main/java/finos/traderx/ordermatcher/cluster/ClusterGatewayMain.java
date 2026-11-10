@@ -2791,6 +2791,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * message is gone: the acceptor's per-order check ALERTs when a later fill shows it, and the last
      * fill of an order can be lost unseen. Unset or {@code auto} takes the stream when one captures
      * {@code /orders}, else core with a WARN. {@code 0} turns it off (a throughput rig).
+     * {@code routed} (FR-FFR-14, the production render) reads only this gateway's own subject,
+     * {@code /fills.<GATEWAY_ID>} on the read model's {@code TRADERX_FILLS} stream, where the read model
+     * republishes the events of the orders this gateway submitted (it named itself to the cluster,
+     * {@link ClusterClientAuth}); every other gateway's fills never reach it.
      */
     private static void startFillFeed(final FixGatewayAcceptor fix) {
         final String mode = env("FIX_FILL_FEED", "auto");
@@ -2881,6 +2885,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             new io.nats.client.Options.Builder().server(url).maxReconnects(-1)
                 .errorListener(new QuietUntilSubscribed()).build());
         try {
+            if ("routed".equals(mode)) {
+                return subscribeRouted(nats, url, sink);
+            }
             final java.util.Map<String, java.util.List<String>> captured = new java.util.TreeMap<>();
             if (!"core".equals(mode)) {
                 final io.nats.client.JetStreamManagement jsm = nats.jetStreamManagement();
@@ -2929,6 +2936,34 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             nats.close();
             throw e;
         }
+    }
+
+    /** FR-FFR-14: one ordered consumer on this gateway's own fills subject. The stream is the read model's; until it
+     *  exists this throws, and {@link #retryFillFeed} retries with backoff as for the capture stream. */
+    static io.nats.client.Connection subscribeRouted(final io.nats.client.Connection nats, final String url,
+                                                     final java.util.function.Consumer<byte[]> sink) throws Exception {
+        return subscribeRouted(nats, url, env(ClusterClientAuth.GATEWAY_ID, ""), env("FILLS_STREAM", "TRADERX_FILLS"), sink);
+    }
+
+    static io.nats.client.Connection subscribeRouted(final io.nats.client.Connection nats, final String url, final String id,
+                                                     final String stream, final java.util.function.Consumer<byte[]> sink)
+        throws Exception {
+        if (id == null || id.isBlank()) {
+            throw new IllegalStateException("FIX_FILL_FEED=routed needs " + ClusterClientAuth.GATEWAY_ID
+                + ": the name this gateway connects to the cluster with, and its fills subject");
+        }
+        final String subject = "/fills." + id;
+        nats.jetStreamManagement().getStreamInfo(stream);   // not there yet: retried by retryFillFeed
+        final io.nats.client.Dispatcher d = nats.createDispatcher();
+        // FR-DRS-41's shape on the routed subject too: one message, one or more events, in the order's own order.
+        nats.jetStream().subscribe(subject, d, m -> { for (final byte[] r : ReceiptLanes.records(m.getData())) { sink.accept(r); } }, false,
+            io.nats.client.PushSubscribeOptions.builder().stream(stream).ordered(true)
+                .configuration(io.nats.client.api.ConsumerConfiguration.builder()
+                    .deliverPolicy(io.nats.client.api.DeliverPolicy.New).build())
+                .build());
+        nats.flush(java.time.Duration.ofSeconds(5));
+        System.out.println("FIX fill feed: routed, JetStream ordered consumer on " + subject + " of " + stream + " (" + url + ")");
+        return nats;
     }
 
     private void runControlFeed(final String natsUrl) {

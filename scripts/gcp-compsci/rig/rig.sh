@@ -494,7 +494,17 @@ print("; ".join(bad) or f"OK {got[0]} sides")
 # of trade_seq and trade_seq^2 (UInt64 arithmetic wraps mod 2^64 as the closed form does) and the duplicates, summed and
 # compared with the closed form over the epoch's sides 1..t minus the unprojected ranges. The store is fed from cursor 0
 # (FR-THT-07), so there is no base. A deleted row breaks the count, a duplicated one is counted, a swapped one the sums.
-HISTORY_CHECK_SQL="SELECT part, count(), max(trade_seq), sum(trade_seq), sum(trade_seq * trade_seq), count() - uniqExact(trade_seq) FROM trades GROUP BY part ORDER BY part FORMAT TSV"
+# FR-THT-06 at volume: the one-query form (GROUP BY part over the table) held every partition's uniqExact set at once and
+# exceeded ClickHouse's 21 GiB query memory at 1.4B rows (the 2026-11-09/10 hours were checked by hand). One query per
+# partition keeps the distinct set to one partition's; the rows and the verdict are unchanged.
+HISTORY_PARTS_SQL="SELECT DISTINCT part FROM trades ORDER BY part FORMAT TSV"
+history_check_sql(){ echo "SELECT part, count(), max(trade_seq), sum(trade_seq), sum(trade_seq * trade_seq), count() - uniqExact(trade_seq) FROM trades WHERE part = $1 GROUP BY part FORMAT TSV"; }
+ch_query(){ kc exec -i "$(wl trade-processor)/trade-processor" -- curl -sf -m600 --data-binary @- http://clickhouse:8123/ <<<"$1"; }
+history_rows(){ # one check row per partition present in the store; fails when any query does
+  local parts p r rows=''
+  parts=$(ch_query "$HISTORY_PARTS_SQL") || return 1
+  for p in $parts; do r=$(ch_query "$(history_check_sql "$p")") || return 1; rows+="$r"$'\n'; done
+  printf '%s' "$rows"; }
 history_health(){ kc exec "$(wl trade-processor)/trade-processor" -- curl -sf -m15 http://history-feed:18095/health; }
 # Every lane open and nothing pending: with the gateways at 0 the store then holds all the stream has.
 history_caught_up(){ history_health | jq -e '.ready and (.lanes | length > 0 and all(.pending == 0))' >/dev/null; }
@@ -535,8 +545,7 @@ g3_history(){
   unowned=$(jq -ce '.unowned | objects' <<<"$health") \
     || die "G3h: history-feed reports no unread-subject check (an image before it, or NATS unreadable: $(jq -r '.unownedError // "none"' <<<"$health"))"
   [ "$unowned" = '{}' ] || die "G3h: no history-feed lane reads $unowned on the capture stream: the store misses those messages (FR-THT-02)"
-  rows=$(kc exec -i "$(wl trade-processor)/trade-processor" -- curl -sf -m120 --data-binary @- http://clickhouse:8123/ <<<"$HISTORY_CHECK_SQL") \
-    || die "G3h: the history store could not be read"
+  rows=$(history_rows) || die "G3h: the history store could not be read"
   printf '%s\n' "$rows" > "$EVIDENCE/gate-history.tsv"
   ranges=$(kc get configmap rig-unprojected -o jsonpath='{.data.ranges}' 2>/dev/null || true)
   verdict=$(history_verdict "$t" "$ranges" "$rows")

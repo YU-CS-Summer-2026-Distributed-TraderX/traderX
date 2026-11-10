@@ -71,9 +71,14 @@ kubectl(){
       *"EXISTS TABLE arc_"*) echo "${CH_ARC:-0}";; *"EXISTS TABLE"*) echo "${CH_LIVE:-1}";;
       *"count() FROM arc_"*) echo 81140;; *"count() FROM"*) echo "${CH_ROWS:-0}";; esac;;
     *"history-feed:18095/health"*) echo "$HIST_HEALTH";;
-    *"clickhouse:8123"*) cat >/dev/null; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
+    *"clickhouse:8123"*) sql=$(cat); call "clickhouse-sql $sql"; [ -n "${HIST_FAIL:-}" ] && return 7   # HIST: per-partition check rows;
       t=$(member 0 | cut -d' ' -f3)                                            # unset: sides 1..trades, each once
-      printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}";;
+      rows=$(printf '%b\n' "${HIST:-0\t$t\t$t\t$((t * (t + 1) / 2))\t$((t * (t + 1) * (2 * t + 1) / 6))\t0}")
+      case "$sql" in
+        *"DISTINCT part"*) printf '%s\n' "$rows" | cut -f1;;                   # the partitions present
+        *"WHERE part = "*) k=${sql#*WHERE part = }; k=${k%% *}; printf '%s\n' "$rows" | awk -F'\t' -v k="$k" '$1 == k';;
+        *) printf '%s\n' "$rows";;                                            # the old one-query shape
+      esac;;
     *TRADE_PROJECTION_MODE*) [ -n "${TP_MODE_FAIL:-}" ] && return 1; echo "${TP_MODE:-}";;
     *projection-feed/accounting*) [ -n "${ACCT_FAIL:-}" ] && return 22   # ACCT_FAIL_N: refused (exit 7) the first N reads
       n=$(( $(cat "$EVIDENCE/.acct" 2>/dev/null || echo 0) + 1 )); echo $n > "$EVIDENCE/.acct"
@@ -507,6 +512,18 @@ class Up(unittest.TestCase):
 
     def test_an_unreadable_history_store_is_refused(self):
         self.assertIn('the history store could not be read', self.refused('G3h', HIST=self.HIST, HIST_FAIL='1'))
+
+    def test_the_history_check_is_one_query_per_partition(self):
+        # FR-THT-06 at volume: GROUP BY part over the table holds every partition's uniqExact set at once and exceeded
+        # ClickHouse's 21 GiB at 1.4B rows (2026-11-09/10). The check lists the partitions, then queries each alone.
+        rc, out, calls = run('rig_up', HIST=self.HIST)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('G3h ok: the history store holds trade sides 1..5, each once', out)
+        self.assertIsNotNone(first(calls, r'clickhouse-sql SELECT DISTINCT part FROM trades'), out)
+        for k in (0, 1):
+            self.assertIsNotNone(first(calls, rf'clickhouse-sql SELECT part, count\(\), max\(trade_seq\).*FROM trades WHERE part = {k} GROUP BY part'), out)
+        self.assertIsNone(first(calls, r'clickhouse-sql SELECT part, count\(\).*FROM trades GROUP BY part'), 'the whole-table query')
+        self.assertIsNone(first(calls, r'clickhouse-sql .*uniqExact\(trade_seq\) FROM trades (ORDER|GROUP) BY'), 'uniqExact over the table')
 
     def test_a_read_model_that_moved_is_refused(self):
         self.refused('G3', RM_AFTER='trades=b')

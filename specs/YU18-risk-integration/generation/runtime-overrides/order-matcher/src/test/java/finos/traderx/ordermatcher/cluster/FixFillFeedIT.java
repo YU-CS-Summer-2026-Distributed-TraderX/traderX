@@ -105,6 +105,45 @@ class FixFillFeedIT {
         }
     }
 
+    /** FR-FFR-14: routed mode reads one subject, the gateway's own, in the batched record form; nothing of another
+     *  gateway's; refused without a name; retried (thrown) while the fills stream does not exist. */
+    @Test
+    void routedModeReadsOnlyItsOwnSubject() throws Exception {
+        final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+        try (Connection admin = Nats.connect(url)) {
+            final JetStreamManagement jsm = admin.jetStreamManagement();
+            for (final String name : jsm.getStreamNames()) {
+                jsm.deleteStream(name);
+            }
+            final List<Integer> got = new CopyOnWriteArrayList<>();
+            assertThrows(IllegalStateException.class,
+                () -> ClusterGatewayMain.subscribeRouted(admin, url, "", "TRADERX_FILLS", b -> { }), "no name");
+            assertThrows(Exception.class,
+                () -> ClusterGatewayMain.subscribeRouted(admin, url, "gw-a", "TRADERX_FILLS", b -> { }), "no stream yet");
+            jsm.addStream(StreamConfiguration.builder().name("TRADERX_FILLS").storageType(StorageType.File)
+                .subjects("/fills.>").build());
+            try (Connection mine = ClusterGatewayMain.subscribeRouted(Nats.connect(url), url, "gw-a", "TRADERX_FILLS",
+                     b -> got.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                final byte[] batch = concat(update(1, 10, (byte) 0, 0), update(1, 6, (byte) 1, 4));
+                admin.jetStream().publish("/fills.gw-a", batch);                  // one message, two events
+                admin.jetStream().publish("/fills.gw-b", update(2, 10, (byte) 0, 0));   // another gateway's order
+                admin.jetStream().publish("/fills.gw-a", update(1, 0, (byte) 2, 6));
+                assertTrue(await(() -> got.size() >= 3, Duration.ofSeconds(10)), "the routed subject was not read: " + got);
+                Thread.sleep(300);
+                assertEquals(List.of(110, 106, 100), got, "its own order's events, in order, once; gw-b's never");
+                assertTrue(mine.getStatus() == Connection.Status.CONNECTED);
+            }
+        }
+    }
+
+    private static byte[] concat(final byte[] a, final byte[] b) {
+        final byte[] out = new byte[a.length + 1 + b.length];
+        System.arraycopy(a, 0, out, 0, a.length);
+        out[a.length] = '\n';
+        System.arraycopy(b, 0, out, a.length + 1, b.length);
+        return out;
+    }
+
     /** ADR-097: with one capture stream per partition, every partition's fills reach the gateway, in order, once. */
     @Test
     void perPartitionStreamsAreEachReadThroughTheirOwnOrderedConsumer() throws Exception {

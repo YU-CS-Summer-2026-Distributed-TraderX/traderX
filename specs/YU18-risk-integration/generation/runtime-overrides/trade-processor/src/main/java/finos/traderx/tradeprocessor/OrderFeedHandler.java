@@ -84,6 +84,12 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   // FR-DRS-30: > 0 = the memory-only view snapshots its open orders and per-partition cursor to SQL this often and a
   // restart resumes from them, exact after any outage the stream retains; 0 = rebuild from the replay window.
   @Value("${traderx.order-view.snapshot-ms:0}") long snapshotMillis = 0;
+  // FR-DRS-48 (FR-FFR-14): route each update of an order whose booking event named its gateway to /fills.<gateway>.
+  @Value("${traderx.fills.route:true}") boolean fillsRoute = true;
+  @Value("${traderx.fills.stream:TRADERX_FILLS}") String fillsStream = "TRADERX_FILLS";
+  @Value("${traderx.fills.stream-max-bytes:2147483648}") long fillsMaxBytes = 2L << 30;
+  @Value("${traderx.fills.stream-max-age-minutes:10}") long fillsMaxAgeMinutes = 10;
+  private volatile FillsRouter fills;
 
   private volatile OrderView view = new OrderView(50_000);
 
@@ -174,6 +180,10 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
    */
   private void startSnapshottedView() throws Exception {
     viewScope = runRegistry == null ? finos.traderx.tradeprocessor.service.RunRegistry.UNKNOWN : runRegistry.activeScope();
+    if (fillsRoute) {
+      fills = new FillsRouter(connection(), fillsStream, fillsMaxBytes, Duration.ofMinutes(fillsMaxAgeMinutes));
+      log.info("fills router: orders with a gateway are republished to {}<gateway> on {}", FillsRouter.SUBJECT_PREFIX, fillsStream);
+    }
     List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
     for (int p : owned()) {
       final int partition = p;
@@ -199,13 +209,17 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
 
   void onViewBatch(int partition, List<Message> msgs) {
     ViewPartition part = viewParts.get(partition);
+    FillsRouter.Batch routed = fills == null ? null : new FillsRouter.Batch();
     for (Message m : msgs) {
       for (byte[] record : records(m.getData())) {          // FR-DRS-41: one message, one or more events
         try {
           OrderUpdate u = decode(record);
           if (u != null && u.getId() != null && u.getAccountId() != null) {
             view.apply(u);
-            part.touched(u.getId(), u.getAccountId(), view.get(u.getAccountId(), u.getId()));
+            OrderUpdate now = view.get(u.getAccountId(), u.getId());
+            part.touched(u.getId(), u.getAccountId(), now);
+            // FR-DRS-48: the record as the capture carries it, to the gateway the booking event named
+            if (routed != null && now != null && now.getGateway() != null) { routed.add(now.getGateway(), record); }
           }
         } catch (Exception x) {
           log.error("undecodable /orders message skipped: {}", x.toString());
@@ -213,8 +227,12 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
       }
       part.streamSeq = m.metaData().streamSequence();
     }
+    if (routed != null && !routed.isEmpty()) { fills.route(routed); }
     snapshotIfDue(partition, part);
   }
+
+  /** FR-DRS-48: the fills router's counters, or null when it is off. */
+  public Map<String, Object> fillsStats() { return fills == null ? null : fills.stats(); }
 
   /** Caught up with nothing pending up to the stream head: the cursor may move there (TradeView.idle's rule). */
   void onViewIdle(int partition, long head) {

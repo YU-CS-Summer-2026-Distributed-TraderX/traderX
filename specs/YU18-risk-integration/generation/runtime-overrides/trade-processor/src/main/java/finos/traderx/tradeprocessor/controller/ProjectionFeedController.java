@@ -170,6 +170,7 @@ public final class ProjectionFeedController {
           m.put("viewSnapshotFailures", o.viewSnapshotFailureCount());
           m.put("committed", o.viewCommitted());
         }
+        if (o.fillsStats() != null) { m.put("fills", o.fillsStats()); }   // FR-DRS-48
         out.put("orders", m);
       }
     }
