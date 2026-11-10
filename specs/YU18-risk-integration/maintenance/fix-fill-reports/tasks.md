@@ -8,3 +8,6 @@
 - [x] Bounded, expiring tracked set (FR-FFR-10); restart contract with ADR-086 (FR-FFR-11).
 - [x] `FixGatewayFillReportTest`, `FixFillFeedIT` and the A/Bs; live on `traderx-fixf` including a mid-cross drop.
 - [ ] Ship in the next `traderx` roll and re-run `yu18-fix-session` step 4 there.
+- [x] FR-FFR-15/16 (2026-11-10, after the 450K acceptance run's 13.5%): early fills by ref, bounded, counted lost;
+      fill reports sent on the session's report thread. Unit tests fail on the pre-fix acceptor; bench in the spec.
+- [ ] Re-run the acceptance stage 1 with `traderx_fix_fill_reports_total{lost}` and FR-GFS-20's commit metrics read.

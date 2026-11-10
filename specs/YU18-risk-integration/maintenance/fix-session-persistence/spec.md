@@ -96,6 +96,12 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   gateway died, or the client reconnected first) resumes at the lowest of them: the client resends from there, the
   engine answers a committed order as a duplicate (§4 of ADR-086), and a later message that was already answered is
   answered again, as ADR-099 already accepts for a crash before a batch.
+- FR-GFS-20: The gateway's `/metrics` SHALL report its session store's group commits (ADR-099):
+  `traderx_fix_store_commits_total`, `traderx_fix_store_commit_bodies_total`, `traderx_fix_store_commit_seconds_total`
+  and `traderx_fix_store_commit_max_seconds` (the longest since the previous scrape). A session's reports leave only
+  once committed and at most `FIX_STORE_MAX_UNCOMMITTED` wait, so a store that caps sessions shows as a long commit:
+  the 450K acceptance run capped every FIX session near 140 answers/s with the gateways, members and NATS disks idle,
+  and nothing measured the store. `FixGatewayThroughputIT` prints them.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
