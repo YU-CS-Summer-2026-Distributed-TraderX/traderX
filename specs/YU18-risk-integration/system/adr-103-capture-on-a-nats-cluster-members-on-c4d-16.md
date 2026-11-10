@@ -98,7 +98,13 @@ routed by `account mod 8` to the owning replica so the API contract is unchanged
 merging N answers, which also works at N=4 but moves the join into every reader). The SQL projection needs no routing.
 yaakov's condition (via the coordinator, 2026-11-10): "if this help then yes", so RI36's proof shows the router earning
 its place: the same API contract for every client, and its latency and throughput against the fan-out-and-merge
-alternative; if it does not help, the console merges.
+alternative; if it does not help, the console merges. **Measured by RI36 on kind 2026-11-10 (commit `2c05b4fd` on
+`tp-partition-ownership`, FR-DRS-45 ownership, FR-DRS-46 router):** four replicas, every partition read by exactly one,
+G3 on the union; the router (inside trade-processor: an unowned account's `/accounts/{id}/orders` is forwarded to the
+live owner, never twice, 503 with no owner) against fan-out-and-merge against the owner directly, open-orders reads at
+16 concurrent: 1,450 / 635 / 1,410 reads/s, p50 8.8 / 21.7 / 10.1 ms; 16 MB `status=all` reads even. The router is
+kept. The snapshot render now carries 4 trade-processor replicas at 12 CPU / 24Gi each, so `readmodel-pool` must hold
+4 × 12 CPU (four c4d-standard-16, or two c4d-standard-32); that pool change lands with the acceptance run.
 
 ### 4. FIX at rate, after RI35, with per-account fill subjects first
 
