@@ -90,7 +90,7 @@ final class FeedLane implements Runnable {
     checkIncarnation(c);
     open(c);
     ready = true;
-    Rows b = new Rows(table.equals("trades"), batchRows);
+    Rows b = new Rows(table.equals("trades"), batchRows + Rows.MAX_RECORDS);   // a whole message always fits past the flush point
     Rows.Parser parser = new Rows.Parser();
     long expectDelivery = 1;           // a fresh consumer numbers its deliveries from 1
     long batchStart = 0;
@@ -106,14 +106,18 @@ final class FeedLane implements Runnable {
         expectDelivery++;
         long seq = md.streamSequence();
         if (seq <= cursor.get()) continue;                  // cannot happen on a consumer opened at cursor + 1
-        parser.parse(m.getData(), b, seq);
-        if (b.n > 1 && b.ts[b.n - 1] / DAY_MS != b.ts[0] / DAY_MS) {
-          // One INSERT is atomic only within one date partition: write the earlier day first.
-          b.n--;
+        if (b.n >= batchRows) { flush(b, lastInBatch); lastInBatch = null; }   // FR-DRS-41: a fetch of batched messages
+        int n0 = b.n, k = parser.parse(m.getData(), b, seq);
+        if (n0 > 0 && b.ts[n0] / DAY_MS != b.ts[0] / DAY_MS) {
+          // One INSERT is atomic only within one date partition: write the earlier day first. A message is written whole,
+          // so its rows are in the store or not (the cursor is a stream sequence); one whose own records straddle
+          // midnight UTC goes into one INSERT across two partitions, which ClickHouse does not make atomic.
+          // ponytail: a bridge drain spans microseconds, so that message is about one in 1e9 per lane per day.
+          b.n = n0;
           flush(b, lastInBatch);
           parser.parse(m.getData(), b, seq);
         }
-        if (b.n == 1) batchStart = System.nanoTime();
+        if (b.n == k) batchStart = System.nanoTime();
         lastInBatch = m;
       }
       if (b.n >= batchRows || (b.n > 0 && System.nanoTime() - batchStart >= flushMs * 1_000_000L)) {

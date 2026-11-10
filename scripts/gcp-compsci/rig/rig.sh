@@ -57,9 +57,11 @@ DRY=0
 SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke reads back
 
 # pool -> machine type, nodes when up, taint key (empty: existing pool, never created here)
-pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-8;;
-  nats-pool) echo c3-standard-8;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
-pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo 1;;
+# ADR-103 (FR-PRG-05, FR-PRG-41): members and NATS on c4d-standard-16, three NATS servers (one per node).
+pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-16;;
+  nats-pool) echo c4d-standard-16;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
+NATS_SERVERS=${NATS_SERVERS:-3}   # the nats StatefulSet's replicas: one server per nats-pool node
+pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo "$NATS_SERVERS";;
   gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
 # history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).
 # FR-THT-10: the partitioned (full-rate) render sizes them at 6 + 8 CPU: HISTORY_MACHINE=c4d-standard-16 creates the pool.
@@ -152,13 +154,14 @@ rig_pools(){
   local common=(--cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 0 --enable-autorepair
                 --service-account "$sa" --scopes "$scopes")
   if [ "$DRY" = 0 ] && pool_exists nats-pool; then
-    [ "$(gc container node-pools describe nats-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.machineType)')" = c3-standard-8 ] \
-      || die "nats-pool exists with another machine type"
+    [ "$(gc container node-pools describe nats-pool --cluster "$CLUSTER" --zone "$ZONE" --format='value(config.machineType)')" = "$(pool_machine nats-pool)" ] \
+      || die "nats-pool exists with another machine type (ADR-103 wants $(pool_machine nats-pool)): delete it at 0 nodes and rerun"
     note "nats-pool present"
   else
-    # c3, not c4d: NATS keeps JetStream on a pd-balanced claim (nats-data), and C4D attaches only Hyperdisk.
-    do_ gcloud container node-pools create nats-pool "${common[@]}" --machine-type c3-standard-8 \
-      --disk-type pd-balanced --disk-size 100 --node-taints traderx-nats=true:NoSchedule --node-labels traderx-role=nats \
+    # ADR-103 (FR-PRG-41): three c4d-standard-16, one NATS server each, each server's JetStream on its own Hyperdisk
+    # Balanced claim (nats-store); the c3/pd-balanced single server was the capture's wall.
+    do_ gcloud container node-pools create nats-pool "${common[@]}" --machine-type "$(pool_machine nats-pool)" \
+      --disk-type hyperdisk-balanced --disk-size 100 --node-taints traderx-nats=true:NoSchedule --node-labels traderx-role=nats \
       --system-config-from-file "$HERE/node-nats.yaml"
   fi
   if [ "$DRY" = 0 ] && pool_exists gateway-pool; then
@@ -295,24 +298,26 @@ accounting_caught_up(){
 # 2026-10-30: NATS was OOM-killed 7 times under the binary arm and came back each time. The rig looked up while the FIX
 # session store refused every Logon and ~89.7M trade sides were lost. A run is clean only if the NATS pod the rig came up
 # with is still the only one, Running, and never restarted; `up` records it (ConfigMap rig-nats), `down` checks it.
-nats_problems(){ # nats_problems <recorded pod uid, or empty>: one line per problem, nothing when intact
+# ADR-103: the servers are a StatefulSet of NATS_SERVERS pods; the record is every pod's uid, sorted and comma-joined.
+nats_problems(){ # nats_problems <recorded pod uids, or empty>: one line per problem, nothing when intact
   local pods
   pods=$(kc get pods -l app=nats -o json) || { echo "the NATS pods could not be listed"; return 0; }
-  jq -r --arg uid "$1" '(.items | length) as $n
-    | (if $n != 1 then "\($n) NATS pods, want 1: \([.items[] | "\(.metadata.name) \(.status.phase)"] | join(", "))" else empty end),
+  jq -r --arg uid "$1" --argjson want "$NATS_SERVERS" '(.items | length) as $n
+    | (if $n != $want then "\($n) NATS pods, want \($want): \([.items[] | "\(.metadata.name) \(.status.phase)"] | join(", "))" else empty end),
       (.items[] | select(.status.phase != "Running") | "\(.metadata.name) is \(.status.phase), not Running"),
       (.items[] | .metadata.name as $p | .status.containerStatuses[]? | select(.name == "nats" and .restartCount > 0)
        | "\($p) restarted \(.restartCount)x; last \(.lastState.terminated.reason // "?") (exit \(.lastState.terminated.exitCode // "?")) at \(.lastState.terminated.finishedAt // "?")"),
-      (if $uid != "" and $n == 1 and .items[0].metadata.uid != $uid
-       then "\(.items[0].metadata.name) is not the NATS pod the rig came up with: it was replaced" else empty end)' <<<"$pods"
+      (if $uid != "" and $n == $want and ([.items[].metadata.uid] | sort | join(",")) != $uid
+       then "\([.items[].metadata.name] | join(", ")) are not the NATS pods the rig came up with: one was replaced" else empty end)' <<<"$pods"
 }
 nats_uid(){ kc get configmap rig-nats -o jsonpath='{.data.uid}' 2>/dev/null || true; }
-nats_record(){ # refuse a NATS that already restarted, then record the pod `down` will check
-  step "NATS intact (FR-PRG-28): one pod, Running, never restarted; recorded for down"
-  if [ "$DRY" = 1 ]; then note "would check and record the NATS pod"; return 0; fi
+nats_uids_now(){ kc get pods -l app=nats -o jsonpath='{.items[*].metadata.uid}' | tr ' ' '\n' | sort | paste -sd, -; }
+nats_record(){ # refuse a NATS that already restarted, then record the pods `down` will check
+  step "NATS intact (FR-PRG-28): $NATS_SERVERS pods, Running, never restarted; recorded for down"
+  if [ "$DRY" = 1 ]; then note "would check and record the NATS pods"; return 0; fi
   local np; np=$(nats_problems "$1")
   [ -z "$np" ] || die "NATS (FR-PRG-28): $np"
-  kc create configmap rig-nats --from-literal=uid="$(kc get pods -l app=nats -o jsonpath='{.items[0].metadata.uid}')" \
+  kc create configmap rig-nats --from-literal=uid="$(nats_uids_now)" \
     --from-literal=at="$(date -u +%FT%TZ)" --dry-run=client -o yaml | kc apply -f - >/dev/null
   note "ok"
 }
@@ -794,12 +799,17 @@ rig_fresh_epoch(){
 # trade store rightly refused with RETENTION_GAP. Read from NATS's monitor, deleted by one JetStream API request over the
 # client protocol (busybox nc in the nats pod: no other image). Deleting a stream deletes its consumers: trade-processor
 # recreates the stream and its tp-* durables on start, and the gateways' fill feed is an ordered (ephemeral) consumer.
+# ADR-103: a server's /jsz reports the streams IT holds (R1 streams placed by tag, FR-DRS-44), so every server is asked.
 feed_streams(){ # "<stream> <messages>" per capture stream, TRADERX_FEED or TRADERX_FEED_P<p>; fails when NATS cannot be read
-  local j; j=$(kc exec deploy/nats -c nats -- wget -qO- 'http://localhost:8222/jsz?accounts=true&streams=true') || return 1
-  jq -e 'has("streams")' <<<"$j" >/dev/null || return 1   # a JetStream report, not an error page
-  jq -r '.account_details[]?.stream_detail[]? | select(.name | test("^TRADERX_FEED(_P[0-9]+)?$")) | "\(.name) \(.state.messages)"' <<<"$j"; }
-nats_api(){ # nats_api <subject>: one JetStream API request, its JSON reply
-  kc exec deploy/nats -c nats -- sh -c '(printf "CONNECT {\"verbose\":false}\r\nSUB r 1\r\nPUB %s r 0\r\n\r\n" "$1"; sleep 2) | nc localhost 4222' sh "$1" \
+  local p j pods; pods=$(kc get pods -l app=nats -o jsonpath='{.items[*].metadata.name}') || return 1
+  [ -n "$pods" ] || return 1
+  for p in $pods; do
+    j=$(kc exec "$p" -c nats -- wget -qO- 'http://localhost:8222/jsz?accounts=true&streams=true') || return 1
+    jq -e 'has("streams")' <<<"$j" >/dev/null || return 1   # a JetStream report, not an error page
+    jq -r '.account_details[]?.stream_detail[]? | select(.name | test("^TRADERX_FEED(_P[0-9]+)?$")) | "\(.name) \(.state.messages)"' <<<"$j"
+  done | sort -u; }
+nats_api(){ # nats_api <subject>: one JetStream API request, its JSON reply (the API is cluster-wide: any server answers)
+  kc exec sts/nats -c nats -- sh -c '(printf "CONNECT {\"verbose\":false}\r\nSUB r 1\r\nPUB %s r 0\r\n\r\n" "$1"; sleep 2) | nc localhost 4222' sh "$1" \
     | grep -o '^{.*}'; }
 reset_feed(){
   local streams s n

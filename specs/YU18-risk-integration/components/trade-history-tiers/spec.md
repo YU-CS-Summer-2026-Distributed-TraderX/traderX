@@ -129,7 +129,9 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
   - the pre-fix image: 2,983 rows/s
   - this image: the 4,517,458-message backlog drained in 39 s (114K rows/s, G3h's wait 825 s)
   - G3h: sides 1..1,787,296, each once
-  - stream 5,361,888 messages = store 1,787,296 trades + 3,574,592 orders; members 1,787,296
+  - stream 5,361,888 messages = store 1,787,296 trades + 3,574,592 orders; members 1,787,296 (since FR-DRS-41 a
+    message holds one or more records, so the script compares the store with the bridges' published records and the
+    stream with their published messages, and checks the orders table by event, not by stream sequence)
   - an earlier run refused at G3h with 952 sides absent from the stream itself, lost when kind's 768Mi NATS was OOM-killed
     under the members' core publishes. That is not the feed.
 - FR-THT-11: The history store SHALL hold each trade side and each order event once, however many times the capture

@@ -195,14 +195,16 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   void onViewBatch(int partition, List<Message> msgs) {
     ViewPartition part = viewParts.get(partition);
     for (Message m : msgs) {
-      try {
-        OrderUpdate u = decode(m.getData());
-        if (u != null && u.getId() != null && u.getAccountId() != null) {
-          view.apply(u);
-          part.touched(u.getId(), u.getAccountId(), view.get(u.getAccountId(), u.getId()));
+      for (byte[] record : records(m.getData())) {          // FR-DRS-41: one message, one or more events
+        try {
+          OrderUpdate u = decode(record);
+          if (u != null && u.getId() != null && u.getAccountId() != null) {
+            view.apply(u);
+            part.touched(u.getId(), u.getAccountId(), view.get(u.getAccountId(), u.getId()));
+          }
+        } catch (Exception x) {
+          log.error("undecodable /orders message skipped: {}", x.toString());
         }
-      } catch (Exception x) {
-        log.error("undecodable /orders message skipped: {}", x.toString());
       }
       part.streamSeq = m.metaData().streamSequence();
     }
@@ -260,11 +262,13 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     ProjectionWriteLock.partition(partition);
     List<OrderUpdate> batch = new ArrayList<>(msgs.size());
     for (Message m : msgs) {
-      try {
-        OrderUpdate u = decode(m.getData());
-        if (u != null) { batch.add(u); }
-      } catch (Exception x) {
-        log.error("undecodable /orders message skipped: {}", x.toString());
+      for (byte[] record : records(m.getData())) {
+        try {
+          OrderUpdate u = decode(record);
+          if (u != null) { batch.add(u); }
+        } catch (Exception x) {
+          log.error("undecodable /orders message skipped: {}", x.toString());
+        }
       }
     }
     if (!batch.isEmpty()) { persistBatch(batch); }

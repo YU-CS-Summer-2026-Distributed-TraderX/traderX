@@ -103,6 +103,22 @@ class FeedBarrierTest {
     assertEquals(2, view.cut().accounting().sides());
   }
 
+  /** FR-DRS-41: a bridge message holds one or more sides, newline-separated; each is booked, and the cursor is the message's. */
+  @Test void aBatchedMessageBooksEveryRecordItHolds() throws Exception {
+    RunRegistry registry = mock(RunRegistry.class);
+    when(registry.scope(anyString())).thenReturn(Map.of());
+    TradeView view = new TradeView();
+    TradeFeedHandler h = snapshotHandler(view, registry);
+    String three = new String(trade(1).getData(), StandardCharsets.UTF_8) + "\n" + new String(trade(2).getData(), StandardCharsets.UTF_8)
+        + "\n" + new String(trade(3).getData(), StandardCharsets.UTF_8);
+
+    assertEquals(3, finos.traderx.messaging.nats.NatsJSONSubscriber.records(three.getBytes(StandardCharsets.UTF_8)).size());
+    h.onSnapshotBatch(0, List.of(message(9, three), message(10, new String(trade(4).getData(), StandardCharsets.UTF_8))));
+    assertEquals(0, h.refused());
+    assertEquals(4, view.cut().accounting().sides(), "three sides from one message and one from the next");
+    assertEquals(10, view.streamSeq());
+  }
+
   @Test void theRetiredRowsModeAndCoreFeedRefuseToStart() {   // FR-THT-01
     for (String[] m : new String[][] {{"jetstream", "rows"}, {"core", "snapshot"}, {"core", "rows"}}) {
       TradeFeedHandler h = new TradeFeedHandler();

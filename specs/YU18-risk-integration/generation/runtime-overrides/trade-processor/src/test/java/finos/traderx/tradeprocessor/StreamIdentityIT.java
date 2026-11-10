@@ -36,6 +36,12 @@ class StreamIdentityIT {
       JetStreamFeed.ensureStream(nc, "IDENTITY", 1L << 30, Duration.ofHours(1), StreamRecreateIT.SUBJECT);
       assertThat(JetStreamFeed.requireRetained(nc, "IDENTITY", "test", "s", 0, 5, bound)).as("an update is the same stream")
           .isEqualTo(bound);
+      // FR-DRS-42: an existing stream is brought to s2 by the update, a new one is created with it.
+      assertThat(jsm.getStreamInfo("IDENTITY").getConfiguration().getCompressionOption())
+          .isEqualTo(io.nats.client.api.CompressionOption.S2);
+      JetStreamFeed.ensureStream(nc, "FRESH", 1L << 30, Duration.ofHours(1), "fresh.>");
+      assertThat(jsm.getStreamInfo("FRESH").getConfiguration().getCompressionOption())
+          .isEqualTo(io.nats.client.api.CompressionOption.S2);
 
       jsm.deleteStream("IDENTITY");
       jsm.addStream(StreamRecreateIT.config("IDENTITY"));

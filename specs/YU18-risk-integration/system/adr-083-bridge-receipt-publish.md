@@ -172,3 +172,32 @@ snapshot barrier and no fresh epoch.
   trade ids and notification subjects change, and the rig's gates assume the legacy scheme (ADR-101 declined it).
 - *The position in a NATS header.* history-feed and trade-processor already read the pair from the payload, and a
   header moves the lane to `HPUB` for every message.
+
+## Amendment, 2026-11-09: a lane publishes its drain as one message (FR-DRS-41)
+
+Context. The 400K campaign (RI34, 2026-11-08/09) was lossless at 67K orders/s and one NATS server dropped feed
+messages from about 285K messages/s with 23–29 CPUs; FR-DRS-34 had measured one c4d-standard-32 at 415–505K
+messages/s with its disk 16% busy and CPU 35–60% idle, whatever the stream count. The cost is per message, not per
+byte: a local 4-CPU server (2026-11-09) stored 363–406K messages/s at 540 B, 385K at 1,080 B, 150K at 5,400 B and
+22K at 54,000 B, i.e. 0.4M, 0.77M, 1.5M and 2.2M records/s. The leader paid the same per-message cost on its 16
+publisher and 16 receipt threads and held about 185–200K orders/s against the bench's 400–450K with the bridges off.
+
+15. **One message per drain.** The lane thread takes what its queue holds, up to `BRIDGE_BATCH_MAX` (64; 1..1,024)
+    records and 256 KiB, encodes them in apply order separated by a newline, and publishes one message with one
+    reply subject. A quiet lane sends one record per message, the wire before this amendment; a loaded lane sends
+    what piled up while the last message went out, which is the egress-coalescing shape the members already use.
+16. **Receipts count records.** The reply subject carries the record count and the first and last key
+    (`<inbox>.<n>.<first>~<last>`; `<inbox>.<n>` on the order bridge). A PubAck acks n records, a 429 rejects n and
+    the rejected-ids log names each message's first~last. `/health` `bridges.*` adds `messages`.
+17. **The cut reads the last record.** The catch-up compares the last record of the stream's last message; a
+    one-record message is unchanged. Its republish is batched like anything else.
+18. **Readers split, nothing else changes.** Every reader of `/trades*` and `/orders*` splits a message on the
+    newline before its per-record parse (decisions 1–14 are per record and hold). history-feed stores one row per
+    record with the message's `seq`; trade-processor's trade view keys its replay check by (seq, index) and applies
+    a message's sides under one lock, so its snapshot cursor is always a whole message.
+
+Rejected: NATS 2.12's atomic/fast batch publish (server-side batches with per-message storage: it buys the ack
+round trip, which the receipt publish already does not pay); a NATS cluster first (FR-DRS-34 proved three servers at
+1M messages/s, but it leaves the leader's per-message cost and is deployment work; it remains the complement if the
+single server's byte rate at 400K, about 540 MB/s, has no margin); a compact wire first (bytes were not the wall).
+

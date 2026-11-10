@@ -39,6 +39,19 @@ class RowsTest {
     assertEquals("ep7", b.orderEpoch[0], "and ep7-4411 from this");
   }
 
+  /** FR-DRS-41: a bridge message holds one or more records on separate lines; each is a row with the message's sequence. */
+  @Test void a_batched_message_is_one_row_per_record_each_with_the_stream_sequence() {
+    Rows b = new Rows(true, 4);
+    String three = TRADE + "\n" + TRADE.replace("e1-ep7-981-S", "e1-ep7-982-B").replace("\"quantity\":250", "\"quantity\":7")
+        + "\n" + TRADE.replace("e1-ep7-981-S", "e1-ep7-983-S") + "\n";
+    assertEquals(3, new Rows.Parser().parse(three.getBytes(StandardCharsets.UTF_8), b, 6001));
+    assertEquals(3, b.n);
+    assertEquals(981, b.key[0]); assertEquals(982, b.key[1]); assertEquals(983, b.key[2]);
+    assertEquals('B', b.side[1]); assertEquals(7, b.qty[1]); assertEquals(250, b.qty[2]);
+    assertEquals(6001, b.seq[0]); assertEquals(6001, b.seq[2]);
+    assertEquals(187.25, b.px[2], 1e-9, "the last record parses to its own end, not the message's");
+  }
+
   @Test void order_event_keeps_status_fill_and_the_unsigned_client_key() {
     Rows b = new Rows(false, 4);
     new Rows.Parser().parse(ORDER.getBytes(StandardCharsets.UTF_8), b, 5002);

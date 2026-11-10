@@ -67,7 +67,7 @@ class Rendering(unittest.TestCase):
         claimed={t['spec']['storageClassName'] for t in engine['spec']['volumeClaimTemplates']}
         self.assertEqual(claimed,{'order-matcher-archive'})
         sc=[d for d in self.docs if d['kind']=='StorageClass']
-        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive','clickhouse-hot'])   # + FR-THT-02's
+        self.assertEqual([d['metadata']['name'] for d in sc],['order-matcher-archive','nats-store','clickhouse-hot'])   # + FR-PRG-41's, FR-THT-02's
         self.assertNotIn('namespace',sc[0]['metadata'])
         self.assertEqual(sc[0]['provisioner'],'pd.csi.storage.gke.io')
 
@@ -358,7 +358,8 @@ class Rendering(unittest.TestCase):
             self.assertIn(flag,jvm)
         self.assertFalse([t for t in jvm if t.startswith('-XX:MaxGCPauseMillis')])
         self.assertEqual(env['MAX_ACTIVE_BOOKS'],'1024')
-        self.assertEqual(c['resources'],{'requests':{'cpu':'7','memory':'16Gi'},'limits':{'cpu':'7','memory':'16Gi'}})
+        # ADR-103: c4d-standard-16, 15 CPU / 40Gi (the 464K hour's members; 16Gi lived in page-cache reclaim and flapped).
+        self.assertEqual(c['resources'],{'requests':{'cpu':'15','memory':'40Gi'},'limits':{'cpu':'15','memory':'40Gi'}})
         def broken(change):
             docs=copy.deepcopy(self.docs); change(module.podspec(self.workload(docs,'order-matcher-cluster'))['containers'][0]); return docs
         def jvm_is(value):
@@ -378,8 +379,8 @@ class Rendering(unittest.TestCase):
         next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_MODE')['value']='core'
         with self.assertRaises(AssertionError): module.validate(docs)
         docs=copy.deepcopy(self.docs)
-        nats=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='nats')
-        next(v for v in module.podspec(nats)['volumes'] if v['name']=='data').pop('persistentVolumeClaim')
+        nats=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='nats')
+        nats['spec']['volumeClaimTemplates']=[]
         with self.assertRaises(AssertionError): module.validate(docs)
 
     def test_all_workloads_have_complete_scheduler_requests(self):
@@ -421,7 +422,7 @@ class NatsMemory(unittest.TestCase):
     def tearDownClass(cls): cls.temp.cleanup()
 
     def nats(self,docs):
-        return module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='nats'))['containers'][0]
+        return module.podspec(next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='nats'))['containers'][0]
 
     def conf(self,docs):
         return next(d for d in docs if d['kind']=='ConfigMap' and d['metadata']['name']=='nats-server-config')['data']
@@ -454,12 +455,83 @@ class NatsMemory(unittest.TestCase):
             return change
         def request(docs): self.nats(docs)['resources']['requests']['memory']='512Mi'
         for change,message in ((limit('2Gi'),'GOMEMLIMIT'),                                  # 2026-10-30's pod
-                               (limit('30Gi'),'fit nats-pool'),
+                               (limit('60Gi'),'fit nats-pool'),                                 # past a c4d-standard-16's allocatable
                                (request,'equal the request'),
-                               (gomem(None),'GOMEMLIMIT'),(gomem('23GiB'),'85%'),
+                               (gomem(None),'GOMEMLIMIT'),(gomem('45GiB'),'85%'),                     # 45 of 48Gi leaves no page cache
                                (conf(r'\s*max_memory_store: \S+',''),'explicit'),          # NATS then takes 75% of the host
                                (conf(r'max_buffered_size: \S+','max_buffered_size: 12GB'),'ingest queue')):
             with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(change))
+
+
+class NatsCluster(unittest.TestCase):
+    """FR-PRG-41 (ADR-103): the capture stream's servers are a three-server NATS cluster, one per node, each on its own
+    retained Hyperdisk claim, named and tagged by pod; the partitioned render places the streams over every server by
+    tag (FR-DRS-44) and sizes each server's store to the partitions it holds. One server was the wall (FR-DRS-34) and one
+    volume saturated at 400K orders/s (RI34 §1b)."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        module.prepare(Path(cls.temp.name)/'rows','test-candidate','10.93.0.10')
+        cls.rows=list(yaml.safe_load_all((Path(cls.temp.name)/'rows/candidate.yaml').read_text()))
+        module.prepare(Path(cls.temp.name)/'snap','test-candidate','10.93.0.10',read_model='snapshot')
+        cls.snap=list(yaml.safe_load_all((Path(cls.temp.name)/'snap/candidate.yaml').read_text()))
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def sts(self,docs): return next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='nats')
+    def conf(self,docs): return next(d for d in docs if d['kind']=='ConfigMap' and d['metadata']['name']=='nats-server-config')['data']
+    def tp_env(self,docs):
+        tp=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor')
+        return {e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
+
+    def test_three_servers_one_per_node_each_on_its_own_hyperdisk(self):
+        sts=self.sts(self.rows); pod=module.podspec(sts); conf=self.conf(self.rows)['nats.conf']
+        self.assertEqual(sts['spec']['replicas'],3)
+        self.assertEqual(sts['spec']['serviceName'],'nats-headless')
+        self.assertEqual(sorted(re.findall(r'nats://(nats-\d)\.nats-headless\.traderx\.svc',conf)),['nats-0','nats-1','nats-2'])
+        self.assertRegex(conf,r'(?m)^\s*server_name: POD_NAME$'); self.assertRegex(conf,r'(?m)^\s*server_tags: \["POD_NAME"\]$')
+        self.assertIn('POD_NAME',' '.join(pod['containers'][0]['args']))
+        self.assertIn({'name':'POD_NAME','valueFrom':{'fieldRef':{'fieldPath':'metadata.name'}}},pod['containers'][0]['env'])
+        self.assertEqual(pod['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution'][0]['topologyKey'],'kubernetes.io/hostname')
+        self.assertEqual(sts['spec']['persistentVolumeClaimRetentionPolicy'],{'whenDeleted':'Retain','whenScaled':'Retain'})
+        claim=next(t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
+        sc=next(d for d in self.rows if d['kind']=='StorageClass' and d['metadata']['name']==claim['spec']['storageClassName'])
+        self.assertEqual(sc['parameters']['type'],'hyperdisk-balanced'); self.assertNotIn('namespace',sc['metadata'])
+        self.assertEqual(pod['nodeSelector'],{'cloud.google.com/gke-nodepool':'nats-pool'})
+        self.assertRegex(conf,r'(?m)^\s*max_pending: 256MB$')
+        self.assertNotIn('PROJECTION_FEED_STREAM_PLACEMENT',self.tp_env(self.rows))   # one stream: the server places it
+
+    def test_the_partitioned_capture_is_placed_over_every_server_and_each_store_holds_its_share(self):
+        env=self.tp_env(self.snap)
+        self.assertEqual(env['PROJECTION_FEED_STREAM_PLACEMENT'],'nats-0,nats-1,nats-2')
+        retention=int(env['PROJECTION_FEED_STREAM_MAX_BYTES'])
+        self.assertEqual(retention,module.stream_retention_bytes(450_000,30))
+        store=int(re.search(r'max_file_store: (\d+)G',self.conf(self.snap)['nats.conf']).group(1))
+        self.assertEqual(store,module.store_per_server_gb(retention,8,3))
+        self.assertGreater(store*10**9,retention*3//8)              # three of eight partitions on the fullest server
+        self.assertLess(store*10**9,retention)                      # not sized for the whole feed on one server
+        claim=next(t for t in self.sts(self.snap)['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
+        self.assertGreater(int(claim['spec']['resources']['requests']['storage'][:-2])*2**30,store*10**9)
+
+    def test_drift_is_refused(self):
+        def broken(docs,change):
+            docs=copy.deepcopy(docs); change(docs); return docs
+        def replicas(docs): self.sts(docs)['spec']['replicas']=1
+        def route(docs): d=self.conf(docs); d['nats.conf']=d['nats.conf'].replace('nats://nats-2.nats-headless','nats://nats-9.nats-headless')
+        def name(docs): d=self.conf(docs); d['nats.conf']=d['nats.conf'].replace('server_name: POD_NAME','server_name: nats')
+        def spread(docs): module.podspec(self.sts(docs)).pop('affinity')
+        def claim(docs): self.sts(docs)['spec']['persistentVolumeClaimRetentionPolicy']['whenScaled']='Delete'
+        def disk(docs):
+            next(t for t in self.sts(docs)['spec']['volumeClaimTemplates'])['spec']['storageClassName']='standard-rwo'
+        def placement(docs):
+            tp=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='trade-processor')
+            next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_STREAM_PLACEMENT')['value']='nats-0,nats-1'
+        for docs,change,message in ((self.rows,replicas,'fewer than three'),(self.rows,route,'routes must name every server'),
+                                    (self.rows,name,'named and tagged'),(self.rows,spread,'one per node'),
+                                    (self.rows,claim,'retained per-server claim'),(self.rows,disk,'Hyperdisk'),
+                                    (self.snap,placement,'placed over every server')):
+            with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(docs,change))
 
 
 class UiMetadata(unittest.TestCase):
@@ -727,8 +799,8 @@ class SnapshotReadModel(unittest.TestCase):
                          '/v2/projection-feed/accounting')
         self.assertEqual(int(tp['PROJECTION_FEED_STREAM_MAX_BYTES']),module.stream_retention_bytes())
         self.assertIn('-XX:+ZGenerational',tp['JAVA_TOOL_OPTIONS'].split())
-        nats=module.podspec(self.doc(self.docs,'Deployment','nats'))['containers'][0]
-        self.assertEqual(nats['resources']['limits']['memory'],'24Gi')   # the base sizing, every profile (FR-PRG-28)
+        nats=module.podspec(self.doc(self.docs,'StatefulSet','nats'))['containers'][0]
+        self.assertEqual(nats['resources']['limits']['memory'],'48Gi')   # the base sizing, every profile (FR-PRG-28)
         self.assertIn({'name':'GOMEMLIMIT','value':'20GiB'},nats['env'])
         for name,pool in (('trade-processor','readmodel-pool'),('eod-price-db','db-pool')):
             self.assertEqual(module.podspec(self.doc(self.docs,'Deployment',name))['nodeSelector'],{'cloud.google.com/gke-nodepool':pool})

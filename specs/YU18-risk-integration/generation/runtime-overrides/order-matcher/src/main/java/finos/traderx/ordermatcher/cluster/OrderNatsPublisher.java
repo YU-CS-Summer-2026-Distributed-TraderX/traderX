@@ -142,6 +142,16 @@ final class OrderNatsPublisher {
         lanes.start();
     }
 
+    /** FR-DRS-41: records per NATS message, at most (tests; production reads BRIDGE_BATCH_MAX). */
+    void batchMax(final int n) {
+        lanes.batchMax = Math.max(1, Math.min(ReceiptLanes.BATCH_CAP, n));
+    }
+
+    /** NATS messages published (FR-DRS-41). */
+    long messages() {
+        return lanes.messages();
+    }
+
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
     /** Pre-traceKey form, for the ancestor states whose overrides predate the read-model trace id
      *  (bfc3ace8). 0 means "no trace", which is exactly what those states emit. */

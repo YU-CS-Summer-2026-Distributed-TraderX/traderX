@@ -388,6 +388,72 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     and 166 order events and counted no gap. The control, the same members rolled to the build before this rule, lost
     45 of 289,908 order events behind INFO lines only, with every trade side held. An earlier pair read the same
     way (333,528 of 333,528; the control lost 68 of 285,724).
+- FR-DRS-41: A bridge lane SHALL publish everything its queue holds, up to `BRIDGE_BATCH_MAX` records (default 64, at
+  most 1,024) and 256 KiB, as ONE NATS message: the records in apply order, each on its own line (the bridges' JSON
+  holds no newline). One message and one receipt per drain instead of per record. At a quiet rate a drain holds one
+  record and the wire is byte for byte the one before this rule; under load the drain fills, which is when the server's
+  per-message cost is the wall: one NATS server stores about 400K messages/s of this wire whatever their size up to
+  about 1 KB, and 1.5M records/s at 10 per message (downstream-at-400k.md §7.13 and §7.14). `BRIDGE_BATCH_MAX=1` is
+  the one-record wire. The 400K campaign (RI34) found one server dropping from about 285K messages/s and the leader at
+  about 185–200K orders/s with 16 publisher and 16 receipt threads; this rule attacks both.
+  - The reply subject is `<inbox>.<n>.<first>~<last>` on the trade bridge (`<inbox>.<n>` on the order bridge): the
+    record count, then the first and last key, so a 429 still names what was lost and `published`, `acked` and
+    `rejected` stay in records; `/health` `bridges.*.messages` counts the messages. A message is stored or 429'd whole.
+  - The catch-up (FR-DRS-37/38) compares the LAST record of the stream's last message; its own republish is batched.
+  - Readers split a message on the newline before their per-record parse: trade-processor's trade store, order view,
+    SQL order projection, recon and core-mode subscriber; history-feed (one row per record, each with the message's
+    `seq`, FR-HST-01); the gateway's FIX fill feed. trade-processor's trade view holds its lock across one message's
+    sides and keys its replay check by (stream sequence, record index), so a snapshot never cuts through a message and
+    a message's second side is not taken for a replay of its first.
+  - Ordering, exactly-once and catch-up are unchanged: a partition's records are in apply order within and across
+    messages; dedupe keys (`tradeSeq`; `consensusSequence`, `outputOrdinal`) are per record.
+  - Tests. `ReceiptLanesIT#everyIngestDropIsCountedAndEachPartitionStaysInOrder` runs at 1 and at 64 records per
+    message (the 64-KiB ingest queue forces 429s of batched messages; counts in records; order across records);
+    `ReceiptLanesIT#aCatchUpCutsAtTheLastRecordOfABatchedMessage` (300 sides in under 300 messages, a promotion
+    republishes exactly 281..310); `HistoryFeedRateIT` at 1 and 64 per message (1M records: 3.5 s and 2.7 s);
+    `RowsTest#a_batched_message_is_one_row_per_record_each_with_the_stream_sequence`;
+    `FeedBarrierTest#aBatchedMessageBooksEveryRecordItHolds` (before: the view booked 2 of 4, taking a message's
+    second side for a replay). `ThreeMemberClusterTest#tradesInFlightAt*` read the stream by record.
+  - On kind: `scripts/trade-history-tiers/kind-history-rate.sh` now checks store rows = the bridges' published records
+    and stream messages = their published messages. Results in RI34.
+
+- FR-DRS-42: The capture stream (every `TRADERX_FEED*` stream trade-processor creates) SHALL be s2-compressed on
+  disk (`compression: s2`); a stream created before this rule is brought to it by the same `ensureStream` that
+  brings an older stream to its limits, and compression applies to the blocks written from then on. The bridges'
+  JSON compresses about 2–3x. Why: at 400K orders/s the batched wire is about 480 MB/s of records (downstream-at-400k.md
+  §7.15); the GKE campaign of 2026-11-09 saw the server's volume saturate twice (a 416 GB pd-balanced at 298 MB/s and
+  io-busy 100%, then a Hyperdisk Balanced provisioned at 1,200 MB/s at 684 MB/s once the streams reached `max_bytes`
+  and deleted while writing), each time stalling the JetStream API on a partition for 8–30 s, cutting the readers as
+  slow consumers and leaving the leader's publishes unacked. With s2 the same load wrote 311 MB/s at 32% busy and the
+  write fell to 311 MB/s at 32% busy, and the Hyperdisk still saturated (724 MB/s) once the streams reached
+  `max_bytes` and deleted while writing. `PROJECTION_FEED_STREAM_STORAGE=memory` keeps the stream in the server's
+  RAM with no volume under it (the throughput rig; `max_memory_store` and `PROJECTION_FEED_STREAM_MAX_BYTES` sized to
+  the machine); unset or `file` is the production setting, and a memory stream has no compression. A server restart
+  empties a memory stream, which the readers' STREAM_RESET path (FR-DRS-36) and the bridges' catch-up (FR-DRS-38)
+  already cover. The NATS CPU cost of s2 is small against its 44 vCPUs (4–5 cores at 400K).
+
+- FR-DRS-43: A pipelined feed (`JetStreamFeed.startPipelined`: the trade store, the order view, the SQL order
+  projection) SHALL size each fetch by bytes, not messages: the next fetch asks for as many messages as the last
+  batch's average message size fits in `FETCH_BYTES` (1 MiB), at most the configured batch. At the one-record wire
+  that is the configured batch, as before; under FR-DRS-41's batching (20–40 records, ~12 KB a message) a 1,000-message
+  fetch per partition, 16 partitions on one connection and two or three fetches in flight is hundreds of MB the server
+  buffers for the client, and NATS cuts the connection at 64 MB pending ("Slow Consumer Detected"): GKE 2026-11-09,
+  351 cuts in five minutes at 1.4M records/s, the read model 4–5M messages behind after each and unable to catch up
+  at ~7 cores. history-feed, which fetches small batches, was cut 27 times in the same window and stayed current.
+  Covered by `JetStreamFeedTest#aFetchIsSizedByTheLastBatchsBytes`. The structural follow-up (a read model sharded
+  by partition across replicas, and a cheaper per-record parse) is RI36.
+- FR-DRS-44: The per-partition capture streams SHALL be placed on the NATS cluster's servers by tag (ADR-103):
+  `PROJECTION_FEED_STREAM_PLACEMENT` names the servers' tags, comma-separated (the production render:
+  `nats-0,nats-1,nats-2`, each server tagged with its pod's name), and partition `p`'s stream is created with
+  placement tag `p mod n`, so N servers hold ceil(P/N) partitions each and each writes its share of the bytes. A
+  stream found on another server (created before the setting, or moved) SHALL be brought to its tag by a placement
+  update, which NATS performs as a stream move; R1 keeps its messages through it. Unset or blank, the server places the
+  stream (one server; the kind rig; the throughput rig's memory streams). The single-stream layout takes the first
+  tag. The production render's per-server `max_file_store` is sized to that share (FR-PRG-41), so placement is part of
+  the capacity, not a tidy-up: an unplaced render is refused there. Measured: FR-DRS-34 (four streams per server by
+  tag, 1.00-1.25M msgs/s, 0 lost); RI34 §1b (one volume saturated at 400K). Covered by
+  `JetStreamFeedTest#aPartitionIsPlacedOnItsServersTag`; the live placement is read back in the acceptance run
+  (ADR-103 rollout).
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

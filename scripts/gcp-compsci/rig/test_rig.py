@@ -36,7 +36,8 @@ kubectl(){
   call "kubectl $*"
   case "$*" in
     *RECON_FULL_HISTORY_MAX*) echo "${CAP:-200000}";;
-    *"get pods -l app=nats -o jsonpath"*) echo u1;;
+    *"get pods -l app=nats -o jsonpath={.items[*].metadata.name}"*) echo "${NATS_NAMES:-nats-u1}";;
+    *"get pods -l app=nats -o jsonpath"*) echo "${NATS_UIDS_NOW:-u1}";;
     *"get pods -l app=nats -o json"*) [ -n "${NATS_LIST_FAIL:-}" ] && return 1; echo "${NATS_PODS:-$NATS_OK}";;
     *"get configmap rig-nats"*) echo "${NATS_UID-u1}";;
     *"get nodes -l cloud.google.com/gke-nodepool=gateway-pool -o name"*)
@@ -157,7 +158,7 @@ def nats_pods(*pods):   # (uid, phase, restarts, last reason)
         for u, ph, r, why in pods]})
 
 
-GOOD = {'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'HIST_HEALTH': '{"ready":true,"unowned":{},"lanes":[{"pending":0},{"pending":0}]}', 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
+GOOD = {'NATS_SERVERS': '1', 'NATS_OK': nats_pods(('u1', 'Running', 0, '')), 'HIST_HEALTH': '{"ready":true,"unowned":{},"lanes":[{"pending":0},{"pending":0}]}', 'GATEWAYS': '3', 'AUTOSCALE': 'off', 'NS': 'traderx', 'M': '100 100 5 11 22 7', 'RM': 'trades=a', 'RM_AFTER': 'trades=a',
         'REINDEX': '{"replayedAppliedSeq":100,"indexedTrades":5}',
         'SHADOW': '{"applied":100,"complete":true,"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}',
         'DIGEST': '{"bookHash":"11","positionHash":"22","openOrders":2,"positions":3,"digestTrades":5}', 'OPEN_ROWS': '2', 'TRADE_ROWS': '5\t5\t5\t0',
@@ -1188,6 +1189,28 @@ class Nats(unittest.TestCase):
     def test_status_reports_it(self):
         rc, out, _ = run('rig_status', NATS_PODS=nats_pods(('u1', 'Running', 2, 'OOMKilled')))
         self.assertIn('NATS: nats-u1 restarted 2x', out)
+
+    def test_three_servers_are_three_pods_each_recorded(self):
+        # ADR-103 (FR-PRG-41): the cluster's three servers; two is a loss, and a replaced one is found by its uid.
+        three = nats_pods(('u1', 'Running', 0, ''), ('u2', 'Running', 0, ''), ('u3', 'Running', 0, ''))
+        rc, out, calls = run('rig_up', NATS_SERVERS='3', NATS_PODS=three, NATS_UIDS_NOW='u1 u2 u3')
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(first(calls, r'create configmap rig-nats --from-literal=uid=u1,u2,u3'), out)
+        rc, out, _ = run('rig_up', NATS_SERVERS='3', NATS_PODS=nats_pods(('u1', 'Running', 0, ''), ('u2', 'Running', 0, '')))
+        self.assertEqual(rc, 2, out)
+        self.assertIn('2 NATS pods, want 3', out)
+        rc, out, _ = run('rig_down', NATS_SERVERS='3', NATS_UID='u1,u2,u3',
+                         NATS_PODS=nats_pods(('u1', 'Running', 0, ''), ('u2', 'Running', 0, ''), ('u4', 'Running', 0, '')))
+        self.assertEqual(rc, 3, out)
+        self.assertIn('one was replaced', out)
+        rc, out, _ = run('rig_down', NATS_SERVERS='3', NATS_UID='u1,u2,u3', NATS_PODS=three)
+        self.assertEqual(rc, 0, out)
+
+    def test_pools_creates_three_nats_nodes_on_hyperdisk(self):
+        rc, out, _ = run('DRY=1; rig_pools')
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r'would: gcloud container node-pools create nats-pool .*--machine-type c4d-standard-16 '
+                              r'.*--disk-type hyperdisk-balanced .*--node-taints traderx-nats=true:NoSchedule')
 
 
 class Clients(unittest.TestCase):

@@ -11,6 +11,9 @@ import io.nats.client.Dispatcher;
 import io.nats.client.Nats;
 import io.nats.client.Options;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
@@ -129,6 +132,25 @@ public abstract class NatsJSONSubscriber<T> implements Subscriber<T>, Initializi
     }
   }
 
+  /**
+   * FR-DRS-41: a bridge message holds one or more records, in apply order, separated by a newline (the bridges' JSON
+   * has no newline inside a record). A one-record message is returned as is, unsplit and uncopied.
+   */
+  public static List<byte[]> records(byte[] data) {
+    int nl = -1;
+    for (int i = 0; i < data.length; i++) { if (data[i] == '\n') { nl = i; break; } }
+    if (nl < 0) { return List.of(data); }
+    List<byte[]> out = new ArrayList<>();
+    int start = 0;
+    for (int i = nl; i <= data.length; i++) {
+      if (i == data.length || data[i] == '\n') {
+        if (i > start) { out.add(Arrays.copyOfRange(data, start, i)); }
+        start = i + 1;
+      }
+    }
+    return out;
+  }
+
   @Override
   public void connect() throws PubSubException {
     try {
@@ -139,19 +161,21 @@ public abstract class NatsJSONSubscriber<T> implements Subscriber<T>, Initializi
           .build();
       connection = Nats.connect(options);
       dispatcher = connection.createDispatcher(msg -> {
-        try {
-          NatsEnvelope<T> envelope = OBJECT_MAPPER.readValue(msg.getData(), envelopeType);
-          if (envelope.getPayload() == null) {
-            log.debug("Ignoring message with empty payload on {}", msg.getSubject());
-            return;
+        for (byte[] record : records(msg.getData())) {
+          try {
+            NatsEnvelope<T> envelope = OBJECT_MAPPER.readValue(record, envelopeType);
+            if (envelope.getPayload() == null) {
+              log.debug("Ignoring message with empty payload on {}", msg.getSubject());
+              continue;
+            }
+            if (!objectType.getSimpleName().equals(envelope.getType())) {
+              log.debug("Ignoring non-target message type {}", envelope.getType());
+              continue;
+            }
+            onMessage(envelope, envelope.getPayload());
+          } catch (Exception x) {
+            log.error("Threw exception while handling incoming message", x);
           }
-          if (!objectType.getSimpleName().equals(envelope.getType())) {
-            log.debug("Ignoring non-target message type {}", envelope.getType());
-            return;
-          }
-          onMessage(envelope, envelope.getPayload());
-        } catch (Exception x) {
-          log.error("Threw exception while handling incoming message", x);
         }
       });
       connected = true;

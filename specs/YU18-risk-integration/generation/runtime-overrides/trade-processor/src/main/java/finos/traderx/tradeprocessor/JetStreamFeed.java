@@ -8,6 +8,8 @@ import io.nats.client.PullSubscribeOptions;
 import io.nats.client.api.AckPolicy;
 import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
+import io.nats.client.api.CompressionOption;
+import io.nats.client.api.Placement;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import java.time.Duration;
@@ -77,8 +79,10 @@ public final class JetStreamFeed {
   public static void ensureStreams(Connection nc, String base, String layout, int partitionCount, long maxBytes, Duration maxAge)
       throws Exception {
     if (streamFor(base, layout, 0, partitionCount).equals(base)) { ensureStream(nc, base, maxBytes, maxAge); return; }
+    String placement = System.getenv("PROJECTION_FEED_STREAM_PLACEMENT");
     for (int p = 0; p < partitionCount; p++) {
-      ensureStream(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, "/trades." + p, "/orders." + p);
+      ensureStreamOn(nc, streamFor(base, layout, p, partitionCount), maxBytes / partitionCount, maxAge, placementTag(placement, p),
+          "/trades." + p, "/orders." + p);
     }
   }
 
@@ -87,7 +91,45 @@ public final class JetStreamFeed {
     ensureStream(nc, stream, maxBytes, maxAge, "/trades", "/trades.*", "/orders", "/orders.*");
   }
 
+  /**
+   * FR-DRS-44 (ADR-103): {@code PROJECTION_FEED_STREAM_PLACEMENT} names the NATS servers' tags, comma-separated
+   * (the production render: {@code nats-0,nats-1,nats-2}); partition {@code p}'s stream is placed on tag
+   * {@code p mod n}, so a three-server cluster holds a third of the partitions each, and each server writes a third
+   * of the bytes. Unset: the server places the stream (one server, or the rig). Null for no placement.
+   */
+  static String placementTag(String placement, int partition) {
+    if (placement == null || placement.isBlank()) return null;
+    String[] tags = placement.split(",");
+    return tags[partition % tags.length].trim();
+  }
+
+  /** A stream is where it should be when it carries the tag; no tag asked for is wherever the server put it. */
+  static boolean placed(Placement have, String tag) {
+    return tag == null || (have != null && have.getTags() != null && have.getTags().contains(tag));
+  }
+
+  /** FR-DRS-42: {@code PROJECTION_FEED_STREAM_STORAGE=memory} keeps the capture stream in the server's RAM (the
+   *  throughput rig: no volume under the stream; a server restart empties it, which the readers' STREAM_RESET path
+   *  and the bridges' catch-up already cover); unset or {@code file} is the production setting. */
+  /** s2 is a file-store property; a memory stream has no compression. */
+  static CompressionOption compression(StorageType storage) {
+    return storage == StorageType.File ? CompressionOption.S2 : CompressionOption.None;
+  }
+
+  static StorageType storageType() {
+    String s = System.getenv("PROJECTION_FEED_STREAM_STORAGE");
+    if (s == null || s.isEmpty() || s.equalsIgnoreCase("file")) return StorageType.File;
+    if (s.equalsIgnoreCase("memory")) return StorageType.Memory;
+    throw new IllegalArgumentException("PROJECTION_FEED_STREAM_STORAGE must be file or memory: " + s);
+  }
+
   static void ensureStream(Connection nc, String stream, long maxBytes, Duration maxAge, String... subjects) throws Exception {
+    ensureStreamOn(nc, stream, maxBytes, maxAge, placementTag(System.getenv("PROJECTION_FEED_STREAM_PLACEMENT"), 0), subjects);
+  }
+
+  /** The stream, placed on the server tagged {@code tag} (null: wherever the server puts it). */
+  static void ensureStreamOn(Connection nc, String stream, long maxBytes, Duration maxAge, String tag, String... subjects)
+      throws Exception {
     var jsm = nc.jetStreamManagement();
     StreamConfiguration existing = null;
     try {
@@ -95,24 +137,37 @@ public final class JetStreamFeed {
     } catch (JetStreamApiException notFound) {
       // fall through and create
     }
+    Placement placement = tag == null ? null : Placement.builder().tags(tag).build();
     if (existing != null) {
       // The retention limits are sized in the manifests (downstream-at-400k.md §7.5); a stream created
       // under older limits is brought to them, so the configured outage window is the one in force.
-      if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())) {
-        jsm.updateStream(StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge).build());
-        log.info("JetStream stream {} limits updated: maxBytes {} -> {}, maxAge {} -> {}", stream,
-            existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge);
+      // FR-DRS-42: the stream is s2-compressed on disk. A stream created before that is brought to it; compression
+      // applies to the blocks written from then on.
+      // FR-DRS-44: a stream on another server is moved to its tag (a placement update is a stream move; R1 keeps
+      // its messages through it).
+      if (existing.getMaxBytes() != maxBytes || !maxAge.equals(existing.getMaxAge())
+          || existing.getCompressionOption() != compression(existing.getStorageType())
+          || !placed(existing.getPlacement(), tag)) {
+        var b = StreamConfiguration.builder(existing).maxBytes(maxBytes).maxAge(maxAge)
+            .compressionOption(compression(existing.getStorageType()));
+        if (placement != null) b.placement(placement);
+        jsm.updateStream(b.build());
+        log.info("JetStream stream {} updated: maxBytes {} -> {}, maxAge {} -> {}, compression {} -> s2, placement {} -> {}",
+            stream, existing.getMaxBytes(), maxBytes, existing.getMaxAge(), maxAge, existing.getCompressionOption(),
+            existing.getPlacement() == null ? null : existing.getPlacement().getTags(), tag);
       }
       return;
     }
-    jsm.addStream(StreamConfiguration.builder()
+    var b = StreamConfiguration.builder()
         .name(stream)
         .subjects(subjects)
-        .storageType(StorageType.File)
+        .storageType(storageType())
+        .compressionOption(compression(storageType()))
         .maxBytes(maxBytes)
-        .maxAge(maxAge)
-        .build());
-    log.info("JetStream stream {} created (maxBytes={}, maxAge={})", stream, maxBytes, maxAge);
+        .maxAge(maxAge);
+    if (placement != null) b.placement(placement);
+    jsm.addStream(b.build());
+    log.info("JetStream stream {} created (maxBytes={}, maxAge={}, {}, s2, placement={})", stream, maxBytes, maxAge, storageType(), tag);
   }
 
   /**
@@ -214,6 +269,24 @@ public final class JetStreamFeed {
 
   /** Batches a pipelined consumer may hold unacknowledged: the one being applied, the one queued, the one in flight. */
   static final int PIPELINE_DEPTH = 4;
+
+  /**
+   * Bytes a fetch aims for (FR-DRS-43). A fetch is sized in messages, and FR-DRS-41 made a message under load 20-40
+   * records (~12 KB) where it was one (~400 B): a 1,000-message fetch per partition, 16 partitions on one connection,
+   * two or three fetches in flight, is hundreds of MB the server must buffer for this client, and it cuts the
+   * connection at 64 MB pending ("Slow Consumer Detected"; GKE 2026-11-09: 351 cuts in 5 min at 1.4M records/s, the
+   * read model 4-5M messages behind after each). The next fetch asks for as many messages as the last batch's average
+   * size fits in this, so the bytes in flight stay bounded whatever the wire's batching; at the one-record wire the
+   * count is the configured batch, as before.
+   */
+  static final long FETCH_BYTES = 1L << 20;
+
+  /** FR-DRS-43: the message count of the next fetch, from the configured {@code batch} and the last batch's bytes. */
+  static int nextFetch(int batch, long lastBytes, int lastCount) {
+    if (lastCount <= 0 || lastBytes <= 0) return batch;
+    long avg = Math.max(1, lastBytes / lastCount);
+    return (int) Math.max(1, Math.min(batch, FETCH_BYTES / avg));
+  }
 
   /** An ephemeral consumer from a stream sequence: the trade store, whose cursor is its own ack. */
   public static ConsumerConfiguration fromSequence(String filterSubject, long startSequence) {
@@ -341,6 +414,7 @@ public final class JetStreamFeed {
     long last = -1;     // stream sequence of the last message handed to the handler, -1 before the first
     long expect = 0;    // consumer sequence the next delivery must carry
     boolean started = false;
+    int want = batch;   // FR-DRS-43: the next fetch's message count, from the last batch's bytes
     long created = 0;   // FR-DRS-36: the stream this feed's sequences belong to
     while (!Thread.currentThread().isInterrupted()) {
       if (sub == null) {
@@ -379,7 +453,7 @@ public final class JetStreamFeed {
       }
       List<Message> msgs;
       try {
-        msgs = sub.fetch(batch, maxWait);
+        msgs = sub.fetch(want, maxWait);
       } catch (Exception x) {
         if (Thread.currentThread().isInterrupted()) { return; }
         // E.g. an ephemeral consumer the server deleted past its inactive threshold while the apply thread held this
@@ -390,6 +464,9 @@ public final class JetStreamFeed {
         continue;
       }
       if (!msgs.isEmpty()) {
+        long bytes = 0;
+        for (Message m : msgs) { bytes += m.getData().length; }
+        want = nextFetch(batch, bytes, msgs.size());
         long first = msgs.get(0).metaData().consumerSequence();
         long end = msgs.get(msgs.size() - 1).metaData().consumerSequence();
         if (first != expect || end - first != msgs.size() - 1) {

@@ -347,7 +347,8 @@ public class ReconciliationService {
                     List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(subs.size() > 1 ? 50 : 500));
                     any |= !msgs.isEmpty();
                     for (var m : msgs) {
-                        var p = json.readTree(m.getData()).path("payload");
+                      for (byte[] record : finos.traderx.messaging.nats.NatsJSONSubscriber.records(m.getData())) {   // FR-DRS-41
+                        var p = json.readTree(record).path("payload");
                         String id = p.path("id").asText();
                         long ts = tradeSeqOf(id);
                         heads.observe(m.getSubject(), ts);
@@ -355,6 +356,7 @@ public class ReconciliationService {
                         pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
                             p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it
                             m.metaData().streamSequence()));
+                      }
                     }
                 }
                 if (!any) return;
