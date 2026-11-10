@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -1248,6 +1249,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             qty, limitPxTicks, clientKey, 0, securityId));
     }
 
+    /** FR-BSP-01: the binary NEW without waiting (see {@link #submitPipelinedAsync}). */
+    @Override
+    public CompletableFuture<ExecResult> submitOrderAsync(final long clientKey, final int accountId,
+                                                         final int securityId, final char side, final int qty,
+                                                         final long limitPxTicks, final Executor completions) {
+        return submitPipelinedAsync(new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, null, side,
+            qty, limitPxTicks, clientKey, 0, securityId), completions);
+    }
+
     /** ADR-090 binary NEW on a sequenced stream: the pair rides the ingress tail; the engine interprets it. */
     @Override
     public ExecResult submitSequencedOrder(final long clientKey, final int accountId, final int securityId,
@@ -1258,6 +1268,21 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         p.streamId = streamId;
         p.streamSeq = streamSeq;
         return submitPipelined(p);
+    }
+
+    /** FR-BSP-01: the sequenced binary NEW without waiting. Enqueued on the caller's thread in call order, so a
+     *  connection's stream reaches the log in the order it arrived (a reordered seq would be refused as a gap). */
+    @Override
+    public CompletableFuture<ExecResult> submitSequencedOrderAsync(final long clientKey, final int accountId,
+                                                                  final int securityId, final char side,
+                                                                  final int qty, final long limitPxTicks,
+                                                                  final long streamId, final long streamSeq,
+                                                                  final Executor completions) {
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, null, side,
+            qty, limitPxTicks, clientKey, 0, securityId);
+        p.streamId = streamId;
+        p.streamSeq = streamSeq;
+        return submitPipelinedAsync(p, completions);
     }
 
     /** ADR-090 FIX NEW on a gateway-sequenced stream (FR-XOD-12): as submitOrder / submitTypedOrder, plus the pair. */
@@ -1284,6 +1309,27 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
         return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
             qty, limitPxTicks, clientKey, orderRef));
+    }
+
+    /** FR-BSP-01: the binary REPLACE without waiting. */
+    @Override
+    public CompletableFuture<ExecResult> submitReplaceAsync(final int orderRef, final long clientKey, final int qty,
+                                                           final long limitPxTicks, final Executor completions) {
+        if (orderRef <= 0) {
+            return CompletableFuture.completedFuture(new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND));
+        }
+        return submitPipelinedAsync(new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
+            qty, limitPxTicks, clientKey, orderRef), completions);
+    }
+
+    /** FR-BSP-01: the binary CANCEL (no ownership claim) without waiting. */
+    @Override
+    public CompletableFuture<ExecResult> submitCancelAsync(final int orderRef, final Executor completions) {
+        if (orderRef <= 0) {
+            return CompletableFuture.completedFuture(new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND));
+        }
+        return submitPipelinedAsync(new PendingOrder(InputEvent.TYPE_ORDER_CANCEL, 0, null, (char) 0,
+            0, 0L, 0L, orderRef), completions);
     }
 
     /** YU18 typed NEW (FR-OT01): same pipelined window and correlation, template 9 on the wire. */
@@ -1330,9 +1376,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * must not claim rejection.
      */
     private ExecResult submitPipelined(final PendingOrder p) {
-        final ExecResult r = submitPipelined0(p);
+        return accountFor(p, submitPipelined0(p));
+    }
+
+    /** The wedge detector's reading of one order's answer; returns {@code r}. */
+    private ExecResult accountFor(final PendingOrder p, final ExecResult r) {
         // The wedge detector, in the ONE place every ingress path funnels through — REST new,
-        // cancel, replace, the binary fast path and the FIX acceptor all reach consensus here, so
+        // cancel, replace, the binary fast path and the FIX acceptor all reach consensus here (the
+        // pipelined binary path through submitPipelinedAsync, which calls this on every answer), so
         // one update covers them and none can be added later that bypasses it. A null is exactly
         // "no committed decision", which is what /ready now has to know about. The one deliberate
         // bulk answer is onNewLeader's early reap of the dying leader's strands: those nulls say an
@@ -1374,44 +1425,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return null; // window saturated: treat as ambiguous backpressure, never a false reject
             }
             acquired = true;
-            // LATENCY-01 Phase A: t_decoded — owner-queue wait starts as this order is enqueued.
-            if (latency != null && latency.sample()) {
-                p.tSubmitNanos = System.nanoTime();
-            }
-            // OTEL-01: head-sample HERE, at ingress, before the order is offered — the verdict is a
-            // pure function of the idempotency key, so the members will independently reach the same
-            // one without us sending them anything.
-            //
-            // OTEL-01 follow-up: the head verdict is now a FLAG, not the gate. traceKey is set for
-            // every keyed order so the span TIMESTAMPS exist if the order turns out to be rejected
-            // and has to be traced after the fact (OrderTrace.escalate) — a decision that can only
-            // be taken once the committed ack is in hand, by which time an unrecorded start time is
-            // unrecoverable. That costs one nanoTime per order, and only while OTEL_TRACES=1: with
-            // tracing off `traces` is null and this whole block is the single null check it always
-            // was. Orders with no idempotency key still leave traceKey 0 and are never traced,
-            // rejected or not, because there is nothing for the member to agree with us about.
-            if (traces != null) {
-                p.traceKey = OrderTrace.keyOf(p.clientKey, p.orderRef);
-                p.traceSampled = OrderTrace.sampled(p.traceKey, traceMask);
-                p.traceStartNanos = System.nanoTime();
-            }
-            // Fire-and-forget on the owner thread: offer + register, no per-order wait.
-            queuedTask = new OwnerTask<>(() -> { offerPipelined(p); return null; });
+            queuedTask = newPipelinedTask(p);
             tasks.add(queuedTask);
-            final ExecResult result = p.future.get(waitBudgetMs, TimeUnit.MILLISECONDS);
-            // OTEL-01: the root span closes on THIS thread, not the owner's — it covers the residence
-            // the client actually experiences, and keeps one of the three span writes off the owner.
-            if (p.traceKey != 0L && (p.traceSampled || (result != null && OrderTrace.escalate(result.kind())))) {
-                final long hi = OrderTrace.traceIdHi(p.traceKey);
-                final long lo = OrderTrace.traceIdLo(p.traceKey);
-                traces.span(hi, lo, OrderTrace.spanId(p.traceKey, 0), 0L,
-                    OrderTrace.epochNanos(p.traceStartNanos), OrderTrace.epochNanos(System.nanoTime()),
-                    SpanSink.NAME_ORDER, result == null ? 0L : result.orderRef());
-            }
-            if (result != null && OrderTrace.escalate(result.kind())) {
-                logReject(p, result);
-            }
-            return result;
+            return finishPipelined(p, p.future.get(waitBudgetMs, TimeUnit.MILLISECONDS));
         } catch (final Exception e) {
             if (queuedTask != null && queuedTask.retireIfUnstarted()) {
                 tasks.remove(queuedTask);
@@ -1425,6 +1441,95 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // offered is still false during encoding/resolution or an offer is in progress.
             return null; // ambiguous/timeout: caller must not claim rejection
         }
+    }
+
+    /** Stamp and trace an order whose window slot this thread holds, and build the owner task that offers it. */
+    private OwnerTask<Void> newPipelinedTask(final PendingOrder p) {
+        // LATENCY-01 Phase A: t_decoded — owner-queue wait starts as this order is enqueued.
+        if (latency != null && latency.sample()) {
+            p.tSubmitNanos = System.nanoTime();
+        }
+        // OTEL-01: head-sample HERE, at ingress, before the order is offered — the verdict is a
+        // pure function of the idempotency key, so the members will independently reach the same
+        // one without us sending them anything.
+        //
+        // OTEL-01 follow-up: the head verdict is now a FLAG, not the gate. traceKey is set for
+        // every keyed order so the span TIMESTAMPS exist if the order turns out to be rejected
+        // and has to be traced after the fact (OrderTrace.escalate) — a decision that can only
+        // be taken once the committed ack is in hand, by which time an unrecorded start time is
+        // unrecoverable. That costs one nanoTime per order, and only while OTEL_TRACES=1: with
+        // tracing off `traces` is null and this whole block is the single null check it always
+        // was. Orders with no idempotency key still leave traceKey 0 and are never traced,
+        // rejected or not, because there is nothing for the member to agree with us about.
+        if (traces != null) {
+            p.traceKey = OrderTrace.keyOf(p.clientKey, p.orderRef);
+            p.traceSampled = OrderTrace.sampled(p.traceKey, traceMask);
+            p.traceStartNanos = System.nanoTime();
+        }
+        // Fire-and-forget on the owner thread: offer + register, no per-order wait.
+        return new OwnerTask<>(() -> { offerPipelined(p); return null; });
+    }
+
+    /** The submitter's side of a completed order: its root span and reject log line, never on the owner thread. */
+    private ExecResult finishPipelined(final PendingOrder p, final ExecResult result) {
+        // OTEL-01: the root span closes on THIS thread, not the owner's — it covers the residence
+        // the client actually experiences, and keeps one of the three span writes off the owner.
+        if (p.traceKey != 0L && (p.traceSampled || (result != null && OrderTrace.escalate(result.kind())))) {
+            final long hi = OrderTrace.traceIdHi(p.traceKey);
+            final long lo = OrderTrace.traceIdLo(p.traceKey);
+            traces.span(hi, lo, OrderTrace.spanId(p.traceKey, 0), 0L,
+                OrderTrace.epochNanos(p.traceStartNanos), OrderTrace.epochNanos(System.nanoTime()),
+                SpanSink.NAME_ORDER, result == null ? 0L : result.orderRef());
+        }
+        if (result != null && OrderTrace.escalate(result.kind())) {
+            logReject(p, result);
+        }
+        return result;
+    }
+
+    /**
+     * FR-BSP-01: {@link #submitPipelined} without waiting. The window slot and the owner-queue entry are taken HERE,
+     * on the caller's thread and in call order, so one connection's orders reach the log in the order they arrived;
+     * a full window parks the caller exactly as the synchronous path does (that is the client back-pressure). The
+     * returned future completes on {@code completions} with what the synchronous call would have returned: the
+     * committed result, or null for no committed decision within the same budget (the queued task retired if the
+     * owner never started it), after the same reject log, root span and wedge accounting.
+     */
+    private CompletableFuture<ExecResult> submitPipelinedAsync(final PendingOrder p, final Executor completions) {
+        try {
+            if (!inflight.acquire(ACK_TIMEOUT_MS)) {
+                return CompletableFuture.completedFuture(accountFor(p, null)); // window saturated: ambiguous
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return CompletableFuture.completedFuture(accountFor(p, null));
+        }
+        final OwnerTask<Void> queuedTask;
+        OwnerTask<Void> built = null;
+        try {
+            built = newPipelinedTask(p);
+            tasks.add(built);
+            queuedTask = built;
+        } catch (final RuntimeException e) { // as submitPipelined0: this slot is ours unless the owner started it
+            if (built == null || built.retireIfUnstarted()) {
+                if (built != null) {
+                    tasks.remove(built);
+                }
+                p.future.complete(null);
+                inflight.release();
+            }
+            return CompletableFuture.completedFuture(accountFor(p, null));
+        }
+        // ponytail: one CompletableFuture.Delayer entry per order (the owner cancels it on the ack); a per-connection
+        // deadline queue if that cancel ever shows in the owner's profile.
+        return p.future.completeOnTimeout(null, ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS)
+            .thenApplyAsync(result -> {
+                if (result == null && queuedTask.retireIfUnstarted()) {
+                    tasks.remove(queuedTask);
+                    inflight.release(); // retirement owns only this acquired, never-started slot
+                }
+                return accountFor(p, finishPipelined(p, result));
+            }, completions);
     }
 
     /**

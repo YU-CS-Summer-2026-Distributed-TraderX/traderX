@@ -1,5 +1,8 @@
 package finos.traderx.ordermatcher.cluster;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+
 /**
  * The one seam between a counterparty-protocol front end (FIX, REST) and the cluster client
  * (ADR-047). Front ends terminate their own sessions and call this to sequence an order through
@@ -115,6 +118,38 @@ public interface OrderSubmitter {
      *  key instead of a String clOrdId. Default unsupported, reported as ambiguity. */
     default ExecResult submitReplace(int orderRef, long clientKey, int qty, long limitPxTicks) {
         return null;
+    }
+
+    /**
+     * FR-BSP-01: {@link #submitOrder(long, int, int, char, int, long)} without waiting, for a front end that keeps many
+     * orders in flight per session. The order is queued for the cluster before this returns, so calls made in order
+     * from one thread reach the log in that order. The future completes with exactly what the synchronous call would
+     * have returned (null = no committed decision); {@code completions} runs the implementation's completion work,
+     * so it never runs on the cluster client's owner thread. Default: the synchronous call, already complete.
+     */
+    default CompletableFuture<ExecResult> submitOrderAsync(long clientKey, int accountId, int securityId, char side,
+                                                          int qty, long limitPxTicks, Executor completions) {
+        return CompletableFuture.completedFuture(submitOrder(clientKey, accountId, securityId, side, qty, limitPxTicks));
+    }
+
+    /** FR-BSP-01: {@link #submitSequencedOrder(long, int, int, char, int, long, long, long)} without waiting. */
+    default CompletableFuture<ExecResult> submitSequencedOrderAsync(long clientKey, int accountId, int securityId,
+                                                                   char side, int qty, long limitPxTicks,
+                                                                   long streamId, long streamSeq,
+                                                                   Executor completions) {
+        return CompletableFuture.completedFuture(submitSequencedOrder(clientKey, accountId, securityId, side, qty,
+            limitPxTicks, streamId, streamSeq));
+    }
+
+    /** FR-BSP-01: {@link #submitCancel(int)} without waiting. */
+    default CompletableFuture<ExecResult> submitCancelAsync(int orderRef, Executor completions) {
+        return CompletableFuture.completedFuture(submitCancel(orderRef));
+    }
+
+    /** FR-BSP-01: {@link #submitReplace(int, long, int, long)} without waiting. */
+    default CompletableFuture<ExecResult> submitReplaceAsync(int orderRef, long clientKey, int qty, long limitPxTicks,
+                                                            Executor completions) {
+        return CompletableFuture.completedFuture(submitReplace(orderRef, clientKey, qty, limitPxTicks));
     }
 
     /** ADR-090: a binary NEW on sequenced stream {@code streamId}; {@code streamSeq} from 1. */

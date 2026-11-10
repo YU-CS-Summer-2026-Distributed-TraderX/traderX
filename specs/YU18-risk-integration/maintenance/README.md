@@ -42,5 +42,6 @@ Issue fixes, reliability hardening, observability corrections and diagnostic acc
 | [Production rig](production-rig/README.md) | Code 2026-10-29: `rig.sh` up/down with the restore gate, `gateways.sh`, autoscaling, gateway drain (ADR-096); not yet run on production |
 | [GKE member runtime](gke-member-runtime/README.md) | Integrated 2026-10-27: archive volume, heap, pause goal, SIGTERM, promtail (ADR-081); retained member claims and no negative DNS caching, on production since roll 4 (ADR-087) |
 | [Cluster test failover race](cluster-test-failover/README.md) | Integrated 2026-10-30: ThreeMemberClusterTest waits for its client on the new leader; the load red was a lost order after a sub-second failover, not an election stall |
+| [Binary session pipelining](binary-session-pipelining/README.md) | RI35, binary half: implemented 2026-11-10 on `binary-acceptor-pipelining`, unit tests and kind; not on GKE or production |
 
 Future fixes, including feed reconnect, belong here. Update the parent RI issue, bounded task record and live-rig queue as appropriate. A directory is not a service or deployment; follow [state pack layout](../../../docs/spec-kit/state-components.md) and the project task lifecycle.

@@ -16,6 +16,10 @@ ADR-102 cutover (2026-11-08) the blotter reads the store, so --history also rend
 (traderx/position-service:<tag>). --eod adds the rest of the EOD chain: price-publisher (its marks) and risk-extract
 (the engine's cut, traderx/cluster-node:<tag>), credentials from the render's own Secrets. --binary adds the gateway's
 binary port (prepare.add_binary_port) for binary-load.mjs, the production load driver (FR-THT-10's drain proof).
+--throughput sets the members as the throughput run renders them (prepare.throughput_members: egress coalescing,
+packed snapshots) and the gateway at production's 4 guaranteed CPUs: without coalescing one pipelined gateway session's
+acks overrun the members' best-effort egress, and at kind's 1-CPU limit the gateway is CFS-throttled (2026-11-10: 470 of
+2,803 periods, a queue p99 of 22.7 ms).
 
 Images: traderx/cluster-node:<tag> (build-cluster-image.sh) and traderx/trade-processor:<tag>
 (build-service-images.sh), loaded into the kind nodes. Secrets are random per render: nothing to leak, and
@@ -88,7 +92,7 @@ def history(docs, tag, hot_days, registry='', pool='', cold_bucket='', ns='trade
 
 
 def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_history=False, hot_days=0,
-           history_pool='', cold_bucket='', with_eod=False, binary=False):
+           history_pool='', cold_bucket='', with_eod=False, binary=False, throughput=False):
     docs = []
     for f in ['statefulset.yaml', 'nats.yaml', 'eod-price-db.yaml', 'trade-processor.yaml', 'gateway.yaml']:
         docs += [d for d in yaml.safe_load_all((K / f).read_text()) if d]
@@ -156,6 +160,12 @@ def render(tag, partitions, gateways, ns='traderx', registry='', pool='', with_h
                 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000'})
     if binary:   # the throughput run's entry (prepare.add_binary_port), for binary-load.mjs in a pod
         prep.add_binary_port(docs, 18140)
+    if throughput:   # the throughput run's members (prepare.throughput_members): egress coalescing, packed snapshots
+        prep.throughput_members(docs)
+        for d in docs:   # and production's gateway size (prepare.py, FR-PRG-06): kind's 1-CPU limit throttles the owner
+            if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway':
+                prep.podspec(d)['containers'][0]['resources'] = {'requests': {'cpu': '4', 'memory': '2Gi'},
+                                                                 'limits': {'cpu': '4', 'memory': '2Gi'}}
     if with_history:
         history(docs, tag, hot_days, registry, history_pool, cold_bucket, ns)
         for d in docs: d['metadata']['namespace'] = ns
@@ -188,6 +198,7 @@ if __name__ == '__main__':
     a.add_argument('--cold-bucket', default='', help='GKE: the GCS bucket of the cold disk, prefix <ns>/')
     a.add_argument('--eod', action='store_true', help='add price-publisher and risk-extract (the EOD extract)')
     a.add_argument('--binary', action='store_true', help='add the gateway binary port 18140 (binary-load.mjs, FR-THT-10)')
+    a.add_argument('--throughput', action='store_true', help="the throughput run's member settings (egress coalescing; FR-BSP-01's proof)")
     o = a.parse_args()
     if o.registry and (o.history or o.history_hot_days) and not o.history_pool:
         a.error('--history on GKE needs --history-pool')
@@ -195,4 +206,5 @@ if __name__ == '__main__':
         a.error('--history-hot-days on GKE needs --cold-bucket')
     yaml.safe_dump_all(render(o.tag, o.partitions, o.gateways, o.ns, o.registry, o.pool,
                               with_history=o.history or o.history_hot_days > 0, hot_days=o.history_hot_days,
-                              history_pool=o.history_pool, cold_bucket=o.cold_bucket, with_eod=o.eod, binary=o.binary), sys.stdout, sort_keys=False)
+                              history_pool=o.history_pool, cold_bucket=o.cold_bucket, with_eod=o.eod, binary=o.binary,
+                              throughput=o.throughput), sys.stdout, sort_keys=False)

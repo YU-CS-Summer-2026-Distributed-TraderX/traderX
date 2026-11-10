@@ -1,5 +1,14 @@
 # Proof coverage against the specs
 
+## Binary session pipelining on kind (2026-11-10, FR-BSP-01, NFR-BSP-01, RI35, kind traderx-bsp, torn down)
+
+`kind-binary-pipelining.sh` on `kind-yu18-rig.py --history --binary --throughput --partitions 1`, one arm per fresh
+rig, 15,000 orders/s offered and 2,048 in flight in total, 70 s. New gateway (`cluster-node:bsp`) against the pre-fix
+one (`:bat`): 4 sessions 14,778 vs 3,349 orders/s; 16 sessions 14,573 vs 13,332; 64 sessions 14,294 vs 14,181. Every
+arm clean (0 ambiguous, 0 unanswered) with G3h ok. `queue` p50 1.2–1.4 µs everywhere; p99 160–359 µs on the new
+gateway and 84–272 µs on the old one at the same rates, so NFR-BSP-01's 50 µs is not met on kind by either (RI35 has
+the table and why). Not on GKE or production.
+
 ## Bridge drain batching on kind (2026-11-09, FR-DRS-41, kind traderx-bat, torn down)
 
 `kind-bridge-batching.sh` on `kind-yu18-rig.py --history --binary --partitions 1` (production's default shape), a
@@ -1832,6 +1841,7 @@ Classified blind: each names the spec, what the spec leads a tester to expect, w
 | YU18 | `FR-DRS-41` | LIVE (gke) | kind-bridge-batching, bat-run |  | added 2026-11-09 (RI34 section 1a): ReceiptLanesIT at 1 and 64 records per message (a 64 KiB ingest queue forces 429s of batched messages; counts in records; order across records), the cut at the last record of a batched message; HistoryFeedRateIT 1M records at 1 and 64 per message (3.5 s / 2.7 s); RowsTest; FeedBarrierTest (before: the trade view booked 2 of 4). kind traderx-bat: 5.5–5.7 records per message on, 1.00 off; G3h, store = records, stream = messages in every run. Not on GKE/production |
 | YU18 | `FR-DRS-42` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109) |  | added 2026-11-09 (RI34 §1b): the stream's volume is the wall at 300–400K (pd-balanced 298 MB/s at 100% busy; Hyperdisk 684 MB/s once max_bytes deletions join the writes); s2 cut the write to 311 MB/s at 32% busy; memory streams for the hour run. StreamIdentityIT covers the stream settings. Disposable rig, torn down |
 | YU18 | `FR-DRS-43` | LIVE (gke) | bat-run (shared notes bridge-batching-gke-20261109/proof-fr-drs-43) |  | added 2026-11-10 (RI36): a pipelined feed's fetch sized by bytes; on the rig at 470K orders/s trade-processor was cut once in 8 min (351 in 5 min before), lag ≤ 361K messages (4–5M before), G3 and G3h ok; JetStreamFeedTest covers the sizing. Disposable rig, torn down |
+| YU18 | `FR-BSP-01` | LIVE (kind) | kind-binary-pipelining |  | added 2026-11-10 (RI35): BinaryGatewayAcceptorTest (acks in completion order, every clOrdId once, arrival order at the seam, the bound reached and never exceeded, half-close answered in full with an ambiguous answer kept ambiguous, a closed connection leaks nothing), PipelineTaskDeadlineTest (the async answer completes on the caller's executor; silence is null and retires the unstarted task). kind: 16 sessions 14,573/s = 64 sessions 14,294/s; 4 sessions 14,778/s against the pre-fix gateway's 3,349; G3h ok in every arm. NFR-BSP-01's queue p99 < 50 µs not met on kind (160–359 µs; the pre-fix gateway 84–272 µs at the same rates). Not on GKE/production |
 | YU18 | `FR-THT-02` | LIVE |  |  | added 2026-11-06: GKE only (rig.sh up) |
 | YU18 | `FR-THT-03` | LIVE |  |  | added 2026-11-06: GKE only (GCS disk) |
 | YU18 | `FR-THT-04` | LIVE |  |  | added 2026-11-06: GKE only (KDB-X VM) |
