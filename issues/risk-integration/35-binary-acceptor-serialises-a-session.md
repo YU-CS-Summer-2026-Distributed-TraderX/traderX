@@ -380,3 +380,19 @@ bench's `PIN` option did.
 - **Tests:** `FixStorePinnedIT` uses two independent servers, so a bucket's stream exists only where it was written.
   Its pinned and loss cases fail when every bucket is on the main connection.
 - **Not done:** the real store on GKE, which needs yaakov's yes (≈ $10–15).
+
+## The real pinned store on GKE (2026-11-11, 9:45–10:10 am ET, slot B, yaakov's yes)
+
+`FixSessionStore` at 1c9b95a5 was configured as the production render configures it: `FIX_SESSION_SERVER_URLS`, 20
+buckets, 5 servers. All 18 store clients logged "each bucket on its own server's connection of 5".
+
+| arm | store bodies/s | commit avg / max | capture | NATS per server |
+| --- | --- | --- | --- | --- |
+| store alone | 1,416,100 | 0.054 / 0.144 s | — | ~286K msgs/s, 3.1–3.2 cores |
+| + capture | 1,256,192 | 0.061 / 0.157 s | 301 MB/s, ack 0.3 ms avg / 15 ms max | ~285K, 3.6–4.2 cores |
+| + capture, again | 1,260,914 | 0.061 / 0.163 s | 301 MB/s, ack 0.3 / 12 ms | ~288K, 3.8–4.2 cores |
+
+- No session failed, and no capture publish failed.
+- This matches the bench prototype (1.45M, and 1.26M with the capture): ~40% over the ~900K bodies/s that 450K FIX needs.
+- Evidence: shared notes `fix-store-gke-real-20261111/`.
+- Not done: end to end with FIX clients on 5 servers, which is the next acceptance run.

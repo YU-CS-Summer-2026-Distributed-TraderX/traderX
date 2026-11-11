@@ -36,6 +36,7 @@
 - [ ] FR-GFS-21 end to end with FIX clients: acceptance run 3.
 - [x] FR-GFS-24 (2026-11-11): each bucket on its own server's connection; one server's loss fails only its sessions;
       `prepare.py` renders `NATS_SERVERS` (5) × 4 buckets and the per-server URLs. `FixStorePinnedIT`, `test_prepare`.
-- [ ] FR-GFS-24 on GKE (yaakov's yes, ≈ $10–15): store + capture on the chosen count with the real store.
+- [x] FR-GFS-24 on GKE (2026-11-11, yaakov's yes): the real store on 5 servers, 1.26M bodies/s + the 301 MB/s capture.
+- [ ] FR-GFS-24 end to end with FIX clients on 5 servers: the next acceptance run.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).
