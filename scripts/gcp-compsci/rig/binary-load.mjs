@@ -16,26 +16,29 @@
 // past the engine's idempotency window (256Ki keys, 0.65 s at 400K/s) a resend can book twice. A lost connection
 // leaves its orders unanswered: reported, exit 1.
 //
-// --sequenced (ADR-090, FR-XOD-11; for a render with exactly-once on, never with BINARY_SEQUENCED=refuse): every NEW
-// sets flags bit 0 and its clOrdId reads streamId:u32 (high) | seq:u32 (low). The engine keys a stream by
+// Sequenced by default (ADR-090, FR-XOD-11, yaakov 2026-11-10: "Turn on exactly-once"): every NEW sets flags bit 0
+// and its clOrdId reads streamId:u32 (high) | seq:u32 (low). --unsequenced sends the old unflagged frame, for members
+// older than ADR-090 (BINARY_SEQUENCED=refuse). The engine keys a stream by
 // (account, streamId), and a session trades 8 accounts, so each (session, account) has its own stream:
 //   streamId = runNonce XOR (session << 3 | account index), never 0
 // A fresh nonce gives every run fresh streams, from seq 1 (a reused stream would answer seq 1 as a duplicate). The
 // ack's echoed id names the stream, and seq counts each stream's NEWs from 1.
-// - DUPLICATE (riskReason 17) with orderRef 0 is a receipt: committed once before, its answer lost past the window
-//   (FR-XOD-03). It is counted as duplicateReceipts, not as a reject or a failure.
+// A pod opens up to sessions x 8 streams of the engine's EXACTLY_ONCE_MAX_STREAMS (8,192, evicted only after an idle
+// hour, FR-XOD-07), so runs within an hour add up (`streams` in the result).
+// - DUPLICATE (riskReason 17) cannot happen without a resend, and this load never resends: a frame reached the engine
+//   twice (the gateway or the transport). It is counted as sequencedDuplicates and fails the run.
 // - OUT_OF_SEQUENCE (34) is a lost frame, and STREAM_LIMIT (35) a full stream table. Both are counted, and both fail
 //   the run.
 //
 //   node binary-load.mjs --resolve http://GW:18110 --ticker MSFT --px 412.50 [--host order-matcher-gw-binary]
 //        [--port 18140] [--sessions 16] [--rate N/s per session] [--secs S] [--max-in-flight 2000] [--out results.json]
-//        [--phase-secs 60] [--pause-ms 3000] [--ramp 0.25,0.5,0.75 --step-secs 300] [--sequenced]
+//        [--phase-secs 60] [--pause-ms 3000] [--ramp 0.25,0.5,0.75 --step-secs 300] [--unsequenced]
 import fs from 'node:fs';
 import net from 'node:net';
 import crypto from 'node:crypto';
 
 const SETS = [[9900010, 9900012, 9900014, 9900016], [9900011, 9900013, 9900015, 9900017]];   // set[role] buys, set[1-role] sells
-const ACCOUNTS = SETS.flat();   // --sequenced: an account's index in its session's streams
+const ACCOUNTS = SETS.flat();   // sequenced: an account's index in its session's streams
 const DUPLICATE = 17, OUT_OF_SEQUENCE = 34, STREAM_LIMIT = 35;   // RiskReason ordinals in the ack (FR-XOD-03/04/07)
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -44,7 +47,7 @@ const cfg = {
   port: Number(flag('--port', 18140)), sessions: Number(flag('--sessions', 16)), rate: Number(flag('--rate', 1000)),
   secs: Number(flag('--secs', 60)), maxInFlight: Number(flag('--max-in-flight', 2000)), out: flag('--out', 'results.json'),
   phaseMs: Number(flag('--phase-secs', 60)) * 1000, pauseMs: Number(flag('--pause-ms', 3000)),
-  sequenced: argv.includes('--sequenced'),
+  sequenced: !argv.includes('--unsequenced'),
 };
 if (!cfg.resolve || !cfg.ticker || !/^\d+(\.\d{1,6})?$/.test(cfg.px ?? '')) {
   console.log('usage: --resolve URL --ticker T --px PRICE'); process.exit(2);
@@ -73,10 +76,10 @@ if (!(cfg.pauseMs >= 200 && cfg.phaseMs >= 2 * cfg.pauseMs + GUARD_MS)) { consol
 
 function session(index) {
   const s = {index, sent: 0, accepted: 0, rejected: 0, ambiguous: 0, protocolErrors: 0, duplicates: 0, unexpected: 0,
-             duplicateReceipts: 0, outOfSequence: 0, streamLimit: 0,
+             sequencedDuplicates: 0, outOfSequence: 0, streamLimit: 0,
              acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, rejectReasons: {}, closed: false};
   const open = new Map();            // key -> side, until the first ack: seq, or (sequenced) account index * 2^32 + its seq
-  const streams = ACCOUNTS.map((_, a) => ((NONCE ^ (index << 3 | a)) >>> 0) || 1);   // --sequenced
+  const streams = ACCOUNTS.map((_, a) => ((NONCE ^ (index << 3 | a)) >>> 0) || 1);   // sequenced
   const streamOf = new Map(streams.map((id, a) => [id, a])), seqs = ACCOUNTS.map(() => 0);
   let seq = 0, buf = Buffer.alloc(0), credit = 0, up = false;
   const picks = [0, 0];   // per side: sides alternate with seq, so seq % n would give one side only half the set's accounts
@@ -119,7 +122,7 @@ function session(index) {
       if (side === undefined) { sentUpTo ? s.duplicates++ : s.unexpected++; continue; }
       open.delete(q);
       if (status === 1) { s.accepted++; side === 0 ? s.acceptedBuys++ : s.acceptedSells++; }
-      else if (status === 0 && risk === DUPLICATE && ref === 0) s.duplicateReceipts++;   // FR-XOD-03: a receipt
+      else if (status === 0 && risk === DUPLICATE && ref === 0 && cfg.sequenced) s.sequencedDuplicates++;   // never resent: a frame twice
       else if (status === 0 && risk === OUT_OF_SEQUENCE) s.outOfSequence++;
       else if (status === 0 && risk === STREAM_LIMIT) s.streamLimit++;
       else if (status === 0) { s.rejected++; s.rejectReasons[`kind${kind}:risk${risk}`] = (s.rejectReasons[`kind${kind}:risk${risk}`] ?? 0) + 1; }
@@ -143,7 +146,7 @@ function session(index) {
     s.balanceOrders += frames.length; sock.write(Buffer.concat(frames));
     return d;
   };
-  return {s, open, stopSending: () => clearInterval(tick), balance, close: () => sock.end()};
+  return {s, open, seqs, stopSending: () => clearInterval(tick), balance, close: () => sock.end()};
 }
 
 const sessions = Array.from({length: cfg.sessions}, (_, i) => session(i));
@@ -153,7 +156,8 @@ const report = (final) => {
   const out = {nonce: NONCE, startedAt: started.toISOString(), at: new Date().toISOString(), final, ticker: cfg.ticker,
                securityId: SECURITY, px: cfg.px, ramp: rampFactor(), sequenced: cfg.sequenced, ...Object.fromEntries(['sent', 'accepted', 'rejected', 'ambiguous',
                'protocolErrors', 'duplicates', 'unexpected', 'unanswered', 'acceptedBuys', 'acceptedSells', 'balanceOrders',
-               'duplicateReceipts', 'outOfSequence', 'streamLimit'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
+               'sequencedDuplicates', 'outOfSequence', 'streamLimit'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
+               streams: cfg.sequenced ? sessions.reduce((a, x) => a + x.seqs.filter((q) => q > 0).length, 0) : 0,
                closedSessions: rows.filter((x) => x.closed && !final).length, sessions: rows};
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
   console.log(`${out.at} sent=${out.sent} accepted=${out.accepted} rejected=${out.rejected} unanswered=${out.unanswered} `
@@ -169,7 +173,7 @@ const finish = (why) => {
   const o = report(true);
   if (why) console.log('STOPPED ' + why);
   process.exit(!why && o.unanswered === 0 && o.ambiguous === 0 && o.duplicates === 0 && o.unexpected === 0
-    && o.protocolErrors === 0 && o.imbalance === 0 && o.outOfSequence === 0 && o.streamLimit === 0 ? 0 : 1);
+    && o.protocolErrors === 0 && o.imbalance === 0 && o.sequencedDuplicates === 0 && o.outOfSequence === 0 && o.streamLimit === 0 ? 0 : 1);
 };
 const clock = setInterval(() => {   // send inside the phase; drain and balance in its pause; check at the boundary
   const now = Date.now(), k = Math.floor(now / cfg.phaseMs), off = now % cfg.phaseMs;

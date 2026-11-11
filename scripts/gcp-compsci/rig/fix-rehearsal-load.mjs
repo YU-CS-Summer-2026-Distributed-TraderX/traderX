@@ -18,7 +18,10 @@
 // when the socket closed, the Logout text or socket error that closed it, and the Logon attempts it took.
 //
 // With FIX exactly-once on the gateway (ADR-090, FR-XOD-12..14), a resend of a ClOrdID the gateway holds is answered
-// from the original. One older than its rings gets a BusinessMessageReject (35=j, RefMsgType D) whose text begins
+// from the original. That answer is one of three:
+// - an ordinary report of the original's current state, when it is still addressable;
+// - a restatement (150=I, "DUPLICATE: ClOrdID already executed as ord-N"), counted as restated;
+// - for a resend older than the rings, a BusinessMessageReject (35=j, RefMsgType D) whose text begins
 // EXACTLY_ONCE_AGED_OUT or EXACTLY_ONCE_COMMITTED_REF_UNKNOWN. That is a receipt (committed once, its answer lost):
 // it is counted (exactlyOnceAgedOut, exactlyOnceRefUnknown), the order is taken as answered, and its status is asked
 // for. It is never resent again, even when the status reads unknown (unknownAfterReceipt).
@@ -110,7 +113,10 @@ function session(compId, { account, password }, index) {
           else if (seq > inExpected) write('2', [['7', inExpected], ['16', 0]]);   // ask for the answers we missed
           up = true;
           if (downAt) {   // reconciled only after any ResendRequest is answered, or the GapFill would cover the requests
-            s.reconnects.push({ at: new Date().toISOString(), downMs: Date.now() - downAt, ...outage }); downAt = null; outage = null;
+            const r = { at: new Date().toISOString(), downMs: Date.now() - downAt, ...outage };
+            s.reconnects.push(r); downAt = null; outage = null;
+            console.log(`${r.at} RECONNECT ${compId} down ${r.downMs} ms from ${r.closedAt}: ${r.cause}; ${r.attempts} attempts`
+              + `${r.lastRefusal ? `; last refused: ${r.lastRefusal}` : ''}; ${open.size} unanswered to reconcile`);
             asking.clear(); reconcileLater();   // a request the outage cut off is asked again
           }
           continue;

@@ -223,24 +223,32 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   `test_fix_load.Drain`.
 - **FR-PRG-45** (2026-11-11, exactly-once on for the acceptance, ADR-090): The rehearsal loads SHALL speak the
   exactly-once wire.
-  - Binary (`binary-load.mjs --sequenced`, FR-XOD-11):
+  - Binary (`binary-load.mjs`, sequenced by default; FR-XOD-11, FR-PRG-16):
     - every NEW SHALL set flags bit 0 and carry `streamId (high u32) | seq (low u32)`;
     - there SHALL be one stream per (session, account), with `streamId` = the run's random nonce XOR
       `(session << 3 | account index)`, never 0, so a run never continues an earlier run's stream. That is 1,024
       streams for 8 pods × 16 sessions × 8 accounts, under `EXACTLY_ONCE_MAX_STREAMS`;
     - `seq` SHALL count each stream's NEWs from 1;
-    - DUPLICATE with orderRef 0 (FR-XOD-03) SHALL be counted `duplicateReceipts` and is not a failure;
-    - OUT_OF_SEQUENCE and STREAM_LIMIT SHALL be counted and SHALL fail the run;
-    - the loads never resend.
-  - FIX (`fix-rehearsal-load.mjs`, FR-XOD-13/14): a BusinessMessageReject for a NewOrderSingle whose text begins
-    `EXACTLY_ONCE_AGED_OUT` or `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN` is a receipt.
+    - the load never resends, so DUPLICATE with orderRef 0 (FR-XOD-03) means a frame reached the engine twice: it
+      SHALL be counted `sequencedDuplicates` and SHALL fail the run;
+    - OUT_OF_SEQUENCE and STREAM_LIMIT SHALL be counted and SHALL fail the run.
+  - FIX (`fix-rehearsal-load.mjs`, FR-XOD-12..14). A resend of a held ClOrdID is answered from the original in one of
+    three ways:
+    - an ordinary report of its current state;
+    - a restatement (150=I, `DUPLICATE: ClOrdID already executed as ord-N`), counted `restated`;
+    - past the rings, a BusinessMessageReject whose text begins `EXACTLY_ONCE_AGED_OUT` or
+      `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`, which is a receipt.
     - It SHALL be counted (`exactlyOnceAgedOut`, `exactlyOnceRefUnknown`), and its order SHALL be taken as answered
       and asked for by H.
     - That order SHALL NOT be resent again, even when its status reads unknown (`unknownAfterReceipt`).
     - Any other BusinessMessageReject SHALL be counted `businessRejects`.
   - Neither load depends on a resend being booked again. FR-PRG-44's reconcile-before-resend stands.
+  - Each FIX outage SHALL be logged by the driver (`RECONNECT`: down for, closed at, cause, Logon attempts, last
+    refusal), and the acceptance SHALL keep those lines. It SHALL also keep every gateway's lease, reclaim, release,
+    Logon/Logout and disconnect lines for each session that reconnected (run 3 kept neither, so CLIENT386's 47 s
+    outage is unexplained).
 
-  `test_binary_load` (sequenced, receipt, out of sequence), `test_fix_load.ExactlyOnce`.
+  `test_binary_load` (sequenced by default, unsequenced, a duplicate, out of sequence), `test_fix_load.ExactlyOnce`.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
@@ -459,7 +467,13 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     only ever sold and hit POSITION_LIMIT within minutes, 5.4M rejects);
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not
     resolve;
-  - send limit orders of 1 at one operator-given price, unflagged (never sequenced);
+  - send limit orders of 1 at one operator-given price, sequenced (amended 2026-11-11, ADR-090 / FR-XOD-11, yaakov:
+    "Turn on exactly-once"; was unflagged). Each NEW sets flags bit 0 with `clOrdId` = `streamId:u32 | seq:u32`, and
+    has one stream per (session, account), new every run (from the run's nonce) with its seq from 1, so the engine
+    books each `(account, stream, seq)` once. A pod opens sessions × 8 of the engine's `EXACTLY_ONCE_MAX_STREAMS`
+    (8,192, evicted only after an idle hour, FR-XOD-07), so runs within an hour add up (`streams` in the result).
+    `--unsequenced` sends the unflagged frame, for members older than ADR-090 (`BINARY_SEQUENCED=refuse`). FR-PRG-45
+    gives the answers;
   - track every clOrdId until its first ack and never resend (a resend past the 256Ki-key window can book twice), in
     memory bounded by the in-flight window: an answer for a seq no longer open is a duplicate, so no per-answer set is
     kept (production 2026-10-29 11:04 pm: that set outgrew node's heap after 18 minutes);
