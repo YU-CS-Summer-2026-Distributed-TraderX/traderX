@@ -247,6 +247,12 @@ static|shared)
   POLICY=static; [ "$MODE" = shared ] && POLICY=none; CFG="$EVIDENCE/node-engine-$MODE.yaml"
   awk -v p="$POLICY" '/^  cpuManagerPolicy:/ {next} {print} /^kubeletConfig:$/ {print "  cpuManagerPolicy: " p}' "$RIG/node-engine.yaml" > "$CFG"
   [ "$(grep -c "^  cpuManagerPolicy: $POLICY\$" "$CFG")" = 1 ] || { log "REFUSED $MODE: could not derive the $POLICY config"; exit 1; }
+  # NODE_SYSCTLS=k=v,k=v (latency session 3: net.core.busy_read, net.core.wmem_*): added under linuxConfig.sysctl,
+  # replacing the same key; unset, the node gets exactly node-engine.yaml's sysctls.
+  for kv in $(echo "${NODE_SYSCTLS:-}" | tr ',' ' '); do k=${kv%%=*}; v=${kv#*=}
+    awk -v k="$k" -v v="$v" 'index($0, "    " k ":") == 1 {next} {print} /^  sysctl:$/ {print "    " k ": '"'"'" v "'"'"'"}' "$CFG" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+    [ "$(grep -c "^    $k: '$v'\$" "$CFG")" = 1 ] || { log "REFUSED $MODE: could not set $k=$v"; exit 1; }
+  done
   g(){ gcloud container "$@" --zone "$ZONE" --project "$PROJECT" --quiet; }   # resize takes the cluster positionally
   kc scale sts/order-matcher-cluster --replicas=0 >/dev/null
   until [ -z "$(kc get pods -l app=order-matcher-cluster -o name)" ]; do sleep 5; done
@@ -257,6 +263,10 @@ static|shared)
   g clusters resize "$CLUSTER" --node-pool "$POOL" --num-nodes "$n" >/dev/null
   [ "$(g node-pools describe "$POOL" --cluster "$CLUSTER" --format='value(config.kubeletConfig.cpuManagerPolicy)')" = "$POLICY" ] \
     || { log "REFUSED $MODE: $POOL does not report cpuManagerPolicy $POLICY"; exit 1; }
+  for kv in $(echo "${NODE_SYSCTLS:-}" | tr ',' ' '); do k=${kv%%=*}; v=${kv#*=}
+    [ "$(g node-pools describe "$POOL" --cluster "$CLUSTER" --format="value(config.linuxNodeConfig.sysctls.\"$k\")")" = "$v" ] \
+      || { log "REFUSED $MODE: $POOL does not report $k=$v"; exit 1; }
+  done
   kc set resources sts/order-matcher-cluster -c cluster-node --requests="cpu=$CPU" --limits="cpu=$CPU" >/dev/null
   kc scale sts/order-matcher-cluster --replicas=3 >/dev/null
   kc rollout status sts/order-matcher-cluster --timeout=1800s >/dev/null
@@ -267,6 +277,36 @@ static|shared)
     else [ "$w" -gt "$CPU" ] || { log "REFUSED shared: m$m cpuset $cs is $w CPUs, still exclusive"; exit 1; }; fi
   done
   until L=$(leader 2>/dev/null); do sleep 5; done
-  log "$MODE: $POOL on cpuManagerPolicy $POLICY ($n nodes), members at $CPU CPU (cpuset $w wide), leader m$L" ;;
+  log "$MODE: $POOL on cpuManagerPolicy $POLICY ($n nodes)${NODE_SYSCTLS:+, sysctls $NODE_SYSCTLS}, members at $CPU CPU (cpuset $w wide), leader m$L" ;;
+pin)
+  # Latency session 3: each hot agent (sender, receiver, consensus module, clustered service) on its own physical core
+  # of the member's exclusive cpuset, and every other JVM thread kept off those cores and their SMT siblings. Needs the
+  # static CPU manager (refuses on a cpuset wider than the member's request). Lasts until the member restarts.
+  CPU=${2:?}
+  for m in 0 1 2; do
+    out=$(kc exec "order-matcher-cluster-$m" -c cluster-node -- sh -c '
+      set -e; CPU='"$CPU"'
+      for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
+      mine=$(cat /sys/fs/cgroup/cpuset.cpus.effective)
+      expand(){ echo "$1" | tr "," "
+" | awk -F- "{ if (\$2 == "") print \$1; else for (i = \$1; i <= \$2; i++) print i }"; }
+      cpus=$(expand "$mine"); [ "$(echo "$cpus" | wc -l)" = "$CPU" ] || { echo "REFUSED cpuset $mine is not $CPU exclusive"; exit 1; }
+      # whole physical cores inside the cpuset, as "first,sibling" groups
+      groups=$(for c in $cpus; do s=$(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list); all=1
+        for x in $(expand "$s"); do echo "$cpus" | grep -qx "$x" || all=0; done; [ $all = 1 ] && echo "$s"; done | sort -u)
+      [ "$(echo "$groups" | wc -l)" -ge 5 ] || { echo "REFUSED only $(echo "$groups" | wc -l) whole cores in $mine"; exit 1; }
+      i=0; hot=""
+      for name in sender receiver consensus-modul clustered-servi; do
+        i=$((i + 1)); g=$(echo "$groups" | sed -n "${i}p"); c=${g%%[,-]*}
+        for t in /proc/$J/task/*; do [ "$(cat "$t/comm" 2>/dev/null)" = "$name" ] && taskset -p -c "$c" "${t##*/}" >/dev/null && echo "$name -> $c (core $g)"; done
+        hot="$hot $(expand "$g")"
+      done
+      rest=$(for c in $cpus; do echo " $hot " | grep -q " $c " || echo "$c"; done | paste -sd, -)
+      n=0; for t in /proc/$J/task/*; do case " sender receiver consensus-modul clustered-servi " in *" $(cat "$t/comm" 2>/dev/null) "*) ;;
+        *) taskset -p -c "$rest" "${t##*/}" >/dev/null 2>&1 && n=$((n + 1)) ;; esac; done
+      echo "others ($n threads) -> $rest"') || { log "REFUSED pin m$m: $out"; exit 1; }
+    case $out in *REFUSED*) log "REFUSED pin m$m: $out"; exit 1 ;; esac
+    log "pin m$m: $(echo "$out" | tr '\n' ';')"
+  done ;;
 *) echo "unknown: $1" >&2; exit 2 ;;
 esac

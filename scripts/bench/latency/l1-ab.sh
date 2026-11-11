@@ -30,6 +30,7 @@ arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 
   if [ "$2" = busyspin ]; then env+=("${SPIN[@]}"); else env+=("${NOSPIN[@]}"); fi
   if [ "$a" = DEDICATED ]; then env+=(CLUSTER_ARCHIVE_THREADING=DEDICATED); else env+=(CLUSTER_ARCHIVE_THREADING-); fi
   EXPECT_IDLE=$(idle "$2") EXPECT_ARCHIVE=$a bash "$B" arm "$label" "${env[@]}"
+  [ -z "${ARM_POST:-}" ] || bash "$B" $ARM_POST   # e.g. ARM_POST="pin 14": after the roll, before the probe
   # A member roll restarts the gateways' cluster sessions: wait for every gateway to be Ready before the probe, and
   # refuse the arm unless the probe is running and has written its first window (S' 2026-11-11 measured no client
   # latency: its probe died on ECONNREFUSED and the blocks ran without it).
@@ -64,6 +65,8 @@ ensure_cycle_flags(){   # once: the thresholds go into the members' JVM options 
 # cores, 2026-11-11), so it cannot tell a 15-CPU shared member from exclusive cores.
 cpuset_width(){ kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" exec order-matcher-cluster-0 -c cluster-node -- \
   cat /sys/fs/cgroup/cpuset.cpus.effective | tr ',' '\n' | awk -F- '{n += ($2 == "" ? 1 : $2 - $1 + 1)} END {print n}'; }
+OFF_BUSY=net.core.busy_read=0,net.core.busy_poll=0
+OFF_WMEM=net.core.wmem_max=212992,net.core.wmem_default=212992   # the kernel's defaults, stated
 ARMS=("$@"); [ ${#ARMS[@]} -gt 0 ] || ARMS=(N S L1 L2 L12)
 bash "$B" seed "$(for a in "${ARMS[@]}"; do printf 'LP%s,L3%s,L5%s,' "$a" "$a" "$a"; done | sed 's/,$//')" "$PX"
 bash "$B" gw-idle lowpark
@@ -77,7 +80,17 @@ for a in "${ARMS[@]}"; do
          arm Np lowpark SHARED ;;
     Sp)  bash "$B" static "$MEMBER_CPU"; arm Sp lowpark SHARED ;;
     Npp) bash "$B" shared 15; arm Npp lowpark SHARED 500 ;;
-    Spp) [ "${STATIC_DONE:-0}" = 1 ] || bash "$B" static "$MEMBER_CPU"; arm Spp lowpark SHARED ;;   # S again, last: shared, static, shared, static
+    Spp) [ "${STATIC_DONE:-0}" = 1 ] || bash "$B" static "$MEMBER_CPU"; arm Spp lowpark SHARED ;;
+    # Latency session 3 (2026-11-11): busy-spin on SHARED cores (production keeps shared, latency-static-cpu-20261111),
+    # kernel busy-read and wider send buffers on that shape, then static cores with and without per-thread pinning.
+    # Each node-config arm states every knob it touches, so no arm inherits the previous one's sysctls.
+    Nsh)    arm Nsh lowpark SHARED ;;
+    L1sh)   arm L1sh busyspin SHARED ;;
+    L1shbr) NODE_SYSCTLS=$OFF_WMEM,net.core.busy_read=50,net.core.busy_poll=50 bash "$B" shared 15; arm L1shbr busyspin SHARED ;;
+    L1shwm) NODE_SYSCTLS=$OFF_BUSY,net.core.wmem_max=16777216,net.core.wmem_default=4194304 bash "$B" shared 15; arm L1shwm busyspin SHARED ;;
+    L1st)   NODE_SYSCTLS=$OFF_BUSY,$OFF_WMEM bash "$B" static "$MEMBER_CPU"; arm L1st busyspin SHARED ;;
+    L1pin)  ARM_POST="pin $MEMBER_CPU" arm L1pin busyspin SHARED ;;
+    Nsh2)   NODE_SYSCTLS=$OFF_BUSY,$OFF_WMEM bash "$B" shared 15; arm Nsh2 lowpark SHARED 500 ;;   # S again, last: shared, static, shared, static
     N)   cs=$(cpuset_width)
          [ "$cs" -gt 15 ] || { log "REFUSED arm N: m0's cpuset is $cs CPUs, already exclusive; N needs the shared pool"; exit 1; }
          arm N lowpark SHARED ;;

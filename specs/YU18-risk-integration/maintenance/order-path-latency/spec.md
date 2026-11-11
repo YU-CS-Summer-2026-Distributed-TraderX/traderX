@@ -37,6 +37,13 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   members back at CPU, and refuse unless the pool reports the policy and each member's cpuset is exactly CPU wide.
   `l0-baseline.sh shared CPU` SHALL do the same with `cpuManagerPolicy: none` and refuse unless each member's cpuset
   is wider than CPU.
+- **FR-OPL-09 (latency session 3 harness):** the cores switch SHALL take `NODE_SYSCTLS=k=v,...`, add each under the
+  engine node config's `linuxConfig.sysctl` (replacing the same key), and refuse unless the pool reports every one.
+  `l0-baseline.sh pin CPU` SHALL put each hot agent (sender, receiver, consensus module, clustered service) on its own
+  whole physical core of the member's exclusive cpuset and every other JVM thread on the remaining cores, refusing on
+  a cpuset wider than CPU or with fewer than five whole cores. The session-3 arms (`Nsh L1sh L1shbr L1shwm L1st L1pin
+  Nsh2`) SHALL each state every node knob they touch (busy_read/busy_poll, wmem_max/wmem_default), so none inherits
+  the previous arm's.
 - **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
   - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
     (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;
@@ -97,6 +104,7 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
 | L1/L2 A/B on GKE | 05, 07 | GKE 2026-11-10/11 (slot A, `eab81f9f`), shared note `latency-l1-l2-20261110.md`, `latency-l1-20261110/` | L1 busy-spin: 300K p50 566–571 → 292–302 µs, idle commit 278 → 55 µs, capacity 478–499K → 452–472K. S (static, 14): idle p99 −27%, capacity −14% (run-order confound, N′ not run). L2 DEDICATED archive hurt (vs S: idle p99 +30%, capacity −4%; recorder stalls). 0 throttling |
 | static vs shared cores, order control | 05, 07 | GKE 2026-11-11 slot A, shared note `latency-static-cpu-20261111.md`, `latency-l1-20261111/` | N′ shared 471–478K → S′ static 452–463K → N″ shared 463–491K → S″ static 405–417K at the 500K setting: static −4 to −15% in both arms, shared did not drift. Static's idle p99 −47%; at 300K within noise. FR-PRG-05's static precondition held out of production |
 | each refusal fires on a real fault | 03, 05, 07 | same session | `seed` on unadmitted accounts, `gw-idle` and `arm` on a mis-declared start line (negative control), `load_ok` on a stopped load (L12 500K window 2) and with no load pods |
+| session-3 harness: node sysctls and per-thread pinning | 09 | local: the sysctl derivation replaces a key and adds a new one (2026-11-11); GKE: session 3 | — |
 | engine-node budget listed | 04 | GKE 2026-11-10, `alloc.txt` | 16 capacity, 15,890m allocatable, DaemonSets 433m, member Guaranteed 15 |
 | FIX probe stages from a scripted acceptor | 08 | `test_fix_latency_probe.Stages`, local mock 2026-11-11 | 2 ms ack / 5 ms fill injected: ack p50 in [2, 4.5) ms, fill p50 in [5, 7.5) ms, two acks per fill; an aggressor answered Filled lands its first answer at 5 ms |
 | FIX probe refusals | 08 | `test_fix_latency_probe.Refusals`, local mock 2026-11-11 | a session dropped after 100 orders: exit 1, lostSessions=1, skipped and unanswered > 0; an odd session count without `--accounts` refused |
