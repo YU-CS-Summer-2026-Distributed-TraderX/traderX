@@ -208,6 +208,8 @@ alloc)
       | jq -r '.items[] | [.metadata.namespace + "/" + .metadata.name, .status.qosClass, ([.spec.containers[].resources.requests.cpu // "0"] | join("+"))] | @tsv'
   done | tee "$EVIDENCE/alloc.txt" ;;
 seed)
+  # after a member restart the gateways (the order-matcher service) reconnect first: curl exit 7 otherwise (2026-11-11)
+  kc wait --for=condition=Ready pod -l app=cluster-gateway --timeout=600s >/dev/null
   T=${2:?}; PX=${3:?}; A="9900010 9900011 9900012 9900013 9900014 9900015 9900016 9900017 9900018 9900019"
   vals=$(for a in $A; do printf '(%s,"l1"),' "$a"; done); sql="insert ignore into accounts(id,displayname) values ${vals%,}"
   n=$(kc exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -N -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" traderx -e "$1; select count(*) from accounts where id between 9900010 and 9900019"' sh "$sql")
