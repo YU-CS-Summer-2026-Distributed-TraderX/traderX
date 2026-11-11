@@ -2,8 +2,11 @@
 """Check a state's component-coverage table against the checkout and an empty-root render.
 
 Every table row must name a spec and a source that exist in the checkout, and every render path must be
-present: tg:<path> under <generated>/code/target-generated, cand:<Kind>/<name> in the CompSci candidate,
+present: tg:<path> under <generated>/code/target-generated, cand:<Kind>/<name> in a CompSci candidate,
 root:<path> in the checkout. Exits nonzero on the first table with a miss, listing every miss.
+
+--candidate may be given once per profile (the default rows render and the --read-model snapshot render);
+a cand: path passes when any of them renders it, since some resources exist in one profile only.
 """
 import argparse
 import re
@@ -25,14 +28,16 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--state', default='YU18-risk-integration')
     p.add_argument('--generated', type=Path, required=True, help='the TRADERX_GENERATED_ROOT that was rendered into')
-    p.add_argument('--candidate', type=Path, help='prepare.py candidate.yaml; required when the table has cand: rows')
+    p.add_argument('--candidate', type=Path, action='append',
+                   help='prepare.py candidate.yaml, once per profile; required when the table has cand: rows')
     a = p.parse_args()
     table = ROOT / 'specs' / a.state / 'generation/component-coverage.md'
     target = a.generated / 'code/target-generated'
     resources = None
     if a.candidate:
         import yaml
-        resources = {f"{d['kind']}/{d['metadata']['name']}" for d in yaml.safe_load_all(a.candidate.read_text()) if d}
+        resources = {f"{d['kind']}/{d['metadata']['name']}" for c in a.candidate
+                     for d in yaml.safe_load_all(c.read_text()) if d}
     misses, count = [], 0
     for component, (specs, sources, renders) in rows(table):
         count += 1
