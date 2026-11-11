@@ -588,6 +588,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private final UnsafeBuffer ackBuffer = new UnsafeBuffer(new byte[EGRESS_ACK_LENGTH]);
     private final UnsafeBuffer coalesceBuffer = new UnsafeBuffer(new byte[EGRESS_ACK_LENGTH * EGRESS_COALESCE_MAX]);
     private int coalesced;
+    // FR-BSP-03: egress records a live session refused past the bounded retry, and records for a closing session.
+    // Written by the service thread only; read by /health and /metrics.
+    private volatile long egressDropped, egressClosing;
     boolean egressCoalesce = EGRESS_COALESCE; // package-private for tests
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
 
@@ -2831,22 +2834,45 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private void flushCoalesced(final ClientSession session) {
         final int n = coalesced;
         coalesced = 0;
-        if (session == null || session.isClosing()) {
+        if (session == null) {
+            return;
+        }
+        if (session.isClosing()) {
+            egressClosing += n;
             return;
         }
         idle.reset();
+        long result = 0;
         for (int i = 0; i < 20; i++) {
-            if (session.offer(coalesceBuffer, 0, n * EGRESS_ACK_LENGTH) > 0) {
+            if ((result = session.offer(coalesceBuffer, 0, n * EGRESS_ACK_LENGTH)) > 0) {
                 return;
             }
             idle.idle();
         }
+        egressDropped(n, result);
     }
+
+    /** FR-BSP-03: count n refused records; log the first and every 10,000th, with Aeron's last answer. */
+    private void egressDropped(final int n, final long result) {
+        final long before = egressDropped, after = before + n;
+        egressDropped = after;
+        if (before == 0 || before / 10_000 != after / 10_000) {
+            System.out.println("ALERT cluster egress dropped " + after + " record(s) a live client session refused"
+                + " 20 times (last offer " + result + "); their senders answer ambiguous - the log holds the outcome");
+        }
+    }
+
+    public long egressDropped() { return egressDropped; }
+    public long egressClosing() { return egressClosing; }
 
     /** Best-effort bounded offer: during replay or after disconnect the session is not
      *  deliverable and the committed log, not egress, is the source of truth. */
     private void offerEgress(final ClientSession session) {
-        if (session == null || session.isClosing()) {
+        if (session == null) {
+            return;
+        }
+        if (session.isClosing()) {
+            egressClosing++;
             return;
         }
         idle.reset();
@@ -2855,12 +2881,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // machine under load: apply collapsed to ~1 ack/s and the cluster appeared frozen
         // (GKE bench, 2026-07-19). Egress is best-effort BY DESIGN — a slow client gets drops,
         // never the state machine's time; the committed log remains the source of truth.
+        long result = 0;
         for (int i = 0; i < 20; i++) {
-            if (session.offer(ackBuffer, 0, EGRESS_ACK_LENGTH) > 0) {
+            if ((result = session.offer(ackBuffer, 0, EGRESS_ACK_LENGTH)) > 0) {
                 return;
             }
             idle.idle();
         }
+        egressDropped(1, result);
     }
 
     // ----- test observability (read off-thread; volatile) ------------------------------------

@@ -56,6 +56,13 @@
       `scripts/proofs/kind-bridge-failover-at-rate.sh` (kind: 231,662 of 231,662 sides with NATS frozen 121 s across a
       leader kill; the parent's image lost 30,100). GKE run E3 (2026-11-10): G3h exact on 183,194,994 sides
       across a leader kill at ~465K sides/s, queueDropped 0 on every member.
+- [x] A dead leader's unstored tail survives on its successor: no lane releases a record the stream has not
+      confirmed (FR-DRS-49, RI38; 2026-11-09 lost 1.9M sides past the 65,536 a follower kept), and a promotion no
+      longer reads the time spent following as 5 s of silence (`bridges.*.reconnects`).
+      `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` (control on `922c327e`:
+      34,464 of 100,100 missing), `#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`,
+      `kind-bridge-failover-at-rate.sh KILL_AFTER=100` (kind: a 118,052-side unstored tail, 387,332 of 387,332 sides;
+      the parent's image lost 57,658 of 465,088 behind a gap).
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.
