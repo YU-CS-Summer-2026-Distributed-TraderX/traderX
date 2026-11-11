@@ -373,8 +373,8 @@ def set_env(c, values):
 
 
 FIX_SESSION_BUCKETS_PER_SERVER = 4   # FR-GFS-21, GKE 2026-11-10: 1/3/12/24 buckets 140K/378K/653K/624K bodies/s
-# FR-GFS-24 (slot B, 2026-11-11): 450K FIX is ~900K session-store bodies/s plus the capture's ~300 MB/s. Pinned, 4
-# servers carried 995K + capture and 5 carried 1.26M + capture. 5 pending yaakov's choice of 4 or 5.
+# FR-GFS-24, ADR-103 amended 2026-11-11 (yaakov: "5 servers (40%)"): 450K FIX is ~900K session-store bodies/s plus
+# the capture's ~300 MB/s; pinned, 5 servers carried 1.26M + capture (4: 995K).
 NATS_SERVERS = 5
 
 

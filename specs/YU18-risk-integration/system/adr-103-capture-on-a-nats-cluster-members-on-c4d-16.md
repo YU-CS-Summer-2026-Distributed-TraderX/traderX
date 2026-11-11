@@ -7,7 +7,7 @@ applied to production: every production change below still takes yaakov's yes on
 [downstream read side](../components/downstream-read-side/spec.md) FR-DRS-44. Relates to ADR-096 (the rig at bench
 parity, which this supersedes in §1's machine rows), ADR-097 (the snapshot read model), FR-DRS-34 (the three-server
 capture bench), FR-DRS-41/42/43 (the batched, compressed, byte-sized wire), RI34 §1b (the campaign), RI35 (acceptors),
-RI36 (read model).
+RI36 (read model). **Amended 2026-11-11: five NATS servers, not three** (yaakov: "5 servers (40%)"; last section).
 
 ## Context
 
@@ -273,3 +273,43 @@ carrier, so the EOD stage could never have passed after stage 1. The spec CSV no
 (`CPTY-TEST-<id>`, `NS-TEST-<id>`, USD), the next image build carries them, and `prepare.py` refuses to render while
 one is unmapped. The acceptance rig had mounted a ConfigMap of the same rows by hand, which the lineage's guard
 forbids in a tracked manifest.
+
+## Amendment 2026-11-11: five NATS servers, each FIX session bucket on its own server (RI35 sizing; FR-GFS-24)
+
+**Decided 2026-11-11 by yaakov, via the coordinator: "5 servers (40%)".** §1's three servers become five. The render
+and every per-server value derive from one constant, `prepare.py`'s `NATS_SERVERS` (FR-PRG-41: at least three):
+- the `nats` StatefulSet runs 5 replicas, its routes name all five, and `nats-pool` has a node for each (`rig.sh`
+  sizes it from the same number);
+- the capture's placement (`PROJECTION_FEED_STREAM_PLACEMENT`) is `nats-0..4`: P=8 partitions over 5 servers, two on
+  each of the first three. Each server's `max_file_store` holds ceil(8/5) = 2 partitions' share plus the fills
+  stream, so it is smaller than at three;
+- the FIX session store has 4 buckets per server (20), bucket i placed on `nats-<i mod 5>` (FR-GFS-21), and written
+  and read only on a connection to that server (FR-GFS-24);
+- `validate()` refuses a FIX render whose placement, per-server URLs or bucket count do not match the server count;
+- the JetStream meta group needs no setting: its cluster size follows the routes, and five keep a majority through
+  two servers down.
+
+**Why five (RI35, slot B, 2026-11-11).** 450K FIX orders/s is ~900K session-store bodies/s (about two stored reports
+an order; ADR-104 adds no NATS writes), plus the capture at ~300 MB/s. The servers were the p4k render's
+(c4d-standard-16, Hyperdisk Balanced 6,000 IOPS / 600 MiB/s); 600 sessions; bodies/s; 0 failed sessions in every arm:
+
+| servers | store alone, through the Service | + capture | store alone, pinned | + capture |
+| --- | --- | --- | --- | --- |
+| 3 | 476–726K | 543K | 859K | 700K |
+| 4 | 805K | 718K | 1.15M | 995K (~10% headroom) |
+| 5 | 964K | 594K / 838K | 1.45M | **1.26M (~40% headroom)** |
+
+- **Through the one Service URL:** each server relayed the publishes for streams it does not hold. It plateaued at
+  ~450K msgs/s in, counting relayed copies, at ~3.3 of 16 cores, and the capture's acks averaged 20–33 ms.
+- **Pinned (FR-GFS-24):** every server took an even ~290K msgs/s of its own, and capture acks were 0.2–0.3 ms.
+- **The decision:** three servers, as §1 decided, cannot carry it either way; four leave ~10% headroom; five ~40%.
+
+**Cost.** List, approximate: one c4d-standard-16 ≈ $0.73/h, and its Hyperdisk ≈ $0.11/h. The NATS tier is
+≈ $4.2/h at five servers (≈ $3,070/month), against ≈ $2.5/h at three. §5's standing-capacity figure rises by
+≈ $1.7/h.
+
+**Rollout.** As §"Rollout": the render change is not a production change. Applying five servers to production
+(two more `nats-pool` nodes and claims, and the gateways' new URLs) takes yaakov's yes on that change. A FIX day
+reset is needed for the session buckets' new count (FR-GFS-21). The real store's GKE check is pending (≈ $10–15).
+Evidence: RI35's "NATS sizing for 450K FIX" section; shared notes `fix-store-sizing-20261111/`.
+

@@ -170,7 +170,7 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
     sessions are served on. A dropped bucket has no other connection, so none of its writes goes to another server.
     Every server's connection SHALL be up before the store first serves.
   - **Render:** `scripts/gcp-compsci/prepare.py` SHALL render the gateway's URLs (`nats-<i>.nats-headless`), four
-    buckets per server and the server count from one parameter, `NATS_SERVERS`: 5 pending yaakov's choice of 4 or 5
+    buckets per server and the server count from one parameter, `NATS_SERVERS`: 5 (yaakov, 2026-11-11: "5 servers (40%)"; ADR-103 amended)
     (FR-PRG-41). `rig.sh` sizes `nats-pool` from the same number. `validate()` SHALL refuse URLs not naming every
     server in placement order, and a bucket count that is not a multiple of the servers.
   - **Tests:**

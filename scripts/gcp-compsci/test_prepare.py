@@ -80,7 +80,7 @@ class Rendering(unittest.TestCase):
         self.assertEqual(int(re.search(r'^NATS_SERVERS=\$\{NATS_SERVERS:-(\d+)\}',rig,re.M).group(1)),module.NATS_SERVERS)
 
     def test_the_nats_server_count_is_a_render_parameter(self):
-        # FR-GFS-24: yaakov's 4-or-5 is the one constant; a 3-server render keeps every per-server value in step
+        # FR-GFS-24: the server count is one constant (5, ADR-103 amended); a 3-server render keeps every per-server value in step
         with tempfile.TemporaryDirectory() as t:
             module.prepare(Path(t)/'c','test-candidate','10.93.0.10',nats_servers_count=3)
             docs=list(yaml.safe_load_all((Path(t)/'c/candidate.yaml').read_text()))
@@ -530,7 +530,8 @@ class NatsCluster(unittest.TestCase):
         return {e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
 
     def test_the_rendered_servers_one_per_node_each_on_its_own_hyperdisk(self):
-        # FR-GFS-24: NATS_SERVERS servers (5 pending yaakov's 4-or-5), the routes naming every one
+        # FR-GFS-24: NATS_SERVERS servers (5, ADR-103 amended 2026-11-11), the routes naming every one
+        self.assertEqual(module.NATS_SERVERS,5)
         sts=self.sts(self.rows); pod=module.podspec(sts); conf=self.conf(self.rows)['nats.conf']; n=module.NATS_SERVERS
         self.assertEqual(sts['spec']['replicas'],n)
         self.assertEqual(sts['spec']['serviceName'],'nats-headless')

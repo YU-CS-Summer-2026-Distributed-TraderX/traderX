@@ -128,9 +128,8 @@ public final class JetStreamFeed {
 
   /**
    * FR-DRS-44 (ADR-103): {@code PROJECTION_FEED_STREAM_PLACEMENT} names the NATS servers' tags, comma-separated
-   * (the production render: {@code nats-0,nats-1,nats-2}); partition {@code p}'s stream is placed on tag
-   * {@code p mod n}, so a three-server cluster holds a third of the partitions each, and each server writes a third
-   * of the bytes. Unset: the server places the stream (one server, or the rig). Null for no placement.
+   * (the production render: {@code nats-0,...,nats-4}, five servers since ADR-103's 2026-11-11 amendment); partition
+   * {@code p}'s stream is placed on tag {@code p mod n}, so each server holds ceil(P/n) of the partitions at most. Unset: the server places the stream (one server, or the rig). Null for no placement.
    */
   static String placementTag(String placement, int partition) {
     if (placement == null || placement.isBlank()) return null;

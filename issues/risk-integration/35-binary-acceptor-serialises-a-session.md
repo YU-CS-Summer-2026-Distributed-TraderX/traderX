@@ -376,7 +376,7 @@ bench's `PIN` option did.
 - **Loss:** losing one server's connection ends only the sessions whose bucket it holds, and refuses their Logons
   until it is back. Their writes have no other connection, so none goes to another server.
 - **Render:** `prepare.py` renders `NATS_SERVERS` = 5 × 4 buckets and the per-server URLs. `rig.sh` sizes `nats-pool`
-  from the same number. yaakov's 4 or 5 is that one constant.
+  from the same number. yaakov chose 5 on 2026-11-11 ("5 servers (40%)"); ADR-103 is amended.
 - **Tests:** `FixStorePinnedIT` uses two independent servers, so a bucket's stream exists only where it was written.
   Its pinned and loss cases fail when every bucket is on the main connection.
 - **Not done:** the real store on GKE, which needs yaakov's yes (≈ $10–15).
