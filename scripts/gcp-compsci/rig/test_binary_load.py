@@ -136,6 +136,7 @@ class BinaryLoad(unittest.TestCase):
         self.assertEqual(g.errors, [])
         self.assertTrue(r['sequenced']); self.assertGreater(r['sent'], 1000)
         self.assertEqual((r['streamsNew'], r['streamsResumed']), (4 * 8, 0))   # 4 sessions x 8 accounts
+        self.assertEqual((r['probes'], r['streams'], r['streamCap'], r['outOfSequence']), (32, 32, 8192, 0))   # probes are not failures
         first = dict(g.streams)
         p, r = g.run()                                        # the same streams again, from where the first run stopped
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -144,6 +145,31 @@ class BinaryLoad(unittest.TestCase):
         self.assertEqual(set(g.streams), set(first)); self.assertTrue(all(g.streams[k] > v for k, v in first.items() if v > 1))
         p, r = g.run(pod=1)                                   # another pod index: its own streams
         self.assertEqual((p.returncode, r['streamsNew'], r['pod']), (0, 4 * 8, 1)); self.assertEqual(len(g.streams), 2 * 4 * 8)
+        for _ in range(3):                                    # however many runs: never more than pods x sessions x 8
+            self.assertEqual(g.run()[0].returncode, 0); self.assertEqual(len(g.streams), 2 * 4 * 8)
+        self.assertEqual(g.errors, [])
+
+    def test_a_stream_resumes_from_the_engines_next_not_1(self):
+        # An earlier run (or epoch history) left a stream at next = 1,000: its first real NEW is 1,000, not 1
+        g = Gateway(self)
+        g.streams[(9900010, 0x40000000 | 0 << 11 | 0 << 3 | 0)] = 1000
+        p, r = g.run()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(g.errors, [])   # the gateway refuses (and records) any gap other than the probe's
+        self.assertEqual((r['streamsResumed'], r['streamsNew']), (1, 31))
+        self.assertGreater(g.streams[(9900010, 0x40000000)], 1000)
+
+    def test_negative_control_fresh_streams_per_run_fill_the_table(self):
+        # The scheme this replaced: a fresh stream id every run (a random nonce then; a new pod index here does the
+        # same). Against a table of 64, two runs fill it and the third is refused, as the engine refused on 2026-11-11.
+        g = Gateway(self, table=64)
+        for pod in (0, 1):
+            self.assertEqual(g.run(pod=pod)[0].returncode, 0)
+        p, r = g.run(pod=2)
+        self.assertEqual(p.returncode, 1); self.assertEqual((r['streamLimit'], r['sent']), (32, 0))
+        g2 = Gateway(self, table=64)                          # the stable scheme on the same table: never refused
+        for _ in range(3): self.assertEqual(g2.run()[0].returncode, 0)
+        self.assertEqual(len(g2.streams), 32)
 
     def test_a_full_stream_table_fails_the_run(self):
         g = Gateway(self, table=20)   # 32 streams wanted

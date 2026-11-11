@@ -28,7 +28,9 @@
 // answers a gap OUT_OF_SEQUENCE(e) and changes nothing (FR-XOD-04), and the stream continues from e: 1 if new, or
 // where an earlier run left it. A session sends nothing until its 8 probes are answered. One binary load at a time
 // on an epoch: two would interleave on the same streams.
-// Result: streamsNew, streamsResumed.
+// Result: probes (each answered OUT_OF_SEQUENCE as expected, never a failure), streamsNew, streamsResumed, and streams
+// (this pod's, against streamCap: the engine's EXACTLY_ONCE_MAX_STREAMS, --stream-cap). Any other answer to a probe,
+// STREAM_LIMIT included, fails the run.
 // - DUPLICATE (riskReason 17) cannot happen without a resend, and this load never resends: a frame reached the engine
 //   twice (the gateway or the transport). It is counted as sequencedDuplicates and fails the run.
 // - OUT_OF_SEQUENCE (34) is a lost frame, and STREAM_LIMIT (35) a full stream table. Both are counted, and both fail
@@ -54,6 +56,7 @@ const cfg = {
   phaseMs: Number(flag('--phase-secs', 60)) * 1000, pauseMs: Number(flag('--pause-ms', 3000)),
   sequenced: !argv.includes('--unsequenced'),
   pod: Number(process.env.JOB_COMPLETION_INDEX ?? flag('--pod-index', 0)),
+  streamCap: Number(flag('--stream-cap', 8192)),   // the engine's EXACTLY_ONCE_MAX_STREAMS, for the report
 };
 if (!cfg.resolve || !cfg.ticker || !/^\d+(\.\d{1,6})?$/.test(cfg.px ?? '')) {
   console.log('usage: --resolve URL --ticker T --px PRICE'); process.exit(2);
@@ -83,7 +86,7 @@ if (!(cfg.pauseMs >= 200 && cfg.phaseMs >= 2 * cfg.pauseMs + GUARD_MS)) { consol
 
 function session(index) {
   const s = {index, sent: 0, accepted: 0, rejected: 0, ambiguous: 0, protocolErrors: 0, duplicates: 0, unexpected: 0,
-             sequencedDuplicates: 0, outOfSequence: 0, streamLimit: 0, streamsNew: 0, streamsResumed: 0,
+             sequencedDuplicates: 0, outOfSequence: 0, streamLimit: 0, probes: 0, streamsNew: 0, streamsResumed: 0,
              acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, rejectReasons: {}, closed: false};
   const open = new Map();            // key -> side, until the first ack: seq, or (sequenced) account index * 2^32 + its seq
   const streams = ACCOUNTS.map((_, a) => (0x40000000 | cfg.pod << 11 | index << 3 | a) >>> 0);   // sequenced
@@ -131,7 +134,7 @@ function session(index) {
         const a = streamOf.get(hi);
         if (a === undefined) { s.unexpected++; continue; }
         if (lo === PROBE && probing.delete(a)) {
-          if (status === 0 && risk === OUT_OF_SEQUENCE && ref >= 1) { seqs[a] = ref - 1; ref === 1 ? s.streamsNew++ : s.streamsResumed++; }
+          if (status === 0 && risk === OUT_OF_SEQUENCE && ref >= 1) { s.probes++; seqs[a] = ref - 1; ref === 1 ? s.streamsNew++ : s.streamsResumed++; }
           else if (status === 0 && risk === STREAM_LIMIT) s.streamLimit++;   // the table is full: this stream never opens
           else s.protocolErrors++;
           if (probing.size === 0 && !s.streamLimit && !s.protocolErrors) ready = true;
@@ -183,7 +186,8 @@ const report = (final) => {
                securityId: SECURITY, px: cfg.px, ramp: rampFactor(), sequenced: cfg.sequenced, ...Object.fromEntries(['sent', 'accepted', 'rejected', 'ambiguous',
                'protocolErrors', 'duplicates', 'unexpected', 'unanswered', 'acceptedBuys', 'acceptedSells', 'balanceOrders',
                'sequencedDuplicates', 'outOfSequence', 'streamLimit'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
-               streamsNew: sum('streamsNew'), streamsResumed: sum('streamsResumed'), pod: cfg.pod,
+               probes: sum('probes'), streamsNew: sum('streamsNew'), streamsResumed: sum('streamsResumed'),
+               streams: sum('streamsNew') + sum('streamsResumed'), streamCap: cfg.streamCap, pod: cfg.pod,
                closedSessions: rows.filter((x) => x.closed && !final).length, sessions: rows};
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
   console.log(`${out.at} sent=${out.sent} accepted=${out.accepted} rejected=${out.rejected} unanswered=${out.unanswered} `

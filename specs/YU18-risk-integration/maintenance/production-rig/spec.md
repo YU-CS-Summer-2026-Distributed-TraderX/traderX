@@ -238,7 +238,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - Binary (`binary-load.mjs`, sequenced by default; FR-XOD-11, FR-PRG-16):
     - every NEW SHALL set flags bit 0 and carry `streamId (high u32) | seq (low u32)`;
     - there SHALL be one stable stream per (pod, session, account), probed at seq 2^31 before its first NEW and
-      continued from the engine's answer (FR-PRG-16). A STREAM_LIMIT on a probe SHALL fail the run;
+      continued from the engine's answer (FR-PRG-16);
+    - a probe's OUT_OF_SEQUENCE is expected, and SHALL be counted as `probes`, never as `outOfSequence`. Any other
+      answer to a probe, STREAM_LIMIT included, SHALL fail the run;
+    - the result SHALL report `streams` (this pod's, new and resumed) against `streamCap` (the engine's 8,192);
     - the load never resends, so DUPLICATE with orderRef 0 (FR-XOD-03) means a frame reached the engine twice: it
       SHALL be counted `sequencedDuplicates` and SHALL fail the run;
     - OUT_OF_SEQUENCE and STREAM_LIMIT SHALL be counted and SHALL fail the run.
