@@ -132,6 +132,19 @@ final class FixSessionStore implements MessageStoreFactory {
     static final int BUCKETS = Math.max(1, Integer.parseInt(System.getenv().getOrDefault("FIX_SESSION_BUCKETS", "1")));
     /** FR-GFS-21: NATS server tags, comma-separated; bucket i is created on tag {@code i mod n} (as FR-DRS-44 places). */
     private static final String PLACEMENT = System.getenv("FIX_SESSION_PLACEMENT");
+    /**
+     * FR-GFS-24: the servers' own client URLs, comma-separated, in {@link #PLACEMENT}'s order. Bucket i is then written
+     * and read only on a connection to server {@code i mod n}, the one that holds it. Through the one Service URL each
+     * server relayed the publishes for the streams it does not hold, and that capped the store: on GKE (2026-11-11,
+     * 600 sessions) 3/4/5 servers took 476–726K/805K/964K bodies/s through the Service and 859K/1.15M/1.45M pinned.
+     * Unset: every bucket on the main connection, as before.
+     */
+    static final List<String> SERVER_URLS = urls(System.getenv("FIX_SESSION_SERVER_URLS"));
+
+    static List<String> urls(final String csv) {
+        return csv == null || csv.isBlank() ? List.of()
+            : java.util.Arrays.stream(csv.split(",")).map(String::trim).filter(u -> !u.isEmpty()).toList();
+    }
 
     static String bucketName(final int i) {
         return i == 0 ? BUCKET : BUCKET + "_" + i;
@@ -139,7 +152,11 @@ final class FixSessionStore implements MessageStoreFactory {
 
     /** FR-GFS-21: a session's bucket, the same on every gateway (String.hashCode is specified). */
     static int bucketOf(final String key) {
-        return Math.floorMod(key.hashCode(), BUCKETS);
+        return bucketOf(key, BUCKETS);
+    }
+
+    static int bucketOf(final String key, final int buckets) {
+        return Math.floorMod(key.hashCode(), buckets);
     }
 
     private static Placement placement(final int i) {
@@ -150,7 +167,12 @@ final class FixSessionStore implements MessageStoreFactory {
         return Placement.builder().tags(tags[i % tags.length].trim()).build();
     }
     private volatile boolean groupCommit;
-    private volatile JetStream js;
+    private volatile JetStream[] jss;   // FR-GFS-24: by bucket, on the bucket's own server's connection
+    private final int buckets;
+    /** FR-GFS-24: one connection per server (empty: unpinned); bucket i on {@code servers[i % servers.length]}. */
+    private final String[] serverUrls;
+    private final java.util.concurrent.atomic.AtomicReferenceArray<Connection> servers;
+    private final java.util.concurrent.atomic.AtomicIntegerArray serverUp;   // 1 = connected
     /**
      * ADR-099: commit acknowledgements are handled here, never on jnats' reader thread. That thread also delivers
      * the reply a lease renewal waits for while holding a session's lock; a callback blocked on the same lock
@@ -199,7 +221,34 @@ final class FixSessionStore implements MessageStoreFactory {
     volatile int orderWindow = Integer.parseInt(System.getenv().getOrDefault("FIX_EXACTLY_ONCE_WINDOW", "8192"));
 
     FixSessionStore(final String natsUrl, final String owner) throws InterruptedException {
+        this(natsUrl, owner, BUCKETS, SERVER_URLS);
+    }
+
+    FixSessionStore(final String natsUrl, final String owner, final int buckets, final List<String> serverUrls)
+            throws InterruptedException {
         this.owner = owner;
+        this.buckets = Math.max(1, buckets);
+        this.serverUrls = serverUrls.toArray(new String[0]);
+        this.servers = new java.util.concurrent.atomic.AtomicReferenceArray<>(this.serverUrls.length);
+        this.serverUp = new java.util.concurrent.atomic.AtomicIntegerArray(this.serverUrls.length);
+        // FR-GFS-24: each server's connection fails closed on its own: its buckets' sessions are dropped and their
+        // Logons refused until it is back; no write of theirs goes to another server (they have no other connection).
+        for (int i = 0; i < this.serverUrls.length; i++) {
+            final int server = i;
+            Nats.connectAsynchronously(new Options.Builder().server(this.serverUrls[i]).maxReconnects(-1)
+                .pingInterval(Duration.ofSeconds(5))
+                .connectionListener((conn, event) -> {
+                    switch (event) {
+                        case DISCONNECTED, CLOSED -> serverDown(server, event.toString());
+                        case RECONNECTED, CONNECTED -> {
+                            servers.set(server, conn);
+                            serverUp.set(server, 1);
+                            ticker.execute(this::setUp);
+                        }
+                        default -> { }
+                    }
+                }).build(), true);
+        }
         // ADR-086 §7: fail closed. On a NATS disconnect every live session here is dropped (TCP close: a
         // Logout would take a sequence number the store cannot record) and Logons are refused until it is
         // back. A 5 s ping finds a silent partition in ~10 s instead of jnats' default 4 minutes. Connecting
@@ -229,14 +278,23 @@ final class FixSessionStore implements MessageStoreFactory {
         if (available || nats == null || nats.getStatus() != Connection.Status.CONNECTED) {
             return;
         }
+        for (int i = 0; i < servers.length(); i++) {
+            final Connection c = servers.get(i);
+            if (c == null || c.getStatus() != Connection.Status.CONNECTED) {
+                return;   // FR-GFS-24: every server's connection up before the first Logon; the tick retries
+            }
+        }
         try {
-            final KeyValue[] buckets = new KeyValue[BUCKETS];
-            for (int i = 0; i < BUCKETS; i++) {
-                ensureBucket(bucketName(i), KeyValueConfiguration.builder().name(bucketName(i)).maxHistoryPerKey(1)
+            final KeyValue[] buckets = new KeyValue[this.buckets];
+            final JetStream[] jets = new JetStream[this.buckets];
+            for (int i = 0; i < this.buckets; i++) {
+                final Connection c = conn(i);
+                ensureBucket(c, bucketName(i), KeyValueConfiguration.builder().name(bucketName(i)).maxHistoryPerKey(1)
                     .ttl(Duration.ofDays(7)).maxBucketSize(1L << 30).storageType(StorageType.File)
                     .placement(placement(i)).build());
-                discardOldest(nats.jetStreamManagement(), bucketName(i));
-                buckets[i] = nats.keyValue(bucketName(i));
+                discardOldest(c.jetStreamManagement(), bucketName(i));
+                buckets[i] = c.keyValue(bucketName(i));
+                jets[i] = c.jetStream();
             }
             ensureBucket(LEASE_BUCKET, KeyValueConfiguration.builder().name(LEASE_BUCKET).maxHistoryPerKey(1)
                 .ttl(LEASE_TTL).storageType(StorageType.File).build());
@@ -245,13 +303,14 @@ final class FixSessionStore implements MessageStoreFactory {
                 .ttl(Duration.ofDays(1)).maxBucketSize(ORDER_STORE_BYTES).storageType(StorageType.File).build());
             ordersDiscardOldest(nats.jetStreamManagement());
             kvs = buckets;
+            jss = jets;
             leases = nats.keyValue(LEASE_BUCKET);
             orders = nats.keyValue(ORDER_BUCKET);
-            js = nats.jetStream();
             groupCommit = GROUP_COMMIT && fenceHonoured();
             available = true;
-            log.warn("FIX session store available (NATS connected, buckets {} x{} and {}); Logons accepted",
-                BUCKET, BUCKETS, LEASE_BUCKET);
+            log.warn("FIX session store available (NATS connected, buckets {} x{} and {}{}); Logons accepted",
+                BUCKET, this.buckets, LEASE_BUCKET, servers.length() == 0 ? ""
+                    : ", each bucket on its own server's connection of " + servers.length());
         } catch (final IOException | JetStreamApiException | RuntimeException e) {
             log.warn("FIX session store not ready yet: {}", e.toString());
         }
@@ -265,8 +324,8 @@ final class FixSessionStore implements MessageStoreFactory {
         final String probe = "_fence-probe-" + owner.replaceAll("[^A-Za-z0-9-]", "_");
         try {
             boolean honoured = true;
-            for (int i = 0; i < BUCKETS && honoured; i++) {   // FR-GFS-21: each bucket may be on another server
-                honoured = fenceHonoured(kvs[i], js, probe, "$KV." + bucketName(i) + ".");
+            for (int i = 0; i < buckets && honoured; i++) {   // FR-GFS-21: each bucket may be on another server
+                honoured = fenceHonoured(kvs[i], jss[i], probe, "$KV." + bucketName(i) + ".");
             }
             if (honoured) {
                 log.info("FIX session store: group commit on (ADR-099)");
@@ -397,8 +456,8 @@ final class FixSessionStore implements MessageStoreFactory {
     private void checkCapacity() {
         try {
             boolean near = false;
-            for (int i = 0; i < BUCKETS; i++) {   // FR-GFS-21: any bucket near its cap
-                final StreamInfo si = nats.jetStreamManagement().getStreamInfo("KV_" + bucketName(i));
+            for (int i = 0; i < buckets; i++) {   // FR-GFS-21: any bucket near its cap
+                final StreamInfo si = conn(i).jetStreamManagement().getStreamInfo("KV_" + bucketName(i));
                 final long max = si.getConfiguration().getMaxBytes();
                 final boolean full = max > 0 && si.getStreamState().getByteCount() >= max * 9 / 10;
                 if (full && !nearlyFull) {
@@ -463,8 +522,51 @@ final class FixSessionStore implements MessageStoreFactory {
 
     private void ensureBucket(final String name, final KeyValueConfiguration config)
         throws IOException, JetStreamApiException {
-        if (!nats.keyValueManagement().getBucketNames().contains(name)) {
-            nats.keyValueManagement().create(config);
+        ensureBucket(nats, name, config);
+    }
+
+    private static void ensureBucket(final Connection c, final String name, final KeyValueConfiguration config)
+        throws IOException, JetStreamApiException {
+        if (!c.keyValueManagement().getBucketNames().contains(name)) {
+            c.keyValueManagement().create(config);
+        }
+    }
+
+    /** FR-GFS-24: the connection bucket {@code i} is written and read on: its server's own, or the main one. */
+    private Connection conn(final int i) {
+        return servers.length() == 0 ? nats : servers.get(i % servers.length());
+    }
+
+    private int serverOf(final int bucket) {
+        return servers.length() == 0 ? -1 : bucket % servers.length();
+    }
+
+    /** FR-GFS-24: is the server that holds {@code bucket} connected? (Unpinned: the main connection decides.) */
+    private boolean serverUp(final int bucket) {
+        return servers.length() == 0 || serverUp.get(bucket % servers.length()) == 1;
+    }
+
+    /** FR-GFS-24: as {@link #unavailable}, for the sessions whose bucket is on this one server only. */
+    private void serverDown(final int server, final String why) {
+        if (!serverUp.compareAndSet(server, 1, 0)) {
+            return;
+        }
+        log.error("ALERT FIX session store: NATS server {} ({}) {}: the FIX sessions whose bucket it holds are"
+            + " disconnected and their Logons refused until it returns; the others are served", server,
+            serverUrls[server], why);
+        for (final Store s : stores.values()) {
+            if (serverOf(s.bucket) != server) {
+                continue;
+            }
+            final boolean live;
+            synchronized (s) {
+                live = s.live;
+                s.leaseRevision = 0;   // as unavailable(): tryAcquire takes back one still ours once it is back
+                s.adoptPending = false;
+            }
+            if (live) {
+                ticker.execute(() -> onLost.accept(s.sid));
+            }
         }
     }
 
@@ -760,6 +862,11 @@ final class FixSessionStore implements MessageStoreFactory {
             if (nats != null) {
                 nats.close();
             }
+            for (int i = 0; i < servers.length(); i++) {
+                if (servers.get(i) != null) {
+                    servers.get(i).close();
+                }
+            }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -843,6 +950,15 @@ final class FixSessionStore implements MessageStoreFactory {
         KeyValue kv() {
             return kvs[bucket];
         }
+
+        JetStream js() {
+            return jss[bucket];
+        }
+
+        /** The store is up for this session: NATS, and (FR-GFS-24) the server that holds its bucket. */
+        boolean up() {
+            return available && serverUp(bucket);
+        }
         int sender = 1;
         int target = 1;
         long created = System.currentTimeMillis();
@@ -882,10 +998,10 @@ final class FixSessionStore implements MessageStoreFactory {
         Store(final SessionID sid) {
             this.sid = sid;
             this.key = keyOf(sid);
-            this.bucket = bucketOf(key);
+            this.bucket = bucketOf(key, buckets);
             this.prefix = "$KV." + bucketName(bucket) + ".";
             try {
-                if (available) {
+                if (up()) {
                     load();   // otherwise the first Logon's refresh loads it, once the store is up
                 }
             } catch (final IOException e) {
@@ -898,7 +1014,7 @@ final class FixSessionStore implements MessageStoreFactory {
             if (leaseRevision > 0) {
                 return true;
             }
-            if (!available) {
+            if (!up()) {
                 return false;
             }
             try {
@@ -1025,7 +1141,7 @@ final class FixSessionStore implements MessageStoreFactory {
 
         /** Held and known to be ours: renewed recently, or renewed successfully now. */
         boolean fresh() {
-            if (leaseRevision == 0 || !available) {
+            if (leaseRevision == 0 || !up()) {
                 return false;
             }
             return System.nanoTime() - renewedAt < FRESH_MILLIS * 1_000_000L || renew();
@@ -1067,7 +1183,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 if (wasLive) {
                     ticker.execute(() -> onLost.accept(sid));
                 }
-                throw new IOException("FIX session " + sid + (available ? " lost its lease" : " store unavailable")
+                throw new IOException("FIX session " + sid + (up() ? " lost its lease" : " store unavailable")
                     + "; not sending");
             }
             return false;
@@ -1251,7 +1367,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 final CompletableFuture<?>[] bodies = new CompletableFuture<?>[uncommitted.size()];
                 int i = 0;
                 for (final Object[] b : uncommitted) {
-                    bodies[i++] = js.publishAsync(NatsMessage.builder().subject(prefix + messageKey(key, (int) b[0]))
+                    bodies[i++] = js().publishAsync(NatsMessage.builder().subject(prefix + messageKey(key, (int) b[0]))
                         .headers(fenced).data((byte[]) b[1]).build());
                 }
                 final NatsMessage seq = NatsMessage.builder().subject(seqSubject)
@@ -1259,7 +1375,7 @@ final class FixSessionStore implements MessageStoreFactory {
                     .data((claimed + " " + tgt + " " + created).getBytes(StandardCharsets.UTF_8)).build();
                 inFlightBodies = bodies.length;
                 uncommitted.clear();
-                CompletableFuture.allOf(bodies).thenComposeAsync(v -> js.publishAsync(seq), commits)
+                CompletableFuture.allOf(bodies).thenComposeAsync(v -> js().publishAsync(seq), commits)
                     .orTimeout(COMMIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
                     .whenCompleteAsync((ack, e) -> {
                         if (e == null) {
@@ -1602,7 +1718,7 @@ final class FixSessionStore implements MessageStoreFactory {
 
         @Override
         public synchronized void refresh() throws IOException {
-            if (!available) {
+            if (!up()) {
                 return;   // QuickFIX/J refreshes on every Logon; with the store down that Logon is refused next
             }
             quiesce();

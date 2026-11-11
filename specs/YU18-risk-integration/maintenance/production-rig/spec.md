@@ -70,7 +70,7 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     cap at ~7 MB per book with 50 % headroom.
   - `rig.sh pools` SHALL:
     - give `engine-pool` the bench sysctls (`vm.dirty_*`, `net.core.rmem_*`), and only while it has no nodes;
-    - create `nats-pool` as three c4d-standard-16 on Hyperdisk (ADR-103, FR-PRG-41; was one c3-standard-8 for a
+    - create `nats-pool` as `NATS_SERVERS` (5, FR-GFS-24) c4d-standard-16 on Hyperdisk (ADR-103, FR-PRG-41; was one c3-standard-8 for a
       pd-balanced claim), and refuse an existing `nats-pool` of another machine type, naming the ADR;
     - `engine-pool` (operator-created) SHALL be c4d-standard-16 (ADR-103; was c4d-standard-8);
     - create `gateway-pool` on c4d-standard-8 with the static CPU manager;
@@ -171,7 +171,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - Consequence: a member whose disk is lost or wiped alone cannot rejoin a purged cluster from empty (its election
     replays the leader's log from 0, which the archive refuses; `ArchivePurgeTest` check 6). Recover it from a copy of a
     peer's disk, or take a fresh epoch, which wipes all three together.
-- **FR-PRG-41:** The capture stream's servers SHALL be a NATS cluster of three (ADR-103): a `nats` StatefulSet,
+- **FR-PRG-41:** The capture stream's servers SHALL be a NATS cluster of `prepare.py`'s `NATS_SERVERS`, at least
+  three: five (ADR-103 amended 2026-11-11, yaakov's "5 servers (40%)"; it chose three): a `nats` StatefulSet,
   `podManagementPolicy: Parallel`, routes over a headless Service (`nats-headless`, not-ready addresses published)
   naming every server, `cluster { name: traderx }`, each server's `server_name` and `server_tags` its pod's name
   (substituted at start from the downward API), one server per node (required hostname anti-affinity on

@@ -223,6 +223,11 @@ Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
 - **Daily reset.** `FIX_SESSION_RESET_TIME` / `FIX_SESSION_TIME_ZONE` (manifest: `17:00:00`,
   `America/New_York`). The first Logon or timer tick after it purges the stored messages and restarts the
   sequence at 1.
+- **Each session bucket on its own server (FR-GFS-24).** The gateway also connects to every NATS server
+  (`FIX_SESSION_SERVER_URLS`) and writes bucket i only on server i mod N's connection; through the one Service each
+  server relayed the others' publishes, which capped the store. Losing one server ends only the FIX sessions whose
+  bucket it holds, until it is back. The server count is `prepare.py`'s `NATS_SERVERS` (5), and `nats-pool` needs a
+  node per server.
 - **NATS down means no FIX.** On losing NATS each gateway logs `ALERT FIX session store unavailable`, closes
   its live FIX sessions and refuses Logons (Logout `FIX session store unavailable; retry later`) until NATS is
   back; then Logons continue the stored sequence. REST and binary order entry are unaffected.

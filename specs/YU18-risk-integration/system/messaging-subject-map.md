@@ -232,7 +232,8 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   holding a session's lease writes that session's keys. A fresh epoch purges both (FR-GFS-13).
   With `FIX_SESSION_BUCKETS=n` (FR-GFS-21; production renders four per NATS server) the sessions are spread over
   `FIX_SESSIONS`, `FIX_SESSIONS_1` ... `FIX_SESSIONS_<n-1>` (streams `KV_FIX_SESSIONS_<i>`), a session's keys all in
-  bucket `hash(K) mod n`, bucket i placed on server tag i mod N.
+  bucket `hash(K) mod n`, bucket i placed on server tag i mod N. FR-GFS-24: each gateway also connects to every server
+  (`FIX_SESSION_SERVER_URLS`, `nats-<i>.nats-headless`) and writes bucket i only on server i mod N's connection.
 - `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and
   `/accounts/{id}/positions` publishes.
 - Bridge receipts (ADR-083): every `/trades[.<p>]` and `/orders[.<p>]` message carries a reply subject
