@@ -23,8 +23,10 @@ def run(*mock_args, secs='3'):
     finally:
         mock.kill(); mock.stdout.close(); mock.wait()
     total = next((l for l in r.stdout.splitlines() if l.startswith('PROBE-TOTAL')), '')
-    ack, _, fill, _ = (dict(re.findall(r'(\S+?)=(\d+)(?:us)?(?=\s|$)', part)) for part in total.split('|'))
+    parts = [dict(re.findall(r'(\S+?)=(\d+)(?:us)?(?=\s|$)', part)) for part in total.split('|')] if total else [{}] * 5
+    ack, fill, rest = parts[0], parts[2], parts[4]
     tail = dict(re.findall(r'(\w+)=(\d+)', total.split('|')[-1]))
+    run.rest = rest
     return r, ack, fill, tail
 
 
@@ -40,6 +42,14 @@ class Stages(unittest.TestCase):
         self.assertTrue(5000 <= int(fill['p50']) < 7500, fill)                # 5 ms fill
         self.assertEqual({k: tail[k] for k in ('unanswered', 'unended', 'skipped', 'lostSessions', 'uncrossed')},
                          dict.fromkeys(('unanswered', 'unended', 'skipped', 'lostSessions', 'uncrossed'), '0'))
+
+    def test_the_resting_report_is_its_own_stage(self):
+        # the aggressor's Filled comes straight back; the resting order's report takes the fill feed's longer path
+        r, ack, fill, _ = run('--ack-ms', '2', '--fill-ms', '5', '--rest-ms', '30')
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:])
+        self.assertTrue(5000 <= int(fill['p50']) < 7500, fill)                # aggressor: 5 ms
+        self.assertTrue(30000 <= int(run.rest['p50']) < 33000, run.rest)       # resting: 30 ms
+        self.assertEqual(int(fill['count']), int(run.rest['count']))
 
     def test_an_aggressor_answered_filled_is_both_stages(self):
         # the gateway answers an order that fills on arrival with Filled, no New (FR-FFR-01)
