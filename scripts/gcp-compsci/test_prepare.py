@@ -266,10 +266,11 @@ class Rendering(unittest.TestCase):
         gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
         env=module.podspec(gw)['containers'][0]['env']
         self.assertIn({'name':'FIX_SESSION_STORE','value':'jetstream'},env)
+        self.assertIn({'name':'FIX_EXACTLY_ONCE','value':'jetstream'},env)   # FR-XOD-12 (yaakov 2026-11-10)
         self.assertIn({'name':'ORDER_READMODEL_URL','value':'http://trade-processor:18091'},env)
         self.assertIn({'name':'FIX_SESSION_RESET_TIME','value':'17:00:00'},env)
         self.assertIn({'name':'FIX_SESSION_TIME_ZONE','value':'America/New_York'},env)
-        for name in ('FIX_SESSION_STORE','ORDER_READMODEL_URL','FIX_SESSION_RESET_TIME'):
+        for name in ('FIX_SESSION_STORE','FIX_EXACTLY_ONCE','ORDER_READMODEL_URL','FIX_SESSION_RESET_TIME'):
             docs=copy.deepcopy(self.docs)
             gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
             env=module.podspec(gw)['containers'][0]['env']; env[:]=[e for e in env if e['name']!=name]

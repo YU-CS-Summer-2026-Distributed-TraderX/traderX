@@ -31,6 +31,9 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
     committed earlier, exactly once, and its own answer was lost beyond the window. The client SHALL reconcile the
     order's state by order status, and SHALL NOT resend that `seq` again. It is never a failure of the request.
   - Every answer from the stream gate consumes no ref and changes no state.
+  - An ACCEPTED answer from the ring reaches no capture stream: like `answeredAsDuplicate`, which re-emits the original
+    with `publishNats=false`, it is never bridged (`MatchingEngineClusteredService.bridgesOrder`), so a resend adds no
+    order event to the read model or the history store (recorded 2026-11-10; FR-THT-12).
 - FR-XOD-04: A request with `seq > next` SHALL NOT execute and SHALL NOT change any state. It SHALL be answered
   REJECTED / `OUT_OF_SEQUENCE`, with `orderRef` set to the expected `next`.
 - FR-XOD-05: The answer of a sequenced request SHALL be kept in its stream's ring and SHALL NOT enter the

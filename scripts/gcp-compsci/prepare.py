@@ -103,6 +103,13 @@ def route_fills(c):
                  {'name': 'FIX_FILL_FEED', 'value': 'routed'}]
 
 
+def exactly_once(c):
+    """ADR-090 (FR-XOD-12, yaakov 2026-11-10: "Turn on exactly-once"): every FIX NewOrderSingle is stored before it is
+    submitted and sequenced per session and account, so a resend is answered from its original and never booked twice
+    (FR-XOD-03). It needs the ADR-086 session store, which the gateway manifest already sets."""
+    set_env(c, {'FIX_EXACTLY_ONCE': 'jetstream'})
+
+
 def validate_routed_fills(docs, require):
     """FR-FFR-14: a routed fill feed needs the gateway's name from its pod and a jetstream read model to route from."""
     gw = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway'), None)
@@ -183,6 +190,7 @@ def configure_private_runtime(docs):
                 # FR-FIX05 (ADR-084): FIX fill reports read a durable stream, so a fill this gateway misses is re-read
                 # rather than lost. FR-FFR-14 (ADR-084 amendment): the stream is this gateway's own routed subject.
                 route_fills(c)
+                exactly_once(c)
                 # ADR-095: a second, TLS-only socket for the external CompID. Keystore and both passwords come from
                 # Secret fix-tls (provision-fix-tls.py). Without the Secret the gateway does not start: no plaintext
                 # fallback. Nothing outside the cluster reaches the port until fix-tls-external is applied.
@@ -856,6 +864,8 @@ def validate(docs, declared=None):
             if 'FIX_ACCEPTOR_PORT' in env:
                 require(env.get('FIX_SESSION_STORE') == 'jetstream',
                         'FIX sessions restart at MsgSeqNum 1 on reconnect (FR-FIX11, ADR-086)')
+                require(env.get('FIX_EXACTLY_ONCE') == 'jetstream',
+                        'FIX orders not exactly-once: a resend past the engine\'s key window books twice (FR-XOD-12, ADR-090)')
                 require((env.get('ORDER_READMODEL_URL') or '').startswith('http://trade-processor:'),
                         'FIX order status has no read model (FR-FIX04)')
                 require(re.fullmatch(r'\d\d:\d\d:\d\d', env.get('FIX_SESSION_RESET_TIME') or '') and env.get('FIX_SESSION_TIME_ZONE'),

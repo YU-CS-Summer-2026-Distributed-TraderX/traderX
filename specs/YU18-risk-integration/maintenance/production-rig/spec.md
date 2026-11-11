@@ -197,6 +197,17 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   or render `--archive-purge` (FR-PRG-40), which bounds the archive near two snapshot intervals
   (`CLUSTER_SNAPSHOT_INTERVAL_MS` 300 s: ~35 GB at 450K) whatever the claim. FR-PRG-39's disk snapshots are of the
   bytes used, not of the claim. The hours are yaakov's decision (ADR-103 amendment 2026-11-10); `test_prepare.AcceptanceShape`.
+- **FR-PRG-46** (2026-11-10, yaakov: "Turn on exactly-once"): The production candidate SHALL render
+  `FIX_EXACTLY_ONCE=jetstream` on `cluster-gateway` (ADR-090, FR-XOD-12; it needs `FIX_SESSION_STORE=jetstream`, which
+  the gateway manifest sets), and `validate()` SHALL refuse a FIX-enabled candidate without it. Without it a FIX resend
+  that arrives past the engine's FR-IMRG14 key window books a second time: 256Ki keys shared by every session are about
+  1.7 s at 150K orders/s, and acceptance run 3's 47 s reconnect double-booked (the +427 NEW, FR-THT-12). Binary
+  orders are sequenced by the client (FR-XOD-11; the load driver is the acceptance lane's); the render carries
+  nothing for them beyond `BINARY_SEQUENCED=refuse` in front of members older than ADR-090 (ADR-096 §6). Not to be
+  rolled out before FIX exactly-once is pipelined or moved into the engine (the engine-side ClOrdID ring is with
+  yaakov): the sequenced FIX path in `cfb748fb` and `2998f238` is one order in flight per session, 1.7-5.2x below the
+  pipelined path locally (`FixGatewayThroughputIT`, 2026-11-10).
+  `test_prepare.Rendering.test_fix_sessions_persist_and_status_has_a_read_model`.
 - **FR-PRG-43** (2026-11-10, the acceptance run): Every load test account (FIX 9900002-9900008, binary
   9900010-9900017) SHALL have a row in `specs/YU15-eod-risk-extract/reference-data/counterparties.csv`
   (`CPTY-TEST-<id>`, `NS-TEST-<id>`, USD). The extract aborts on a holding account with no mapping (FR-RXT09) and the
