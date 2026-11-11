@@ -651,6 +651,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     16 lanes did this at the promotion. Silence now counts only while publishes wait for receipts, and a catch-up's
     stream read does not count either. `/health` `bridges.*.reconnects` counts dropped connections.
     `ReceiptLanesIT#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`.
+    On GKE (2026-11-11, RI38, production's render at 494–512K sides/s, 5 leader kills per build):
+    - The tip's lanes made 0 reconnects at any promotion, and no kill produced a second election.
+    - E3's build had storms of 9, 13 and 14 lanes. One storm was followed by ZGC allocation stalls on the new leader:
+      284 ms on the apply thread and 952 ms on the Aeron receiver. Then came a second election, 21 s after the kill.
+    - Inference (RI38 §3c): the storm's republish allocates on the publish path, the leader stalls on allocation,
+      and that is the reported second election. This was seen once; it is not a measured rate.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

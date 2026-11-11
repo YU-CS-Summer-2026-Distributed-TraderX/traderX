@@ -2,8 +2,9 @@
 
 Opened 2026-11-10 (coordinator, three items on the members' egress and failover path). Branch `ri38-egress-failover-gaps`
 from `traderX-risk-integration` `922c327e`. Status: item 1 fixed (FR-DRS-49: a unit test and kind, each with a failing control).
-Item 2 counted, not yet prevented (FR-BSP-03, unit test; prevention is T-BSP07). Item 3 is diagnosed from evidence, with one contributing defect
-fixed. The second election's cause is open. Nothing has run on GKE.
+Item 2 counted, not yet prevented (FR-BSP-03, unit test; prevention is T-BSP07). Item 3: on GKE (§3c) the second
+election comes from ZGC allocation stalls on the new leader. It followed the promotion reconnect storm, which is fixed
+here. It did not recur on the tip in 5 kills.
 
 ## 1. The FR-DRS-33 "ack gap": not covered by FR-DRS-47 + FR-DRS-37; fixed (FR-DRS-49)
 
@@ -144,3 +145,39 @@ after the first. Each one began on the follower, which lost the new leader's hea
 throttling and memory events stayed near 0, so it is not CPU quota or cgroup memory. The tap-off arm and the GC/safepoint
 logging rerun did not run: the Mac stayed above load 12 all night. Evidence and next steps: shared notes
 `ri38-second-election-kind/README.md`. `SnapshotBarrierPerformanceTest` passed run alone at load 12.
+
+## 3c. GKE, production's render (2026-11-11, slot B, about $40)
+
+yaakov's yes in this lane's chat. Cluster `traderx-ri38` in us-east4-a, 1:24–3:27 pm ET, torn down with GCE's proof: 0
+instances and 0 disks. Evidence: shared notes `ri38-second-election-gke/README.md`.
+
+- The render: images from the integration tip `b20fe928`, through `prepare.py` and `acc.py` as acceptance run 4 did.
+  Members are production's: 15 CPU / 40Gi, 12g generational ZGC, 50/200/100 ms, the kdb tap on. execution-algo-engine
+  is left out (FR-AE10).
+- The load: binary, 494–512K sides/s.
+- Each arm: a no-kill baseline, then 5 leader kills. Recorded: GC and safepoint lines, the members' applied position
+  every 100 ms, cgroup and PSI every second, `memory.stat`.
+
+| build | kills with a second election | longest allocation stall on a new leader | reconnect storms at promotion |
+|---|---|---|---|
+| the tip | 0 of 5 | 48 ms | none |
+| run E3's members and gateway | 1 of 5 (+21 s) | 1,427 ms | 9, 13 and 14 lanes |
+
+How that one second election happened:
+1. A storm of 14 lanes.
+2. ZGC allocation stalls on the new leader: jnats and lane threads first, then the apply thread (284 ms) and the Aeron
+   receiver (952 ms).
+3. The heap went from 3.3 to 10.9 GB in one 3.4 s young collection.
+4. The follower opened the election.
+
+Ruled out on the real heap:
+- stop-the-world pauses: safepoints at most 14.4 ms;
+- CPU throttling: 0 ms;
+- memcg reclaim: followers at their limit, memory PSI 0.00–0.05;
+- the tap: 3 of the tip's promotions wrote its 256 MB cap within seconds, with no election.
+
+Open: what allocated 7.6 GB in 3 s, since other storms stalled at most 108 ms; a JFR allocation profile of a promotion
+would show it. 1 of 5 against 0 of 5 is the mechanism seen once, not a rate.
+
+Measurement: one engine node's clock stepped about 0.7 s, so election times are read per member, on its own clock
+(`ri38-recount.py`).
