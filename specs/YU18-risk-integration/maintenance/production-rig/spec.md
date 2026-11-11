@@ -204,6 +204,23 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   load the EOD stage failed closed. `prepare.py` SHALL refuse to render while one is unmapped
   (`unmapped_test_accounts`). A test account's positions are extracted like any other's (ADR-103 §5: the EOD extract
   runs against the load's positions); FR-PRG-38's clean-up is unchanged. `test_prepare.AcceptanceShape`.
+- **FR-PRG-44** (2026-11-10, acceptance run 3): After a reconnect or a GapFill, the FIX rehearsal load SHALL reconcile
+  before it resends. After `--reconcile-settle-ms` (default 10 s), it sends one OrderStatusRequest (H) per unanswered
+  order. An order the venue reports (ExecType OrderStatus, 150=I) is counted `foundBooked`, taken as answered and
+  set to the status reported (`foundFilled` when that status is Filled and its fill report never came). Only an order
+  the venue answers "unknown order" is resent, with PossResend(97), and counted `resent`; resends are never in `sent`.
+  The run reports `statusRequests`, and for each outage when the socket closed, what closed it (the Logout text or the
+  socket error) and the Logon attempts it took.
+  - Why: a blind resend books a second order once the engine's duplicate window (FR-IMRG14, a count shared by every
+    session, ~1.7 s at 150K orders/s) has passed its key. In run 3, CLIENT386 was down 46.9 s and blind-resent 1,464
+    orders; history held +427 NEW and +8 FILLED over `sent` (`history-overcount-run3.md`, trade-history-tiers).
+  - The status comes from the read model, so an order booked within the read model's lag reads as unknown and is
+    still resent: the settle time is that margin, not a proof. The acceptance compares the history store's NEW with
+    `sent` + `resent`.
+  - What a production client should do past the window (ADR-090 exactly-once, the engine window) is yaakov's decision
+    and is not this row's.
+
+  `test_fix_load.Drain`.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
@@ -453,7 +470,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   account, track every ClOrdID until its first ExecutionReport, and through a gateway drain:
   - reconnect through the internal LB with its next MsgSeqNum, never a reset after the first Logon;
   - answer the acceptor's ResendRequest with a GapFill before resending anything;
-  - resend every unanswered order with PossResend(97), so the engine dedupes it and the gateway restates it.
+  - reconcile before resending (FR-PRG-44): resend with PossResend(97) only an unanswered order the venue answers
+    "unknown order" to an OrderStatusRequest.
 
   It SHALL send no TimeInForce (a Day order needs an open trading day, FR-OT08), pace each session at its rate,
   cancel every order still resting at the end, and end non-zero when any order is unanswered, answered as New twice,

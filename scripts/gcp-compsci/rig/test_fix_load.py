@@ -33,13 +33,16 @@ def messages(conn):
 
 class Drain(unittest.TestCase):
     def test_a_drain_loses_nothing_and_books_nothing_twice(self):
+        # FR-PRG-44 (acceptance run 3: 1,464 blind resends after a 47 s outage booked again past the engine's window):
+        # after the drain the client asks (H) for every unanswered order and resends only what the venue does not know.
         srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
-        seen = {'logons': [], 'conn2': [], 'answered': set(), 'errors': []}
+        seen = {'logons': [], 'conn2': [], 'booked': set(), 'errors': []}
         out = [1]
         def reply(conn, fields):
             conn.sendall(frame([('35', fields[0][1]), ('34', out[0]), ('52', '20261029-18:00:00.000')] + fields[1:])); out[0] += 1
         def acceptor():
-            # Connection 1: answers the first 20 orders, leaves the next ones in flight, then drains (Logout).
+            # Connection 1: books the first 25 orders and answers the first 20; 26..30 are lost before booking; then
+            # it drains (Logout).
             conn, _ = srv.accept(); last = 0; orders = 0
             for f in messages(conn):
                 if not re.fullmatch(r'\d{8}-\d\d:\d\d:\d\d\.\d{3}', f['52']): seen['errors'].append('52 ' + f['52'])
@@ -47,10 +50,10 @@ class Drain(unittest.TestCase):
                 if f['35'] == 'A': seen['logons'].append(f); reply(conn, [('35', 'A')]); continue
                 if f['35'] != 'D': continue
                 orders += 1
-                if orders <= 20:
-                    seen['answered'].add(f['11']); reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
+                if orders <= 25: seen['booked'].add(f['11'])
+                if orders <= 20: reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
                 if orders == 30:
-                    reply(conn, [('35', '5')]); conn.close(); break
+                    reply(conn, [('35', '5'), ('58', 'gateway draining')]); conn.close(); break
             # Connection 2: the resumed session. It asks for everything after the last message it read.
             conn, _ = srv.accept()
             for f in messages(conn):
@@ -60,37 +63,49 @@ class Drain(unittest.TestCase):
                     # Resumed, not reset; at or past the last number read (what the drain cut off is asked for again).
                     if f.get('141') == 'Y' or int(f['34']) <= last: seen['errors'].append(f"resume logon seq {f['34']} after {last}")
                     reply(conn, [('35', 'A')]); reply(conn, [('35', '2'), ('7', last + 1), ('16', 0)]); continue
+                if f['35'] == 'H':   # the gateway's answers: the order's status, or an unknown order (OrdStatus Rejected)
+                    if f['11'] in seen['booked']:
+                        reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', 'I')])
+                    else:
+                        reply(conn, [('35', '8'), ('11', f['11']), ('39', '8'), ('150', 'I'), ('58', 'unknown order; resend with OrderID (37)')])
                 if f['35'] == 'F':   # the end-of-run sweep cancels what still rests; the first is already gone
                     seen.setdefault('cancels', []).append(f['41'])
                     if len(seen['cancels']) == 1:   # production 2026-10-29: an order cancelled unseen answers 35=9
                         reply(conn, [('35', '9'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('434', '1'), ('102', '1')])
                     else:
                         reply(conn, [('35', '8'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('150', '4')])
-                if f['35'] == 'D':   # a resend of a key the engine already holds is restated (150=I)
-                    restate = f['11'] in seen['answered']
-                    if not restate: seen['answered'].add(f['11'])
-                    reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', 'I' if restate else '0')])
+                if f['35'] == 'D':   # a resend of a key already booked would be a second booking past the window
+                    if f.get('97') == 'Y' and f['11'] in seen['booked']: seen['errors'].append('resent a booked order ' + f['11'])
+                    seen['booked'].add(f['11'])
+                    reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
                 if f['35'] == '5': reply(conn, [('35', '5')]); conn.close(); return
         threading.Thread(target=acceptor, daemon=True).start()
         with tempfile.TemporaryDirectory() as d:
             creds = Path(d, 'creds.json'); creds.write_text(json.dumps({'CLIENT2': {'account': '9900002', 'password': 'not-printed-pw'}}))
             r = subprocess.run(['node', str(LOAD), '--creds', str(creds), '--px', '100.00', '--rate', '400', '--secs', '2',
-                                '--host', '127.0.0.1', '--port', str(srv.getsockname()[1]), '--out', str(Path(d, 'r.json'))],
-                               capture_output=True, text=True, timeout=60)
+                                '--reconcile-settle-ms', '200', '--host', '127.0.0.1', '--port', str(srv.getsockname()[1]),
+                                '--out', str(Path(d, 'r.json'))], capture_output=True, text=True, timeout=60)
             result = json.loads(Path(d, 'r.json').read_text())
+        s = result['sessions'][0]
         self.assertEqual(seen['errors'], [])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn('not-printed-pw', r.stdout + r.stderr)
         self.assertEqual((result['unanswered'], result['duplicateAnswers'], result['reconnects'], result['restingAtEnd']), (0, 0, 1, 0))
         self.assertEqual(result['cancelledAtEnd'], result['answered'] - 1)   # every order rests; one was gone already
         self.assertEqual(len(seen['cancels']), len(set(seen['cancels'])))
-        self.assertEqual(result['sent'], result['answered'])
-        self.assertGreaterEqual(result['sessions'][0]['resent'], 10)
+        self.assertEqual(result['sent'], result['answered'])   # resends are not new orders
+        self.assertEqual(result['foundBooked'], 5)             # 21..25: booked, their answers lost in the drain
+        self.assertGreaterEqual(result['resent'], 5)           # 26.. : the venue never had them
+        self.assertEqual(result['statusRequests'], result['foundBooked'] + result['resent'])
+        self.assertEqual(result['restated'], 0)
         self.assertEqual([l.get('141') for l in seen['logons']], ['Y', None])
+        self.assertEqual((s['reconnects'][0]['cause'], s['reconnects'][0]['attempts']), ('Logout: gateway draining', 1))
         types = [f['35'] for f in seen['conn2']]
         gapfill = next(i for i, f in enumerate(seen['conn2']) if f['35'] == '4' and f.get('123') == 'Y')
+        first_status = next(i for i, f in enumerate(seen['conn2']) if f['35'] == 'H')
         first_resend = next(i for i, f in enumerate(seen['conn2']) if f['35'] == 'D' and f.get('97') == 'Y')
-        self.assertLess(gapfill, first_resend, types[:12])
+        self.assertLess(gapfill, first_status, types[:12])
+        self.assertLess(first_status, first_resend, types[:40])
 
     def test_the_rate_is_per_session_per_second(self):
         # Production 2026-10-29: --rate 5 sent 100/s per session (one order per 10 ms tick at least).

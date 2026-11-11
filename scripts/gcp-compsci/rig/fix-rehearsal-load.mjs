@@ -8,13 +8,18 @@
 // (believedResting) and what the venue said was not open (cancelRejects), for comparison with the members' openOrders.
 //
 // A gateway that drains logs its sessions out (FR-PRG-07). This client then reconnects through the internal LB with
-// its next MsgSeqNum (never a reset after the first Logon), answers the acceptor's ResendRequest with a GapFill, asks
-// for what it missed, and resends every unanswered order with PossResend(97): the engine dedupes a key it already
-// holds and the gateway restates it (150=I, ADR-091). So a drain loses nothing and books nothing twice.
+// its next MsgSeqNum (never a reset after the first Logon), answers the acceptor's ResendRequest with a GapFill, and
+// asks for what it missed. It then reconciles before it resends (FR-PRG-44): after --reconcile-settle-ms, one
+// OrderStatusRequest (H) per unanswered order. An order the venue reports is counted as found (foundBooked) and taken
+// as answered; only one it says it does not know is resent, with PossResend(97). A blind resend double-books once the
+// engine's duplicate window (FR-IMRG14, a count shared by every session: ~1.7 s at 150K orders/s) has passed the key:
+// acceptance run 3, 1,464 resends after a 47 s outage, +427 NEW in the history store. The status comes from the read
+// model, so an order booked within its lag reads as unknown; the settle time is that margin. Each outage records
+// when the socket closed, the Logout text or socket error that closed it, and the Logon attempts it took.
 //
 //   node fix-rehearsal-load.mjs --creds FILE --px P [--ticker MSFT] [--rate N/s per session] [--secs S]
 //        [--host 10.90.0.41] [--port 18130] [--out results.json] [--ramp 0.25,0.5,0.75 --step-secs 300]
-//        [--max-end-cancels 2048]
+//        [--max-end-cancels 2048] [--reconcile-settle-ms 10000]
 // FILE is provision-fix-test-clients.json ({CompID: {account, password}}, mode 0600). No password is printed.
 import fs from 'node:fs';
 import net from 'node:net';
@@ -27,6 +32,7 @@ const cfg = {
   out: flag('--out', 'results.json'), maxInFlight: Number(flag('--max-in-flight', 5000)),
   drainSecs: Number(flag('--drain-secs', 60)),   // after sending stops: wait this long for answers
   maxEndCancels: Number(flag('--max-end-cancels', 2048)),   // per session
+  settleMs: Number(flag('--reconcile-settle-ms', 10000)),   // after a reconnect, before asking for order status
 };
 if (!cfg.creds || !cfg.px) { console.log('usage: --creds FILE --px PRICE'); process.exit(2); }
 const creds = JSON.parse(fs.readFileSync(cfg.creds, 'utf8'));
@@ -51,7 +57,7 @@ const bits = () => ({ a: new Uint8Array(1 << 13),
 function session(compId, { account, password }, index) {
   const s = { compId, account, sent: 0, answered: 0, resent: 0, restated: 0, rejected: 0, sessionRejects: 0,
               duplicateAnswers: 0, filled: 0, duplicateFills: 0, cancelRejects: 0, believedResting: 0, endCancels: 0,
-              reconnects: [], rejectReasons: {} };
+              statusRequests: 0, foundBooked: 0, foundFilled: 0, reconnects: [], rejectReasons: {} };
   const open = new Map();          // ClOrdID -> fields of the NewOrderSingle, until its first ExecutionReport
   // One bit per sequence of our own ClOrdIDs (RUN-index-seq), so an hour at rate stays a few MB. resting: last status
   // New / PartiallyFilled; done: Filled, Canceled, Rejected or not open, never resting again (a late New after its
@@ -62,6 +68,7 @@ function session(compId, { account, password }, index) {
   const end = (n) => { if (n < 0) return; done.add(n); if (resting.has(n)) { resting.del(n); restingCount--; } };
   const mine = `${RUN}-${index}-`, seqOf = (cl) => (cl.startsWith(mine) && /^\d+$/.test(cl.slice(mine.length)) ? Number(cl.slice(mine.length)) : -1);
   let out = 1, inExpected = 1, sock = null, up = false, first = true, buf = '', next = 0, downAt = null, resendTimer = null, credit = 0;
+  let outage = null;   // {closedAt, cause, attempts} of the current outage, pushed into reconnects at the next Logon
 
   const frame = (type, fields, header = []) => {
     const seq = header.find(([k]) => k === '34')?.[1] ?? out++;
@@ -74,10 +81,14 @@ function session(compId, { account, password }, index) {
   const write = (type, fields, header) => { if (sock && !sock.destroyed) sock.write(frame(type, fields, header)); };
   const order = (cl, side, resend) => write('D', [['11', cl], ['1', account], ['55', cfg.ticker], ['54', side],
     ['38', 1], ['40', 2], ['44', cfg.px], ['60', stamp()]], resend ? [['97', 'Y']] : []);
-  const resendOpen = () => { for (const [cl, side] of open) { order(cl, side, true); s.resent++; } };
+  // FR-PRG-44: ask, then resend only what the venue does not know (the 150=I answers below)
+  const asking = new Set();
+  const reconcileOpen = () => { sock.cork(); for (const [cl, side] of open) { if (asking.has(cl)) continue; asking.add(cl); s.statusRequests++;
+    write('H', [['11', cl], ['1', account], ['55', cfg.ticker], ['54', side]]); } sock.uncork(); };
+  const reconcileLater = () => { clearTimeout(resendTimer); resendTimer = setTimeout(reconcileOpen, cfg.settleMs); };
 
   const connect = () => {
-    buf = ''; sock = net.connect(cfg.port, cfg.host);
+    buf = ''; sock = net.connect(cfg.port, cfg.host); if (outage) outage.attempts++;
     sock.on('connect', () => write('A', [['98', 0], ['108', 30], ['554', password], ...(first ? [['141', 'Y']] : [])]));
     sock.on('data', (chunk) => {
       buf += chunk.toString('latin1');
@@ -90,24 +101,39 @@ function session(compId, { account, password }, index) {
           if (first) { inExpected = seq + 1; first = false; }
           else if (seq > inExpected) write('2', [['7', inExpected], ['16', 0]]);   // ask for the answers we missed
           up = true;
-          if (downAt) {   // resent only after any ResendRequest is answered, or the GapFill would cover the resends
-            s.reconnects.push({ at: new Date().toISOString(), downMs: Date.now() - downAt }); downAt = null;
-            resendTimer = setTimeout(resendOpen, 300);
+          if (downAt) {   // reconciled only after any ResendRequest is answered, or the GapFill would cover the requests
+            s.reconnects.push({ at: new Date().toISOString(), downMs: Date.now() - downAt, ...outage }); downAt = null; outage = null;
+            asking.clear(); reconcileLater();   // a request the outage cut off is asked again
           }
           continue;
         }
         if (f['43'] !== 'Y' && seq >= inExpected) inExpected = seq + 1;
         if (f['35'] === '4' && f['123'] === 'Y') { inExpected = Math.max(inExpected, Number(f['36'])); continue; }
-        if (f['35'] === '2') {   // GapFill what it asks for, then resend the open orders as new messages
-          clearTimeout(resendTimer);
+        if (f['35'] === '2') {   // GapFill what it asks for, then reconcile the open orders
           write('4', [['123', 'Y'], ['36', out]], [['34', Number(f['7'])], ['43', 'Y'], ['122', stamp()]]);
-          resendOpen(); continue;
+          reconcileLater(); continue;
         }
         if (f['35'] === '1') { write('0', [['112', f['112']]]); continue; }
         if (f['35'] === '3') { s.sessionRejects++; continue; }
         if (f['35'] === '9') { end(seqOf(f['41'])); s.cancelRejects++; continue; }   // the venue says it is not open
-        if (f['35'] === '5') { if (!closing) sock.destroy(); continue; }
+        if (f['35'] === '5') {   // a Logout that ends the session, or one that refuses a Logon during an outage
+          if (closing) continue;
+          const why = `Logout: ${f['58'] || '(no text)'}`;
+          if (outage) outage.lastRefusal = why; else outage = { closedAt: new Date().toISOString(), cause: why, attempts: 0 };
+          sock.destroy(); continue;
+        }
         if (f['35'] === '8' && f['11']) {
+          // The answer to our OrderStatusRequest (ExecType OrderStatus, 150=I): the venue knows the order, or says
+          // "unknown order" (OrdStatus Rejected), and only then is it resent. Neither is a restatement nor a reject.
+          if (f['150'] === 'I' && (asking.delete(f['11']) || (f['39'] === '8' && /^unknown order/.test(f['58'] || '')))) {
+            const cl = f['11'], k = seqOf(cl);
+            if (f['39'] === '8' && /^unknown order/.test(f['58'] || '')) { if (open.has(cl)) { order(cl, open.get(cl), true); s.resent++; } continue; }
+            s.foundBooked++;
+            if (f['39'] === '2' && k >= 0 && !filled.has(k)) { filled.add(k); s.foundFilled++; }   // its fill report was lost
+            if (['0', '1'].includes(f['39'])) rest(k); else if (['2', '4', '8', 'C'].includes(f['39'])) end(k);
+            if (open.delete(cl)) { answered.add(k); s.answered++; }   // answered: its answer was what the outage lost
+            continue;
+          }
           const orig = f['41'] || f['11'];   // a cancel's report names the order in OrigClOrdID(41)
           const n = seqOf(orig);
           // every order is a limit of 1: Filled(39=2) is its one fill report; a restatement (150=I) is not a fill
@@ -129,9 +155,10 @@ function session(compId, { account, password }, index) {
       up = false;
       if (closing) return;
       downAt ??= Date.now();
+      outage ??= { closedAt: new Date().toISOString(), cause: 'socket closed by the peer', attempts: 0 };
       setTimeout(connect, 500);
     });
-    sock.on('error', () => {});
+    sock.on('error', (e) => { outage ??= { closedAt: new Date().toISOString(), cause: `socket error: ${e.code || e.message}`, attempts: 0 }; });
   };
   connect();
   const tick = setInterval(() => {
@@ -165,6 +192,7 @@ const report = (final) => {
                 filled: sum('filled'), duplicateFills: sum('duplicateFills'),
                 selfTradeCancelled: rows.reduce((a, r) => a + (r.selfTradeCancelled || 0), 0),
                 reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), restingAtEnd: sum('restingAtEnd'),
+                resent: sum('resent'), statusRequests: sum('statusRequests'), foundBooked: sum('foundBooked'), foundFilled: sum('foundFilled'),
                 cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), believedResting: sum('believedResting'),
                 endCancels: sum('endCancels'), cancelRejects: sum('cancelRejects'), sessions: rows };
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
