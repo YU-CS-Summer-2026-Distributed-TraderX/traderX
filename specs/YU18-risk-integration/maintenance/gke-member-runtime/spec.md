@@ -70,6 +70,17 @@
   had parked up to 1 ms between orders at low rate. L0, 2026-11-10, on GKE: client p50 1,165 µs on the default
   against 614 µs with the gateway driver on spin, p99 2,230 → 1,041 µs; pure spin cost 8% of capacity at
   saturation (more, smaller packets).
+- FR-GMR-12 (latency L1): Each member agent SHALL take its own idle strategy from `CLUSTER_IDLE_STRATEGY_<AGENT>`,
+  where AGENT is SENDER, RECEIVER or CONDUCTOR (the DEDICATED driver's threads), ARCHIVE (the archive's conductor and,
+  when DEDICATED, its recorder and replayer), CONSENSUS or SERVICE. It takes the same names as `CLUSTER_IDLE_STRATEGY`.
+  An agent with none set SHALL take the member-wide idle (`CLUSTER_IDLE_STRATEGY`, else `CLUSTER_IDLE_SLEEP_MS`, else
+  Aeron's default), so a member with none of these set runs as before, and earlier measurements stay reproducible. An
+  unknown name SHALL refuse to start and name its variable. The member's start line SHALL name each agent's idle and the
+  archive threading (`Cluster node up: ... idle=[sender=... service=...] archiveThreading=...`). Busy-spin wants a core
+  per spinning agent: it is paired with the engine pool's static CPU manager (FR-PRG-05, FR-OPL-05). Node-local: members
+  may differ, so it rolls one member at a time.
+- FR-GMR-13 (latency L2): The archive's threading SHALL come from `CLUSTER_ARCHIVE_THREADING` (SHARED, DEDICATED,
+  INVOKER). Unset SHALL be SHARED, as before. Any other value SHALL refuse to start. Node-local, as FR-GMR-12.
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the GKE tier.
 
@@ -82,6 +93,13 @@
   `test_member_archive_storageclass_is_rendered` and `test_promtail_ships_this_namespace_from_every_node`.
 - SC-GMR-03: An empty-root CompSci candidate contains the StorageClass, the promtail DaemonSet and
   exactly 21 distinct images in 24 slots.
+- SC-GMR-07: `ClusterNodeConfigTest` passes. With nothing set, the contexts carry Aeron's default idle and a SHARED
+  archive, and the start line reads `aeron-default` for every agent. The names parse, and an unknown one names its
+  variable. An agent's own idle wins over the member-wide one. In a forked JVM with `CLUSTER_IDLE_STRATEGY=lowpark`,
+  `CLUSTER_IDLE_STRATEGY_SENDER=busyspin`, `CLUSTER_IDLE_STRATEGY_SERVICE=busyspin` and
+  `CLUSTER_ARCHIVE_THREADING=dedicated`, exactly the sender and the service spin, every other agent runs lowpark, and
+  the archive is DEDICATED. With the sender wired to the member-wide idle instead, that test fails (negative control,
+  2026-11-10).
 - SC-GMR-05: `test_prepare.test_member_log_outlives_its_pod` passes: the render's member claims `data` with
   Retain/Retain, and a member with an ephemeral `/data`, or either retention set to Delete, is refused.
   `MemberDnsCacheTest` passes.

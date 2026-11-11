@@ -34,8 +34,20 @@ if (!cfg.resolve || !cfg.ticker || !/^\d+(\.\d{1,6})?$/.test(cfg.px ?? '') || cf
 }
 const [whole, frac = ''] = cfg.px.split('.');
 const PX = BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, '0'));
-const r = await fetch(`${cfg.resolve}/resolve`, {method: 'POST', headers: {'content-type': 'application/json'},
-  body: JSON.stringify({ticker: cfg.ticker}), signal: AbortSignal.timeout(5000)});
+// After a member roll the gateways can still be reconnecting: retry the resolve (no order sent) for up to a minute
+// instead of dying, which left a whole arm without client latency (2026-11-11, S').
+let r;
+for (let attempt = 1; ; attempt++) {
+  try {
+    r = await fetch(`${cfg.resolve}/resolve`, {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ticker: cfg.ticker}), signal: AbortSignal.timeout(5000)});
+    if (r.status === 200 || attempt >= 12) break;
+  } catch (e) {
+    if (attempt >= 12) throw e;
+  }
+  console.log(`resolve attempt ${attempt} failed; retrying`);
+  await new Promise((ok) => setTimeout(ok, 5000));
+}
 const SECURITY = r.status === 200 ? (await r.json()).securityId : undefined;
 if (!Number.isInteger(SECURITY)) { console.log(`refused: ${cfg.ticker} does not resolve (${r.status})`); process.exit(2); }
 const NONCE = crypto.randomBytes(4).readUInt32LE(0) || 1;

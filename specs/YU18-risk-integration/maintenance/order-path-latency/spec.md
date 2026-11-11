@@ -27,6 +27,44 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
 - **FR-OPL-04 (engine-node CPU budget):** `l0-baseline.sh alloc` SHALL list each engine node's capacity and allocatable
   CPU and every pod on it with its QoS class and CPU requests, so a static CPU manager's exclusive budget can be
   checked against the member's integer request before the pool is recreated.
+- **FR-OPL-05 (exclusive cores, latency L1):** on a rig, the engine pool's static CPU manager gives a Guaranteed member
+  with an integer CPU request exclusive cores (whether production's `node-engine.yaml` carries it is FR-PRG-05, a
+  separate decision). The kubelet keeps ceil(kube-reserved) = 1 CPU (cpu 0) in
+  the shared pool and allocates whole physical cores first. On a c4d-standard-16 a 14-CPU member gets 7 full cores; a
+  15-CPU member also takes cpu 0's SMT sibling. GKE's node config exposes no `full-pcpus-only` and no IRQ affinity, so
+  NIC interrupts are recorded (FR-OPL-06), not steered. `l0-baseline.sh static CPU` SHALL take the members to 0,
+  apply `node-engine.yaml` with `cpuManagerPolicy: static` to the engine pool at 0 nodes, bring the pool and the
+  members back at CPU, and refuse unless the pool reports the policy and each member's cpuset is exactly CPU wide.
+  `l0-baseline.sh shared CPU` SHALL do the same with `cpuManagerPolicy: none` and refuse unless each member's cpuset
+  is wider than CPU.
+- **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
+  - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
+    (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;
+  - the container's `cpu.stat` (CFS throttling) and cpuset, and the SMT sibling map;
+  - `/proc/interrupts` (gVNIC) and `/proc/softirqs` (NET_RX/TX) per CPU;
+  - the CPU each thread last ran on.
+
+  `l1-report.py` SHALL give one row per window: throttled periods and time, each agent's max cycle, cycles over the
+  threshold, back pressure, NIC IRQs and NET_RX on the member's own cores against the rest, and any hot agents
+  sharing a physical core.
+- **FR-OPL-07 (L1/L2 A/B):** `l1-ab.sh` SHALL run five arms in one session, each a member roll. Each arm runs a probe
+  with blocks at 0, ~300K and the 500K setting, and the gateways are on `lowpark` throughout:
+  - N: today's member on shared cores (lowpark, SHARED archive, 15 CPU);
+  - S: N on MEMBER_CPU exclusive cores (default 14);
+  - L1: S with the sender, receiver, consensus module and service busy-spinning;
+  - L2: S with a DEDICATED archive;
+  - L12: L1 and L2 together.
+
+  The order control (2026-11-11) SHALL run `Np Sp Npp`: N' on shared cores, S' on static, then N'' back on shared
+  cores at the 500K setting, so static's saturation cost is measured shared, static, shared within one session.
+
+  After each roll the arm SHALL wait for every gateway to be Ready, start the probe, and refuse unless the probe is
+  running and has written a window within 180 s. The probe retries its `/resolve` for up to a minute (2026-11-11: S'
+  ran its blocks with a probe that died on ECONNREFUSED behind restarting gateways, and measured no client latency).
+
+  `arm` SHALL refuse unless every member's start line shows the arm's idle and archive threading (FR-GMR-12/13), and
+  `gw-idle` unless every gateway reports the strategy. N SHALL refuse on exclusive cores. `seed` admits the load's and
+  the probe's accounts and seeds the arm tickers, since a fresh epoch has neither (RI35, 2026-11-10).
 
 - **FR-OPL-08 (FIX probe):** `fix-latency-probe.mjs` SHALL apply FR-OPL-02's method to the FIX 4.4 acceptor (port
   18130): constant rate on a wall-clock schedule, latency from the intended send time (from the write when the timer
@@ -51,6 +89,11 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
 | a window over a stopped load is refused | 03 | GKE 2026-11-10, `void-no-policy/` | without the policy raise the load rejected 21% and stopped at the phase boundary; those windows measured an idle leader (0.54 cores) and are void; the precondition now refuses them |
 | windows per rate, twice (A, B) | 03 | GKE 2026-11-10, `latency-l0-20261110/table.md` | p50 within ±1–3% between A and B, p99 ±2–5%, p99.9 ±15–20%; see `latency-l0-baseline-20261110.md` |
 | a gateway-only A/B in the same session (C) | 03 | GKE 2026-11-10, `C*-gwspin/` | leader commit unchanged at idle (the control); the gateways' driver on spin: client p50 1,165 → 614 µs at idle, −8% capacity at saturation |
+| per-agent idle and archive threading reach the contexts | 05–07 (FR-GMR-12/13) | `ClusterNodeConfigTest` 7/7, 2026-11-10; forked-JVM negative control | default unchanged; sender/service spin, the rest lowpark, archive DEDICATED |
+| counter dump reads a live driver | 06 | local `AeronPingPong` driver, 2026-11-10 | max cycle, exceeded and back-pressure counters listed; Aeron's driver threshold is 100 ms, so `l1-ab.sh` sets 1 ms (`aeron.driver.*.cycle.threshold`) |
+| leader-state report | 06 | `test_l1_report.py` (fixture) | deltas, own/other CPU split, SMT pair found |
+| L1/L2 A/B on GKE | 05, 07 | GKE 2026-11-10/11 (slot A, `eab81f9f`), shared note `latency-l1-l2-20261110.md`, `latency-l1-20261110/` | L1 busy-spin: 300K p50 566–571 → 292–302 µs, idle commit 278 → 55 µs, capacity 478–499K → 452–472K. S (static, 14): idle p99 −27%, capacity −14% (run-order confound, N′ not run). L2 DEDICATED archive hurt (vs S: idle p99 +30%, capacity −4%; recorder stalls). 0 throttling |
+| each refusal fires on a real fault | 03, 05, 07 | same session | `seed` on unadmitted accounts, `gw-idle` and `arm` on a mis-declared start line (negative control), `load_ok` on a stopped load (L12 500K window 2) and with no load pods |
 | engine-node budget listed | 04 | GKE 2026-11-10, `alloc.txt` | 16 capacity, 15,890m allocatable, DaemonSets 433m, member Guaranteed 15 |
 | FIX probe stages from a scripted acceptor | 08 | `test_fix_latency_probe.Stages`, local mock 2026-11-11 | 2 ms ack / 5 ms fill injected: ack p50 in [2, 4.5) ms, fill p50 in [5, 7.5) ms, two acks per fill; an aggressor answered Filled lands its first answer at 5 ms |
 | FIX probe refusals | 08 | `test_fix_latency_probe.Refusals`, local mock 2026-11-11 | a session dropped after 100 orders: exit 1, lostSessions=1, skipped and unanswered > 0; an odd session count without `--accounts` refused |

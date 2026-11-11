@@ -48,6 +48,10 @@
 
       Evidence: shared notes `gis-gke-20261110/` (per-arm tables, `extras.md`, `cgroups.txt`, `teardown-proof.txt`).
 
+- [x] FR-GMR-12/13: per-agent idle (`CLUSTER_IDLE_STRATEGY_<AGENT>`) and `CLUSTER_ARCHIVE_THREADING`, default
+      unchanged; `ClusterNodeConfigTest` (SC-GMR-07). 2026-11-10, branch `claude/latency-l1-l2`. Measured by
+      `l1-ab.sh` (order-path-latency FR-OPL-07).
+
 ## Still open
 
 

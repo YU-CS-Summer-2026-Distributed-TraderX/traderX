@@ -11,6 +11,16 @@
 #        every gateway's and the leader's /latency reset at the window start and read at its end, the leader's
 #        per-thread CPU over it. Windows skip the last minute of binary-load's 300 s phase (its 4 s pause).
 #   CTX=... EVIDENCE=dir bash l0-baseline.sh alloc                  # L1 input: engine node allocatable vs 15 integer CPUs
+# Latency L1/L2 (FR-OPL-05/06), driven by l1-ab.sh:
+#   ... seed TICKERS PX         # a fresh epoch: the load's and probe's accounts (SQL row + admitted), the tickers seeded
+#   ... gw-idle STRATEGY        # GATEWAY_IDLE_STRATEGY on every gateway, verified on each one's "GATEWAY up" line
+#   ... arm LABEL KEY=VAL|KEY-  # set/unset member env, roll the members, refuse unless every member's startup line
+#                               # shows the idle and archive threading the arm declares (EXPECT_IDLE, EXPECT_ARCHIVE)
+#   ... static CPU              # members to 0, the engine pool onto node-engine.yaml (static CPU manager), members
+#                               # back at CPU integer CPUs; refuses unless the kubelet reports the static policy
+# Every block window also records, on the leader at its start and end: the driver's Aeron counters (AeronCounters: max
+# cycle times, cycles over the threshold, back pressure), the container's cpu.stat and cpuset, /proc/interrupts and
+# /proc/softirqs (NIC IRQs on the member's cores), and the CPU each thread last ran on.
 # Needs: AeronPingPong compiled to $PP_CLASSES (javac --release 21 against aeron-client/driver 1.51.0, agrona, HdrHistogram).
 set -euo pipefail
 : "${CTX:?}" "${EVIDENCE:?}"; NS=${NS:-pa-proof-400k}; mkdir -p "$EVIDENCE"
@@ -26,7 +36,22 @@ gw_ips(){ kc get pods -l app=cluster-gateway --field-selector=status.phase=Runni
 gw_all(){ kc exec deploy/trade-processor -- sh -c "for ip in $(gw_ips); do echo \"== \$ip\"; curl -s -m 5 \"http://\$ip:18110/latency$1\"; echo; done"; }
 threads(){ kc exec "order-matcher-cluster-$1" -c cluster-node -- sh -c '
   for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
-  for t in /proc/$J/task/*; do c=$(cat "$t/comm"); set -- $(sed "s/.*) //" "$t/stat"); echo "$c $(( ${12} + ${13} ))"; done' 2>/dev/null; }
+  for t in /proc/$J/task/*; do   # a thread can exit mid-scan (idle JIT compiler threads retire): skip it, do not fail
+    c=$(cat "$t/comm" 2>/dev/null) && s=$(sed "s/.*) //" "$t/stat" 2>/dev/null) && [ -n "$s" ] || continue
+    set -- $s; echo "$c $(( ${12} + ${13} ))"; done' 2>/dev/null; }
+# FR-OPL-06: the leader's state at a window edge, one exec; sections are "== name" (l1-report.py reads them).
+leader_state(){ kc exec "order-matcher-cluster-$1" -c cluster-node -- sh -c '
+  for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
+  echo "== cpu.stat"; cat /sys/fs/cgroup/cpu.stat
+  echo "== cpuset"; cat /sys/fs/cgroup/cpuset.cpus.effective
+  echo "== siblings"; cat /sys/devices/system/cpu/cpu*/topology/thread_siblings_list | sort -u
+  echo "== interrupts"; grep -E "CPU|gve|virtio|eth" /proc/interrupts
+  echo "== softirqs"; grep -E "CPU|NET_RX|NET_TX" /proc/softirqs
+  echo "== psr"; for t in /proc/$J/task/*; do echo "$(cat "$t/comm") $(sed "s/.*) //" "$t/stat" | cut -d" " -f37)"; done
+  echo "== counters"; env -u JAVA_TOOL_OPTIONS java -Xmx64m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+    -cp "/opt/app/classes:/opt/app/lib/*" finos.traderx.ordermatcher.cluster.AeronCounters "${CLUSTER_AERON_DIR:-/dev/shm/aeron-cluster}"' 2>&1; }
+first_line(){ awk -v p="$1" 'index($0, p) && !f {print; f = 1}'; }   # reads to EOF: no SIGPIPE upstream
 op(){ kc get secret auth-secrets -o jsonpath='{.data.risk-control-token}' | base64 -d \
         | awk '{print "X-Risk-Control-Token: " $0; print "X-Risk-Operator: l0"; print "Content-Type: application/json"}' \
         | kc exec -i deploy/trade-processor -- curl -s -m 30 -o /dev/null -w '%{http_code}' -H @- -X POST "http://order-matcher:18110$1" -d "$2"; }
@@ -36,9 +61,12 @@ op(){ kc get secret auth-secrets -o jsonpath='{.data.risk-control-token}' | base
 policy(){ op /risk/control/policy "{\"policyVersion\":$(date +%s),\"killSwitch\":false,\"maxPositionQuantity\":2000000000,\"maxConcentrationNotionalTicks\":9000000000000000000}"; }
 # A window measures the background rate only while every load pod runs and nothing it sent was rejected: a rejecting
 # session unbalances, and binary-load stops itself at the next phase boundary (2026-11-10: a whole block measured idle).
-load_ok(){ local p bad=0; [ "$(kc get pods -l job-name=binary-load --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 8 ] || return 1
+# The last line is read whole (case, not grep -q: an early grep exit SIGPIPEs kubectl and pipefail reads it as a miss),
+# and one failed read is retried after 3 s, so a refusal is the load's state, not an API hiccup (2026-11-10, arm S).
+load_once(){ local p bad=0; [ "$(kc get pods -l job-name=binary-load --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 8 ] || return 1
   for p in $(kc get pods -l job-name=binary-load --no-headers -o custom-columns=:metadata.name); do
-    kc logs "$p" --tail=1 | grep -q ' rejected=0 ' || bad=1; done; [ $bad = 0 ]; }
+    case $(kc logs "$p" --tail=1 2>/dev/null) in *' rejected=0 '*) ;; *) bad=1 ;; esac; done; [ $bad = 0 ]; }
+load_ok(){ load_once || { sleep 3; load_once; }; }
 
 pp_pair(){   # pp_pair LABEL PING_POD PING_CONTAINER PONG_POD PONG_CONTAINER IDLE
   local label=$1 a=$2 ac=$3 b=$4 bc=$5 idle=$6 aip bip run
@@ -132,6 +160,8 @@ spec:
   completionMode: Indexed
   completions: 8
   parallelism: 8
+  # No retries: a load that stops itself (unbalanced at a phase boundary) must fail the block, not restart into a
+  # rejecting book (2026-11-11, L12). binary-load retries its own first /resolve on a node that is still coming up.
   backoffLimit: 0
   template:
     metadata: {annotations: {cluster-autoscaler.kubernetes.io/safe-to-evict: "false"}}
@@ -157,10 +187,12 @@ YAML
     if [ $(( start % 300 )) -eq 240 ]; then start=$((start + 60)); fi   # the minute that holds binary-load's pause
     sleep $(( start - $(date +%s) ))
     if [ "$PER" -gt 0 ] && ! load_ok; then log "REFUSED $LABEL window $w: the load is not all running with 0 rejected"; exit 1; fi
+    leader_state "$L" > "$D/state-$w-start.txt"
     gw_all '?reset=1' >/dev/null; member "$L" '/latency?reset=1' >/dev/null; threads "$L" > "$D/threads-$w-start.txt"
     t0=$(date +%s); sleep $(( start + 60 - $(date +%s) ))
     if [ "$PER" -gt 0 ] && ! load_ok; then log "REFUSED $LABEL window $w: the load stopped or rejected during it"; exit 1; fi
     gw_all '' > "$D/gw-$w.txt"; member "$L" /latency > "$D/leader-$w.txt"; threads "$L" > "$D/threads-$w-end.txt"; t1=$(date +%s)
+    leader_state "$L" > "$D/state-$w-end.txt"
     echo "$t0 $t1 $(date -u -r "$start" +%FT%TZ)" > "$D/window-$w.at"
     log "block $LABEL window $w $(date -u -r "$start" +%TZ) done ($((t1 - t0)) s)"
     w=$((w + 1))
@@ -173,5 +205,68 @@ alloc)
     kubectl --context "$CTX" get pods -A --field-selector "spec.nodeName=${n#node/}" -o json \
       | jq -r '.items[] | [.metadata.namespace + "/" + .metadata.name, .status.qosClass, ([.spec.containers[].resources.requests.cpu // "0"] | join("+"))] | @tsv'
   done | tee "$EVIDENCE/alloc.txt" ;;
+seed)
+  T=${2:?}; PX=${3:?}; A="9900010 9900011 9900012 9900013 9900014 9900015 9900016 9900017 9900018 9900019"
+  vals=$(for a in $A; do printf '(%s,"l1"),' "$a"; done); sql="insert ignore into accounts(id,displayname) values ${vals%,}"
+  n=$(kc exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -N -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" traderx -e "$1; select count(*) from accounts where id between 9900010 and 9900019"' sh "$sql")
+  [ "$n" = 10 ] || { log "REFUSED seed: $n of 10 SQL accounts"; exit 1; }
+  # bodies in variables: macOS bash 3.2 mis-parses \" inside "$( ... )" ("[: too many arguments", 2026-11-10)
+  for a in $A; do   # a fresh epoch knows no account until it is admitted (RI33): the SQL row alone is UNKNOWN_ACCOUNT
+    body='{"accountId":'$a',"enabled":true}'; code=$(op /risk/control/account "$body")
+    [ "$code" = 200 ] || { log "REFUSED seed: account $a not admitted ($code)"; exit 1; }
+  done
+  body='{"accountId":9900010,"tickers":"'$T'","price":'$PX'}'; code=$(op /seed "$body")
+  [ "$code" = 200 ] || { log "REFUSED seed: tickers $T ($code)"; exit 1; }
+  [ "$(policy)" = 200 ] || { log "REFUSED seed: risk policy not raised"; exit 1; }
+  log "seed: accounts admitted, tickers $T at $PX, policy raised" ;;
+gw-idle)
+  S=${2:?}; kc set env deploy/cluster-gateway -c gateway "GATEWAY_IDLE_STRATEGY=$S" >/dev/null
+  kc rollout status deploy/cluster-gateway --timeout=900s >/dev/null
+  for p in $(kc get pods -l app=cluster-gateway --field-selector=status.phase=Running --no-headers -o custom-columns=:metadata.name); do
+    # first_line, not grep -m1/-q: an early exit SIGPIPEs kubectl logs, and pipefail reads that as a miss (2026-11-10)
+    case $(kc logs "$p" -c gateway | first_line 'GATEWAY up') in *"driverIdle=$S"*) ;;
+      *) log "REFUSED gw-idle: $p does not report driverIdle=$S"; exit 1 ;; esac
+  done; log "gw-idle: every gateway reports driverIdle=$S" ;;
+arm)
+  LABEL=${2:?}; shift 2; : "${EXPECT_IDLE:?}" "${EXPECT_ARCHIVE:?}"
+  [ $# -gt 0 ] && kc set env sts/order-matcher-cluster -c cluster-node "$@" >/dev/null
+  kc rollout status sts/order-matcher-cluster --timeout=1800s >/dev/null
+  for m in 0 1 2; do
+    up=$(kc logs "order-matcher-cluster-$m" -c cluster-node | first_line 'Cluster node up')
+    case $up in *"idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE"*) ;;
+      *) log "REFUSED arm $LABEL: m$m started with '${up#*baseDir=}', not idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE"; exit 1 ;; esac
+  done
+  until L=$(leader 2>/dev/null); do sleep 5; done
+  log "arm $LABEL: members rolled, leader m$L; idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE; $(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[?(@.name=="cluster-node")].resources.limits.cpu}') CPU" ;;
+static|shared)
+  # static CPU: the engine pool onto node-engine.yaml, members at CPU exclusive. shared CPU: the same config with
+  # cpuManagerPolicy none, members at CPU on shared cores (the order control, N' / N'', FR-OPL-07).
+  MODE=$1; CPU=${2:?}; POOL=${ENGINE_POOL:-p4k-engine}; : "${CLUSTER:?}" "${ZONE:?}" "${PROJECT:?}"
+  # Both configs are node-engine.yaml with the policy line set, so this works whether or not the production config
+  # carries the static policy (FR-PRG-05 is a separate decision).
+  POLICY=static; [ "$MODE" = shared ] && POLICY=none; CFG="$EVIDENCE/node-engine-$MODE.yaml"
+  awk -v p="$POLICY" '/^  cpuManagerPolicy:/ {next} {print} /^kubeletConfig:$/ {print "  cpuManagerPolicy: " p}' "$RIG/node-engine.yaml" > "$CFG"
+  [ "$(grep -c "^  cpuManagerPolicy: $POLICY\$" "$CFG")" = 1 ] || { log "REFUSED $MODE: could not derive the $POLICY config"; exit 1; }
+  g(){ gcloud container "$@" --zone "$ZONE" --project "$PROJECT" --quiet; }   # resize takes the cluster positionally
+  kc scale sts/order-matcher-cluster --replicas=0 >/dev/null
+  until [ -z "$(kc get pods -l app=order-matcher-cluster -o name)" ]; do sleep 5; done
+  n=$(kubectl --context "$CTX" get nodes -l "cloud.google.com/gke-nodepool=$POOL" --no-headers | wc -l | tr -d ' ')
+  [ "$n" -gt 0 ] || n=3
+  g clusters resize "$CLUSTER" --node-pool "$POOL" --num-nodes 0 >/dev/null
+  g node-pools update "$POOL" --cluster "$CLUSTER" --system-config-from-file "$CFG" >/dev/null
+  g clusters resize "$CLUSTER" --node-pool "$POOL" --num-nodes "$n" >/dev/null
+  [ "$(g node-pools describe "$POOL" --cluster "$CLUSTER" --format='value(config.kubeletConfig.cpuManagerPolicy)')" = "$POLICY" ] \
+    || { log "REFUSED $MODE: $POOL does not report cpuManagerPolicy $POLICY"; exit 1; }
+  kc set resources sts/order-matcher-cluster -c cluster-node --requests="cpu=$CPU" --limits="cpu=$CPU" >/dev/null
+  kc scale sts/order-matcher-cluster --replicas=3 >/dev/null
+  kc rollout status sts/order-matcher-cluster --timeout=1800s >/dev/null
+  for m in 0 1 2; do   # static: the container's cpuset is exactly CPU wide; shared: wider (the node's)
+    cs=$(kc exec "order-matcher-cluster-$m" -c cluster-node -- cat /sys/fs/cgroup/cpuset.cpus.effective)
+    w=$(echo "$cs" | tr ',' '\n' | awk -F- '{n += ($2 == "" ? 1 : $2 - $1 + 1)} END {print n}')
+    if [ "$MODE" = static ]; then [ "$w" = "$CPU" ] || { log "REFUSED static: m$m cpuset $cs is $w CPUs, not $CPU exclusive"; exit 1; }
+    else [ "$w" -gt "$CPU" ] || { log "REFUSED shared: m$m cpuset $cs is $w CPUs, still exclusive"; exit 1; }; fi
+  done
+  until L=$(leader 2>/dev/null); do sleep 5; done
+  log "$MODE: $POOL on cpuManagerPolicy $POLICY ($n nodes), members at $CPU CPU (cpuset $w wide), leader m$L" ;;
 *) echo "unknown: $1" >&2; exit 2 ;;
 esac

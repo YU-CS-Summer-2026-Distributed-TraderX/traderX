@@ -1,0 +1,29 @@
+== cpu.stat
+usage_usec 1
+nr_periods 1000
+nr_throttled 130
+throttled_usec 9000
+== cpuset
+1-7,9-15
+== siblings
+0,8
+1,9
+2,10
+3,11
+== interrupts
+           CPU0       CPU1       CPU2       CPU3
+ 30:          1        50          0          0  PCI-MSIX  gve-ntfy-blk0
+ 31:          5          0          0          50  PCI-MSIX  gve-ntfy-blk1
+== softirqs
+                    CPU0       CPU1       CPU2       CPU3
+      NET_RX:        90          90          0          0
+== psr
+sender 2
+receiver 10
+consensus-modul 3
+clustered-servi 4
+C2 CompilerThre 5
+== counters
+16 0 7 Short sends
+26 0 7000000 Sender max cycle time doing its work in ns: DEDICATED
+29 0 4 Sender work cycle exceeded threshold count: threshold=1ms DEDICATED

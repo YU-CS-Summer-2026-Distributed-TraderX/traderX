@@ -71,8 +71,20 @@ const T0 = Date.now(), rampFactor = () => RAMP[Math.floor((Date.now() - T0) / ST
 const [whole, frac = ''] = cfg.px.split('.');
 const PX = BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, '0'));   // limitPx x1e6
 
-const r = await fetch(`${cfg.resolve}/resolve`, {method: 'POST', headers: {'content-type': 'application/json'},
-  body: JSON.stringify({ticker: cfg.ticker}), signal: AbortSignal.timeout(5000)});
+// A pod on a node the autoscaler has just added can time out its first request before the node's network is up
+// (2026-11-10): retry the resolve, which sends no order, for up to a minute instead of dying on it.
+let r;
+for (let attempt = 1; ; attempt++) {
+  try {
+    r = await fetch(`${cfg.resolve}/resolve`, {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ticker: cfg.ticker}), signal: AbortSignal.timeout(5000)});
+    break;
+  } catch (e) {
+    if (attempt >= 12) throw e;
+    console.log(`resolve attempt ${attempt} failed (${e.name}); retrying`);
+    await new Promise((ok) => setTimeout(ok, 5000));
+  }
+}
 const resolved = r.status === 200 ? await r.json() : null;
 if (!Number.isInteger(resolved?.securityId) || resolved.securityId < 0) {
   console.log(`refused: ${cfg.ticker} does not resolve (${r.status})`); process.exit(2);
