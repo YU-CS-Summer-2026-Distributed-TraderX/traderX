@@ -1453,6 +1453,11 @@ final class FixSessionStore implements MessageStoreFactory {
         public synchronized void get(final int startSequence, final int endSequence,
                                      final Collection<String> messages) throws IOException {
             if (groupCommit && endSequence >= persistedSender) {
+                // FR-GFS-23: a refused commit fails the read whether it came back before the read or during it. Its
+                // release() zeroes the lease, so quiesce() alone skipped the wait and read the new owner's bodies.
+                if (failed != null) {
+                    throw failed;
+                }
                 quiesce();   // ADR-099: what the resend reads is committed first
             }
             // FR-GFS-14: only the last RESEND_WINDOW are kept; a missing body is gap-filled by QuickFIX/J.
