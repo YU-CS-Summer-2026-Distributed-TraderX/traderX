@@ -295,8 +295,8 @@ pin)
       set -e; CPU='"$CPU"'
       for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
       mine=$(cat /sys/fs/cgroup/cpuset.cpus.effective)
-      expand(){ echo "$1" | tr "," "
-" | awk -F- "{ if (\$2 == "") print \$1; else for (i = \$1; i <= \$2; i++) print i }"; }
+      expand(){ for part in $(echo "$1" | tr "," " "); do case $part in
+        *-*) i=${part%-*}; while [ "$i" -le "${part#*-}" ]; do echo "$i"; i=$((i + 1)); done ;; *) echo "$part" ;; esac; done; }
       cpus=$(expand "$mine"); [ "$(echo "$cpus" | wc -l)" = "$CPU" ] || { echo "REFUSED cpuset $mine is not $CPU exclusive"; exit 1; }
       # whole physical cores inside the cpuset, as "first,sibling" groups
       groups=$(for c in $cpus; do s=$(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list); all=1
@@ -306,7 +306,7 @@ pin)
       for name in sender receiver consensus-modul clustered-servi; do
         i=$((i + 1)); g=$(echo "$groups" | sed -n "${i}p"); c=${g%%[,-]*}
         for t in /proc/$J/task/*; do [ "$(cat "$t/comm" 2>/dev/null)" = "$name" ] && taskset -p -c "$c" "${t##*/}" >/dev/null && echo "$name -> $c (core $g)"; done
-        hot="$hot $(expand "$g")"
+        hot="$hot $(expand "$g" | tr "\\n" " ")"
       done
       rest=$(for c in $cpus; do echo " $hot " | grep -q " $c " || echo "$c"; done | paste -sd, -)
       n=0; for t in /proc/$J/task/*; do case " sender receiver consensus-modul clustered-servi " in *" $(cat "$t/comm" 2>/dev/null) "*) ;;
