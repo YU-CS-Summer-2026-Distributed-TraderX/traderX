@@ -67,7 +67,7 @@ class GatewayCatalogFeedTest {
         String bill="UST-BILL-20260910";
         var first=gateway();
         feed(first,bill,1);                                         // first registration: new, so enabled
-        int id=symbolId(bill);
+        int id=registeredEverywhere(bill);
         await(()->enabledEverywhere(id,true));
         operatorControl(id,false);                                  // the initializer disables the matured bill
         await(()->enabledEverywhere(id,false));
@@ -98,6 +98,13 @@ class GatewayCatalogFeedTest {
         var buffer=new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
         new AeronReplicationCodec().encodeInput(buffer,0,event,0,0,0);
         await(()->{client.pollEgress();return client.offer(buffer,0,buffer.capacity())>0;});
+    }
+    /** The registration's id once every member has applied it. The gateway's ack comes from the leader; a follower
+     *  applies the same entry a moment later, so reading member 0 at once was -1 whenever it was a follower that had
+     *  not yet, and nothing then waited for that id to become enabled (1 run in 10 locally, 2 in 3 on a loaded box). */
+    private int registeredEverywhere(String ticker) {
+        await(()->{client.pollEgress();return services.stream().allMatch(s->s.symbolIdFor(ticker)>=0);});
+        return symbolId(ticker);
     }
     private int symbolId(String ticker) {
         for(int id=0;;id++) {String t=services.get(0).tickerFor(id);if(t==null) return -1;if(t.equals(ticker)) return id;}

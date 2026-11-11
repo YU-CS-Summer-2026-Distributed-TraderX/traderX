@@ -59,8 +59,13 @@ class FixStoreGroupCommitIT {
 
     /** Waits for every commit so far (a resend read quiesces first), and returns that message as stored. */
     private static String stored(final Connection nc, final MessageStore ms, final int n) throws Exception {
+        return stored(nc, ms, SID, n);
+    }
+
+    private static String stored(final Connection nc, final MessageStore ms, final SessionID sid, final int n)
+            throws Exception {
         ms.get(n, n, new ArrayList<>());
-        return nc.keyValue(FixSessionStore.BUCKET).get(FixSessionStore.messageKey(FixSessionStore.keyOf(SID), n))
+        return nc.keyValue(FixSessionStore.BUCKET).get(FixSessionStore.messageKey(FixSessionStore.keyOf(sid), n))
             .getValueAsString();
     }
 
@@ -72,25 +77,40 @@ class FixStoreGroupCommitIT {
      */
     @Test
     void aReplacedOwnersLateWriteNeverOverwritesTheNewOwners() throws Exception {
+        lateWrite(SID, false);
+    }
+
+    /**
+     * FR-GFS-23: the same late write, with A's resend read made only once the refusal has come back. The refusal had
+     * released A's lease, and get() waited for commits only under a held lease, so the read neither waited nor threw:
+     * it returned B's message 6 on A's dropped session. Whether the read threw depended on which arrived first (the
+     * test above failed about one run in five). Falsifiable: on the old store this ordering returns B's body.
+     */
+    @Test
+    void aResendReadAfterTheRefusalHasArrivedStillFails() throws Exception {
+        lateWrite(new SessionID("FIX.4.4", "TRADERX", "LATE-R"), true);
+    }
+
+    private static void lateWrite(final SessionID sid, final boolean refusalFirst) throws Exception {
         try (Connection nc = Nats.connect(url(NATS))) {
             final FixSessionStore a = start(NATS, "gw-a");
             final FixSessionStore b = start(NATS, "gw-b");
             try {
                 assertTrue(a.groupCommit() && b.groupCommit());
-                final MessageStore ma = a.create(SID);
-                final MessageStore mb = b.create(SID);
-                assertTrue(a.acquire(SID));
+                final MessageStore ma = a.create(sid);
+                final MessageStore mb = b.create(sid);
+                assertTrue(a.acquire(sid));
                 for (int n = 1; n <= 5; n++) {
                     send(ma, n, "a");
                 }
-                assertTrue(stored(nc, ma, 5).contains("58=a"));
+                assertTrue(stored(nc, ma, sid, 5).contains("58=a"));
 
                 a.renewalsStalled = true;                                            // A stops renewing...
-                nc.keyValue(FixSessionStore.LEASE_BUCKET).delete(FixSessionStore.keyOf(SID));   // ...and its lease lapses
-                assertTrue(b.acquire(SID), "B takes the lapsed lease");
+                nc.keyValue(FixSessionStore.LEASE_BUCKET).delete(FixSessionStore.keyOf(sid));   // ...and its lease lapses
+                assertTrue(b.acquire(sid), "B takes the lapsed lease");
                 assertEquals(6, mb.getNextSenderMsgSeqNum(), "B continues after A's committed messages");
                 send(mb, 6, "b");
-                assertTrue(stored(nc, mb, 6).contains("58=b"));
+                assertTrue(stored(nc, mb, sid, 6).contains("58=b"));
 
                 final AtomicInteger lost = new AtomicInteger();
                 a.onLost = s -> lost.incrementAndGet();
@@ -98,8 +118,14 @@ class FixStoreGroupCommitIT {
                 // box, A rechecks, finds B's lease and writes nothing at all: safe, but not the case under test.)
                 field(ma, "renewedAt", System.nanoTime());
                 send(ma, 6, "a-late");
+                if (refusalFirst) {
+                    for (int i = 0; i < 250 && lost.get() == 0; i++) {   // the refusal is back: A's lease is released
+                        Thread.sleep(20);
+                    }
+                    assertEquals(1, lost.get(), "control: the refusal arrived before the read");
+                }
                 assertThrows(IOException.class, () -> ma.get(6, 6, new ArrayList<>()), "A's late commit is refused");
-                assertTrue(stored(nc, mb, 6).contains("58=b\u0001"), "B's message 6 is what is stored");
+                assertTrue(stored(nc, mb, sid, 6).contains("58=b\u0001"), "B's message 6 is what is stored");
                 for (int i = 0; i < 50 && lost.get() == 0; i++) {
                     Thread.sleep(20);
                 }

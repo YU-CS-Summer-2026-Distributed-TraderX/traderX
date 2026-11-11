@@ -83,6 +83,10 @@
   symbol-register ack carries the fact in byte 21 (1 = created), an ack-only value identical on every member; the
   gateway and the members ship as one image. `GatewayCatalogFeedTest` (three members: register, operator disable,
   replay by the same and by a restarted gateway, still disabled everywhere) fails against the previous gateway.
+  The test reads the registration's id only once every member has applied it (2026-11-10): the gateway's ack comes
+  from the leader, and reading member 0 at once gave -1 whenever it was a follower that had not yet applied it, after
+  which nothing could ever be enabled at that id (the 60 s timeout, 1 run in 10 locally and 2 in 3 on a loaded box).
+  A race in the test, not the product.
 - FR-ERH-F15: Each member SHALL serve `GET /risk/control/securities` (admin JWT; 401/404/405/503 as
   `/risk/control/accounts`): every registered ticker with its security control as applied. The reference-data
   initializer SHALL verify the catalog's enabled states there on all three members, not on a gateway's control

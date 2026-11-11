@@ -131,6 +131,14 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   nobody else had: in the FR-GFS-21 bench renewals delayed past the 3 s TTL did that in every run (132–586 refusals);
   after, none. `FixStoreGroupCommitIT.aRetakeWithItsOwnCommitInFlightKeepsTheSession` (the old store confirms at once and its
   commit then fails); the refusing case stays `#aStalledOwnerIsNotConfirmedAfterAnotherServedTheSessionAndLeft`.
+- FR-GFS-23 (2026-11-10): A resend read (`get`) reaching an uncommitted number on a store whose group commit has
+  failed SHALL fail with that failure, whether the failure arrived before the read or while the read waited. A
+  refused commit releases the lease, and the read waited for commits only under a held lease, so a read made after
+  the refusal had arrived neither waited nor failed: on a replaced owner's dropped session it returned the new
+  owner's body for that number. The write barrier still dropped that body (FR-GFS-18), so nothing reached a client;
+  the store's answer depended on arrival order, and `FixStoreGroupCommitIT.aReplacedOwnersLateWriteNeverOverwritesTheNewOwners`
+  failed about one run in five. `FixStoreGroupCommitIT.aResendReadAfterTheRefusalHasArrivedStillFails` makes the read
+  only after the refusal is back; it fails on the previous store.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` (every bucket, FR-GFS-21) with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
