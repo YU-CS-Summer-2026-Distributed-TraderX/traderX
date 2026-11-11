@@ -85,6 +85,56 @@ class SessionRingAllocationGateTest {
             "tagged FIX apply path did not produce two consecutive exact-zero windows; last delta=" + lastDelta[0] + " bytes");
     }
 
+    /**
+     * ADR-104 format 16 (NFR-XOD-05): the snapshot's ring section, 600 full rings (600 heads, 19,200 entry records,
+     * ~26 MB) through the production SnapshotPacker into a copying sink, allocates nothing: two consecutive exact-zero
+     * windows after warm-up. Format 15 built a 776-long {@code long[]} per record here (~30 MB per snapshot).
+     */
+    @Test
+    void theSnapshotRingSectionAllocatesNothing() throws Exception {
+        final var threadMx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        assumeTrue(threadMx.isThreadAllocatedMemorySupported());
+        threadMx.setThreadAllocatedMemoryEnabled(true);
+        final long[] result = { -1, -1, 0, 0 };   // last delta, consecutive zero windows, records, bytes
+        final Thread gate = new Thread(() -> {
+            final MatchingEngineClusteredService service = new MatchingEngineClusteredService();
+            service.initEngine();
+            final finos.traderx.ordermatcher.risk.SessionRing ring = service.risk().sessionRing();
+            for (int s = 0; s < 600; s++) {
+                for (int i = 0; i < ring.n() + 9; i++) {
+                    ring.admit(SESSION + s, KEY + i, i, i + 1, false, false, i);
+                    ring.record(i + 1, (byte) 1);
+                }
+            }
+            final byte[] sink = new byte[1 << 12];
+            final MatchingEngineClusteredService.SnapshotWriter copy = (b, o, l) -> {
+                result[2]++;
+                result[3] += l;
+                b.getBytes(o, sink, 0, l);
+            };
+            final MatchingEngineClusteredService.SnapshotPacker packer =
+                new MatchingEngineClusteredService.SnapshotPacker(SnapshotPackedRoundTripTest.PAYLOAD, copy);
+            for (int i = 0; i < 5; i++) {
+                service.writeSessionRings(packer);
+                packer.flush();
+            }
+            final long own = Thread.currentThread().threadId();
+            for (int window = 0; window < 4 && result[1] < 2; window++) {
+                result[2] = result[3] = 0;
+                threadMx.getThreadAllocatedBytes(own);
+                final long before = threadMx.getThreadAllocatedBytes(own);
+                service.writeSessionRings(packer);
+                packer.flush();
+                result[0] = threadMx.getThreadAllocatedBytes(own) - before;
+                result[1] = result[0] == 0 ? result[1] + 1 : 0;
+            }
+        }, "snapshot-ring-gate");
+        gate.start();
+        gate.join(300_000);
+        assertTrue(result[3] > 25_000_000L, "600 full rings went through the packer: " + result[3] + " bytes");
+        assertEquals(2, result[1], "the ring section allocated; last delta=" + result[0] + " bytes");
+    }
+
     /** The event mix, encoded in place; counts the ring's answers off its egress acks (reason, ack byte 22). */
     private static final class Mix implements io.aeron.cluster.service.ClientSession {
         static final byte AGED_OUT = (byte) finos.traderx.ordermatcher.risk.RiskReason.SESSION_AGED_OUT.ordinal();

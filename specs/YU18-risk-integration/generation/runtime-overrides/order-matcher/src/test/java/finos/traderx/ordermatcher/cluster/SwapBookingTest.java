@@ -179,8 +179,8 @@ class SwapBookingTest {
         // YU18 (order types, FR-OT35) moved the writer to format 11: typed order state rides its
         // own records, and formats 9 and 10 still restore (as untyped orders), so MIN_READABLE
         // stays 9 below — the same "adds, never re-reads" rule format 10 followed.
-        assertEquals(15, header.getInt(4),
-            "format 15 (ADR-104): T_SESSION_RING joins format 14's T_STREAM (ADR-090)");
+        assertEquals(16, header.getInt(4),
+            "format 16 (ADR-104 §5): compact session-ring records replace format 15's T_SESSION_RING");
         // Literals on BOTH sides, never the constants they pin.
         //
         // MIN_READABLE DELIBERATELY DOES NOT RISE HERE, and that is a departure from every raise

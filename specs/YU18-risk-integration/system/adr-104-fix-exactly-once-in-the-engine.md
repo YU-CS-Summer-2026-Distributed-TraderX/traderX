@@ -41,10 +41,16 @@ NATS write the 450K capture cluster (ADR-103) would also carry.
    `STREAM_LIMIT`. Every decision reads the log timestamp only (FR-XOD-08). A session's arrays are allocated when
    it is first seen and reused when it is evicted: ~60 KB per session (2,048 entries × 21 bytes plus a 4,096-slot
    index), ~60 MB for a full table.
-5. **Snapshot format 15.** `T_SESSION_RING` records, one per 256 entries (~6 KB, so they go unpacked over the
-   FR-XOD-18 reassembly path). Formats 9–14 load with empty rings; a snapshot written with another N is refused, as
-   ADR-090 refuses another W. A worst-case full table is 48 MiB of snapshot; the production shape (tens of
-   sessions) is ~1.6 MB. NFR-XOD-04 measures the pause.
+5. **Snapshot format 16 (amended 2026-11-11, yaakov: "Build it").** Format 15 wrote `T_SESSION_RING` records of 256
+   entries (6,212 bytes, so they went unpacked over the FR-XOD-18 reassembly path, each built as a `long[]`). Format
+   16 writes, per session, one 44-byte `T_SESSION_HEAD` and then `T_SESSION_ENTRIES` records of 64 entries at 21 bytes
+   each (1,360 bytes), the most that fit one 1,376-byte packed message. They are written straight from the ring's
+   arrays with no allocation, column by column (keys, checks, MsgSeqNums, refs, decisions) into a fixed buffer:
+   entry-major writes, or writes through the growable snapshot buffer, measured slower than format 15's writer. 600 full rings are ~26 MB instead of ~30 MB. Delta-varints (~21 MB) were not taken: a
+   second codec in the core for ~5 MB more. Serialization only: format 15's records still load, into an identical
+   ring, so a format-15 snapshot restores under 16 (MIN_READABLE stays 9), and a format-15 build refuses a format-16
+   snapshot at the header ("NEWER"). Formats 9–14 load with empty rings; a snapshot written with another N is
+   refused, as ADR-090 refuses another W. NFR-XOD-04 measures the pause.
 6. **Roll order: members before gateways.** The session-keyed flags (4, 8, 16) are unknown to a pre-ADR-104 member,
    which refuses the message, so the gateway turns them on (`FIX_EXACTLY_ONCE=engine`) only in front of format-15
    members. A gateway in front of an old member fails safe: its FIX orders are refused, none books twice.
@@ -74,8 +80,22 @@ NFR-XOD-04, GKE 2026-11-11 (one image, the arm is the gateways' flag; ~360K orde
 | 600 full rings (`engine`) | 54 ms (45–72) |
 
 The snapshot callback grows only from 0.3 to 7.4 ms median at 600 rings, and to 15.3 ms at the table's 1,024. The
-rest of the +25 ms is publishing and recording ~30 MB of unpacked ~6 KB records. Smaller chunks that fit the packed
-path are the lever if 54 ms every 300 s is too much. Not built. Evidence: the coordinator notes `snap-pause-20261111/`.
+rest of the +25 ms is publishing and recording ~30 MB of ring records: the cost follows bytes (~0.84 ms per MB), and
+re-chunking alone would not move it, since a 6 KB record already spreads its offer over ~5 frames. Evidence: the
+coordinator notes `snap-pause-20261111/`. Format 16 (§5) is the change built. Its GKE halt is a later measurement.
+
+Format 16 locally, 2026-11-11 (the Mac, 11 cores, load ~3; the `callback-bench` states, SerialGC, 2 warm-up + 7
+timed per JVM, 5 JVM runs per build interleaved; the median of the run medians, then their range):
+
+| Full rings | Ring bytes 15 → 16 | `writeSnapshot`, format 15 | format 16 | `onTakeSnapshot` over IPC, packed, 15 | 16 |
+|---|---|---|---|---|---|
+| 0 | 0 | 0.23 ms (0.23–0.30) | 0.23 (0.23–0.23) | 0.33 (0.29–0.40) | 0.32 (0.31–0.34) |
+| 600 | 29.8 → 26.1 MB | 5.07 (5.06–5.25) | 3.83 (3.78–4.14) | 10.2 (9.6–16.4) | 8.5 (8.2–15.7) |
+| 1,024 | 50.9 → 44.6 MB | 8.62 (8.57–8.88) | 6.47 (6.43–6.53) | 30.9 (16.7–38.4) | 14.9 (14.1–32.3) |
+
+Every ring record now packs (0 of 19,903 messages oversize at 600 rings, against 4,800 unpacked). The Mac's callback
+runs below the GKE member's 7.4 ms (format 15, c4d), so read the ratio, ~25% off the callback, not the milliseconds.
+The IPC column is bimodal on a shared Mac and excludes the archive's recording, which is most of the GKE halt.
 
 
 `SessionRingTest`: run 3's case (1,464 resends after the key table turns over and 47 s pass) books once keyed and
