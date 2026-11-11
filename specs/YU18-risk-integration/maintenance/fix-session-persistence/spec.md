@@ -180,6 +180,10 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
       main connection.
     - `test_prepare`: the per-server URLs, the drift check, a 3-server render through the parameter, and
       `rig.sh`'s pool size.
+    - GKE (slot B, 2026-11-11 9:45–10:10 am ET, the store at 1c9b95a5 configured as the render does it, 5 servers,
+      600 sessions on 18 store clients): the store alone 1,416,100 bodies/s; with the capture at 301 MB/s,
+      1,256,192 and 1,260,914 bodies/s. Commits averaged 0.054–0.061 s (max 0.16 s), capture acks 0.3 ms, every
+      server ~286K msgs/s at 3.1–4.2 cores, no session failed.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` (every bucket, FR-GFS-21) with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
