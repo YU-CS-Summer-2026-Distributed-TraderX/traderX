@@ -8,6 +8,7 @@ import net from 'node:net';
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const ackMs = Number(flag('--ack-ms', 0)), fillMs = Number(flag('--fill-ms', 0)), dropAfter = Number(flag('--drop-after', 0));
+const restMs = Number(flag('--rest-ms', fillMs));   // the resting side's fill report (the fill feed's path), default with the aggressor
 const filledAck = argv.includes('--filled-ack');
 const SOH = '\x01';
 const frame = (fields) => {
@@ -37,7 +38,8 @@ const server = net.createServer((sock) => {
       const er = (s, id, st) => s.reply('8', [['11', id], ['17', `e${seq}`], ['39', st], ['150', st === '2' ? 'F' : '0']]);
       if (!other) { book[side].push([sock, cl]); setTimeout(() => er(sock, cl, '0'), ackMs); continue; }
       if (!filledAck) setTimeout(() => er(sock, cl, '0'), ackMs);
-      setTimeout(() => { er(sock, cl, '2'); er(other[0], other[1], '2'); }, fillMs);
+      setTimeout(() => er(sock, cl, '2'), fillMs);
+      setTimeout(() => er(other[0], other[1], '2'), restMs);
     }
   });
 });

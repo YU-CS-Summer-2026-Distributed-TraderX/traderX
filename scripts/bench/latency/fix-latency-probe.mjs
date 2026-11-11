@@ -2,11 +2,11 @@
 // fix-latency-probe.mjs — binary-latency-probe.mjs's method on the FIX 4.4 order path (FR-OPL-08).
 //
 // Constant arrival rate on a wall-clock schedule; latency from the INTENDED send time (from the write when the timer
-// fired up to 1 ms early), plus from the write. Two stages per order pair:
+// fired up to 1 ms early), plus from the write. Three stages per order pair:
 //   ack:  NewOrderSingle intended send -> the first ExecutionReport for its ClOrdID (New, or the first answer: the
 //         gateway answers an aggressor that fills on arrival with Filled directly, FR-FFR-01);
-//   fill: the crossing order's (the sell's) intended send -> the ExecutionReport that ends the LATER of the two orders:
-//         the aggressor's own Filled and the resting buy's unsolicited fill report (FR-FFR-02, through the fill feed).
+//   fill: the crossing order's (the sell's) intended send -> its own Filled (the aggressor's answer);
+//   rest: the same intended send -> the resting buy's unsolicited fill report (FR-FFR-02, through the fill feed).
 //
 // Book- and position-neutral on its own ticker, as the binary probe: a LANE sends order 2k as a buy and 2k+1 as a sell
 // at one price, so every pair crosses, and the buyer alternates between the lane's two accounts. A lane is
@@ -57,10 +57,13 @@ const winNs = BigInt(cfg.window) * 1_000_000_000n;
 let measureFrom = 0n, closing = false;
 const stage = () => ({intended: [], actual: []});
 const windows = new Map();                                             // window index -> {ack, fill, rejected}
-const total = {ack: stage(), fill: stage(), rejected: 0, uncrossed: 0, lostSessions: 0};
+// fill: the crossing order's own Filled (the gateway answers it directly, FR-FFR-01); rest: the resting order's fill
+// report, which reaches its session through the fill feed (FR-FFR-02/14). Run 4's baseline (2026-11-11) read ~117 ms
+// p50 for the two together, so they are separate stages.
+const total = {ack: stage(), fill: stage(), rest: stage(), rejected: 0, uncrossed: 0, lostSessions: 0};
 const bucket = (intendedNs) => {
   const k = (intendedNs + wallOffset) / winNs;
-  if (!windows.has(k)) windows.set(k, {ack: stage(), fill: stage(), rejected: 0});
+  if (!windows.has(k)) windows.set(k, {ack: stage(), fill: stage(), rest: stage(), rejected: 0});
   return windows.get(k);
 };
 const record = (name, o, t) => {
@@ -109,9 +112,15 @@ function session(compId, {password}) {
       if (f['39'] === '8') { reject(o); console.log(`[probe] ${compId} rejected ${f['11']}: ${f['58'] || ''}`); }
       if (!['2', '4', '8', 'C'].includes(f['39'])) continue;            // still open (New, PartiallyFilled)
       orders.delete(f['11']); o.endedAt = t;
-      if (f['39'] !== '2') { if (f['39'] !== '8') total.uncrossed++; continue; }
+      if (f['39'] !== '2') {
+        if (f['39'] !== '8') {
+          total.uncrossed++;
+          console.log(`[probe] ${compId} ${f['11']} side=${f['54']} ended 39=${f['39']} 150=${f['150']} cum=${f['14']} ${f['58'] || ''}`);
+        }
+        continue;
+      }
       const [buy, sell] = o.pair;
-      if (buy.endedAt && sell?.endedAt) record('fill', sell, buy.endedAt > sell.endedAt ? buy.endedAt : sell.endedAt);
+      if (buy.endedAt && sell?.endedAt) { record('fill', sell, sell.endedAt); record('rest', sell, buy.endedAt); }
     }
     buf = buf.slice(at);
   });
@@ -146,7 +155,8 @@ const dist = (v) => { const s = v.slice().sort((a, b) => a - b);
   return `p50=${us(pct(s, 50))}us p90=${us(pct(s, 90))}us p99=${us(pct(s, 99))}us p99.9=${us(pct(s, 99.9))}us max=${us(s[s.length - 1] || 0)}us`; };
 // the part before the first '|' has binary-latency-probe's keys (the ack stage), so l0-report.py reads either probe
 const line = (tag, at, w) => `${tag} at=${at} count=${w.ack.intended.length} rejected=${w.rejected} ${dist(w.ack.intended)} `
-  + `| from-write ${dist(w.ack.actual)} | fill count=${w.fill.intended.length} ${dist(w.fill.intended)} | fill-from-write ${dist(w.fill.actual)}`;
+  + `| from-write ${dist(w.ack.actual)} | fill count=${w.fill.intended.length} ${dist(w.fill.intended)} | fill-from-write ${dist(w.fill.actual)}`
+  + ` | rest count=${w.rest.intended.length} ${dist(w.rest.intended)}`;
 const flushWindows = (all) => {
   const current = (now() + wallOffset) / winNs;
   for (const [k, w] of [...windows].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {

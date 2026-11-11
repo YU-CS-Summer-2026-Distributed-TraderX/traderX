@@ -68,10 +68,12 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
 
 - **FR-OPL-08 (FIX probe):** `fix-latency-probe.mjs` SHALL apply FR-OPL-02's method to the FIX 4.4 acceptor (port
   18130): constant rate on a wall-clock schedule, latency from the intended send time (from the write when the timer
-  fired early) plus from the write, epoch-aligned `PROBE-WINDOW` lines and a `PROBE-TOTAL`. It SHALL report two stages,
+  fired early) plus from the write, epoch-aligned `PROBE-WINDOW` lines and a `PROBE-TOTAL`. It SHALL report three stages,
   each p50/p90/p99/p99.9/max: **ack**, a NewOrderSingle to the first ExecutionReport for its ClOrdID (New, or Filled
-  for an aggressor answered filled, FR-FFR-01); and **fill**, the crossing sell's send to the ExecutionReport that ends
-  the later of the pair (the aggressor's Filled and the resting buy's fill report, FR-FFR-02). It SHALL stay book- and
+  for an aggressor answered filled, FR-FFR-01); **fill**, the crossing sell's send to its own Filled; and **rest**,
+  the same send to the resting buy's fill report, which reaches its session through the fill feed (FR-FFR-02/14). Run
+  4's quiet baseline (2026-11-11) read 117 ms p50 for fill and rest together, against an ack of 835 µs, so the two
+  paths are reported apart. An order that ends neither filled nor rejected SHALL be logged with its 39/150/58. It SHALL stay book- and
   position-neutral as FR-OPL-02: a lane is one session sending both accounts (`--accounts A,B`, the CompID bound to
   both) or two sessions each trading its own account (`--creds`, an even count, distinct accounts per pair). It SHALL
   log on every session before the first order, and exit non-zero on a reject (39=8, 35=3, 35=j), an order that ends
@@ -98,4 +100,6 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
 | engine-node budget listed | 04 | GKE 2026-11-10, `alloc.txt` | 16 capacity, 15,890m allocatable, DaemonSets 433m, member Guaranteed 15 |
 | FIX probe stages from a scripted acceptor | 08 | `test_fix_latency_probe.Stages`, local mock 2026-11-11 | 2 ms ack / 5 ms fill injected: ack p50 in [2, 4.5) ms, fill p50 in [5, 7.5) ms, two acks per fill; an aggressor answered Filled lands its first answer at 5 ms |
 | FIX probe refusals | 08 | `test_fix_latency_probe.Refusals`, local mock 2026-11-11 | a session dropped after 100 orders: exit 1, lostSessions=1, skipped and unanswered > 0; an odd session count without `--accounts` refused |
-| FIX probe on GKE | 08 | not yet run | carried by acceptance run 4 |
+| FIX probe: aggressor and resting reports apart | 08 | `test_fix_latency_probe.Stages.test_the_resting_report_is_its_own_stage`, local mock 2026-11-11 | 5 ms aggressor / 30 ms resting injected: fill p50 in [5, 7.5) ms, rest p50 in [30, 33) ms, one each per pair |
+| FIX probe on GKE, quiet baseline | 08 | acceptance run 4 (3a42e515), 2026-11-11 11:10–11:20 am ET, `acceptance-450k-20261110/l0-fix-probe/baseline/` | 300,001 orders, 0 rejected: ack p50 835 / p99 1,712 / p99.9 2,188 µs; fill and resting report together p50 117 ms (split from the next run on); exit 1 on 4 orders that ended neither filled nor rejected (not logged by that build) |
+| FIX probe on GKE, at rate | 08 | not yet run | acceptance run 4 stage 2 |
