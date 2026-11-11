@@ -133,14 +133,21 @@ public final class FixGatewayAcceptor {
     private final Map<Integer, Tracked> tracked = new LinkedHashMap<>(1024, 0.75f, false) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<Integer, Tracked> eldest) {
-            return size() > TRACKED_CAPACITY;
+            if (size() <= TRACKED_CAPACITY) {
+                return false;
+            }
+            final List<byte[]> held = eldest.getValue().pending;
+            if (held != null && !held.isEmpty() && ownFillsOnly) {
+                fillsLost.addAndGet(held.size());   // FR-FFR-18: evicted before its New was sent
+            }
+            return true;
         }
     };
 
     /**
-     * FR-FFR-15: the feed beats the answer. The leader publishes the fill and the ack from one apply, but a pipelined
-     * order (FR-BSP-02) is tracked only when its answer runs on the session's report thread, seconds later when the
-     * session is behind (the 2026-11-10 acceptance run: 4–9 s). Fills for untracked refs wait here, by ref in arrival
+     * FR-FFR-15: the feed beats the ack. The leader publishes the fill and the ack from one apply, and a pipelined
+     * order (FR-BSP-02) is tracked when its ack reaches {@link #acks} (FR-FFR-18; when its answer ran on the session's
+     * report thread, seconds later when the session was behind, run 3 lost 10.9M). Fills for untracked refs wait here, by ref in arrival
      * order, and {@link #track} takes its ref's. One leaves unreported only by age ({@link #EARLY_MAX_AGE_NANOS}, past
      * the ack deadline) or count ({@link #EARLY_CAPACITY}); on the routed feed every one of those is this gateway's
      * own order's fill, so it is counted lost and ALERTed. A 4,096-slot ring overwritten in arrival order lost 87% of
@@ -148,6 +155,7 @@ public final class FixGatewayAcceptor {
      */
     static final int EARLY_CAPACITY = Integer.parseInt(System.getenv().getOrDefault("FIX_EARLY_FILLS", "65536"));
     static final long EARLY_MAX_AGE_NANOS = 30_000_000_000L;
+    long earlyMaxAgeNanos = EARLY_MAX_AGE_NANOS;   // not final: tests shorten it
     private static final class Early {
         final long at = System.nanoTime();
         final List<byte[]> msgs = new java.util.ArrayList<>(1);
@@ -185,6 +193,16 @@ public final class FixGatewayAcceptor {
      */
     static final int MAX_IN_FLIGHT = Math.max(1, MAX_QUEUED_WRITES / 2);
     private final Map<SessionID, Pipeline> pipelines = new ConcurrentHashMap<>();
+    /**
+     * FR-FFR-18: where a pipelined order's ack completes, so {@link #acked} tracks it at once. On the session's report
+     * thread (as before) the ack waited behind every report the session had queued, which a saturated store holds
+     * back: the 2026-11-10 acceptance run 3 lost 10.9M fills and ends that aged out of the early buffer meanwhile.
+     */
+    private final ExecutorService acks = Executors.newSingleThreadExecutor(r -> {
+        final Thread t = new Thread(r, "fix-acks");
+        t.setDaemon(true);
+        return t;
+    });
 
     /**
      * FR-BSP-02: one session's NewOrderSingles in flight. Submitted on QuickFIX/J's session thread in arrival order,
@@ -234,6 +252,7 @@ public final class FixGatewayAcceptor {
         int cumQty;
         double notional;
         boolean cancelRequested;   // FR-FFR-17: the client's OrderCancelRequest answers this order's cancel
+        List<byte[]> pending;      // FR-FFR-18: tracked at its ack, its New not yet sent: its updates wait here
 
         Tracked(final SessionID session, final String clOrdId, final String symbol, final char side) {
             this.session = session;
@@ -435,6 +454,7 @@ public final class FixGatewayAcceptor {
 
     public void stop() {
         pipelines.values().forEach(p -> p.reports.shutdown());
+        acks.shutdown();
         if (acceptor != null) {
             acceptor.stop();
         }
@@ -787,6 +807,10 @@ public final class FixGatewayAcceptor {
             p.slots.acquireUninterruptibly();
             p.hold(msgSeqNum);
             final CompletableFuture<Void> done = submitNew(sid, clOrdId, accountId, ticker, side, qty, mapped, p, 0)
+                .thenApply(result -> {
+                    acked(sid, clOrdId, ticker, side, result);
+                    return result;
+                })
                 .handleAsync((result, failure) -> {
                     try {
                         answer(sid, clOrdId, accountId, ticker, side, qty, failure == null ? result : null);
@@ -814,7 +838,7 @@ public final class FixGatewayAcceptor {
             final long elections = submitter.leaderChanges();
             final OrderSubmitter.TypedOrder typed = mapped instanceof OrderSubmitter.TypedOrder t ? t : null;
             return submitter.submitOrderAsync(qualify(sid, clOrdId), accountId, ticker, side, qty,
-                    typed == null ? (Long) mapped : 0L, typed, p.reports)
+                    typed == null ? (Long) mapped : 0L, typed, acks)
                 .thenCompose(r -> {
                     if (r != null || attempt == FAILOVER_RESUBMITS || submitter.leaderChanges() == elections) {
                         return CompletableFuture.completedFuture(r);
@@ -852,7 +876,7 @@ public final class FixGatewayAcceptor {
             // is already terminal (filled by its own ack, FOK/IOC canceled) has nothing left to report.
             if (result.accepted() && result.kind() != OutputEvent.KIND_ORDER_CANCELED
                     && result.kind() != OutputEvent.KIND_ORDER_FILLED) {
-                track(result.orderRef(), sessionId, clOrdId, ticker, side);
+                answered(result.orderRef(), sessionId, clOrdId, ticker, side);
             } else if (result.accepted()) {
                 discardEarly(result.orderRef());
             }
@@ -1481,7 +1505,9 @@ public final class FixGatewayAcceptor {
         }
         synchronized (feedLock) {
             final Tracked t = tracked.get(ref);
-            if (t != null) {
+            if (t != null && t.pending != null) {
+                t.pending.add(json);   // FR-FFR-18: after its New
+            } else if (t != null) {
                 applyUpdate(ref, t, json);
             } else if (indexOf(json, FILL_STATUS, 0) >= 0 || indexOf(json, PARTIAL_STATUS, 0) >= 0
                     || indexOf(json, CANCELED_STATUS, 0) >= 0 || indexOf(json, REJECTED_STATUS, 0) >= 0) {
@@ -1496,7 +1522,7 @@ public final class FixGatewayAcceptor {
         final long now = System.nanoTime();
         for (final java.util.Iterator<Map.Entry<Integer, Early>> it = early.entrySet().iterator(); it.hasNext(); ) {
             final Map.Entry<Integer, Early> e = it.next();
-            if (early.size() <= EARLY_CAPACITY && now - e.getValue().at < EARLY_MAX_AGE_NANOS) {
+            if (early.size() <= EARLY_CAPACITY && now - e.getValue().at < earlyMaxAgeNanos) {
                 return;
             }
             it.remove();
@@ -1514,6 +1540,51 @@ public final class FixGatewayAcceptor {
     private void discardEarly(final int ref) {
         synchronized (feedLock) {
             early.remove(ref);
+        }
+    }
+
+    /**
+     * FR-FFR-18: a pipelined order is tracked at its ack, on {@link #acks}, not when its answer reaches the session's
+     * report thread. Its updates (and the early buffer's, which now spans only the ack's own hop) wait on the order
+     * until {@link #answered} has sent its New. They are bounded by the session's window ({@link #MAX_IN_FLIGHT}, freed
+     * when the answer runs) times an order's few updates, not by time.
+     */
+    private void acked(final SessionID sid, final String clOrdId, final String ticker, final char side,
+                       final OrderSubmitter.ExecResult r) {
+        if (r == null || !r.accepted()) {
+            return;
+        }
+        if (r.kind() == OutputEvent.KIND_ORDER_CANCELED || r.kind() == OutputEvent.KIND_ORDER_FILLED) {
+            discardEarly(r.orderRef());
+            return;
+        }
+        synchronized (feedLock) {
+            final Tracked t = new Tracked(sid, clOrdId, ticker, side);
+            final Early e = early.remove(r.orderRef());
+            t.pending = e == null ? new java.util.ArrayList<>(2) : e.msgs;
+            tracked.put(r.orderRef(), t);
+        }
+    }
+
+    /** After the New: what waited on the order (FR-FFR-18), oldest first; an order not tracked at its ack, tracked now. */
+    private void answered(final int ref, final SessionID session, final String clOrdId, final String symbol,
+                          final char side) {
+        synchronized (feedLock) {
+            final Tracked t = tracked.get(ref);
+            if (t == null || !t.session.equals(session)) {
+                track(ref, session, clOrdId, symbol, side);
+                return;
+            }
+            final List<byte[]> held = t.pending;
+            t.pending = null;
+            if (held != null) {
+                for (final byte[] m : held) {
+                    if (tracked.get(ref) != t) {
+                        break;   // ended by one of them
+                    }
+                    applyUpdate(ref, t, m);
+                }
+            }
         }
     }
 

@@ -299,6 +299,76 @@ class FixGatewayFillReportTest {
         assertEquals(1, acceptor.endReports());
     }
 
+    /**
+     * FR-FFR-18: the ack comes back at once but its answer waits on the session's report thread, behind reports a
+     * saturated store holds (acceptance run 3: from ~150K orders/s, 10.9M fills and ends lost). The order is tracked
+     * at its ack, so its fill waits on it, not in the early buffer, which the venue's other fills then overrun.
+     * Falsifiable: on the ff684979 acceptor the fill is evicted from the early buffer and never reported.
+     */
+    @Test
+    void aFillWhoseAnswerWaitsBehindTheSessionsReportsIsReported() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "q1", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(1));
+        final CountDownLatch stalled = stallReports();
+        submitter.answer("q1", 7);                                               // acked; its answer waits
+        acceptor.onOrderUpdate(feed(7, (byte) 0, 5, 0, FILLED, 50.0, 5));
+        for (int i = 0; i < FixGatewayAcceptor.EARLY_CAPACITY + 10; i++) {
+            acceptor.onOrderUpdate(feed(100_000 + i, (byte) 0, 1, 0, FILLED, 50.0, 1));   // other gateways' orders
+        }
+        stalled.countDown();
+        assertNotNull(c.await(r -> is(r, "q1", ExecType.TRADE)), "the fill was not reported");
+        assertEquals(List.of(ExecType.NEW, ExecType.TRADE),
+            c.reports.stream().map(FixGatewayFillReportTest::exec).toList(), "the New, then the fill");
+    }
+
+    /** FR-FFR-18: an answer held ten times the early buffer's age still has its fill and its venue cancel reported. */
+    @Test
+    void updatesForAnAnswerHeldPastTheEarlyAgeAreReported() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        acceptor.ownFillsOnly = true;
+        acceptor.earlyMaxAgeNanos = 100_000_000L;                                // 30 s, scaled to 100 ms
+        sendOrder(c, "q2", Side.BUY, 5, 50.0);
+        sendOrder(c, "q3", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(2));
+        final CountDownLatch stalled = stallReports();
+        submitter.answer("q2", 8);
+        submitter.answer("q3", 9);
+        acceptor.onOrderUpdate(feed(8, (byte) 0, 5, 2, PARTIAL, 50.0, 3));
+        acceptor.onOrderUpdate(feed(9, (byte) 0, 5, 5, CANCELED, 0, 0));
+        Thread.sleep(1_000);
+        acceptor.onOrderUpdate(feed(100_000, (byte) 0, 1, 0, FILLED, 50.0, 1));   // runs the age bound
+        stalled.countDown();
+        assertNotNull(c.await(r -> is(r, "q2", ExecType.TRADE)), "the fill was not reported");
+        assertNotNull(c.await(r -> is(r, "q3", ExecType.CANCELED)), "the venue's cancel was not reported");
+        assertEquals(0, acceptor.fillsLost(), "nothing aged out: ff684979 lost both");
+    }
+
+    /** Blocks the (one) session's report thread until the latch is counted down. */
+    private CountDownLatch stallReports() throws Exception {
+        final java.lang.reflect.Field f = FixGatewayAcceptor.class.getDeclaredField("pipelines");
+        f.setAccessible(true);
+        final Object pipeline = ((Map<?, ?>) f.get(acceptor)).values().iterator().next();
+        final java.lang.reflect.Field r = pipeline.getClass().getDeclaredField("reports");
+        r.setAccessible(true);
+        final CountDownLatch release = new CountDownLatch(1);
+        final CountDownLatch running = new CountDownLatch(1);
+        ((java.util.concurrent.ExecutorService) r.get(pipeline)).execute(() -> {
+            running.countDown();
+            try {
+                release.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertTrue(running.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        return release;
+    }
+
     /** FR-FFR-15: on the routed feed every fill is this gateway's, so one dropped from the early buffer is counted. */
     @Test
     void aFillLeftUnreportedOnTheRoutedFeedIsCounted() throws Exception {

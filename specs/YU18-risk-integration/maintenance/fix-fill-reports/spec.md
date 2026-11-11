@@ -145,4 +145,19 @@ fails.
   - `FixGatewayFillReportTest#aVenueCancelThatBeatsThePipelinedAnswerIsReportedAfterTheNew` (fails on the 316b269e
     acceptor), `#aRefusedClientCancelLeavesTheVenueCancelReported` (fails without clearing the request on refusal),
     `#aClientCancelIsReportedOnceWhenTheVenueUpdateFollows`.
+- FR-FFR-18 (2026-11-10, the 450K acceptance run 3): A pipelined order SHALL be tracked when its ack reaches the
+  gateway, not when its answer reaches the session's report thread. Run 3 lost 10,927,047 fills and ends (counted,
+  ALERTed on all 18 gateways) once the rate passed ~150K orders/s: the store was saturated from the 0.44 step
+  (every commit 128 bodies at ~290 ms), so each session's report thread sent at the store's pace, its acks waited
+  behind it, and their updates aged out of the early buffer (30 s / 65,536).
+  - The ack completes on one gateway thread (`fix-acks`), which tracks the order. Its updates SHALL wait on the order
+    until its New is sent, then be applied in arrival order after it, so a fill or end never precedes its New
+    (FR-FFR-15, FR-FFR-17).
+  - Bound: what waits is the session's window (`MAX_IN_FLIGHT`, 1,024; an order holds its slot until its answer
+    runs) times an order's few updates, with no time limit. The early buffer now covers only the ack's own hop.
+  - An order evicted from the tracked set (FR-FFR-10) before its New was sent SHALL count its waiting updates as
+    `outcome="lost"` on the routed feed.
+  - `FixGatewayFillReportTest#aFillWhoseAnswerWaitsBehindTheSessionsReportsIsReported` (the report thread held, the
+    early buffer overrun: fails on the ff684979 acceptor) and `#updatesForAnAnswerHeldPastTheEarlyAgeAreReported` (the
+    age scaled to 100 ms, the answer held 10×: ff684979 loses the fill and the cancel).
 
