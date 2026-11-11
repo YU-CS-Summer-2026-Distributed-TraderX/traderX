@@ -8,7 +8,9 @@ Sources:
 - `specs/YU12-aeron-cluster/generation/runtime-overrides/order-matcher/.../cluster/AeronPingPong.java`: `MODE=ping` /
   `MODE=pong`, the wire floor (FR-OPL-01).
 - `scripts/bench/latency/binary-latency-probe.mjs`: the constant-rate binary probe (FR-OPL-02).
-- `scripts/bench/latency/l0-baseline.sh`: `floor`, `probe`, `block`, `alloc` (FR-OPL-01, 03, 04).
+- `scripts/bench/latency/fix-latency-probe.mjs`: the constant-rate FIX probe, ack and fill stages (FR-OPL-08);
+  `test_fix_latency_probe.py` drives it against `testdata/mock-fix-acceptor.mjs`.
+- `scripts/bench/latency/l0-baseline.sh`: `floor`, `probe`, `fix-probe`, `block`, `alloc` (FR-OPL-01, 03, 04, 08).
 - `scripts/bench/latency/l0-report.py`: one row per window from the evidence.
 
 See [spec](spec.md), [plan](plan.md) and [tasks](tasks.md).

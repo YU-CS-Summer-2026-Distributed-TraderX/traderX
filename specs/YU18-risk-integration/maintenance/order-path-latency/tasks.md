@@ -10,3 +10,7 @@
       at saturation.
 - [ ] Next session: read `cpu.stat` throttling on gateway and member cgroups for the ~28–30 ms max seen in every loaded
       gateway window.
+- [x] `fix-latency-probe.mjs` (FR-OPL-08): ack and fill stages over FIX; `test_fix_latency_probe.py` against a mock
+      acceptor (injected delays on their stage, a dropped session refused); `l0-baseline.sh fix-probe`.
+- [ ] GKE: the FIX probe on the acceptance rig, carried by acceptance run 4 (`CREDS=... l0-baseline.sh fix-probe T PX
+      SECS`); record the windows and the coverage row.
