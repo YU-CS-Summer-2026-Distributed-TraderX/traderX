@@ -135,3 +135,12 @@ stall. The link runs the other way only: the second election starts every lane's
    - Filling 8 partitions to 136 GB takes 40–60 minutes: about 450 MB/s offered, 311 MB/s stored with s2. The
      estimate is 90–110 minutes of rig on the morning's shape (about $20 per 67 minutes), so about $30–35 (range
      $25–50). Not planned until items 2 and 3 have run.
+
+## 3b. The second election reproduces on kind (2026-11-10 night)
+
+`scripts/proofs/kind-second-election.sh` (kind, run D's 50/200/100 ms timeouts, members at a guaranteed 2 CPUs). There
+were no elections in the no-kill baselines. A second or third election followed a leader kill in 4 of 5 kills, 2.5–22 s
+after the first. Each one began on the follower, which lost the new leader's heartbeat, as in E3. cgroup CPU
+throttling and memory events stayed near 0, so it is not CPU quota or cgroup memory. The tap-off arm and the GC/safepoint
+logging rerun did not run: the Mac stayed above load 12 all night. Evidence and next steps: shared notes
+`ri38-second-election-kind/README.md`. `SnapshotBarrierPerformanceTest` passed run alone at load 12.
