@@ -1172,6 +1172,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         return hash == 0L ? 1L : hash;   // never collide with the "no key" sentinel
     }
 
+    /** ADR-104: FNV-1a 32 of the same qualified ClOrdID, independent of {@link #clientOrderKey}'s 64 bits. */
+    static int clientOrderCheck(final String clOrdId) {
+        int hash = 0x811c9dc5;
+        for (int i = 0; i < clOrdId.length(); i++) {
+            hash = (hash ^ clOrdId.charAt(i)) * 0x01000193;
+        }
+        return hash;
+    }
+
     // ----- OrderSubmitter (called by REST + FIX threads) -------------------------------------
 
     @Override
@@ -1278,6 +1287,24 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             qty, typed == null ? limitPxTicks : typed.limitPx(), clientOrderKey(clOrdId), 0);
         p.clOrdId = clOrdId;
         p.typed = typed;
+        return submitPipelinedAsync(p, completions);
+    }
+
+    /** ADR-104: the FIX NEW with its session tail; the check is a second hash of the same qualified ClOrdID. */
+    @Override
+    public CompletableFuture<ExecResult> submitSessionKeyedAsync(final String clOrdId, final int accountId,
+                                                                final String ticker, final char side, final int qty,
+                                                                final long limitPxTicks, final TypedOrder typed,
+                                                                final long sessionStream, final int msgSeqNum,
+                                                                final int possFlags, final Executor completions) {
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, ticker, side,
+            qty, typed == null ? limitPxTicks : typed.limitPx(), clientOrderKey(clOrdId), 0);
+        p.clOrdId = clOrdId;
+        p.typed = typed;
+        p.sessionStream = sessionStream;
+        p.sessionCheck = clientOrderCheck(clOrdId);
+        p.msgSeqNum = msgSeqNum;
+        p.sessionFlags = AeronReplicationCodec.INPUT_FLAG_SESSION_KEYED | possFlags;
         return submitPipelinedAsync(p, completions);
     }
 
@@ -1601,7 +1628,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // Owner thread only, so a plain increment; starts at 1 because 0 means "no request".
             p.requestId = nextRequestId++;
             int bytes;
-            final int flags = p.streamSeq != 0L ? AeronReplicationCodec.INPUT_FLAG_SEQUENCED : 0;
+            final int flags = p.streamSeq != 0L ? AeronReplicationCodec.INPUT_FLAG_SEQUENCED : p.sessionFlags;
             if (p.typed != null) {
                 // YU18: typed NEW / REPLACE ride template 9; untyped keep template 1 byte for byte.
                 event.orderType = p.typed.orderType();
@@ -1620,8 +1647,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 codec.encodeInput(orderBuffer, 0, event, p.requestId, 0, flags);
                 bytes = AeronReplicationCodec.INPUT_BYTES;
             }
-            if (flags != 0) {   // ADR-090: the stream pair, uninterpreted here (FR-XOD-11)
+            if (p.streamSeq != 0L) {   // ADR-090: the stream pair, uninterpreted here (FR-XOD-11)
                 bytes = AeronReplicationCodec.appendSequencedTail(orderBuffer, 0, bytes, p.streamId, p.streamSeq);
+            } else if (flags != 0) {   // ADR-104: the FIX session tail (FR-XOD-20)
+                bytes = AeronReplicationCodec.appendSessionTail(orderBuffer, 0, bytes, p.sessionStream, p.sessionCheck,
+                    p.msgSeqNum);
             }
             final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
             pipelineOfferAttempts++;
@@ -3874,6 +3904,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // ADR-090: a sequenced NEW's stream pair, carried in the ingress tail; streamSeq 0 = unsequenced.
         long streamId;
         long streamSeq;
+        // ADR-104: a FIX NEW's session tail; sessionFlags 0 = untagged.
+        long sessionStream;
+        int sessionCheck;
+        int msgSeqNum;
+        int sessionFlags;
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
                      final int qty, final long limitPx, final long clientKey, final int orderRef) {

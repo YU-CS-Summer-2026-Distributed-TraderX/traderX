@@ -16,7 +16,7 @@ package finos.traderx.ordermatcher.risk;
  *
  * <p>Zero-allocation on the apply path; every array is presized. BLP thread only.
  */
-public final class StreamDedupe {
+public final class StreamDedupe implements SequencedAnswers {
     public static final int ADMIT = 0;
     public static final int DUPLICATE = 1;
     public static final int GAP = 2;
