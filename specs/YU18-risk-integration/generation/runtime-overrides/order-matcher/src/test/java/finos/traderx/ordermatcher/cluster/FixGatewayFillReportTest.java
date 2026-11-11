@@ -348,6 +348,49 @@ class FixGatewayFillReportTest {
         assertEquals(0, acceptor.fillsLost(), "nothing aged out: ff684979 lost both");
     }
 
+    /**
+     * FR-FFR-19, the 2026-11-11 acceptance run 4 at 300K orders/s: one gateway acked ~16.7K orders/s while the routed
+     * feed stalled ~10 s (the read model's fills router a slow consumer), so ~167K orders were working here, their
+     * fills not yet arrived. A resting order's fill that comes after them is still its own. Falsifiable: on 09fafeda the
+     * 65,536-order LRU evicted it while working, and its fill aged out of the early buffer counted lost.
+     */
+    @Test
+    void aRestingOrdersFillLateBehindTenSecondsOfAckedOrdersIsReported() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        acceptor.ownFillsOnly = true;
+        sendOrder(c, "rest", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(1));
+        submitter.answer("rest", 1);
+        assertNotNull(c.await(r -> is(r, "rest", ExecType.NEW)), "no New");
+        for (int ref = 2; ref <= 167_000; ref++) {                               // ten seconds of this gateway's acks
+            track(ref);
+        }
+        acceptor.onOrderUpdate(feed(1, (byte) 0, 5, 0, FILLED, 50.0, 5));     // the stalled feed resumes
+        assertNotNull(c.await(r -> is(r, "rest", ExecType.TRADE)), "the resting order's late fill was not reported");
+        assertEquals(0, acceptor.trackedEvicted(), "a working order was evicted");
+    }
+
+    /** FR-FFR-19: past its heap bound the gateway evicts its oldest working order, and counts it. */
+    @Test
+    void aWorkingOrderEvictedPastTheTrackedBoundIsCounted() throws Exception {
+        start(new GatedSubmitter());
+        acceptor.trackedCapacity = 4;
+        for (int ref = 1; ref <= 6; ref++) {
+            track(ref);
+        }
+        assertEquals(2, acceptor.trackedEvicted());
+    }
+
+    /** Tracks {@code ref} as CLIENT1's working order whose New was sent (what {@code answered} does). */
+    private void track(final int ref) throws Exception {
+        final java.lang.reflect.Method m = FixGatewayAcceptor.class.getDeclaredMethod("track", int.class,
+            SessionID.class, String.class, String.class, char.class);
+        m.setAccessible(true);
+        m.invoke(acceptor, ref, new SessionID("FIX.4.4", "TRADERX", "CLIENT1"), "o" + ref, "IBM", '1');
+    }
+
     /** Blocks the (one) session's report thread until the latch is counted down. */
     private CountDownLatch stallReports() throws Exception {
         final java.lang.reflect.Field f = FixGatewayAcceptor.class.getDeclaredField("pipelines");

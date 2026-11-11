@@ -127,16 +127,26 @@ public final class FixGatewayAcceptor {
         });
 
     /**
-     * FR-FIX05: orderRef → the FIX order a feed fill belongs to. Bounded like the map above, and
-     * an entry leaves on its terminal update (filled, canceled, rejected). ponytail: an order
-     * evicted while still working gets no further fill reports; it stays answerable by H.
+     * FR-FIX05: orderRef → the FIX order a feed fill belongs to. An entry leaves on its terminal update (filled,
+     * canceled, rejected). FR-FFR-19: a working order stays until then; the bound only guards the heap. Its size is
+     * time: every order acked while the routed feed is late is working here, so 65,536 was ~4 s of one gateway at 300K
+     * orders/s, and run 4 lost every fill that the read model's fills router delivered later than that. 524,288
+     * (~215 B each measured, ~113 MB of the 768 MB heap) rides ~30 s of feed lag at 300K, ~20 s at 450K. Past it the oldest
+     * working order is evicted, counted and ALERTed: its later fills age out of the early buffer counted lost.
      */
-    private static final int TRACKED_CAPACITY = 65_536;
+    static final int TRACKED_CAPACITY = Integer.parseInt(System.getenv().getOrDefault("FIX_TRACKED_ORDERS", "524288"));
+    int trackedCapacity = TRACKED_CAPACITY;   // not final: tests shorten it
+    private final AtomicLong trackedEvicted = new AtomicLong();
     private final Map<Integer, Tracked> tracked = new LinkedHashMap<>(1024, 0.75f, false) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<Integer, Tracked> eldest) {
-            if (size() <= TRACKED_CAPACITY) {
+            if (size() <= trackedCapacity) {
                 return false;
+            }
+            if (trackedEvicted.getAndIncrement() == 0) {
+                log.error("ALERT FIX {} orders tracked: ord-{} evicted while working, its later fills and end go unreported"
+                    + " (traderx_fix_tracked_evicted_total counts every one; the fill feed is late or losing ends)",
+                    trackedCapacity, eldest.getKey());
             }
             final List<byte[]> held = eldest.getValue().pending;
             if (held != null && !held.isEmpty() && ownFillsOnly) {
@@ -1613,8 +1623,9 @@ public final class FixGatewayAcceptor {
             if (!ownFillsOnly) {
                 fillsEvicted.addAndGet(e.getValue().msgs.size());   // the venue's fills: mostly other gateways' orders
             } else if (fillsLost.getAndAdd(e.getValue().msgs.size()) == 0) {
-                log.error("ALERT FIX fill or end of ord-{} not reported: its order was never tracked here within {} s or {}"
-                    + " fills (traderx_fix_fill_reports_total{outcome=\"lost\"} counts every one)", e.getKey(),
+                log.error("ALERT FIX fill or end of ord-{} not reported: its order was not tracked here (never, or evicted:"
+                    + " traderx_fix_tracked_evicted_total) within {} s or {} fills (traderx_fix_fill_reports_total{outcome=\"lost\"}"
+                    + " counts every one)", e.getKey(),
                     EARLY_MAX_AGE_NANOS / 1_000_000_000L, EARLY_CAPACITY);
             }
         }
@@ -1849,6 +1860,11 @@ public final class FixGatewayAcceptor {
 
     public long fillsEvicted() {
         return fillsEvicted.get();
+    }
+
+    /** FR-FFR-19: working orders evicted past {@link #TRACKED_CAPACITY}. */
+    public long trackedEvicted() {
+        return trackedEvicted.get();
     }
 
     private static final byte[] ID_KEY = "\"id\":\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);

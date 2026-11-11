@@ -14,4 +14,6 @@
       reported, early ones after the New; a client cancel once. Unit tests fail on the 316b269e acceptor.
 - [x] FR-FFR-18 (2026-11-10, after acceptance run 3's 10.9M lost at ~150K orders/s): orders tracked at their ack,
       updates held on the order until its New. Unit tests fail on the ff684979 acceptor.
+- [x] FR-FFR-19 (2026-11-11, after acceptance run 4's 171,167 lost at the 0.67 step): working orders stay tracked
+      through ~30 s of routed-feed lag at 300K (524,288, was 65,536); evictions counted. The test fails at 65,536.
 - [ ] Re-run the acceptance stage 1 with `traderx_fix_fill_reports_total{lost}` and FR-GFS-20's commit metrics read, and `traderx_fix_end_reports_total`.

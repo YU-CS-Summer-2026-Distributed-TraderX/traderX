@@ -396,3 +396,30 @@ buckets, 5 servers. All 18 store clients logged "each bucket on its own server's
 - This matches the bench prototype (1.45M, and 1.26M with the capture): ~40% over the ~900K bodies/s that 450K FIX needs.
 - Evidence: shared notes `fix-store-gke-real-20261111/`.
 - Not done: end to end with FIX clients on 5 servers, which is the next acceptance run.
+
+## Run 4's lost fills: the tracked bound, not the early buffer (2026-11-11, FR-FFR-19)
+
+Run 4 (3a42e515, slot B) lost 171,167 fills and ends by the end of the 0.67 step (~300K orders/s), and 44M by the end.
+The evidence is in the acceptance lane's `acceptance-450k-20261110/fix/`.
+
+- **The trigger was upstream.** The routed feed comes from the read model's fills router (trade-processor, FR-FFR-14).
+  - trade-processor-0 was a NATS slow consumer from 12:00:57 pm ET, and the first lost-fill ALERT came 2 s later.
+  - Losses came in bursts, one at each of its connection resets.
+  - It ran out of heap at 12:05:34 pm ET and never became Ready again.
+  - From 12:10:34 pm ET no client received a fill.
+- **The gateway made late fills lost.** The tracked set was an LRU of 65,536 orders: about 4 s of one gateway at 300K
+  (16.7K orders/s each).
+  - Every order acked while the feed is late is still working, so the LRU evicted working orders.
+  - Their fills then found no order, waited in the early buffer, and aged out counted lost. The ALERT wrongly said
+    "never tracked here".
+  - With the feed on time, 776–869 s at 0.67 lost 0.
+  - Per-session in flight stayed under 100 and commits under 63 ms, so it is neither the window nor `fix-acks`.
+- **Fix (FR-FFR-19).** A working order stays tracked until its end.
+  - `FIX_TRACKED_ORDERS` defaults to 524,288, measured at ~215 B an order (~113 MB of the 768 MB heap). That rides
+    ~30 s of feed lag at 300K and ~20 s at 450K.
+  - Past it, an eviction is counted (`traderx_fix_tracked_evicted_total`) and ALERTed.
+  - The test fails at the old bound.
+- **Not fixed here:** a feed later than the bound, or one that never delivers.
+  - 84.4M orders still looked resting to the clients against 44.0M counted lost. The rest never reached a gateway,
+    which points to the router's own loss after its out-of-memory crash.
+  - That is the trade-processor's to fix.

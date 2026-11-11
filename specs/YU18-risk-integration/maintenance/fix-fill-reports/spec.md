@@ -35,7 +35,8 @@ subscription. No engine, wire, snapshot or consensus change.
   a missed message loses a report), `auto` or unset (the stream when one captures `/orders`, else core with
   the WARN) and `0` (off, logged at startup). `scripts/gcp-compsci/prepare.py` SHALL set `jetstream` on the
   CompSci gateway and refuse a render with any other value.
-- FR-FFR-10: The tracked set SHALL hold at most 65,536 orders. An order SHALL leave it on its FILLED,
+- FR-FFR-10: The tracked set SHALL hold at most `FIX_TRACKED_ORDERS` orders (FR-FFR-19; 65,536 until 2026-11-11). An
+  order SHALL leave it on its FILLED,
   CANCELED or REJECTED update, or on an update whose epoch prefix differs from the one first seen for its ref.
   An accepted FIX cancel keeps it until the venue's CANCELED, which then ends it unreported (FR-FFR-17; removed at
   the cancel, that update waited as an untracked order's and aged out counted lost).
@@ -160,4 +161,19 @@ fails.
   - `FixGatewayFillReportTest#aFillWhoseAnswerWaitsBehindTheSessionsReportsIsReported` (the report thread held, the
     early buffer overrun: fails on the ff684979 acceptor) and `#updatesForAnAnswerHeldPastTheEarlyAgeAreReported` (the
     age scaled to 100 ms, the answer held 10×: ff684979 loses the fill and the cancel).
+- FR-FFR-19 (2026-11-11, the 450K acceptance run 4): A working order SHALL stay tracked until its end, through the
+  routed feed's lag. Every order a gateway acks while its fills are late is working there, so the tracked bound is a
+  time: 65,536 orders was ~4 s of one gateway at 300K orders/s. Run 4 lost 171,167 fills and ends by the end of the
+  0.67 step, each burst within seconds of the read model's fills router (trade-processor-0, a NATS slow consumer from
+  12:00:57 pm ET, out of memory at 12:05:34 pm ET) delivering late; with the feed on time the 0.67 step lost none.
+  The fill found its order evicted while working, waited as an untracked one's and aged out counted lost.
+  - Bound: `FIX_TRACKED_ORDERS`, default 524,288 (~215 B an order measured, ~113 MB of the gateway's 768 MB heap): ~30 s of
+    feed lag at 300K orders/s, ~20 s at 450K. It guards the heap against a feed that stopped; it is not a window.
+  - Past it the oldest working order SHALL be evicted, counted in `traderx_fix_tracked_evicted_total` and ALERTed once;
+    its later fills and end age out of the early buffer as `outcome="lost"`.
+  - Not the in-flight window or `fix-acks`: per-session in flight stayed under 100 and the store's commits under
+    63 ms. A feed later than the bound, or one that drops ends, still loses reports; that is the router's to fix.
+  - `FixGatewayFillReportTest#aRestingOrdersFillLateBehindTenSecondsOfAckedOrdersIsReported` (a resting order, then
+    167,000 orders tracked, ten seconds of one 300K gateway, then its fill: fails with `FIX_TRACKED_ORDERS=65536`, the
+    09fafeda bound, which evicts it) and `#aWorkingOrderEvictedPastTheTrackedBoundIsCounted`.
 
