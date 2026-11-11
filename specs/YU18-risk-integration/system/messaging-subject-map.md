@@ -230,7 +230,7 @@ explicitly selected archive URI. Archive mode never emits a ready receipt from o
   `$KV.FIX_SESSION_LEASE.<K>`, max age 10 s). `<K>` is the SessionID with every character outside `[A-Za-z0-9-]`
   written as `_XX`. Each `cluster-gateway` creates both idempotently once NATS is reachable. Only the gateway
   holding a session's lease writes that session's keys. A fresh epoch purges both (FR-GFS-13).
-  With `FIX_SESSION_BUCKETS=n` (FR-GFS-21; production renders one per NATS server) the sessions are spread over
+  With `FIX_SESSION_BUCKETS=n` (FR-GFS-21; production renders four per NATS server) the sessions are spread over
   `FIX_SESSIONS`, `FIX_SESSIONS_1` ... `FIX_SESSIONS_<n-1>` (streams `KV_FIX_SESSIONS_<i>`), a session's keys all in
   bucket `hash(K) mod n`, bucket i placed on server tag i mod N.
 - `PROJECTION_FANOUT=false` stops trade-processor's per-trade `/accounts/{id}/trades` and

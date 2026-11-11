@@ -228,7 +228,7 @@ Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
   back; then Logons continue the stored sequence. REST and binary order entry are unaffected.
 - **Fresh epoch: purge the FIX store.** A fresh cluster epoch reuses order refs, and stored reports name orders
   as `ord-<orderRef>`, so wipe the sessions with the venue (gateways scaled to 0 first, or their next Logon
-  adopts stale orders). Every `KV_FIX_SESSION*` stream: the sessions are spread over one bucket per NATS server
+  adopts stale orders). Every `KV_FIX_SESSION*` stream: the sessions are spread over four buckets per NATS server
   (`FIX_SESSIONS`, `FIX_SESSIONS_1`, ..., FR-GFS-21), and the lease bucket is `KV_FIX_SESSION_LEASE`:
 
   ```bash

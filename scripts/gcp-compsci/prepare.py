@@ -358,13 +358,17 @@ def set_env(c, values):
     c['env'] = [e for e in c.get('env', []) if e['name'] not in values] + [{'name': k, 'value': v} for k, v in values.items()]
 
 
+FIX_SESSION_BUCKETS_PER_SERVER = 4   # FR-GFS-21, GKE 2026-11-10: 1/3/12/24 buckets 140K/378K/653K/624K bodies/s
+
+
 def fix_session_buckets(docs):
-    """FR-GFS-21: the gateways spread their FIX sessions over one bucket per NATS server, bucket i on server i mod N
+    """FR-GFS-21: the gateways spread their FIX sessions over four buckets per NATS server, bucket i on server i mod N
     (as FR-DRS-44 places partitions). One FIX_SESSIONS stream on one server capped the 2026-11-10 acceptance run's
-    FIX near 85K orders/s with ~2 s commits."""
+    FIX near 85K orders/s with ~2 s commits: a stream takes its fenced writes one at a time."""
     servers = nats_servers(docs)
     gw = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway')
-    set_env(podspec(gw)['containers'][0], {'FIX_SESSION_BUCKETS': str(servers), 'FIX_SESSION_PLACEMENT': placement(servers)})
+    set_env(podspec(gw)['containers'][0], {'FIX_SESSION_BUCKETS': str(FIX_SESSION_BUCKETS_PER_SERVER * servers),
+                                                   'FIX_SESSION_PLACEMENT': placement(servers)})
 
 
 def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):

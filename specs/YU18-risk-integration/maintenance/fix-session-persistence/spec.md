@@ -105,7 +105,7 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
 - FR-GFS-21 (2026-11-10, the 450K acceptance run 2): The store SHALL spread its sessions over `FIX_SESSION_BUCKETS`
   buckets (`FIX_SESSIONS`, `FIX_SESSIONS_1`, ...), each its own stream, a session in bucket `hash(K) mod n`, bucket i
   placed on NATS server tag i mod N of `FIX_SESSION_PLACEMENT` (as FR-DRS-44 places partitions).
-  `scripts/gcp-compsci/prepare.py` SHALL render one bucket per NATS server. Default 1: the layout before.
+  `scripts/gcp-compsci/prepare.py` SHALL render four buckets per NATS server. Default 1: the layout before.
   - Why: run 2 capped FIX near 85K orders/s with commits averaging ~2.0 s, every session in the one
     `KV_FIX_SESSIONS` stream on nats-1. A commit's wait is its queue: 600 sessions × up to 1,024 bodies each,
     taken one stream at a time. Locally that one stream refused publishes (429) and capped 600 sessions on 18 store
@@ -122,8 +122,22 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
     there, as every session does after the reset.
   - Size: a session holds at most `FIX_RESEND_WINDOW` (2,048) messages, so the store levels off instead of growing
     with time at rate (run 2: 557 MB for 600 sessions); each bucket keeps FR-GFS-10's 7 d and 1 GiB cap.
+  - On GKE (2026-11-10, slot A: the p4k render's three NATS servers on c4d-standard-16, 600 sessions on 18 store
+    clients in 6 pods on p4k-gateway, 120 s per arm, the store alone): a stream takes its fenced writes one at a
+    time, so throughput follows the number of streams and the bound sets the commit's wait. Four per server is the
+    knee; 24 buckets were no faster.
+
+  | buckets | uncommitted | bodies/s | commit avg | commit max | busiest server CPU |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 (before) | 1,024 | 140,099 / 144,080 | 2.21 / 2.16 s | 3.67 / 3.88 s | nats-1 0.6–1.3 of 12 |
+  | 1 | 256 | 131,170 | 0.59 s | 0.97 s | nats-1 1.3 |
+  | 3 | 1,024 | 389,723 | 0.79 s | 1.59 s | 1.9 each |
+  | 3 | 256 | 378,353 / 375,220 | 0.20 s | 0.38 / 0.40 s | 1.8–1.9 each |
+  | **12 (rendered)** | **256** | **652,673** | **0.12 s** | **0.67 s** | 3.4 each |
+  | 24 | 256 | 623,702 | 0.12 s | 2.06 s | 3.5, uneven |
+
   - `test_prepare.Rendering.test_fix_sessions_are_spread_over_the_nats_servers`; the bucket count is printed by
-    `FixStoreThroughputIT`. Not yet measured on GKE.
+    `FixStoreThroughputIT`. Not yet measured end to end with FIX clients (acceptance run 3).
 - FR-GFS-22 (2026-11-10): A lease that lapsed while the session's own commit was in flight SHALL be retaken with that
   commit as its fence (FR-GFS-16): fenced on the `K.seq` revision this gateway last saw, it lands only if nobody served
   the session meanwhile, and `confirm` SHALL wait for it (at most the 5 s commit timeout) before acting for the
