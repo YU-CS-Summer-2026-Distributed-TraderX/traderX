@@ -158,6 +158,9 @@ session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept a
   against the ADR-086 baseline before FR-XOD-12 is enabled on any rig.
 - NFR-XOD-04 (ADR-104): Before a format-15 member rolls, the leader's snapshot pause at 400K/s on GKE, with the
   production FIX session count, SHALL be measured against a format-14 control on the same rig.
+- NFR-XOD-05 (ADR-104): The apply path of a session-tagged NEW SHALL allocate nothing in steady state, once its
+  session's arrays exist: a miss (booked, recorded, the oldest entry evicted), a hit and an AGED_OUT refusal, under the
+  cluster apply-path gate (NFR-AC01).
 
 ## Test plan
 
@@ -203,6 +206,13 @@ behaviour that holds either way.
 every NEW carries one stream, its check, its MsgSeqNum and no poss flag; a 97=Y resend inside the ring is restated
 as its original with the bit set; one past it is a 35=j `EXACTLY_ONCE_AGED_OUT`; a forced ring answer naming another
 ClOrdID's order is resubmitted salted and booked; the shipped N is at least twice `MAX_IN_FLIGHT` (the drift test).
+
+`SessionRingAllocationGateTest` covers NFR-XOD-05 inside `clusterAllocationGateTest` (C2 only, two consecutive
+exact-zero windows of 1M events): with the ring full and evicting, a tagged new order, a PossResend hit, a PossResend
+of an evicted ClOrdID (AGED_OUT), ticks and a cancel of an unknown ref, each message encoded in place. It fails on
+any allocation in those paths, and asserts that hits and AGED_OUT answers really happened. Its first run measured
+28,000,056 bytes per window: `RiskReason.values()` cloned the enum array for every resend answered with its original
+rejection, in the session ring and in the ADR-090 stream gate alike (now one cached array).
 
 A/B: with the ring's hook disabled in the rendered tree, run 3, the aged rule and the snapshot round trip fail; the
 in-window resend passes either way (FR-IMRG14 still holds it), and the unit cases pin `SessionRing` directly.
