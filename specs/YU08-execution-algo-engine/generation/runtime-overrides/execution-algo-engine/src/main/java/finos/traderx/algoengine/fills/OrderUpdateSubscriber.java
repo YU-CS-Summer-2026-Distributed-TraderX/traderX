@@ -31,17 +31,27 @@ import org.springframework.stereotype.Component;
  * only {@code /accounts/<id>/orders} and read only {@code orderId}, so on the cluster tier every
  * child fill was discarded twice over and every parent order stayed RUNNING for ever.
  *
- * <p>These subjects use a literal {@code /}, not NATS's {@code .}-delimited token hierarchy, so the
- * whole thing is one token from NATS's perspective and {@code *} cannot be embedded inside it as a
- * wildcard (jnats's subject validator rejects {@code "/accounts/*}{@code /orders"} outright:
- * "Subject wildcard improperly placed"). Instead this subscribes to NATS's full match-all
- * ({@code ">"}) and filters client-side, at the cost of also receiving every other subject on the
- * connection (pricing ticks, trades, positions) and discarding non-matches.
+ * <p>FR-AE10 (run 4 of the 450K acceptance, 2026-11-11): this used to subscribe to NATS's match-all
+ * ({@code ">"}) and filter client-side, so at load it was sent the whole bus (the members'
+ * publishes, the routed fills, the FIX session store's writes) and discarded nearly all of it: 915
+ * slow-consumer cuts from this one client, and the server's write deadline stalled the producers on
+ * the way. It now subscribes to exactly the order-update subjects: bare {@code /orders} and the
+ * partitioned {@code /orders.<p>} ({@code "/orders.*"}: the subjects use a literal {@code /}, so
+ * {@code /orders} is one token and {@code .*} the partition token after it, as the gateway's own
+ * subscription does). The suffix filter it replaces also dropped {@code /orders.<p>}, so on a
+ * partitioned bridge every child fill was lost. And it holds even that interest only while a parent
+ * is RUNNING ({@link #interest}, from the scheduler's tick): with no algo order live, which is every
+ * load run, it receives nothing at all.
+ *
+ * <p>ponytail: while a parent runs it receives the whole order feed; above what its CPU can parse
+ * it is a slow consumer again. The upgrade is to read only its own children (the fills router's
+ * per-gateway stream, or the read model's {@code GET /accounts/{id}/orders}).
  */
 @Component
 public class OrderUpdateSubscriber {
   private static final Logger log = LoggerFactory.getLogger(OrderUpdateSubscriber.class);
-  private static final String CATCH_ALL_SUBJECT = ">";
+  /** FR-AE10: the order-update subjects, bare and partitioned; nothing else on the bus. */
+  static final String[] ORDER_SUBJECTS = {"/orders", "/orders.*"};
 
   /** Selects exactly {@code /orders} and {@code /accounts/<id>/orders} — the two order-lifecycle
    * subject forms in this system, and nothing else that is published on this bus
@@ -70,6 +80,8 @@ public class OrderUpdateSubscriber {
   private final AlgoOrderService algoOrderService;
   private final ObjectMapper mapper = new ObjectMapper();
   private volatile Connection connection;
+  private io.nats.client.Dispatcher dispatcher;
+  private boolean subscribed;
 
   public OrderUpdateSubscriber(
       @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress,
@@ -80,14 +92,44 @@ public class OrderUpdateSubscriber {
 
   @PostConstruct
   void start() throws Exception {
-    connection = Nats.connect(new Options.Builder()
+    Connection conn = Nats.connect(new Options.Builder()
         .server(natsAddress)
         .connectionTimeout(Duration.ofSeconds(10))
         .maxReconnects(-1)
         .build());
-    connection.createDispatcher(this::onMessage).subscribe(CATCH_ALL_SUBJECT);
-    log.info("subscribed to {} (filtering for subjects ending {}) for child-order fill tracking",
-        CATCH_ALL_SUBJECT, ORDERS_SUBJECT_SUFFIX);
+    attach(conn, conn.createDispatcher(this::onMessage));
+  }
+
+  /** The connection and its dispatcher, subscribed to nothing until {@link #interest}. */
+  synchronized void attach(Connection conn, io.nats.client.Dispatcher d) {
+    connection = conn;
+    dispatcher = d;
+  }
+
+  /**
+   * FR-AE10: hold the order-update subscriptions only while {@code want} (a parent is RUNNING). Called
+   * by the scheduler before it submits any bucket, so the server holds the interest (the flush)
+   * before a child can fill; an update published while no parent ran is for no child of this engine.
+   */
+  public synchronized void interest(boolean want) throws Exception {
+    if (want == subscribed || dispatcher == null) {
+      return;
+    }
+    for (String subject : ORDER_SUBJECTS) {
+      if (want) { dispatcher.subscribe(subject); } else { dispatcher.unsubscribe(subject); }
+    }
+    if (want) { connection.flush(Duration.ofSeconds(5)); }
+    subscribed = want;
+    log.info("{} {} for child-order fill tracking", want ? "subscribed to" : "unsubscribed from",
+        String.join(", ", ORDER_SUBJECTS));
+  }
+
+  synchronized boolean subscribed() { return subscribed; }
+
+  /** {@code /orders}, {@code /orders.<p>} or the retired single-BLP tier's {@code /accounts/<id>/orders}. */
+  static boolean orderSubject(String subject) {
+    return subject != null && (subject.equals("/orders") || subject.startsWith("/orders.")
+        || subject.endsWith(ORDERS_SUBJECT_SUFFIX));
   }
 
   /** True when the fill-tracking NATS connection is up. Feeds the readiness health group. */
@@ -98,14 +140,19 @@ public class OrderUpdateSubscriber {
 
   void onMessage(io.nats.client.Message msg) {
     String subject = msg.getSubject();
-    if (subject == null || !subject.endsWith(ORDERS_SUBJECT_SUFFIX)) {
+    if (!orderSubject(subject)) {
       return;
     }
-    try {
-      JsonNode body = mapper.readTree(msg.getData());
-      handle(body);
-    } catch (Exception ex) {
-      log.warn("failed to process order-update message: {}", ex.toString());
+    // FR-DRS-41: a bridge message holds one or more records, newline-separated (none inside a record)
+    for (String record : new String(msg.getData(), java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
+      if (record.isBlank()) {
+        continue;
+      }
+      try {
+        handle(mapper.readTree(record));
+      } catch (Exception ex) {
+        log.warn("failed to process order-update message: {}", ex.toString());
+      }
     }
   }
 

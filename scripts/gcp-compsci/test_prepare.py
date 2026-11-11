@@ -33,6 +33,12 @@ class Rendering(unittest.TestCase):
         self.assertEqual(engine['spec']['template']['spec']['nodeSelector'],
                          {'cloud.google.com/gke-nodepool':'engine-pool'})
 
+    def test_the_algo_engine_is_sized(self):
+        # FR-AE10: run 4 (2026-11-11) found it at 100m on the shared system node, no CPU limit, the JVM's default heap.
+        c=module.podspec(next(d for d in self.docs if d['kind']=='Deployment' and d['metadata']['name']=='execution-algo-engine'))['containers'][0]
+        self.assertEqual(c['resources'],{'requests':{'cpu':'250m','memory':'512Mi'},'limits':{'cpu':'1','memory':'768Mi'}})
+        self.assertIn({'name':'JAVA_TOOL_OPTIONS','value':'-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError'},c['env'])
+
     def test_every_render_names_the_snapshot_read_model(self):
         # Production 2026-11-07: this render left TRADE_PROJECTION_MODE unset, so 889e47be moved production from rows to
         # snapshot by flipping trade-processor's default. The mode is named in the render, and its absence refused.
