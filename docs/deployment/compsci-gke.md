@@ -228,11 +228,12 @@ Spec: `specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md`.
   back; then Logons continue the stored sequence. REST and binary order entry are unaffected.
 - **Fresh epoch: purge the FIX store.** A fresh cluster epoch reuses order refs, and stored reports name orders
   as `ord-<orderRef>`, so wipe the sessions with the venue (gateways scaled to 0 first, or their next Logon
-  adopts stale orders):
+  adopts stale orders). Every `KV_FIX_SESSION*` stream: the sessions are spread over one bucket per NATS server
+  (`FIX_SESSIONS`, `FIX_SESSIONS_1`, ..., FR-GFS-21), and the lease bucket is `KV_FIX_SESSION_LEASE`:
 
   ```bash
   kubectl -n traderx run fixpurge --rm -i --restart=Never --image=natsio/nats-box:0.14.5 -- \
-    sh -c 'nats -s nats://nats:4222 stream purge KV_FIX_SESSIONS -f && nats -s nats://nats:4222 stream purge KV_FIX_SESSION_LEASE -f'
+    sh -c 'for s in $(nats -s nats://nats:4222 stream ls --names | grep "^KV_FIX_SESSION"); do nats -s nats://nats:4222 stream purge "$s" -f || exit 1; done'
   ```
 
   Every counterparty then logs on with `ResetSeqNumFlag=Y` (or is reset by the acceptor on its first Logon).

@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * thread doing, per order, what QuickFIX/J does under its session lock: the inbound number moves
  * (incrNextTargetMsgSeqNum), and the answer is stored before it is sent (set + incrNextSenderMsgSeqNum).
  * FIX_STORE_BENCH=1 runs it; FIX_STORE_BENCH_SESSIONS (33, f15's per-gateway count) and _SECONDS (10) size it.
+ * FIX_STORE_BENCH_GATEWAYS (1) splits the sessions over that many store clients, each with its own NATS connection, as
+ * a venue's gateways share the store (the 2026-11-10 acceptance run: 600 sessions on 18 gateways).
  */
 @Testcontainers
 @EnabledIfEnvironmentVariable(named = "FIX_STORE_BENCH", matches = "1")
@@ -40,14 +42,20 @@ class FixStoreThroughputIT {
     void ordersPerSecondThroughOneGatewaysStore() throws Exception {
         final int sessions = Integer.parseInt(System.getenv().getOrDefault("FIX_STORE_BENCH_SESSIONS", "33"));
         final int seconds = Integer.parseInt(System.getenv().getOrDefault("FIX_STORE_BENCH_SECONDS", "10"));
-        final FixSessionStore store = new FixSessionStore(
-            "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222), "gw-bench");
-        for (int i = 0; i < 100 && !store.available(); i++) {
-            Thread.sleep(100);
+        final int gateways = Integer.parseInt(System.getenv().getOrDefault("FIX_STORE_BENCH_GATEWAYS", "1"));
+        final List<FixSessionStore> gws = new ArrayList<>();
+        for (int g = 0; g < gateways; g++) {
+            final FixSessionStore store = new FixSessionStore(
+                "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222), "gw-bench-" + g);
+            for (int i = 0; i < 100 && !store.available(); i++) {
+                Thread.sleep(100);
+            }
+            assertTrue(store.available());
+            gws.add(store);
         }
-        assertTrue(store.available());
         final List<MessageStore> stores = new ArrayList<>();
         for (int s = 0; s < sessions; s++) {
+            final FixSessionStore store = gws.get(s % gateways);
             final SessionID sid = new SessionID("FIX.4.4", "TRADERX", "C" + s);
             stores.add(store.create(sid));
             assertTrue(store.acquire(sid));
@@ -89,9 +97,11 @@ class FixStoreThroughputIT {
         final double secs = (System.nanoTime() - t0) / 1e9;
         stop.set(true);
         done.await();
-        store.close();
-        System.out.printf("[fix-store-bench] sessions=%d orders/s=%.0f per-session/s=%.0f us/order/session=%.0f%n",
-            sessions, n / secs, n / secs / sessions, 1e6 * secs * sessions / n);
+        final String commits = gws.get(0).commitMetrics().replace('\n', ' ');
+        gws.forEach(FixSessionStore::close);
+        System.out.printf("[fix-store-bench] buckets=%s gateways=%d sessions=%d orders/s=%.0f per-session/s=%.0f"
+            + " us/order/session=%.0f | gateway 0: %s%n", System.getenv().getOrDefault("FIX_SESSION_BUCKETS", "1"),
+            gateways, sessions, n / secs, n / secs / sessions, 1e6 * secs * sessions / n, commits);
         assertTrue(failures.get() == 0, failures.get() + " session thread(s) failed");
     }
 }

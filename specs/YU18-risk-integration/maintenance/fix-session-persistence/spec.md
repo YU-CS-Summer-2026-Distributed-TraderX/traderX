@@ -88,7 +88,7 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   storing anything.
   Group commit SHALL be on only if the server accepts a probe write fenced on another subject's current revision
   and refuses the same write at a stale revision with wrong-last-sequence (10071). Otherwise, or with
-  `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (1,024) bodies per session are uncommitted, the batch in flight included.
+  `FIX_STORE_GROUP_COMMIT=false`, the store SHALL stay synchronous with an ALERT. At most `FIX_STORE_MAX_UNCOMMITTED` (256 since FR-GFS-21; 1,024 before) bodies per session are uncommitted, the batch in flight included.
 - FR-GFS-19: With pipelined NewOrderSingles (FR-BSP-02) the store SHALL NOT store an inbound number above the lowest
   one whose order is undecided. QuickFIX/J's own expected number moves on; only the target in `K.seq` is held. When
   the lowest undecided order is decided, the held number SHALL be stored without waiting for the session's next
@@ -102,7 +102,36 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   once committed and at most `FIX_STORE_MAX_UNCOMMITTED` wait, so a store that caps sessions shows as a long commit:
   the 450K acceptance run capped every FIX session near 140 answers/s with the gateways, members and NATS disks idle,
   and nothing measured the store. `FixGatewayThroughputIT` prints them.
-- FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` with the rest of the venue's state
+- FR-GFS-21 (2026-11-10, the 450K acceptance run 2): The store SHALL spread its sessions over `FIX_SESSION_BUCKETS`
+  buckets (`FIX_SESSIONS`, `FIX_SESSIONS_1`, ...), each its own stream, a session in bucket `hash(K) mod n`, bucket i
+  placed on NATS server tag i mod N of `FIX_SESSION_PLACEMENT` (as FR-DRS-44 places partitions).
+  `scripts/gcp-compsci/prepare.py` SHALL render one bucket per NATS server. Default 1: the layout before.
+  - Why: run 2 capped FIX near 85K orders/s with commits averaging ~2.0 s, every session in the one
+    `KV_FIX_SESSIONS` stream on nats-1. A commit's wait is its queue: 600 sessions × up to 1,024 bodies each,
+    taken one stream at a time. Locally that one stream refused publishes (429) and capped 600 sessions on 18 store
+    clients at 133–138K bodies/s with ~2.5 s commits (`FixStoreThroughputIT`, `FIX_STORE_BENCH_GATEWAYS=18`).
+  - `FIX_STORE_MAX_UNCOMMITTED` SHALL default to 256: a smaller queue is a shorter commit, and 256 still covers a
+    commit's round trip at one session's rate. Same bench, one NATS process (the ceiling is that process, not the
+    streams), two runs each: 1 bucket 115–138K/s with 429s; 3 buckets 161–172K/s (commit max 1.3–5.1 s); 3 buckets
+    and 256, 173–205K/s (0.58–0.76 s) and no 10071 after FR-GFS-22; 64 was no faster (196K/s). The sessions that
+    still fail there time out a commit (5 s) at that one saturated process.
+  - ADR-086's invariants hold as before: all of a session's keys (`K.seq` and its bodies) are in its one bucket, so
+    each body is fenced on `K.seq` in the same stream (ADR-099), and store-before-send (`FixWriteBarrier`) is
+    unchanged. Leases stay in the one `FIX_SESSION_LEASE` bucket. Every gateway SHALL run the same
+    `FIX_SESSION_BUCKETS`, changed only across a FIX day reset: a session whose bucket moves starts the next day
+    there, as every session does after the reset.
+  - Size: a session holds at most `FIX_RESEND_WINDOW` (2,048) messages, so the store levels off instead of growing
+    with time at rate (run 2: 557 MB for 600 sessions); each bucket keeps FR-GFS-10's 7 d and 1 GiB cap.
+  - `test_prepare.Rendering.test_fix_sessions_are_spread_over_the_nats_servers`; the bucket count is printed by
+    `FixStoreThroughputIT`. Not yet measured on GKE.
+- FR-GFS-22 (2026-11-10): A lease that lapsed while the session's own commit was in flight SHALL be retaken with that
+  commit as its fence (FR-GFS-16): fenced on the `K.seq` revision this gateway last saw, it lands only if nobody served
+  the session meanwhile, and `confirm` SHALL wait for it (at most the 5 s commit timeout) before acting for the
+  session. Retaking used to write `K.seq` itself, which refused this gateway's own batch (10071) and dropped a session
+  nobody else had: in the FR-GFS-21 bench renewals delayed past the 3 s TTL did that in every run (132–586 refusals);
+  after, none. `FixStoreGroupCommitIT.aRetakeWithItsOwnCommitInFlightKeepsTheSession` (the old store confirms at once and its
+  commit then fails); the refusing case stays `#aStalledOwnerIsNotConfirmedAfterAnotherServedTheSessionAndLeft`.
+- FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` (every bucket, FR-GFS-21) with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.
 - NFR-GFS-01: The store's cost SHALL be measured on GKE and recorded in ADR-086: new order → first

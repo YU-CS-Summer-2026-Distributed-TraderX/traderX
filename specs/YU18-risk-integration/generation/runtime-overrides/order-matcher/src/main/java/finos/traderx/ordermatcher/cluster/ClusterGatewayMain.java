@@ -3462,6 +3462,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 + "\ntraderx_fix_fill_reports_total{outcome=\"gap\"} " + fix.fillGaps()
                 + "\ntraderx_fix_fill_reports_total{outcome=\"lost\"} " + fix.fillsLost()
                 + "\ntraderx_fix_fill_reports_total{outcome=\"evicted\"} " + fix.fillsEvicted()
+                + "\ntraderx_fix_end_reports_total " + fix.endReports()
                 + "\ntraderx_fix_fill_feed_connect_failures_total " + fillFeedConnectFailures.get()
                 + "\ntraderx_fix_fill_feed_subscribed " + (fillFeedSubscribed ? 1 : 0)
                 + "\ntraderx_fix_resend_gapfilled_total " + fix.resendGapFills() + "\n" + fix.storeMetrics())
