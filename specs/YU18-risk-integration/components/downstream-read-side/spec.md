@@ -651,6 +651,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     16 lanes did this at the promotion. Silence now counts only while publishes wait for receipts, and a catch-up's
     stream read does not count either. `/health` `bridges.*.reconnects` counts dropped connections.
     `ReceiptLanesIT#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`.
+    On GKE (2026-11-11, RI38, production's render at 494–512K sides/s, 5 leader kills per build):
+    - The tip's lanes made 0 reconnects at any promotion, and no kill produced a second election.
+    - E3's build had storms of 9, 13 and 14 lanes. One storm was followed by ZGC allocation stalls on the new leader:
+      284 ms on the apply thread and 952 ms on the Aeron receiver. Then came a second election, 21 s after the kill.
+    - Inference (RI38 §3c): the storm's republish allocates on the publish path, the leader stalls on allocation,
+      and that is the reported second election. This was seen once; it is not a measured rate.
 - FR-DRS-50 (450K acceptance run 4, 2026-11-11): A feed's log SHALL name where a resume really starts. Before the feed
   has handed anything over, that is the consumer's own start, the cursor the feed was started from, and never a bare
   `last + 1`. `/v2/projection-feed` SHALL report the heap (`heap.usedBytes`, `heap.maxBytes`) beside the order view's
