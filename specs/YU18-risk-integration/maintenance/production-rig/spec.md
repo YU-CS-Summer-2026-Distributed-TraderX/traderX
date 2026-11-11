@@ -116,6 +116,14 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
 
   `gateway-pool`'s cluster autoscaler SHALL run with min `GATEWAYS` and max 18. `gateways.sh N` on an autoscaled
   rig SHALL set both minimums to N.
+
+  Note (2026-11-10, the acceptance run): the HPA cannot place long-lived sessions. A FIX or binary session connects
+  once, so a gateway the HPA adds receives only the logons that come after it; at 600 sessions on 18 gateways each
+  gateway ran 0.7 of 4 cores and the HPA would not have fired, while every session sat at its window. **Decided
+  2026-11-10 (yaakov, "All yes"; ADR-103 amendment §1, option A): the standing shape is a fixed gateway count sized
+  to sessions, `AUTOSCALE` off, the count measured after RI35's FIX fix.** The production candidate SHALL carry no
+  HPA on `cluster-gateway` and `validate()` SHALL refuse one (`test_prepare.AcceptanceShape`); `AUTOSCALE=on` stays a
+  rig option for a measurement, not the shape.
 - **FR-PRG-10:** The image population SHALL be declared in `scripts/gcp-compsci/population.json`: one default source
   commit, and per workload at most one exception (image, component, full source SHA, not the default).
   - `prepare.py`, `measure-admission.py`, `admit.py` and `admission-controls.py` SHALL refuse:
@@ -181,6 +189,78 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   server's `/jsz` reports only the streams it holds. Measured: one server stored 0.4-0.5M msgs/s whatever the stream
   count and three stored 1.00-1.25M with 0 lost (FR-DRS-34); one volume saturated at 298 MB/s (pd-balanced) and at
   684-724 MB/s (Hyperdisk, 1,200 MB/s provisioned) under retention churn at 400K orders/s (RI34 §1b).
+- **FR-PRG-42** (2026-11-10, the acceptance run): Each member's archive claim (`data`, class `order-matcher-archive`)
+  SHALL hold `MEMBER_ARCHIVE_HOURS` (3) hours at `READ_MODEL_RATE` at 125 B per order, rounded up to 50Gi: 600Gi. The
+  pack's 32Gi is the kind/demo figure (~4 minutes at 450K); the acceptance rig ran 600Gi by hand. `validate()` SHALL
+  refuse a smaller claim. The production render runs no purge, so an epoch at rate past the claim is ENOSPC on the
+  recorder (`statefulset-emptydir.yaml`, GROWTH): grow the claims first (`rig.sh member-disk`; a claim never shrinks)
+  or render `--archive-purge` (FR-PRG-40), which bounds the archive near two snapshot intervals
+  (`CLUSTER_SNAPSHOT_INTERVAL_MS` 300 s: ~35 GB at 450K) whatever the claim. FR-PRG-39's disk snapshots are of the
+  bytes used, not of the claim. The hours are yaakov's decision (ADR-103 amendment 2026-11-10); `test_prepare.AcceptanceShape`.
+- **FR-PRG-46** (2026-11-10, yaakov: "Turn on exactly-once"; amended the same day for ADR-104, the engine-side design
+  yaakov chose): The production candidate SHALL render `FIX_EXACTLY_ONCE=engine` on `cluster-gateway` (FR-XOD-24; it
+  needs `FIX_SESSION_STORE=jetstream`, which the gateway manifest sets) and `EXACTLY_ONCE_SESSION_RING` on the members,
+  and `validate()` SHALL refuse a FIX-enabled candidate with any other `FIX_EXACTLY_ONCE` (FR-XOD-12's `jetstream`
+  included: one order in flight per session, 1.7-5.2x below the pipelined path locally, `FixGatewayThroughputIT`) or
+  with a member ring below the gateways' `FIX_MAX_QUEUED_WRITES`. Without it a FIX resend that arrives past the
+  engine's FR-IMRG14 key window books a second time: 256Ki keys shared by every session are about 1.7 s at 150K
+  orders/s, and acceptance run 3's 47 s reconnect double-booked (the +427 NEW, FR-THT-12). Binary orders are sequenced
+  by the client (FR-XOD-11; the load driver is the acceptance lane's); the render carries nothing for them beyond
+  `BINARY_SEQUENCED=refuse` in front of members older than ADR-090 (ADR-096 §6). Members roll to format 15 before
+  gateways turn the flag on (ADR-104 §6), and not before NFR-XOD-04's snapshot-pause measurement.
+  `test_prepare.Rendering.test_fix_sessions_persist_and_status_has_a_read_model`.
+- **FR-PRG-43** (2026-11-10, the acceptance run): Every load test account (FIX 9900002-9900008, binary
+  9900010-9900017) SHALL have a row in `specs/YU15-eod-risk-extract/reference-data/counterparties.csv`
+  (`CPTY-TEST-<id>`, `NS-TEST-<id>`, USD). The extract aborts on a holding account with no mapping (FR-RXT09) and the
+  image is the CSV's only carrier (`issues/risk-extract-counterparties-configmap-shadows-the-image.md`), so after any
+  load the EOD stage failed closed. `prepare.py` SHALL refuse to render while one is unmapped
+  (`unmapped_test_accounts`). A test account's positions are extracted like any other's (ADR-103 §5: the EOD extract
+  runs against the load's positions); FR-PRG-38's clean-up is unchanged. `test_prepare.AcceptanceShape`.
+- **FR-PRG-44** (2026-11-10, acceptance run 3): After a reconnect or a GapFill, the FIX rehearsal load SHALL reconcile
+  before it resends. After `--reconcile-settle-ms` (default 10 s), it sends one OrderStatusRequest (H) per unanswered
+  order. An order the venue reports (ExecType OrderStatus, 150=I) is counted `foundBooked`, taken as answered and
+  set to the status reported (`foundFilled` when that status is Filled and its fill report never came). Only an order
+  the venue answers "unknown order" is resent, with PossResend(97), and counted `resent`; resends are never in `sent`.
+  The run reports `statusRequests`, and for each outage when the socket closed, what closed it (the Logout text or the
+  socket error) and the Logon attempts it took.
+  - Why: a blind resend books a second order once the engine's duplicate window (FR-IMRG14, a count shared by every
+    session, ~1.7 s at 150K orders/s) has passed its key. In run 3, CLIENT386 was down 46.9 s and blind-resent 1,464
+    orders; history held +427 NEW and +8 FILLED over `sent` (`history-overcount-run3.md`, trade-history-tiers).
+  - The status comes from the read model, so an order booked within the read model's lag reads as unknown and is
+    still resent: the settle time is that margin, not a proof. The acceptance compares the history store's NEW with
+    `sent` + `resent`.
+  - What a production client should do past the window (ADR-090 exactly-once, the engine window) is yaakov's decision
+    and is not this row's.
+
+  `test_fix_load.Drain`.
+- **FR-PRG-45** (2026-11-11, exactly-once on for the acceptance, ADR-090): The rehearsal loads SHALL speak the
+  exactly-once wire.
+  - Binary (`binary-load.mjs`, sequenced by default; FR-XOD-11, FR-PRG-16):
+    - every NEW SHALL set flags bit 0 and carry `streamId (high u32) | seq (low u32)`;
+    - there SHALL be one stream per (session, account), with `streamId` = the run's random nonce XOR
+      `(session << 3 | account index)`, never 0, so a run never continues an earlier run's stream. That is 1,024
+      streams for 8 pods × 16 sessions × 8 accounts, under `EXACTLY_ONCE_MAX_STREAMS`;
+    - `seq` SHALL count each stream's NEWs from 1;
+    - the load never resends, so DUPLICATE with orderRef 0 (FR-XOD-03) means a frame reached the engine twice: it
+      SHALL be counted `sequencedDuplicates` and SHALL fail the run;
+    - OUT_OF_SEQUENCE and STREAM_LIMIT SHALL be counted and SHALL fail the run.
+  - FIX (`fix-rehearsal-load.mjs`, FR-XOD-12..14). A resend of a held ClOrdID is answered from the original in one of
+    three ways:
+    - an ordinary report of its current state;
+    - a restatement (150=I, `DUPLICATE: ClOrdID already executed as ord-N`), counted `restated`;
+    - past the rings, a BusinessMessageReject whose text begins `EXACTLY_ONCE_AGED_OUT` or
+      `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN`, which is a receipt.
+    - It SHALL be counted (`exactlyOnceAgedOut`, `exactlyOnceRefUnknown`), and its order SHALL be taken as answered
+      and asked for by H.
+    - That order SHALL NOT be resent again, even when its status reads unknown (`unknownAfterReceipt`).
+    - Any other BusinessMessageReject SHALL be counted `businessRejects`.
+  - Neither load depends on a resend being booked again. FR-PRG-44's reconcile-before-resend stands.
+  - Each FIX outage SHALL be logged by the driver (`RECONNECT`: down for, closed at, cause, Logon attempts, last
+    refusal), and the acceptance SHALL keep those lines. It SHALL also keep every gateway's lease, reclaim, release,
+    Logon/Logout and disconnect lines for each session that reconnected (run 3 kept neither, so CLIENT386's 47 s
+    outage is unexplained).
+
+  `test_binary_load` (sequenced by default, unsequenced, a duplicate, out of sequence), `test_fix_load.ExactlyOnce`.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
@@ -399,7 +479,13 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     only ever sold and hit POSITION_LIMIT within minutes, 5.4M rejects);
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not
     resolve;
-  - send limit orders of 1 at one operator-given price, unflagged (never sequenced);
+  - send limit orders of 1 at one operator-given price, sequenced (amended 2026-11-11, ADR-090 / FR-XOD-11, yaakov:
+    "Turn on exactly-once"; was unflagged). Each NEW sets flags bit 0 with `clOrdId` = `streamId:u32 | seq:u32`, and
+    has one stream per (session, account), new every run (from the run's nonce) with its seq from 1, so the engine
+    books each `(account, stream, seq)` once. A pod opens sessions × 8 of the engine's `EXACTLY_ONCE_MAX_STREAMS`
+    (8,192, evicted only after an idle hour, FR-XOD-07), so runs within an hour add up (`streams` in the result).
+    `--unsequenced` sends the unflagged frame, for members older than ADR-090 (`BINARY_SEQUENCED=refuse`). FR-PRG-45
+    gives the answers;
   - track every clOrdId until its first ack and never resend (a resend past the 256Ki-key window can book twice), in
     memory bounded by the in-flight window: an answer for a seq no longer open is a duplicate, so no per-answer set is
     kept (production 2026-10-29 11:04 pm: that set outgrew node's heap after 18 minutes);
@@ -430,7 +516,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   account, track every ClOrdID until its first ExecutionReport, and through a gateway drain:
   - reconnect through the internal LB with its next MsgSeqNum, never a reset after the first Logon;
   - answer the acceptor's ResendRequest with a GapFill before resending anything;
-  - resend every unanswered order with PossResend(97), so the engine dedupes it and the gateway restates it.
+  - reconcile before resending (FR-PRG-44): resend with PossResend(97) only an unanswered order the venue answers
+    "unknown order" to an OrderStatusRequest.
 
   It SHALL send no TimeInForce (a Day order needs an open trading day, FR-OT08), pace each session at its rate,
   cancel every order still resting at the end, and end non-zero when any order is unanswered, answered as New twice,

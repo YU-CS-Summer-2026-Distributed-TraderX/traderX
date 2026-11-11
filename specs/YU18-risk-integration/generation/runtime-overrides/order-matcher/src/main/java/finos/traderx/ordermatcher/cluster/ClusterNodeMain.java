@@ -339,6 +339,8 @@ public final class ClusterNodeMain {
                 + ",\"lastResetSeq\":" + service.lastResetSeq()
                 + ",\"phase\":\"" + service.phaseName() + "\""
                 + ",\"queueDepth\":" + service.queueDepth()
+                // FR-BSP-03: acks the leader could not hand its client (each one's sender answers ambiguous).
+                + ",\"egress\":{\"dropped\":" + service.egressDropped() + ",\"closing\":" + service.egressClosing() + "}"
                 // YU18 (§7.9): non-zero "rejected" = NATS dropped published messages at stream ingest.
                 + ",\"bridges\":" + service.bridgeJson()
                 // FR-ERH-F16: opt-in, because the readiness sampler polls /health every 250 ms and the digest walks
@@ -535,6 +537,8 @@ public final class ClusterNodeMain {
                 + "# TYPE traderx_cluster_applied counter\ntraderx_cluster_applied" + m + applied + "\n"
                 + "# TYPE traderx_cluster_trades counter\ntraderx_cluster_trades" + m + trades + "\n"
                 + "# TYPE traderx_cluster_snapshots counter\ntraderx_cluster_snapshots" + m + service.snapshotsTaken() + "\n"
+                + "# TYPE traderx_cluster_egress_dropped counter\ntraderx_cluster_egress_dropped" + m + service.egressDropped() + "\n"
+                + "# TYPE traderx_cluster_egress_closing counter\ntraderx_cluster_egress_closing" + m + service.egressClosing() + "\n"
                 + "# TYPE traderx_cluster_up gauge\ntraderx_cluster_up" + m + (started ? 1 : 0) + "\n"
                 + "# TYPE traderx_book_open_orders gauge\ntraderx_book_open_orders" + m + (d == null ? 0 : d.openOrders()) + "\n"
                 + "# TYPE traderx_book_order_hash gauge\ntraderx_book_order_hash" + m + (d == null ? 0L : d.orderHash()) + "\n"

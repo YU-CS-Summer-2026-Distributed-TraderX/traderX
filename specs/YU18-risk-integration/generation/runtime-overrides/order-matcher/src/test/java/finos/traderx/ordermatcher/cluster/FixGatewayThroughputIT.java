@@ -108,6 +108,24 @@ class FixGatewayThroughputIT {
             return new ExecResult(true, ref.getAndIncrement(), OutputEvent.KIND_ORDER_ACCEPTED);
         }
 
+        /** FIX_EXACTLY_ONCE=jetstream (ADR-090, FR-XOD-12): the sequenced submit waits for its answer on the session's
+         *  thread, so the venue's delay is paid in line here, as the pipelined path pays it on {@link #later}. */
+        @Override
+        public ExecResult submitSequencedOrder(final String clOrdId, final int accountId, final String ticker,
+                                               final char side, final int qty, final long limitPxTicks,
+                                               final TypedOrder typed, final long streamId, final long streamSeq) {
+            if (venueMs > 0) {
+                try {
+                    Thread.sleep(venueMs);
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            final ExecResult r = new ExecResult(true, ref.getAndIncrement(), OutputEvent.KIND_ORDER_ACCEPTED);
+            fill(r.orderRef());
+            return r;
+        }
+
         @Override
         public ExecResult submitCancel(final int orderRef, final int accountId) {
             return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
@@ -222,7 +240,11 @@ class FixGatewayThroughputIT {
         final AtomicLong tradeReports = new AtomicLong();
         final AtomicInteger failed = new AtomicInteger();
         final List<Thread> threads = new ArrayList<>();
+        // NFR-XOD-03: order-to-ack, each order stamped when its bytes leave the client (the writer flushes when its window
+        // is spent) and paired with the session's next ExecType=0: exact here, the venue answers a session in order.
+        final java.util.concurrent.ConcurrentLinkedQueue<Long> latencies = new java.util.concurrent.ConcurrentLinkedQueue<>();
         for (final Object[] client : clients) {
+            final java.util.concurrent.ConcurrentLinkedQueue<Long> sentAt = new java.util.concurrent.ConcurrentLinkedQueue<>();
             final String compId = (String) client[0];
             final Socket socket = new Socket("127.0.0.1", (int) client[1]);
             final OutputStream os = new java.io.BufferedOutputStream(socket.getOutputStream(), 1 << 16);
@@ -242,8 +264,12 @@ class FixGatewayThroughputIT {
                                 typeNext = false;
                                 if (buf[i] == '0') {
                                     outstanding.release();
+                                    final Long at = sentAt.poll();
                                     if (measuring.get()) {
                                         reports.incrementAndGet();
+                                        if (at != null) {
+                                            latencies.add(System.nanoTime() - at);
+                                        }
                                     }
                                 } else if (buf[i] == 'F' && measuring.get()) {
                                     tradeReports.incrementAndGet();
@@ -266,11 +292,16 @@ class FixGatewayThroughputIT {
             final Thread writer = new Thread(() -> {
                 try {
                     Thread.sleep(500);   // the Logon answer first
+                    int unstamped = 0;
                     for (int seq = 2, id = 0; !stop.get(); seq++, id++) {
                         if (!outstanding.tryAcquire()) {
                             os.flush();
+                            for (final long now = System.nanoTime(); unstamped > 0; unstamped--) {
+                                sentAt.add(now);
+                            }
                             outstanding.acquire();
                         }
+                        unstamped++;
                         send(os, compId, seq, "D", "11=" + compId + "-" + id + "\u00011=11\u000155=IBM\u000154=2\u000160="
                             + ZonedDateTime.now(ZoneOffset.UTC).format(TS) + "\u000138=10\u000140=2\u000144=100");
                     }
@@ -293,12 +324,17 @@ class FixGatewayThroughputIT {
         final double rate = reports.get() / ((System.nanoTime() - t0) / 1e9);
         stop.set(true);
         threads.forEach(Thread::interrupt);
-        System.out.printf("[fix-gw-bench] groupCommit=%s gateways=%d sessions=%d window=%d natsDelayMs=%d venueMs=%s"
-            + " venueWindow=%s fills=%s answers/s=%.0f per-session=%.0f fill-reports/s=%.0f lost=%d%n", store.groupCommit(),
+        System.out.printf("[fix-gw-bench] exactlyOnce=%s groupCommit=%s gateways=%d sessions=%d window=%d natsDelayMs=%d venueMs=%s"
+            + " venueWindow=%s fills=%s answers/s=%.0f per-session=%.0f fill-reports/s=%.0f lost=%d%n",
+            store.sequenceOrders, store.groupCommit(),
             gateways, sessions, window, natsDelayMs, System.getenv().getOrDefault("FIX_GW_BENCH_VENUE_MS", "0"),
             System.getenv().getOrDefault("FIX_GW_BENCH_VENUE_WINDOW", "0"), System.getenv("FIX_GW_BENCH_FILLS"), rate,
             rate / clients.size(), tradeReports.get() / ((System.nanoTime() - t0) / 1e9),
             gws.stream().mapToLong(FixGatewayAcceptor::fillsLost).sum());
+        final long[] lat = latencies.stream().mapToLong(Long::longValue).sorted().toArray();
+        System.out.printf("[fix-gw-bench] order-to-ack ms: n=%d p50=%.2f p99=%.2f max=%.2f%n", lat.length,
+            lat.length == 0 ? 0 : lat[lat.length / 2] / 1e6, lat.length == 0 ? 0 : lat[(int) (lat.length * 0.99)] / 1e6,
+            lat.length == 0 ? 0 : lat[lat.length - 1] / 1e6);
         System.out.print("[fix-gw-bench] gateway 0 store: " + stores.get(0).commitMetrics().replace('\n', ' ') + "\n");
         gws.forEach(FixGatewayAcceptor::stop);
         stores.forEach(FixSessionStore::close);

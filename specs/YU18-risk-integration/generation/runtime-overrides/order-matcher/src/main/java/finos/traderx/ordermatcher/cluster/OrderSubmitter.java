@@ -141,6 +141,18 @@ public interface OrderSubmitter {
             : submitTypedOrder(clOrdId, accountId, ticker, side, qty, typed));
     }
 
+    /**
+     * ADR-104 (FR-XOD-24): the FIX NEW tagged for the engine's session ring: the session-day stream, the NewOrderSingle's
+     * MsgSeqNum and its PossDup/PossResend bits ({@code AeronReplicationCodec.INPUT_FLAG_POSS_*}). Only the cluster
+     * client carries the tag; a stub venue answers it as an untagged NEW.
+     */
+    default CompletableFuture<ExecResult> submitSessionKeyedAsync(String clOrdId, int accountId, String ticker,
+                                                                 char side, int qty, long limitPxTicks,
+                                                                 TypedOrder typed, long sessionStream, int msgSeqNum,
+                                                                 int possFlags, Executor completions) {
+        return submitOrderAsync(clOrdId, accountId, ticker, side, qty, limitPxTicks, typed, completions);
+    }
+
     /** FR-BSP-01: {@link #submitSequencedOrder(long, int, int, char, int, long, long, long)} without waiting. */
     default CompletableFuture<ExecResult> submitSequencedOrderAsync(long clientKey, int accountId, int securityId,
                                                                    char side, int qty, long limitPxTicks,

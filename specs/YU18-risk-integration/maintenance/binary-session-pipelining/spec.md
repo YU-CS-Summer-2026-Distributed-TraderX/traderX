@@ -3,7 +3,8 @@
 Status: implemented 2026-11-10 on `binary-acceptor-pipelining`; unit tests and kind only (see [tasks](tasks.md)): the
 rate half of NFR-BSP-01 met on kind, the `queue` half not (RI35); NFR-BSP-02's rate met on kind, with the members' egress drop open (T-BSP07). Not on GKE or production. Issue: [RI35](../../../../issues/risk-integration/35-binary-acceptor-serialises-a-session.md).
 Dependencies: the gateway's pipelined submit (`ClusterGatewayMain`'s `PendingOrder` future, owner thread, deadline
-reap and failover reap, all unchanged). No engine, wire-layout, snapshot or member change.
+reap and failover reap, all unchanged). No engine, wire-layout or snapshot change; the one member change is
+FR-BSP-03's counter.
 
 ## Requirements
 
@@ -57,6 +58,23 @@ reap and failover reap, all unchanged). No engine, wire-layout, snapshot or memb
     ADR-090), whose store-then-submit and FR-XOD-12 catch-up stay one order at a time.
   - Latency decomposition: FIX orders sample `queue` and `cluster` as binary ones do; `decode`, `reply` and `total`
     are binary only.
+- FR-BSP-03 (RI38, 2026-11-10): The leader SHALL count every egress record it does not hand its client session.
+  - `/health` `egress.dropped` (`traderx_cluster_egress_dropped`) counts records a live session refused on all 20
+    bounded attempts: back-pressure, not connected, or an admin action. A coalesced message counts every record it
+    carried.
+  - `egress.closing` (`traderx_cluster_egress_closing`) counts records for a session already closing.
+  - The first drop, and then every 10,000th, logs an ALERT with Aeron's last answer.
+  - Each such record is committed, but its sender answers ambiguous after its deadline (binary `STATUS_AMBIGUOUS`;
+    FIX sends no report). Before this rule `offerEgress` and `flushCoalesced` dropped these records and counted
+    nothing: RI35's 7 of 720,819 binary acks with coalescing off, and 187 FIX acks at a load's start with it on.
+  - Records with no session (an input no client sent) are not egress and are not counted.
+  - Followers never count: their sessions' offers are mocked.
+  - Production can still drop. `--throughput-members` (FR-PRG-15) renders `CLUSTER_EGRESS_COALESCE=true`, which cuts
+    the offers 64-fold, but `flushCoalesced` has the same 20-attempt bound and drops a whole message. RI35's 187 FIX
+    drops were on coalesced members. The default render leaves coalescing off. The drop is now counted; it is not
+    yet prevented (T-BSP07).
+  - Test: `EgressDropCountTest`. A session that is always back-pressured counts each record of an order's answer,
+    per record and coalesced. A closing session counts in `closing`. A session that accepts counts nothing.
 - NFR-BSP-01: With pipelining, a gateway's binary rate SHALL NOT depend on the number of client sessions: on one rig,
   16 sessions SHALL reach the rate 64 sessions reach, with `/latency` `queue` p99 under 50 µs and G3h ok.
 - NFR-BSP-02: With FR-BSP-02, on one rig and one offer, 4 FIX sessions SHALL reach the rate 64 reach, with every

@@ -249,6 +249,16 @@ public final class InputEvent {
      */
     public long streamId;
     public long streamSeq;
+    /**
+     * ADR-104: a FIX ORDER_NEW's session-day ({@code sessionStream}, 0 = not session-keyed), the 32-bit check of its
+     * ClOrdID, its MsgSeqNum, and whether the gateway saw PossDup (43=Y) or PossResend (97=Y), from the ingress tail
+     * behind {@code AeronReplicationCodec.INPUT_FLAG_SESSION_KEYED}. Set by every decode.
+     */
+    public long sessionStream;
+    public int sessionCheck;
+    public int msgSeqNum;
+    public boolean possDup;
+    public boolean possResend;
 
     public static InputEvent newInstance() {
         return new InputEvent();

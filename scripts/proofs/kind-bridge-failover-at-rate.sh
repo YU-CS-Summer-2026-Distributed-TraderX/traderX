@@ -12,10 +12,15 @@
 #                 records unpublished (maxBacklog): the stall was longer than the old queue
 #   order events  the load books two per side; strict when the load saw no ambiguous order, else reported
 #
-#   EXPECT_LOSS=1 is the control, for a member image before FR-DRS-47: the same run must LOSE trade sides, with
-#   queueDropped > 0 on a promoted member. It fails if nothing was lost: the freeze did not discriminate.
+#   KILL_AFTER (FR-DRS-49, RI38) kills the leader that many seconds into the freeze instead of 2: the dead leader's
+#   unstored tail (the members' sides between the freeze and the kill) must then exceed 65,536, what a follower kept
+#   before FR-DRS-49, and replaces the maxBacklog check. KILL_AFTER=100 FREEZE_SECS=140 SECS=420 RATE=400.
 #
-#   CTX=kind-<c> NS=traderx [SECS=300 SESSIONS=4 RATE=250 KILL_AT=60 FREEZE_SECS=120 EXPECT_LOSS=1] \
+#   EXPECT_LOSS=1 is the control, for a member image before FR-DRS-47: the same run must LOSE trade sides, with
+#   queueDropped > 0 on a promoted member (with KILL_AFTER, for one before FR-DRS-49: a new gap). It fails if nothing
+#   was lost: the freeze did not discriminate.
+#
+#   CTX=kind-<c> NS=traderx [SECS=300 SESSIONS=4 RATE=250 KILL_AT=60 FREEZE_SECS=120 KILL_AFTER=2 EXPECT_LOSS=1] \
 #     bash scripts/proofs/kind-bridge-failover-at-rate.sh
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -25,9 +30,10 @@ EVIDENCE=${EVIDENCE:-${TMPDIR:-/tmp}/kind-bridge-failover-at-rate-$$}; mkdir -p 
 RIG_LIB=1 . "$ROOT/scripts/gcp-compsci/rig/rig.sh"
 # 4 x 250 orders/s is about 1,000 sides/s and 2,000 order events/s on one lane each: the old queue held 65 s and 33 s.
 SECS=${SECS:-300}; SESSIONS=${SESSIONS:-4}; RATE=${RATE:-250}; PX=${TICKER_PX:-50}
-KILL_AT=${KILL_AT:-60}; FREEZE_SECS=${FREEZE_SECS:-120}; OLD_QUEUE=65536
+KILL_AT=${KILL_AT:-60}; FREEZE_SECS=${FREEZE_SECS:-120}; KILL_AFTER=${KILL_AFTER:-2}; OLD_QUEUE=65536
+((KILL_AFTER < FREEZE_SECS)) || { echo "KILL_AFTER ($KILL_AFTER) must fall inside the freeze ($FREEZE_SECS s)" >&2; exit 1; }
 # binary-load's phases are wall-clock aligned and it stops if a session still has an order unanswered at a boundary:
-# the kill lands 10 s to half a phase in, and the pause is long enough for the dead leader's in-flight orders to resolve.
+# the kill (KILL_AFTER s after the freeze) lands 10 s to half a phase in, and the pause is long enough for the dead leader's in-flight orders to resolve.
 PHASE_SECS=${PHASE_SECS:-120}; PAUSE_MS=${PAUSE_MS:-20000}
 NODE_IMAGE=${NODE_IMAGE:-node:20-alpine}
 fail(){ echo "[FAIL] $*" >&2; exit 1; }
@@ -89,14 +95,15 @@ spec:
 YAML
 kc wait --for=condition=Ready pod -l job-name=binary-load --timeout=120s >/dev/null
 s0=$SECONDS
-while ((SECONDS - s0 < KILL_AT)) || (( $(date +%s) % PHASE_SECS < 10 || $(date +%s) % PHASE_SECS > PHASE_SECS / 2 )); do sleep 1; done
+k(){ echo $(( ($(date +%s) + KILL_AFTER) % PHASE_SECS )); }
+while ((SECONDS - s0 < KILL_AT)) || (( $(k) < 10 || $(k) > PHASE_SECS / 2 )); do sleep 1; done
 # Nothing is frozen or killed unless the load is booking: a refused driver must not turn into a vacuous failover.
 [[ -z $(kc get job binary-load -o jsonpath='{.status.failed}') ]] || { kc logs job/binary-load | tail -3 >&2; fail "binary-load exited before the failover"; }
 [[ $(trades) -gt $t0 ]] || fail "the load booked nothing in ${KILL_AT}s"
 docker exec "$NNODE" pkill -STOP -x nats-server || fail "no nats-server to freeze on $NNODE"
-f0=$SECONDS; note "$(et)  NATS frozen (members' trades $(trades))"
-sleep 2   # the dying leader's last publishes go into the frozen socket: in flight, never stored
-kill_member "$l0"; note "$(et)  killed member $l0's JVM"
+f0=$SECONDS; tf=$(trades); note "$(et)  NATS frozen (members' trades $tf)"
+sleep "$KILL_AFTER"   # the dying leader's publishes go into the frozen socket: in flight, never stored
+tk=$(trades); kill_member "$l0"; tail=$((tk - tf)); note "$(et)  killed member $l0's JVM: $tail sides applied since the freeze, none stored"
 leaders=""; while ((SECONDS - f0 < FREEZE_SECS)); do l=$(leader); [[ $l == none || $leaders == *"$l"* ]] || leaders+="$l "; sleep 1; done
 thaw; note "$(et)  NATS thawed after $((SECONDS - f0)) s; leaders during the freeze: ${leaders:-none}"
 [[ -n $leaders && $leaders != "$l0 " ]] || fail "no new leader during the freeze ($leaders)"
@@ -128,16 +135,19 @@ done
 g3=PASS; out=$( (g3_history "$t") 2>&1) || g3="FAIL: $out"
 echo "$out" > "$EVIDENCE/g3h.txt"
 o=$(q "SELECT count() FROM orders"); got=$((o - o0)); want=$((2 * sides)); d=$(left_out)
-summary="$sides sides, G3h $g3; order events $got of $want ($amb ambiguous); queueDropped $lost; new gaps $gapped; trade lane held $held unpublished at most; leaders ${leaders}; left out $((d - d0))"
+summary="$sides sides, G3h $g3; dead leader's unstored tail $tail sides; order events $got of $want ($amb ambiguous); queueDropped $lost; new gaps $gapped; trade lane held $held unpublished at most; leaders ${leaders}; left out $((d - d0))"
 echo "$summary" > "$EVIDENCE/summary.txt"
 if [[ ${EXPECT_LOSS:-0} == 1 ]]; then
-  [[ $g3 != PASS && $lost -gt 0 ]] || fail "the control lost nothing (G3h $g3, queueDropped $lost): the freeze did not discriminate; raise FREEZE_SECS"
+  # FR-DRS-47's control loses at the promoted lane's queue (queueDropped); FR-DRS-49's past the follower's keep (a gap).
+  [[ $g3 != PASS && ( $lost -gt 0 || $gapped -gt 0 ) ]] || fail "the control lost nothing (G3h $g3, queueDropped $lost, new gaps $gapped): the freeze did not discriminate; raise FREEZE_SECS (or KILL_AFTER)"
   echo; echo "KIND-BRIDGE-FAILOVER-AT-RATE CONTROL LOST ($summary) evidence $EVIDENCE"; exit 0
 fi
 [[ $g3 == PASS ]] || fail "G3h: $out"
 [[ $lost == 0 ]] || fail "a lane lost $lost record(s) past its ring ($summary)"
 [[ $gapped == 0 ]] || fail "a lane counted $gapped new gap(s) ($summary)"
-[[ $held -gt $OLD_QUEUE ]] || fail "the trade lane never held more than $OLD_QUEUE: the freeze was shorter than the old queue at this rate; raise FREEZE_SECS or RATE ($summary)"
+if ((KILL_AFTER > 2)); then
+  [[ $tail -gt $OLD_QUEUE ]] || fail "the dead leader's unstored tail ($tail sides) fit in the $OLD_QUEUE a follower kept before FR-DRS-49; raise KILL_AFTER or RATE ($summary)"
+else [[ $held -gt $OLD_QUEUE ]] || fail "the trade lane never held more than $OLD_QUEUE: the freeze was shorter than the old queue at this rate; raise FREEZE_SECS or RATE ($summary)"; fi
 [[ $((d - d0)) == 0 ]] || fail "history-feed left out $((d - d0)) repeated message(s): a record was stored twice ($summary)"
 if [[ $amb == 0 ]]; then [[ $got == "$want" ]] || fail "order events on the stream: $got, the load's sides need $want"; fi
 echo; echo "KIND-BRIDGE-FAILOVER-AT-RATE PASS ($summary) evidence $EVIDENCE"

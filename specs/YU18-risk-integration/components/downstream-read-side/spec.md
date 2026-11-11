@@ -574,8 +574,9 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     no gap on every member. The promoted leader's lanes held up to 95,618 sides and 191,317 order events. The
     control, the parent's image, is the same run. It held 201,966 of 232,066 sides and 338,327 of 464,132 order
     events. The new leader's `queueDropped` was 30,100 and 125,805: each shortfall exactly, as on GKE. On GKE (2026-11-10, run E3: run D's render, members on this
-    rule's image only, 1:45–1:52 pm ET), the leader was killed at about 465K sides/s and member 1 led 1.81 s later,
-    with one election. The members agreed at 183,194,994 sides. The history store held 1..183,194,994, each once
+    rule's image only, 1:45–1:52 pm ET), the leader was killed at about 465K sides/s and member 1 led 1.81 s later.
+    Member 2 began a second election 4.9 s after that, and member 1 won it and kept the lead (corrected 2026-11-10:
+    first recorded as one election, because `failover.sh` stops at the first new leader; RI38). The members agreed at 183,194,994 sides. The history store held 1..183,194,994, each once
     (G3h). `queueDropped` was 0 and `gaps` 0 on every member. The promoted lanes caught up in 201–221 ms and held
     at most 8,681 sides and 17,443 order events each (`maxBacklog` 9,254 and 18,595).
 
@@ -583,13 +584,18 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     the failover lossless at rate on this build, but alone it does not discriminate against the old one. The kind
     proof and `ReceiptLanesIT` do, with their stalls induced.
   - Not caused by the bridges, and not changed by this rule: the second election 4 s after the first (member 2, then
-    member 1). The apply thread's offer never blocks, before or after this rule. Run D kept no member logs, so the
-    election's cause is open in RI37. Under this rule a second promotion is one more catch-up within the ring, not a
+    member 1). The apply thread's offer never blocks, before or after this rule. Run D kept no member logs. E3, which
+    did, had one too (above), so the election's cause is open in RI38. Under this rule a second promotion is one more catch-up within the ring, not a
     second loss window.
 
 - FR-DRS-48 (ADR-084 amendment, FR-FFR-14; 2026-11-10): The order view SHALL route each update of an order whose
   booking event named its gateway (`gateway`, the submitting session's principal) to `/fills.<gateway>` on the
-  `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` 2 GiB, `FILLS_STREAM_MAX_AGE_MINUTES` 10;
+  `TRADERX_FILLS` stream (`FILLS_STREAM`; R1, file, `FILLS_STREAM_MAX_BYTES` and `FILLS_STREAM_MAX_AGE_MINUTES`:
+  2 GiB / 10 min in the code, the kind figure, ~5 s at 450K orders/s — the production snapshot render sets them from
+  the rate, `FILLS_WINDOW_MINUTES` 3 at `READ_MODEL_RATE` × 882 B per order ≈ 71 GB, the window a gateway's ordered
+  consumer may fall behind by and still find its next message, a drain and an in-place restart included, and adds the
+  stream to every server's store budget since the one server holding it is any of them (FR-PRG-41;
+  `test_prepare.AcceptanceShape`; what the window does not buy is in FR-FFR-14);
   created idempotently by trade-processor like the capture, placement per FR-DRS-44's first tag), so a gateway reads
   only its own orders' events instead of the whole feed. The view SHALL keep an order's gateway from its booking
   event across later updates (as it keeps `clientOrderKey`), and the gateway SHALL NOT be part of the event digest
@@ -605,6 +611,47 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   `FillsRouterTest` (the batch shape; the view keeps the gateway named at booking and none for an order booked
   without one), `FillsRouterIT` (NATS: each gateway's subject holds only its own orders' events, one message per
   batch per gateway, acks counted, the stream's subject `/fills.>`), and the kind proof of FR-FFR-14.
+- FR-DRS-49 (RI38, 2026-11-10): A lane SHALL NOT release a record the stream has not confirmed stored. This holds in
+  every role, so a dead leader's unstored tail survives on its successor for as long as the successor's ring holds it.
+  The tail is what the leader applied but did not publish, plus what it published and the stream did not store.
+  FR-DRS-37's catch-up then republishes it, each record once and in order.
+  - Before this rule, a follower kept only its last 65,536 records per lane. On 2026-11-09 a stalled volume left about
+    1.9M sides unacked, and a full archive then killed the leader: §7.15 item 4, the "FR-DRS-33 ack gap". FR-DRS-33
+    is the reader's ack and does not cover it; FR-DRS-47's ring keeps only what the promoted lane applies itself.
+  - Each lane asks the stream for its last stored message on its subject. It uses the same request as the catch-up
+    (`$JS.API.STREAM.MSG.GET`, last by subject, after one `STREAM.NAMES` lookup), but sends it asynchronously, so
+    the lane thread never waits on it. It asks at most every 250 ms, and only when the keep would otherwise release
+    past what the stream last confirmed. The lane then never releases a record after that position. Records are in
+    apply order, so a bisection finds the position.
+  - A current stream confirms well within the keep (about 32K records at 127K/s), so a lane that keeps up holds what
+    it held before. A stalled stream, or a dead leader not yet replaced, holds records in the ring instead. Cost: one
+    small request per lane per 250 ms at most, 64 per second for a member's 16 lanes.
+  - Past the ring, the oldest unstored records are overwritten. The successor's catch-up counts that as a gap
+    (FR-DRS-38), as before.
+  - With no JetStream, no stream on the subject, or a last message without a position, the keep alone decides, as
+    before.
+  - The same rule covers a stall within one leader's life: a reconnect's catch-up (FR-DRS-38) finds everything the
+    stream did not store, not just the last 65,536.
+  - Test. `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor`: NATS freezes after
+    sides and order events 1..100 are stored, both members apply 101..100,100, and the leader publishes them into the
+    frozen socket. NATS is then killed, so none is stored, the leader dies and the follower is promoted. Each subject
+    reads back 1..100,100 once, in order, with gaps 0. Control, this test on the parent (`922c327e`): 65,636 of
+    100,100 sides stored, with 34,464 missing behind the catch-up's gap ALERT. `#aNatsOutageLongerThanTheRingIsALoudGap`
+    now keeps the 16 its ring holds (before: the last 8). On kind (2026-11-10, `kind-bridge-failover-at-rate.sh` with `KILL_AFTER=100 FREEZE_SECS=140 SECS=420 RATE=400`,
+    production's default shape, one partition, the members' image differing from the control's in `ReceiptLanes`
+    only): NATS was frozen 141 s and the leader killed 100 s into the freeze, with 118,052 sides applied since the
+    freeze and none of them stored. With this rule, G3h held all 387,332 sides, each once. The store held 774,665
+    order events against the 774,664 the sides need; the load had 5 ambiguous orders. `queueDropped` was 0, with no
+    new gap. The promoted leader republished the 108,828 sides and 241,208 order events it had held while following,
+    and `reconnects` was 0. The control is the same run on the parent's image, `ReceiptLanes` as at `922c327e`. Its
+    tail was 121,886 sides. The store held 407,430 of 465,088 sides, 57,658 lost, and 752,959 of 930,176 order events.
+    The promoted leader republished exactly 65,536 of each and counted a gap on each bridge.
+  - FR-DRS-38's stall check, fixed with this rule. A promoted lane read the time it spent following as silence: its
+    first publish counted as 5 s without a receipt, and it reconnected and caught up a second time. On GKE run E3 all
+    16 lanes did this at the promotion. Silence now counts only while publishes wait for receipts, and a catch-up's
+    stream read does not count either. `/health` `bridges.*.reconnects` counts dropped connections.
+    `ReceiptLanesIT#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

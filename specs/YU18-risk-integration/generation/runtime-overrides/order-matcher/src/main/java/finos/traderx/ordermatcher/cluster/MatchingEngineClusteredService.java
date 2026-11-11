@@ -14,6 +14,7 @@ import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.risk.BlpRiskState;
 import finos.traderx.ordermatcher.risk.RiskMetrics;
 import finos.traderx.ordermatcher.risk.RiskReason;
+import finos.traderx.ordermatcher.risk.SessionRing;
 import finos.traderx.ordermatcher.risk.StreamDedupe;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
@@ -152,6 +153,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int STREAM_WINDOW = (int) envLong("EXACTLY_ONCE_STREAM_WINDOW", 256);
     static final int MAX_STREAMS = (int) envLong("EXACTLY_ONCE_MAX_STREAMS", 8192);
     static final long STREAM_IDLE_MILLIS = envLong("EXACTLY_ONCE_STREAM_IDLE_MS", 3_600_000L);
+    /**
+     * ADR-104 (FR-XOD-21): ClOrdIDs kept per FIX session-day, and how many session-days the table holds (evicted as
+     * FR-XOD-07 evicts streams, on the log timestamp). N is twice the gateway's per-session cap on undecided orders
+     * (FixGatewayAcceptor.MAX_IN_FLIGHT, FIX_MAX_QUEUED_WRITES / 2): the cap plus as many answered but not yet seen.
+     * Allocated per session on first use: ~60 KB each, ~60 MB for a full table.
+     */
+    static final int SESSION_RING = (int) envLong("EXACTLY_ONCE_SESSION_RING", 2048);
+    static final int SESSION_STREAMS = (int) envLong("EXACTLY_ONCE_SESSION_STREAMS", 1024);
 
     private static long envLong(final String name, final long fallback) {
         final String v = System.getenv(name);
@@ -263,7 +272,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // and 10 still restore: every order comes back untyped, hasTraded false, businessDate 0.
     // Format 14 (ADR-090): adds the OPTIONAL T_STREAM records. MIN_READABLE stays 9: an older snapshot
     // restores with no streams, which is exactly the state before any sequenced order was sent.
-    static final int SNAPSHOT_FORMAT = 14; // account tuples append self-match group (13); T_STREAM (14)
+    // Format 15 (ADR-104): adds the OPTIONAL T_SESSION_RING records. MIN_READABLE stays 9: an older snapshot restores
+    // with empty session rings, the state before any session-keyed order was sent.
+    static final int SNAPSHOT_FORMAT = 15; // account tuples append self-match group (13); T_STREAM (14); T_SESSION_RING (15)
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -338,6 +349,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_RUN_IDENTITY = 20;
     /** Format 14 (ADR-090): one sequenced stream, {@link StreamDedupe#tuple}, in stream-index order. */
     static final int T_STREAM = 21;
+    /** Format 15 (ADR-104): one chunk of one session ring, {@link SessionRing#tuple}, sessions in index order. */
+    static final int T_SESSION_RING = 22;
 
     /** {orderRef, accountId, securityId, side, qty, limitPx, clientOrderKey, eventTimeMillis} --
      *  the complete replicated content of a queued ORDER_NEW. {@code seq}, {@code ingressNanos} and
@@ -588,6 +601,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private final UnsafeBuffer ackBuffer = new UnsafeBuffer(new byte[EGRESS_ACK_LENGTH]);
     private final UnsafeBuffer coalesceBuffer = new UnsafeBuffer(new byte[EGRESS_ACK_LENGTH * EGRESS_COALESCE_MAX]);
     private int coalesced;
+    // FR-BSP-03: egress records a live session refused past the bounded retry, and records for a closing session.
+    // Written by the service thread only; read by /health and /metrics.
+    private volatile long egressDropped, egressClosing;
     boolean egressCoalesce = EGRESS_COALESCE; // package-private for tests
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
 
@@ -895,6 +911,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             CREDIT_LIMIT_TICKS, MAX_ORDER_QUANTITY, MAX_ORDER_NOTIONAL_TICKS, PRICE_MAX_AGE_MILLIS,
             new RiskMetrics());
         this.risk.attachStreams(new StreamDedupe(STREAM_WINDOW, MAX_STREAMS, STREAM_IDLE_MILLIS));
+        this.risk.attachSessionRing(new SessionRing(SESSION_RING, SESSION_STREAMS, STREAM_IDLE_MILLIS));
         // fillFullThreshold 0: the crossing book has no threshold-driven half-fill policy (YU13).
         this.outputs = new OutputPublisher(outputRing, this::drainOnBackpressure);
         this.engine = new MatchingEngine(outputs, new HotPathMetrics(),
@@ -1029,6 +1046,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // NEW, and a duplicate whose original was accepted, continue — BlpRiskState then answers this
         // key from the stream's ring, so the duplicate is answered exactly as FR-IMRG14 answers one.
         if (event.type == InputEvent.TYPE_ORDER_NEW && event.streamSeq != 0L && !admitSequenced(session, timestamp)) {
+            return;
+        }
+        // ADR-104: a FIX NEW keyed by its session's ClOrdID ring, the same posture: a resend is answered from the ring,
+        // an AGED_OUT or a full table is refused here with no ref and no state change.
+        if (event.type == InputEvent.TYPE_ORDER_NEW && event.sessionStream != 0L && !admitSessionKeyed(session, timestamp)) {
             return;
         }
         // OTEL-01: derive this order's trace identity BEFORE the sequenced generator overwrites
@@ -1476,7 +1498,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     return true;
                 }
                 if (decision >= 0) {
-                    refuseSequenced(session, RiskReason.values()[decision], 0);   // its original rejection
+                    refuseSequenced(session, REASONS[decision], 0);   // its original rejection
                 } else if (!streams.beyondWindow() && (risk.knowsKey(key) || queuedByClientKey.containsKey(key))) {
                     return true;   // admitted but answered elsewhere (PRE_OPEN queue): the key table answers it
                 } else {
@@ -1486,6 +1508,44 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         return false;
     }
+
+    /**
+     * ADR-104 session ring (FR-XOD-19..22). Returns true to apply the NEW, with the risk state answering its key from the
+     * ring; false when it was answered here.
+     */
+    private boolean admitSessionKeyed(final ClientSession session, final long timestamp) {
+        final SessionRing ring = risk.sessionRing();
+        final long nowMillis = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS
+            ? timestamp / 1_000_000L : timestamp;   // cluster time only (FR-XOD-08)
+        final long key = event.clientOrderKey();
+        switch (ring.admit(event.sessionStream, key, event.sessionCheck, event.msgSeqNum, event.possDup,
+                           event.possResend, nowMillis)) {
+            case SessionRing.ADMIT -> {
+                risk.beginSequenced(key, false, ring);
+                return true;
+            }
+            case SessionRing.AGED_OUT -> refuseSequenced(session, RiskReason.SESSION_AGED_OUT, 0);
+            case SessionRing.LIMIT -> refuseSequenced(session, RiskReason.STREAM_LIMIT, 0);
+            default -> {
+                final byte decision = ring.duplicateDecision();
+                if (decision == RiskReason.ACCEPTED.ordinal() && ring.duplicateRef() > 0) {
+                    risk.beginSequenced(key, true, ring);
+                    return true;
+                }
+                if (decision >= 0) {
+                    refuseSequenced(session, REASONS[decision], 0);   // its original rejection
+                } else if (risk.knowsKey(key) || queuedByClientKey.containsKey(key)) {
+                    return true;   // admitted but answered elsewhere (PRE_OPEN queue): the key table answers it
+                } else {
+                    refuseSequenced(session, RiskReason.DUPLICATE, 0);   // never executes twice
+                }
+            }
+        }
+        return false;
+    }
+
+    /** NFR-XOD-05: {@code values()} clones the array, so a resend answered with its original rejection allocated. */
+    private static final RiskReason[] REASONS = RiskReason.values();
 
     private void refuseSequenced(final ClientSession session, final RiskReason reason, final int orderRef) {
         ackBuffer.putLong(0, appliedSeq);
@@ -2194,6 +2254,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         for (int i = 0, n = risk.streams().size(); i < n; i++) {
             writeTuple(writer, T_STREAM, risk.streams().tuple(i));
         }
+        // ADR-104: session rings in index order, each in chunks oldest entry first; restore rebuilds each ring in place.
+        final SessionRing ring = risk.sessionRing();
+        for (int s = 0, n = ring.size(); s < n; s++) {
+            for (int c = 0, k = ring.chunks(s); c < k; c++) {
+                writeTuple(writer, T_SESSION_RING, ring.tuple(s, c));
+            }
+        }
         // YU17 contracts in booking order. That order is load-bearing twice over: it is what the
         // rendered cut iterates (so restore must reproduce it exactly, byte for byte), and the
         // idempotency table remembers a contract by its INDEX in this list — restoring them in a
@@ -2576,6 +2643,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 }
                 risk.streams().restore(tuple);
             }
+            case T_SESSION_RING -> {
+                final long[] tuple = new long[(length - 4) / 8];
+                for (int i = 0; i < tuple.length; i++) {
+                    tuple[i] = buffer.getLong(offset + 4 + 8 * i);
+                }
+                risk.sessionRing().restore(tuple);
+            }
             case T_RUN_IDENTITY -> {
                 long present=buffer.getLong(offset+4);
                 if (present!=0 && present!=1) {throw new IllegalStateException("RUN_SNAPSHOT_INVALID");}
@@ -2831,22 +2905,45 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private void flushCoalesced(final ClientSession session) {
         final int n = coalesced;
         coalesced = 0;
-        if (session == null || session.isClosing()) {
+        if (session == null) {
+            return;
+        }
+        if (session.isClosing()) {
+            egressClosing += n;
             return;
         }
         idle.reset();
+        long result = 0;
         for (int i = 0; i < 20; i++) {
-            if (session.offer(coalesceBuffer, 0, n * EGRESS_ACK_LENGTH) > 0) {
+            if ((result = session.offer(coalesceBuffer, 0, n * EGRESS_ACK_LENGTH)) > 0) {
                 return;
             }
             idle.idle();
         }
+        egressDropped(n, result);
     }
+
+    /** FR-BSP-03: count n refused records; log the first and every 10,000th, with Aeron's last answer. */
+    private void egressDropped(final int n, final long result) {
+        final long before = egressDropped, after = before + n;
+        egressDropped = after;
+        if (before == 0 || before / 10_000 != after / 10_000) {
+            System.out.println("ALERT cluster egress dropped " + after + " record(s) a live client session refused"
+                + " 20 times (last offer " + result + "); their senders answer ambiguous - the log holds the outcome");
+        }
+    }
+
+    public long egressDropped() { return egressDropped; }
+    public long egressClosing() { return egressClosing; }
 
     /** Best-effort bounded offer: during replay or after disconnect the session is not
      *  deliverable and the committed log, not egress, is the source of truth. */
     private void offerEgress(final ClientSession session) {
-        if (session == null || session.isClosing()) {
+        if (session == null) {
+            return;
+        }
+        if (session.isClosing()) {
+            egressClosing++;
             return;
         }
         idle.reset();
@@ -2855,12 +2952,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // machine under load: apply collapsed to ~1 ack/s and the cluster appeared frozen
         // (GKE bench, 2026-07-19). Egress is best-effort BY DESIGN — a slow client gets drops,
         // never the state machine's time; the committed log remains the source of truth.
+        long result = 0;
         for (int i = 0; i < 20; i++) {
-            if (session.offer(ackBuffer, 0, EGRESS_ACK_LENGTH) > 0) {
+            if ((result = session.offer(ackBuffer, 0, EGRESS_ACK_LENGTH)) > 0) {
                 return;
             }
             idle.idle();
         }
+        egressDropped(1, result);
     }
 
     // ----- test observability (read off-thread; volatile) ------------------------------------

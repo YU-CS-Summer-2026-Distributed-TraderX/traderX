@@ -20,7 +20,9 @@ Updated 2026-11-10.
   every arm that reached it. NFR-BSP-02's rate met. One of two new-gateway 64-session runs lost 187 committed acks at
   the load's start to the members' best-effort egress (answered ambiguous); the pre-fix gateway's one 64-session run
   lost none. Numbers and the mechanism: RI35.
-- [ ] T-BSP07 Members: count every egress drop and stop dropping committed acks to a live session (RI35), then rerun
-  T-BSP06's 64-session arm until clean.
+- [x] T-BSP08 Members count every egress drop (FR-BSP-03): `/health` `egress.dropped` and `egress.closing`,
+  `traderx_cluster_egress_*`, and an ALERT. `EgressDropCountTest`.
+- [ ] T-BSP07 Members: stop dropping committed acks to a live session (RI35). Either retry until the session closes,
+  or size the egress term for a burst. Then rerun T-BSP06's 64-session arm until `egress.dropped` stays 0.
 - [ ] T-BSP04 GKE: the same comparison on a pinned guaranteed gateway (FR-PRG-06) with `--throughput-members` (egress
   coalescing; without it a pipelined session overruns the members' best-effort egress), and `queue` p99 there.
