@@ -186,6 +186,22 @@ FR-DRS-33/34/36), production rig FR-PRG-27 (restore gate), KDB-X Community (lice
     its restart; history-feed left out 2,030, then 4,057 after the restart (it reads the first 2,030 again); the
     store held 290,806 trades throughout; G3h: sides 1..290,806, each once. The stream also held the repeats of three
     earlier runs of the script. The 4,016 order events republished were unpositioned and were stored, as above.
+- FR-THT-12 (2026-11-10, yaakov: "Yes, count by order"): Every count of orders read from the history store SHALL count
+  distinct orders within a status (`uniqExact(order_ref)`), never rows. The store keeps every row the bridge publishes;
+  no bridge or engine change. `scripts/trade-history-tiers/order-status-counts.clickhouse.sql` is the count:
+  per status its orders, its rows and `repeated_rows` (rows less orders, expected 0). Acceptance checks of NEW and
+  FILLED, and any report of orders by status, use its `orders` column. Trade-side counts stay by `trade_seq` (G3h
+  already compares `count()` with `uniqExact(trade_seq)`). The transport proofs that compare the store's rows with
+  the records published (`kind-bridge-*`, `kind-history-*`) keep counting rows: that is their job.
+  - Why: acceptance run 3 read NEW +427 and FILLED +8 over the client's counts from `count()` by status. The store held
+    exactly the bridge's output (published − sides = its order rows, 309,137,793); the extras were engine order events
+    (double bookings of resends past FR-IMRG14's count window, and 8 FILLED not explained). A re-answered resend is
+    not one of them: the engine re-emits the original with `publishNats=false` and `bridgesOrder` never bridges it.
+  - Under exactly-once (ADR-090, FR-XOD-03) a sequenced resend never executes and its ring answer takes the same
+    unbridged path, so for sequenced FIX and binary clients no repeat reaches the store. Unsequenced clients (REST,
+    unflagged binary) still depend on the count window; counting by order keeps the reports right for them.
+  - `test_order_status_counts_clickhouse` (ClickHouse 25.8, docker): each status counts its orders; a repeated FILLED
+    and a repeated NEW each count their order once and show as one repeated row.
 - FR-THT-07: Either store SHALL be rebuildable from the capture streams from its cursor 0, with the result equal to
   the store it replaces (count and hash, FR-THT-06).
 
