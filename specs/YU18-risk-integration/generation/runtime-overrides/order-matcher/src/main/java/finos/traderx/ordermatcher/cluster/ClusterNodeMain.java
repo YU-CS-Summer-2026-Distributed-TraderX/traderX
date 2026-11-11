@@ -157,7 +157,8 @@ public final class ClusterNodeMain {
             // Printed once the barrier is armed: a SIGTERM before this line takes the JVM's default exit
             // (143, nothing closed), so "up" is the point from which a TERM closes the member cleanly.
             System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
-                + " portBase=" + portBase + " baseDir=" + baseDir);
+                + " portBase=" + portBase + " baseDir=" + baseDir + " idle=[" + ClusterNodeConfig.describeIdle()
+                + "] archiveThreading=" + ClusterNodeConfig.archiveThreading(System.getenv("CLUSTER_ARCHIVE_THREADING")));
             barrier.await();
             STOPPING.set(true);
             System.out.println("Cluster node stopping: shutdown signal received");

@@ -130,8 +130,12 @@ public final class ClusterNodeConfig {
      * measurement stays reproducible.
      */
     static Supplier<IdleStrategy> idleOverrideSupplier() {
-        final String s = System.getenv("CLUSTER_IDLE_STRATEGY");
-        if (s == null || s.isEmpty()) {
+        return idleStrategy("CLUSTER_IDLE_STRATEGY", System.getenv("CLUSTER_IDLE_STRATEGY"));
+    }
+
+    /** One of the names above, or null when blank; {@code knob} only names the variable in the error. */
+    static Supplier<IdleStrategy> idleStrategy(final String knob, final String s) {
+        if (s == null || s.isBlank()) {
             return null;
         }
         switch (s.trim().toLowerCase()) {
@@ -139,8 +143,60 @@ public final class ClusterNodeConfig {
             case "busyspin": case "noop":  return NoOpIdleStrategy::new;
             case "lowpark":  return () -> new BackoffIdleStrategy(10, 5, 1000, 1_000L);
             case "backoff":  return () -> new BackoffIdleStrategy(10, 5, 1000, 1_000_000L);
-            default: throw new IllegalArgumentException("unknown CLUSTER_IDLE_STRATEGY: " + s);
+            default: throw new IllegalArgumentException("unknown " + knob + ": " + s);
         }
+    }
+
+    /** The member-wide idle: CLUSTER_IDLE_STRATEGY, else CLUSTER_IDLE_SLEEP_MS, else null (Aeron's default). */
+    static Supplier<IdleStrategy> memberIdle() {
+        final Supplier<IdleStrategy> s = idleOverrideSupplier();
+        return s != null ? s : sleepingIdleMs() > 0 ? ClusterNodeConfig::sleepingIdle : null;
+    }
+
+    /** The member agents that take their own idle strategy (latency L1, FR-GMR-12). */
+    static final List<String> IDLE_AGENTS = List.of("SENDER", "RECEIVER", "CONDUCTOR", "ARCHIVE", "CONSENSUS", "SERVICE");
+
+    /**
+     * Latency L1 lever (FR-GMR-12): {@code CLUSTER_IDLE_STRATEGY_<AGENT>}, one of {@link #IDLE_AGENTS}, takes the
+     * names above for that agent alone, so the agents on the order path (sender, receiver, consensus module,
+     * clustered service) can busy-spin while the conductor and archive keep parking. Unset, an agent takes the
+     * member-wide idle, so a member with none of these set runs exactly as before. SENDER, RECEIVER and CONDUCTOR are
+     * the DEDICATED driver's threads (SHARED and SHARED_NETWORK keep the member-wide idle); ARCHIVE covers the
+     * archive's conductor and, under {@code CLUSTER_ARCHIVE_THREADING=DEDICATED}, its recorder and replayer.
+     * Busy-spin wants a core per spinning agent: pair it with the engine pool's static CPU manager (node-engine.yaml).
+     */
+    static Supplier<IdleStrategy> agentIdle(final String agent) {
+        final String knob = "CLUSTER_IDLE_STRATEGY_" + agent;
+        return agentIdle(idleStrategy(knob, System.getenv(knob)), memberIdle());
+    }
+
+    static Supplier<IdleStrategy> agentIdle(final Supplier<IdleStrategy> own, final Supplier<IdleStrategy> memberWide) {
+        return own != null ? own : memberWide;
+    }
+
+    /** The idle each agent runs, as configured, for the member's startup line: "aeron-default" when nothing is set. */
+    static String describeIdle() {
+        final String all = System.getenv("CLUSTER_IDLE_STRATEGY");
+        final String member = all != null && !all.isBlank() ? all.trim().toLowerCase()
+            : sleepingIdleMs() > 0 ? "sleep-" + sleepingIdleMs() + "ms" : "aeron-default";
+        final StringBuilder b = new StringBuilder();
+        for (final String agent : IDLE_AGENTS) {
+            agentIdle(agent);   // refuses an unknown name before the line can claim it
+            final String own = System.getenv("CLUSTER_IDLE_STRATEGY_" + agent);
+            b.append(b.length() == 0 ? "" : " ").append(agent.toLowerCase()).append('=')
+                .append(own == null || own.isBlank() ? member : own.trim().toLowerCase());
+        }
+        return b.toString();
+    }
+
+    /**
+     * Latency L2 lever (FR-GMR-13): archive threading, {@code CLUSTER_ARCHIVE_THREADING} = SHARED (default) |
+     * DEDICATED | INVOKER. SHARED runs the recorder, replayer and archive conductor on one thread, and the recorder is
+     * in the commit path (a follower acks its recorded position). DEDICATED gives each its own thread: two more threads
+     * per member, so size it with L1's core budget. Node-local: members may differ, so it rolls one member at a time.
+     */
+    static ArchiveThreadingMode archiveThreading(final String v) {
+        return v == null || v.isBlank() ? ArchiveThreadingMode.SHARED : ArchiveThreadingMode.valueOf(v.trim().toUpperCase());
     }
 
     /**
@@ -191,22 +247,29 @@ public final class ClusterNodeConfig {
         final String host = hostnames.get(memberId);
         final File archiveDir = new File(baseDir, "archive");
         final File clusterDir = new File(baseDir, "cluster");
-        // LATENCY-01 lever (precedence: explicit strategy > sleeping-ms > Aeron default).
-        final Supplier<IdleStrategy> idleOverride = idleOverrideSupplier();
-
         final MediaDriver.Context mediaDriverContext = new MediaDriver.Context()
             .aeronDirectoryName(aeronDir)
             .threadingMode(memberThreading(System.getenv("CLUSTER_MEDIA_DRIVER_THREADING")))
             .termBufferSparseFile(true)
             .dirDeleteOnStart(true);
-        final Supplier<IdleStrategy> driverIdle = idleOverride != null ? idleOverride
-            : sleepingIdleMs() > 0 ? ClusterNodeConfig::sleepingIdle : null;
+        // LATENCY-01 lever (precedence: per-agent > explicit strategy > sleeping-ms > Aeron default). Every driver
+        // agent, so a split (DEDICATED/SHARED_NETWORK) thread does not fall back to Aeron's 1 ms backoff park; only
+        // the one(s) the threading mode runs are used.
+        final Supplier<IdleStrategy> driverIdle = memberIdle();
         if (driverIdle != null) {
-            // Every driver agent, so a split (DEDICATED/SHARED_NETWORK) thread does not fall back to
-            // Aeron's 1 ms backoff park; only the one(s) the threading mode runs are used.
-            mediaDriverContext.sharedIdleStrategy(driverIdle.get()).sharedNetworkIdleStrategy(driverIdle.get())
-                .senderIdleStrategy(driverIdle.get()).receiverIdleStrategy(driverIdle.get())
-                .conductorIdleStrategy(driverIdle.get());
+            mediaDriverContext.sharedIdleStrategy(driverIdle.get()).sharedNetworkIdleStrategy(driverIdle.get());
+        }
+        final Supplier<IdleStrategy> senderIdle = agentIdle("SENDER");
+        final Supplier<IdleStrategy> receiverIdle = agentIdle("RECEIVER");
+        final Supplier<IdleStrategy> conductorIdle = agentIdle("CONDUCTOR");
+        if (senderIdle != null) {
+            mediaDriverContext.senderIdleStrategy(senderIdle.get());
+        }
+        if (receiverIdle != null) {
+            mediaDriverContext.receiverIdleStrategy(receiverIdle.get());
+        }
+        if (conductorIdle != null) {
+            mediaDriverContext.conductorIdleStrategy(conductorIdle.get());
         }
 
         final Archive.Context archiveContext = new Archive.Context()
@@ -218,12 +281,11 @@ public final class ClusterNodeConfig {
             .localControlChannel("aeron:ipc?term-length=64k")
             .replicationChannel("aeron:udp?endpoint=" + host + ":" + port(memberId, portBase, ARCHIVE_REPLICATION_PORT_OFFSET))
             .recordingEventsEnabled(false)
-            .threadingMode(ArchiveThreadingMode.SHARED)
+            .threadingMode(archiveThreading(System.getenv("CLUSTER_ARCHIVE_THREADING")))
             .deleteArchiveOnStart(cleanStart);
-        if (idleOverride != null) {
-            archiveContext.idleStrategySupplier(idleOverride);
-        } else if (sleepingIdleMs() > 0) {
-            archiveContext.idleStrategySupplier(ClusterNodeConfig::sleepingIdle);
+        final Supplier<IdleStrategy> archiveIdle = agentIdle("ARCHIVE");
+        if (archiveIdle != null) {
+            archiveContext.idleStrategySupplier(archiveIdle);
         }
 
         final AeronArchive.Context localArchiveClient = new AeronArchive.Context()
@@ -254,10 +316,9 @@ public final class ClusterNodeConfig {
         if (nanosClusterClock()) {
             consensusModuleContext.clusterClock(new NanosClusterClock());
         }
-        if (idleOverride != null) {
-            consensusModuleContext.idleStrategySupplier(idleOverride);
-        } else if (sleepingIdleMs() > 0) {
-            consensusModuleContext.idleStrategySupplier(ClusterNodeConfig::sleepingIdle);
+        final Supplier<IdleStrategy> consensusIdle = agentIdle("CONSENSUS");
+        if (consensusIdle != null) {
+            consensusModuleContext.idleStrategySupplier(consensusIdle);
         }
 
         final ClusteredServiceContainer.Context containerContext = new ClusteredServiceContainer.Context()
@@ -266,10 +327,9 @@ public final class ClusterNodeConfig {
             .clusterDir(clusterDir)
             .clusteredService(service)
             .serviceId(0);
-        if (idleOverride != null) {
-            containerContext.idleStrategySupplier(idleOverride);
-        } else if (sleepingIdleMs() > 0) {
-            containerContext.idleStrategySupplier(ClusterNodeConfig::sleepingIdle);
+        final Supplier<IdleStrategy> serviceIdle = agentIdle("SERVICE");
+        if (serviceIdle != null) {
+            containerContext.idleStrategySupplier(serviceIdle);
         }
 
         return new Contexts(mediaDriverContext, archiveContext, consensusModuleContext, containerContext);

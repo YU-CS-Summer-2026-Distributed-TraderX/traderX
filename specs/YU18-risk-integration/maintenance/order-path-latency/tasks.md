@@ -6,7 +6,20 @@
       (`void-no-policy/`).
 - [x] GKE 2026-11-10: wire floor; blocks A, B (0 / 300K / 500K setting) and C (gateways on a spinning driver);
       engine-node CPU budget. Note `latency-l0-baseline-20261110.md`.
-- [ ] Re-measure with the gateway driver on a parking strategy (`lowpark`), all three rates: pure spin cost 8% capacity
-      at saturation.
-- [ ] Next session: read `cpu.stat` throttling on gateway and member cgroups for the ~28–30 ms max seen in every loaded
-      gateway window.
+- [x] Re-measure with the gateway driver on `lowpark`: RI35's GKE A/B, 2026-11-10 (gke-member-runtime FR-GMR-11). It is
+      the gateways' default, and `l1-ab.sh` holds it throughout.
+- [x] `cpu.stat` throttling, for the ~28–30 ms max: RI35's run read 0 throttled periods on every member in every
+      window, and the gateways have no quota. `leader_state` now records it per window (FR-OPL-06).
+- [x] L1/L2 harness: `static`, `arm`, `gw-idle`, `seed`, `leader_state` (l0-baseline.sh), `AeronCounters`,
+      `l1-report.py`, `l1-ab.sh` (FR-OPL-05..07).
+- [x] `l1-ab.sh` on slot A, 2026-11-10/11: five arms × three rates (L12 500K: 2 of 3 windows). Result and
+      take/leave calls in the shared note `latency-l1-l2-20261110.md`.
+- [ ] N′: the engine pool back on shared cores and N's 500K block repeated last, to separate the static CPU manager's
+      −14% capacity from run order (`n-prime.sh`, beside the rig files in the run's scratch). Decides FR-PRG-05's
+      static precondition.
+- [x] binary-load retries also restarted a load that stopped itself at a phase boundary. Both exits are code 1, so no
+      Job failure policy can tell them apart: the Job is back to `backoffLimit: 0`, and binary-load retries its own
+      `/resolve` (no order sent) for up to a minute.
+- [ ] A member whose archive filled cannot restart: `ENOSPC` left `archive-mark.dat` with `activityTimestamp =
+      Long.MAX_VALUE`, which the 60 s mark-file wait never clears. Treat MAX_VALUE with a dead pid as stale (own spec
+      row and test). Production's 600Gi archive has no purge on the GKE tier either (~4 h at 450K/s).
