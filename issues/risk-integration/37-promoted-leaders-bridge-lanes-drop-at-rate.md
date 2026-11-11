@@ -4,7 +4,7 @@ Opened 2026-11-10 (trade-history-tiers lane, the ADR-103 re-test, shared notes `
 Status: fixed (FR-DRS-47, ADR-083 decisions 19–21; branch `ri37-promoted-lane-ring`, merged into trade-history-tiers).
 The unit test and the kind proof pass, and their controls fail on the parent. GKE run E3 (2026-11-10) passed:
 G3h exact across a leader kill at rate, `queueDropped` 0 on every member. Remaining open: the cause of run D's
-JetStream stall and its second election, which did not recur. Blocks ADR-103's "failover at rate" acceptance until the GKE re-run passes; does not block the timeouts
+JetStream stall and its second election. The election did recur in E3 (corrected below), and both are carried in RI38. Blocks ADR-103's "failover at rate" acceptance until the GKE re-run passes; does not block the timeouts
 decision (200/100 ms holds at 40Gi).
 
 ## What
@@ -130,7 +130,7 @@ The leader's JVM (member 0) was killed at 1:48:02 pm ET at about 465K sides/s.
 
 | | Run D (parent) | Run E3 (FR-DRS-47) |
 |---|---|---|
-| Promotion | member 2 after ~1.1 s, then member 1 at +4 s | member 1 after 1.81 s; one election |
+| Promotion | member 2 after ~1.1 s, then member 1 at +4 s | member 1 after 1.81 s; member 2 began a second election 4.9 s later, member 1 won it (corrected: first read as one, because `failover.sh` stops at the first new leader) |
 | Members' sides | 1,003,275,732 | 183,194,994 |
 | History store (G3h) | short 22,948,341 | 1..183,194,994, each once |
 | New leader `trades.queueDropped` | 22,948,341 | 0 |
@@ -154,7 +154,8 @@ Reading:
   on a fresh rig the stream read took ~0.2 s, and each lane held less than the old queue's 65,536. So E3 alone
   would also pass on the parent build. The discriminating evidence is `ReceiptLanesIT` and the kind proof, both
   with an induced stall and a failing control.
-- Run D's second election did not recur. Its cause stays open (the members' logs of E3 are kept). So does what
+- Run D's second election recurred: member 2 began one 4.9 s after member 1's promotion, and member 1 won it
+  (`member-2.log` ELECTION-PHASE INIT at 1:48:08.882 pm ET; RI38). First recorded here as not recurring. Its cause is open in RI38, with E3's member logs. So is what
   stalled run D's stream reads. Run D followed runs A–C on the same streams; E3's streams were fresh.
 - Two earlier starts on the same rig were void: every order hit `POSITION_LIMIT` after 8,000,000 sides. A fresh
   epoch's default policy holds about 1M per account per ticker, and `/risk/control/policy` needs both limits to

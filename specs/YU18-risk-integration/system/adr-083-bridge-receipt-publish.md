@@ -247,3 +247,36 @@ while a lane is behind.
   them is the archive replay (Decision 5), not something a lane can do live.
 - *A ring sized to cover any stall.* JetStream can stall longer than any heap. Past the ring the loss is counted and
   the repair is still the archive replay.
+
+## Amendment, 2026-11-10: release only what the stream confirmed (FR-DRS-49, RI38)
+
+Context. Decision 20 released a record once it was older than the last 65,536 a lane had read or published. That
+bounds what a successor can republish of a dead leader's unstored tail at 65,536 records per lane, about 0.5–1 s at
+500K orders/s on 8 partitions. On 2026-11-09 (downstream-at-400k.md §7.15 item 4) a stalled volume left the leader's
+publishes unacked, and a full archive then killed it: about 1.9M sides lost, about 240K per lane. The same bound held
+within one leader's life, for a reconnect's catch-up after a stall. Decision 20 assumed a current stream. Under a
+stall, "published" is not "stored", and only the stream can say what it stored.
+
+22. **The stream's last stored message bounds release, in every role.** Each lane asks the stream for its last
+    stored message on its subject: `STREAM.NAMES` once, then `STREAM.MSG.GET` last-by-subject. It asks
+    asynchronously, at most every 250 ms, and only when Decision 20 would release past the last confirmed position.
+    It never releases a record after that position. The answer is compared with Decision 7's cut and bisected in
+    apply order. A current stream confirms within the keep, so Decision 20's heap holds. A stalled stream holds
+    records up to the ring (Decision 19). Past the ring the apply thread overwrites the oldest unconfirmed records,
+    and the successor's catch-up counts that as a gap (Decision 10).
+23. **The stall check counts only silence.** A lane's quiet timer advances while no publish waits for a receipt, in
+    every role, and a catch-up's stream read restarts it. Before this, a promoted lane's first publish read its whole
+    time following as 5 s without a receipt, and it reconnected and caught up again (GKE run E3: all 16 lanes).
+    `/health` adds `reconnects`.
+
+Cost. At most one small JetStream API request per lane per 250 ms: 64 per second for a member's 16 lanes, answered by
+the stream's server. The lane thread never waits on it. With no JetStream, no stream, or no comparable position,
+Decision 20 alone applies.
+
+**Rejected:**
+
+- *Learn the leader's receipts on the followers.* That is off-consensus state crossing members: a protocol addition,
+  §8 item 1's option (i). The stream already holds the answer, and every member can ask it.
+- *Followers keep the whole ring.* That is 1.6 GiB of resident records per member at all times, to cover a case the
+  stream can bound.
+- *Block the lane on the probe.* A JetStream API stall would then hold the lane, which is RI37's mechanism again.

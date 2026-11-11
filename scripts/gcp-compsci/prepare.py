@@ -103,6 +103,18 @@ def route_fills(c):
                  {'name': 'FIX_FILL_FEED', 'value': 'routed'}]
 
 
+MEMBER_SESSION_RING = '2048'   # ADR-104 (FR-XOD-24): EXACTLY_ONCE_SESSION_RING, at least the gateways' FIX_MAX_QUEUED_WRITES
+GATEWAY_MAX_QUEUED_WRITES = 2048   # FixGatewayAcceptor's FIX_MAX_QUEUED_WRITES default
+
+
+def exactly_once(c):
+    """ADR-104 (yaakov 2026-11-10: "Turn on exactly-once", then the engine-side design): every FIX NewOrderSingle carries
+    its session-day, MsgSeqNum and PossDup/PossResend to the engine, whose per-session ClOrdID ring answers a resend
+    with its original and never books it twice (FR-XOD-19..22). Pipelined, nothing stored before submit. The session
+    stream needs the ADR-086 store, which the gateway manifest already sets. Members must be format 15 first."""
+    set_env(c, {'FIX_EXACTLY_ONCE': 'engine'})
+
+
 def validate_routed_fills(docs, require):
     """FR-FFR-14: a routed fill feed needs the gateway's name from its pod and a jetstream read model to route from."""
     gw = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway'), None)
@@ -163,6 +175,7 @@ def configure_private_runtime(docs):
                 jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
                 kept = [t for t in jvm['value'].split() if not t.startswith(('-Xms', '-Xmx', '-XX:MaxGCPauseMillis', '-XX:+Use'))]
                 jvm['value'] = ' '.join([MEMBER_JVM] + kept)
+                set_env(c, {'EXACTLY_ONCE_SESSION_RING': MEMBER_SESSION_RING})
             if name == 'cluster-gateway':
                 c['resources'] = {'requests': {'cpu': '4', 'memory': '2Gi'}, 'limits': {'cpu': '4', 'memory': '2Gi'}}
                 c['env'] = [e for e in c.get('env', []) if e['name'] != 'GATEWAY_DRAIN_DELAY_MS']
@@ -183,6 +196,7 @@ def configure_private_runtime(docs):
                 # FR-FIX05 (ADR-084): FIX fill reports read a durable stream, so a fill this gateway misses is re-read
                 # rather than lost. FR-FFR-14 (ADR-084 amendment): the stream is this gateway's own routed subject.
                 route_fills(c)
+                exactly_once(c)
                 # ADR-095: a second, TLS-only socket for the external CompID. Keystore and both passwords come from
                 # Secret fix-tls (provision-fix-tls.py). Without the Secret the gateway does not start: no plaintext
                 # fallback. Nothing outside the cluster reaches the port until fix-tls-external is applied.
@@ -358,13 +372,17 @@ def set_env(c, values):
     c['env'] = [e for e in c.get('env', []) if e['name'] not in values] + [{'name': k, 'value': v} for k, v in values.items()]
 
 
+FIX_SESSION_BUCKETS_PER_SERVER = 4   # FR-GFS-21, GKE 2026-11-10: 1/3/12/24 buckets 140K/378K/653K/624K bodies/s
+
+
 def fix_session_buckets(docs):
-    """FR-GFS-21: the gateways spread their FIX sessions over one bucket per NATS server, bucket i on server i mod N
+    """FR-GFS-21: the gateways spread their FIX sessions over four buckets per NATS server, bucket i on server i mod N
     (as FR-DRS-44 places partitions). One FIX_SESSIONS stream on one server capped the 2026-11-10 acceptance run's
-    FIX near 85K orders/s with ~2 s commits."""
+    FIX near 85K orders/s with ~2 s commits: a stream takes its fenced writes one at a time."""
     servers = nats_servers(docs)
     gw = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway')
-    set_env(podspec(gw)['containers'][0], {'FIX_SESSION_BUCKETS': str(servers), 'FIX_SESSION_PLACEMENT': placement(servers)})
+    set_env(podspec(gw)['containers'][0], {'FIX_SESSION_BUCKETS': str(FIX_SESSION_BUCKETS_PER_SERVER * servers),
+                                                   'FIX_SESSION_PLACEMENT': placement(servers)})
 
 
 def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
@@ -852,6 +870,16 @@ def validate(docs, declared=None):
             if 'FIX_ACCEPTOR_PORT' in env:
                 require(env.get('FIX_SESSION_STORE') == 'jetstream',
                         'FIX sessions restart at MsgSeqNum 1 on reconnect (FR-FIX11, ADR-086)')
+                require(env.get('FIX_EXACTLY_ONCE') == 'engine',
+                        'FIX orders not exactly-once in the engine: a resend past its key window books twice, or each order'
+                        ' waits on a store write (FR-PRG-46, ADR-104)')
+                ring = next((e.get('value') for d in docs if d['kind'] == 'StatefulSet'
+                             and d['metadata']['name'] == 'order-matcher-cluster'
+                             for e in podspec(d)['containers'][0].get('env', [])
+                             if e['name'] == 'EXACTLY_ONCE_SESSION_RING'), None)
+                require(int(ring or 2048) >= int(env.get('FIX_MAX_QUEUED_WRITES') or GATEWAY_MAX_QUEUED_WRITES),
+                        'members\' EXACTLY_ONCE_SESSION_RING is below the gateways\' FIX_MAX_QUEUED_WRITES: a resend of what'
+                        ' one session can have outstanding would be refused AGED_OUT (FR-XOD-24, ADR-104)')
                 require((env.get('ORDER_READMODEL_URL') or '').startswith('http://trade-processor:'),
                         'FIX order status has no read model (FR-FIX04)')
                 require(re.fullmatch(r'\d\d:\d\d:\d\d', env.get('FIX_SESSION_RESET_TIME') or '') and env.get('FIX_SESSION_TIME_ZONE'),

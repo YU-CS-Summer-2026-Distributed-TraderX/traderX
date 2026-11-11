@@ -67,7 +67,7 @@ class Rendering(unittest.TestCase):
         env={e['name']:e.get('value') for e in module.podspec(gw)['containers'][0]['env']}
         n=module.nats_servers(self.docs)
         self.assertEqual((env.get('FIX_SESSION_BUCKETS'),env.get('FIX_SESSION_PLACEMENT')),
-                         (str(n),','.join(f'nats-{i}' for i in range(n))))
+                         (str(4*n),','.join(f'nats-{i}' for i in range(n))))
         self.assertGreater(n,1)
 
     def test_member_archive_storageclass_is_rendered(self):
@@ -266,14 +266,28 @@ class Rendering(unittest.TestCase):
         gw=next(d for d in self.docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
         env=module.podspec(gw)['containers'][0]['env']
         self.assertIn({'name':'FIX_SESSION_STORE','value':'jetstream'},env)
+        self.assertIn({'name':'FIX_EXACTLY_ONCE','value':'engine'},env)   # FR-PRG-46, ADR-104 (yaakov 2026-11-10)
         self.assertIn({'name':'ORDER_READMODEL_URL','value':'http://trade-processor:18091'},env)
         self.assertIn({'name':'FIX_SESSION_RESET_TIME','value':'17:00:00'},env)
         self.assertIn({'name':'FIX_SESSION_TIME_ZONE','value':'America/New_York'},env)
-        for name in ('FIX_SESSION_STORE','ORDER_READMODEL_URL','FIX_SESSION_RESET_TIME'):
+        for name in ('FIX_SESSION_STORE','FIX_EXACTLY_ONCE','ORDER_READMODEL_URL','FIX_SESSION_RESET_TIME'):
             docs=copy.deepcopy(self.docs)
             gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
             env=module.podspec(gw)['containers'][0]['env']; env[:]=[e for e in env if e['name']!=name]
             with self.assertRaises(AssertionError, msg=name): module.validate(docs)
+        # FR-XOD-24: the store-before-submit path (FR-XOD-12) is no longer production's, and the members' ring must
+        # hold what a session can have outstanding at the gateways' write bound.
+        for value in ('jetstream','1'):
+            docs=copy.deepcopy(self.docs)
+            gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+            next(e for e in module.podspec(gw)['containers'][0]['env'] if e['name']=='FIX_EXACTLY_ONCE')['value']=value
+            with self.assertRaises(AssertionError, msg=value): module.validate(docs)
+        engine=next(d for d in self.docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+        self.assertIn({'name':'EXACTLY_ONCE_SESSION_RING','value':'2048'},module.podspec(engine)['containers'][0]['env'])
+        docs=copy.deepcopy(self.docs)
+        gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        module.podspec(gw)['containers'][0]['env'].append({'name':'FIX_MAX_QUEUED_WRITES','value':'4096'})
+        with self.assertRaises(AssertionError): module.validate(docs)
 
     def member_script(self, docs=None):
         engine=next(d for d in (docs or self.docs) if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
