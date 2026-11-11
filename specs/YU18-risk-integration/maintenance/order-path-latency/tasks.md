@@ -14,9 +14,10 @@
       `l1-report.py`, `l1-ab.sh` (FR-OPL-05..07).
 - [x] `l1-ab.sh` on slot A, 2026-11-10/11: five arms × three rates (L12 500K: 2 of 3 windows). Result and
       take/leave calls in the shared note `latency-l1-l2-20261110.md`.
-- [ ] N′: the engine pool back on shared cores and N's 500K block repeated last, to separate the static CPU manager's
-      −14% capacity from run order (`n-prime.sh`, beside the rig files in the run's scratch). Decides FR-PRG-05's
-      static precondition.
+- [x] Order control, GKE 2026-11-11 (N′ S′ N″ S″): static costs 4–15% of saturation capacity in every static arm;
+      FR-PRG-05's static precondition is held out of production (shared note `latency-static-cpu-20261111.md`).
+- [ ] Busy-spin (L1) on SHARED cores: last night's L1 gain was measured on static, so it carried static's capacity
+      cost. Add it to the next GKE session (with L6a, busy-poll, pinning and wmem).
 - [x] binary-load retries also restarted a load that stopped itself at a phase boundary. Both exits are code 1, so no
       Job failure policy can tell them apart: the Job is back to `backoffLimit: 0`, and binary-load retries its own
       `/resolve` (no order sent) for up to a minute.
