@@ -10,4 +10,6 @@
 - [ ] Ship in the next `traderx` roll and re-run `yu18-fix-session` step 4 there.
 - [x] FR-FFR-15/16 (2026-11-10, after the 450K acceptance run's 13.5%): early fills by ref, bounded, counted lost;
       fill reports sent on the session's report thread. Unit tests fail on the pre-fix acceptor; bench in the spec.
-- [ ] Re-run the acceptance stage 1 with `traderx_fix_fill_reports_total{lost}` and FR-GFS-20's commit metrics read.
+- [x] FR-FFR-17 (2026-11-10, after acceptance run 2's 44M unreported STP cancels): venue cancels and rejects are
+      reported, early ones after the New; a client cancel once. Unit tests fail on the 316b269e acceptor.
+- [ ] Re-run the acceptance stage 1 with `traderx_fix_fill_reports_total{lost}` and FR-GFS-20's commit metrics read, and `traderx_fix_end_reports_total`.

@@ -233,6 +233,7 @@ public final class FixGatewayAcceptor {
         String epoch;
         int cumQty;
         double notional;
+        boolean cancelRequested;   // FR-FFR-17: the client's OrderCancelRequest answers this order's cancel
 
         Tracked(final SessionID session, final String clOrdId, final String symbol, final char side) {
             this.session = session;
@@ -954,7 +955,11 @@ public final class FixGatewayAcceptor {
                     CxlRejReason.OTHER, "account not permitted for this session");
                 return;
             }
+            cancelRequested(orderRef, true);   // FR-FFR-17: this cancel is answered here, not as the venue's
             final OrderSubmitter.ExecResult result = submitter.submitCancel(orderRef, account);
+            if (result == null || !result.accepted()) {
+                cancelRequested(orderRef, false);   // not this cancel's: a venue end still reaches the client
+            }
             if (result == null) {
                 // Post-publish ambiguity: the cancel may yet apply, so no reject may be sent.
                 log.warn("FIX cancel of ord-{} ambiguous (no committed ack)", orderRef);
@@ -973,6 +978,15 @@ public final class FixGatewayAcceptor {
         }
 
         private static final String AGED_OUT = "order already terminal; its final state is no longer retained";
+
+        private void cancelRequested(final int orderRef, final boolean requested) {
+            synchronized (feedLock) {
+                final Tracked t = tracked.get(orderRef);
+                if (t != null) {
+                    t.cancelRequested = requested;
+                }
+            }
+        }
 
         /**
          * FR-XOC-03: the engine no longer knows a ref this session's own ClOrdID mapping names. The mapping comes only
@@ -1288,7 +1302,9 @@ public final class FixGatewayAcceptor {
             int cum = 0;
             double notional = 0;
             synchronized (feedLock) {
-                final Tracked t = tracked.remove(orderRef);
+                // FR-FFR-17: kept until the venue's CANCELED update, which then ends it unreported (cancelRequested);
+                // dropped here, that update would wait as an untracked order's and age out counted as lost.
+                final Tracked t = tracked.get(orderRef);
                 if (t != null) {
                     cum = t.cumQty;
                     notional = t.notional;
@@ -1467,8 +1483,9 @@ public final class FixGatewayAcceptor {
             final Tracked t = tracked.get(ref);
             if (t != null) {
                 applyUpdate(ref, t, json);
-            } else if (indexOf(json, FILL_STATUS, 0) >= 0 || indexOf(json, PARTIAL_STATUS, 0) >= 0) {
-                early.computeIfAbsent(ref, r -> new Early()).msgs.add(json);
+            } else if (indexOf(json, FILL_STATUS, 0) >= 0 || indexOf(json, PARTIAL_STATUS, 0) >= 0
+                    || indexOf(json, CANCELED_STATUS, 0) >= 0 || indexOf(json, REJECTED_STATUS, 0) >= 0) {
+                early.computeIfAbsent(ref, r -> new Early()).msgs.add(json);   // FR-FFR-15, FR-FFR-17
                 expireEarly();
             }
         }
@@ -1486,7 +1503,7 @@ public final class FixGatewayAcceptor {
             if (!ownFillsOnly) {
                 fillsEvicted.addAndGet(e.getValue().msgs.size());   // the venue's fills: mostly other gateways' orders
             } else if (fillsLost.getAndAdd(e.getValue().msgs.size()) == 0) {
-                log.error("ALERT FIX fill for ord-{} not reported: its order was never tracked here within {} s or {}"
+                log.error("ALERT FIX fill or end of ord-{} not reported: its order was never tracked here within {} s or {}"
                     + " fills (traderx_fix_fill_reports_total{outcome=\"lost\"} counts every one)", e.getKey(),
                     EARLY_MAX_AGE_NANOS / 1_000_000_000L, EARLY_CAPACITY);
             }
@@ -1540,7 +1557,15 @@ public final class FixGatewayAcceptor {
         final String status = p.path("status").asText("");
         final boolean filled = "FILLED".equals(status);
         if (!filled && !"PARTIALLY_FILLED".equals(status)) {
-            if ("CANCELED".equals(status) || "REJECTED".equals(status)) {
+            final boolean canceled = "CANCELED".equals(status);
+            if (canceled || "REJECTED".equals(status)) {
+                // FR-FFR-17: the venue ended the order (self-trade prevention, expiry, a trigger refusal...). Its
+                // client hears it here, unless it asked for the cancel itself, which its own request answers. Under
+                // the lease as a fill is (ADR-086 §3); taking it adopts the stored log, which may hold the end.
+                if (!t.cancelRequested && (sessionStore == null || sessionStore.held(t.session)
+                        || sessionStore.acquire(t.session) && tracked.get(ref) == t)) {
+                    sendUnsolicited(t.session, t.clOrdId, endReport(t, ref, p, canceled), endReports);
+                }
                 tracked.remove(ref);
             }
             return;
@@ -1572,7 +1597,7 @@ public final class FixGatewayAcceptor {
         }
         t.notional += lastQty * lastPx;
         t.cumQty = cum;
-        sendFill(t.session, t.clOrdId, fillReport(t, ref, qty, cum, lastQty, lastPx));
+        sendUnsolicited(t.session, t.clOrdId, fillReport(t, ref, qty, cum, lastQty, lastPx), fillReports);
         if (leaves == 0) {
             tracked.remove(ref);
         }
@@ -1584,19 +1609,42 @@ public final class FixGatewayAcceptor {
      * one feed thread carried every fill of the gateway through QuickFIX/J and the store one at a time (~4.6K/s) and
      * held every session's {@link #track} behind it.
      */
-    private void sendFill(final SessionID sid, final String clOrdId, final ExecutionReport report) {
+    private void sendUnsolicited(final SessionID sid, final String clOrdId, final ExecutionReport report,
+                                 final AtomicLong sent) {
         try {
             pipelines.computeIfAbsent(sid, Pipeline::new).reports.execute(() -> {
                 final Session session = sessionOf(sid);
                 if (session == null) {
                     log.warn("FIX session gone before fill report for {}", clOrdId);
                 } else if (session.send(report)) {   // false: off-lease (ADR-086)
-                    fillReports.incrementAndGet();
+                    sent.incrementAndGet();
                 }
             });
         } catch (final java.util.concurrent.RejectedExecutionException stopping) {
             log.warn("FIX gateway stopping: fill report for {} not sent", clOrdId);
         }
+    }
+
+    /** FR-FFR-17: the unsolicited Canceled (or Rejected) report of an order the venue ended; what was filled stands. */
+    private ExecutionReport endReport(final Tracked t, final int ref, final com.fasterxml.jackson.databind.JsonNode p,
+                                      final boolean canceled) {
+        final ExecutionReport report = new ExecutionReport(
+            new OrderID("ord-" + ref),
+            new ExecID(EXEC_ID_PREFIX + execSeq.incrementAndGet()),
+            new ExecType(canceled ? ExecType.CANCELED : ExecType.REJECTED),
+            new OrdStatus(canceled ? OrdStatus.CANCELED : OrdStatus.REJECTED),
+            new Side(t.side == 'S' ? Side.SELL : Side.BUY),
+            new LeavesQty(0),
+            new CumQty(t.cumQty),
+            new AvgPx(t.cumQty > 0 ? t.notional / t.cumQty : 0));
+        report.set(new ClOrdID(t.clOrdId));
+        report.set(new Symbol(t.symbol));
+        report.set(new OrderQty(p.path("quantity").asInt()));
+        final String reason = p.path("reason").asText("");
+        if (!reason.isEmpty()) {
+            report.set(new Text(reason));
+        }
+        return report;
     }
 
     /** The unsolicited fill ExecutionReport (ADR-084 §3); {@code t.notional} already includes it. */
@@ -1621,6 +1669,12 @@ public final class FixGatewayAcceptor {
     }
 
     private final AtomicLong fillReports = new AtomicLong();
+    private final AtomicLong endReports = new AtomicLong();
+
+    /** FR-FFR-17: unsolicited Canceled/Rejected reports sent for orders the venue ended. */
+    public long endReports() {
+        return endReports.get();
+    }
     private final AtomicLong fillGaps = new AtomicLong();
 
     /** Fill reports sent, and fill gaps ALERTed (gateway {@code /metrics}). */
@@ -1646,6 +1700,8 @@ public final class FixGatewayAcceptor {
     private static final byte[] FILL_STATUS = "\"status\":\"FILLED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final byte[] PARTIAL_STATUS =
         "\"status\":\"PARTIALLY_FILLED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] CANCELED_STATUS = "\"status\":\"CANCELED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] REJECTED_STATUS = "\"status\":\"REJECTED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
     /** The orderRef of {@code "id":"<epoch>-<orderRef>"}, or -1. */
     static int feedRef(final byte[] json) {

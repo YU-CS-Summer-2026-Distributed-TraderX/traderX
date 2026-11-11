@@ -61,6 +61,15 @@ class Rendering(unittest.TestCase):
             c['env']=[e for e in c['env'] if e['name']!='ORDER_VIEW_SNAPSHOT_MS']+([{'name':'ORDER_VIEW_SNAPSHOT_MS','value':value}] if value else [])
             with self.assertRaisesRegex(AssertionError,'no order view snapshot'): module.validate(docs)
 
+    def test_fix_sessions_are_spread_over_the_nats_servers(self):
+        # FR-GFS-21: one FIX_SESSIONS stream capped the 2026-11-10 acceptance run's FIX near 85K orders/s.
+        gw=next(d for d in self.docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway')
+        env={e['name']:e.get('value') for e in module.podspec(gw)['containers'][0]['env']}
+        n=module.nats_servers(self.docs)
+        self.assertEqual((env.get('FIX_SESSION_BUCKETS'),env.get('FIX_SESSION_PLACEMENT')),
+                         (str(n),','.join(f'nats-{i}' for i in range(n))))
+        self.assertGreater(n,1)
+
     def test_member_archive_storageclass_is_rendered(self):
         # Members claim a retained volume of this class; a render without it leaves them Pending.
         engine=next(d for d in self.docs if d['kind']=='StatefulSet')

@@ -217,3 +217,53 @@ on two findings in the FIX half.
 - **Fills will cost more:** with FR-FFR-15/16 every fill is reported and stored, so each traded order costs the store
   two reports instead of ~1.1.
 
+
+## After the 450K acceptance run 2 (2026-11-10): venue cancels unreported, FIX capped by the store
+
+Run 2 (`acceptance-450k-20261110/fix/`, 600 FIX sessions on 18 gateways, on 316b269e's fixes) reported every fill and
+0 lost. It found two more problems.
+
+**1. Venue cancels never reached FIX clients: fixed (FR-FFR-17).**
+- **The loss:** STP canceled 44,071,636 orders and none were reported.
+- **The cause:** for an untracked order only fills waited in the early buffer, and a tracked order's CANCELED or
+  REJECTED removed it without a report. With answers seconds late, STP's cancel nearly always came first.
+- **Now:** an order the venue ends gets an unsolicited Canceled (or Rejected) report, sent after its New, with the
+  `CumQty`/`AvgPx` reported so far. An early one waits by ref like a fill, and is counted `lost` if it ages out.
+  A client's own cancel is answered once, by its request. A refused client cancel does not mute the venue's end.
+  The count is `traderx_fix_end_reports_total`.
+- **Tests:** `FixGatewayFillReportTest` gains three. The cancel that beats the answer fails on the 316b269e acceptor.
+  The refused-cancel test fails without the reset.
+
+**2. FIX capped near 85K orders/s, ~2 s per commit: the one session stream (FR-GFS-21, FR-GFS-22).**
+- **Why a commit takes seconds:** every session's fenced bodies went to one stream, `KV_FIX_SESSIONS` on nats-1, one
+  at a time. A commit waits behind its queue: 600 sessions × up to 1,024 uncommitted bodies. Locally the one stream
+  also refused publishes (429).
+- **Fix:**
+  - The sessions are spread over one bucket per NATS server, placed as FR-DRS-44 places partitions
+    (`FIX_SESSION_BUCKETS`, `FIX_SESSION_PLACEMENT`; `prepare.py` renders them).
+  - A session may have 256 bodies uncommitted, not 1,024.
+- **Measured** (`FixStoreThroughputIT`, 600 sessions on 18 store clients, 20 s, one local NATS process, two runs
+  each):
+
+  | buckets | uncommitted | bodies/s | commit max | 10071 drops |
+  | --- | --- | --- | --- | --- |
+  | 1 | 1,024 | 115–138K, 429s | 1.9–2.5 s | before FR-GFS-22 only |
+  | 3 | 1,024 | 161–172K | 1.3–5.1 s | before FR-GFS-22 only |
+  | 3 | 256 | **173–205K** | **0.58–0.76 s** | before FR-GFS-22 only |
+  | 3 | 64 | 196K | 0.18 s | (before) |
+
+  One process is the local ceiling, so this shows the stream cap removed, not GKE's rate. With three servers each
+  bucket has its own server.
+- **A third finding, from the bench (FR-GFS-22):** a lease that lapsed while its own commit was in flight was retaken
+  by writing `K.seq`. That fenced the gateway's own batch out (10071) and dropped the session, which happened in every
+  run. The commit in flight is now the retake's fence, and `confirm` waits for it. The sessions that still fail locally
+  time out a commit at the one saturated process. Run 2 logged 7,122 "Logon state is not valid (MsgType=F)" errors.
+  That fits sessions being dropped, but its lease WARNs were not kept, so the cause there is not shown.
+- **ADR-086's invariants:** a session's `K.seq` and bodies stay in one bucket, so each body is fenced on `K.seq` in
+  the same stream. Store-before-send (`FixWriteBarrier`) and the one lease bucket are unchanged. A retake is still
+  confirmed only by a write fenced on the revision last seen. Every gateway runs the same bucket count, changed only
+  across a FIX day reset.
+- **Size:** at most `FIX_RESEND_WINDOW` (2,048) messages per session, so the store levels off at rate (run 2:
+  557 MB). Each bucket keeps the 7 d / 1 GiB cap.
+- **Not done:** GKE at 600 sessions over three servers (needs yaakov's yes), and a kind proof with slowed answers
+  (the unit tests and the benches cover it).

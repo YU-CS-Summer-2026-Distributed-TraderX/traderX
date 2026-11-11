@@ -326,6 +326,15 @@ def set_env(c, values):
     c['env'] = [e for e in c.get('env', []) if e['name'] not in values] + [{'name': k, 'value': v} for k, v in values.items()]
 
 
+def fix_session_buckets(docs):
+    """FR-GFS-21: the gateways spread their FIX sessions over one bucket per NATS server, bucket i on server i mod N
+    (as FR-DRS-44 places partitions). One FIX_SESSIONS stream on one server capped the 2026-11-10 acceptance run's
+    FIX near 85K orders/s with ~2 s commits."""
+    servers = nats_servers(docs)
+    gw = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway')
+    set_env(podspec(gw)['containers'][0], {'FIX_SESSION_BUCKETS': str(servers), 'FIX_SESSION_PLACEMENT': placement(servers)})
+
+
 def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
     """ADR-097 (FR-PRG-20): the members partition both bridges by account, trade-processor runs the snapshot read model
     on its own pool, NATS keeps the outage window, and the database moves to its own pool on a faster disk. The move
@@ -1061,6 +1070,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
         throughput_members(docs)
     if read_model == 'snapshot':
         snapshot_read_model(docs, partitions or READ_MODEL_PARTITIONS)
+    fix_session_buckets(docs)
     history_store(docs, history_hot_days)
     shard_read_model(docs, read_model_replicas or (min(READ_MODEL_REPLICAS, partitions or READ_MODEL_PARTITIONS)
                                                    if read_model == 'snapshot' else 1))
