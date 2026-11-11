@@ -28,3 +28,9 @@
       acceptor (injected delays on their stage, a dropped session refused); `l0-baseline.sh fix-probe`.
 - [ ] GKE: the FIX probe on the acceptance rig, carried by acceptance run 4 (`CREDS=... l0-baseline.sh fix-probe T PX
       SECS`); record the windows and the coverage row.
+- [x] Session 3 on GKE (2026-11-11): busy-spin on shared cores, busy-read, wmem, static, pinning, and the C media driver
+      at an equal member share. Calls in the shared note `latency-s3-20261111.md`.
+- [ ] Confirm `busy_read`/`busy_poll`=50 once more at the next roll, interleaved, before production takes it.
+- [ ] wmem: repeat interleaved with its control (this session's +115 µs step outlived the arm).
+- [ ] Pinning at saturation with the other threads on 4–5 cores (this session's one window logged 3,815 cycles > 1 ms).
+- [ ] Long runs: plan epochs under the 2³¹ order-ref ceiling (~80 min at 450K/s) until that issue is fixed.
