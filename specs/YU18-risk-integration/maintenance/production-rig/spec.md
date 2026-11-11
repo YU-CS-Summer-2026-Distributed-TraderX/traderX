@@ -237,10 +237,11 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   exactly-once wire.
   - Binary (`binary-load.mjs`, sequenced by default; FR-XOD-11, FR-PRG-16):
     - every NEW SHALL set flags bit 0 and carry `streamId (high u32) | seq (low u32)`;
-    - there SHALL be one stream per (session, account), with `streamId` = the run's random nonce XOR
-      `(session << 3 | account index)`, never 0, so a run never continues an earlier run's stream. That is 1,024
-      streams for 8 pods × 16 sessions × 8 accounts, under `EXACTLY_ONCE_MAX_STREAMS`;
-    - `seq` SHALL count each stream's NEWs from 1;
+    - there SHALL be one stable stream per (pod, session, account), probed at seq 2^31 before its first NEW and
+      continued from the engine's answer (FR-PRG-16);
+    - a probe's OUT_OF_SEQUENCE is expected, and SHALL be counted as `probes`, never as `outOfSequence`. Any other
+      answer to a probe, STREAM_LIMIT included, SHALL fail the run;
+    - the result SHALL report `streams` (this pod's, new and resumed) against `streamCap` (the engine's 8,192);
     - the load never resends, so DUPLICATE with orderRef 0 (FR-XOD-03) means a frame reached the engine twice: it
       SHALL be counted `sequencedDuplicates` and SHALL fail the run;
     - OUT_OF_SEQUENCE and STREAM_LIMIT SHALL be counted and SHALL fail the run.
@@ -260,7 +261,8 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     Logon/Logout and disconnect lines for each session that reconnected (run 3 kept neither, so CLIENT386's 47 s
     outage is unexplained).
 
-  `test_binary_load` (sequenced by default, unsequenced, a duplicate, out of sequence), `test_fix_load.ExactlyOnce`.
+  `test_binary_load` (sequenced by default, streams stable across runs and pods, a full stream table, unsequenced, a
+  duplicate, out of sequence), `test_fix_load.ExactlyOnce`.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's
@@ -480,10 +482,17 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
   - resolve its ticker per run through the gateway's lookup-only `/resolve`, and refuse before any order if it does not
     resolve;
   - send limit orders of 1 at one operator-given price, sequenced (amended 2026-11-11, ADR-090 / FR-XOD-11, yaakov:
-    "Turn on exactly-once"; was unflagged). Each NEW sets flags bit 0 with `clOrdId` = `streamId:u32 | seq:u32`, and
-    has one stream per (session, account), new every run (from the run's nonce) with its seq from 1, so the engine
-    books each `(account, stream, seq)` once. A pod opens sessions × 8 of the engine's `EXACTLY_ONCE_MAX_STREAMS`
-    (8,192, evicted only after an idle hour, FR-XOD-07), so runs within an hour add up (`streams` in the result).
+    "Turn on exactly-once"; was unflagged). Each NEW sets flags bit 0 with `clOrdId` = `streamId:u32 | seq:u32`, so the
+    engine books each `(account, stream, seq)` once.
+    - There is one stream per (pod, session, account), the same in every run: `0x40000000 | pod << 11 | session << 3
+      | account index`, where pod is the Job's `JOB_COMPLETION_INDEX`.
+    - Each stream is first probed at seq 2^31. The engine answers OUT_OF_SEQUENCE(next) and changes nothing
+      (FR-XOD-04), and the stream continues from that next (`streamsNew`, `streamsResumed`); a session sends nothing
+      before its probes are answered.
+    - The rig therefore holds pods × sessions × 8 of the engine's `EXACTLY_ONCE_MAX_STREAMS` (8,192, evicted only
+      after an idle hour, FR-XOD-07) however many runs share an epoch. Amended 2026-11-11: fresh streams per run
+      filled the table within an hour (trade-history-tiers, `snap-pause-20261111/stream-limit`).
+    - One binary load at a time per epoch.
     `--unsequenced` sends the unflagged frame, for members older than ADR-090 (`BINARY_SEQUENCED=refuse`). FR-PRG-45
     gives the answers;
   - track every clOrdId until its first ack and never resend (a resend past the 256Ki-key window can book twice), in
