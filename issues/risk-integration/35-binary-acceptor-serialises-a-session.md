@@ -344,3 +344,27 @@ reached ~133–157K orders/s. Three items came back.
     (FR-DRS-44 places by server). Other levers are fewer stored bodies per order, or more NATS connections per
     gateway; neither is tested.
   - Choosing a server count is a production render decision.
+
+## NATS sizing for 450K FIX (slot B, 2026-11-10 11:34 pm – 2026-11-11 1:47 am ET, ≈ $15, yaakov's yes)
+
+The FIX session store alone, and then with the capture at 301 MB/s (`TRADERX_FEED_P0..7`, S2), on 3, 4 and 5 of the
+p4k render's NATS servers (c4d-standard-16). 600 sessions, 120 s per arm, 0 failed sessions in every arm. The target
+is ~900K store bodies/s plus the capture. Evidence: shared notes `fix-store-sizing-20261111/`.
+
+| servers | store alone, today | store + capture, today | store alone, pinned | store + capture, pinned |
+| --- | --- | --- | --- | --- |
+| 3 | 476–726K | 543K | 859K | 700K |
+| 4 | 805K | 718K | 1.15M | **995K** |
+| 5 | 964K | 594K / 838K | 1.45M | **1.26M** |
+
+- **The limit is relaying, not CPU.** Every store client connects through the `nats` Service, so a server relays the
+  publishes for streams it does not hold. Each server plateaued at ~450K msgs/s in, counting relayed copies, at ~3.3
+  of 16 cores. Results also swing with where connections land.
+- **"Pinned" is a bench option, not shipped code.** Each client keeps one connection per server and sends each
+  bucket to its own server. Every server then takes an even ~290K msgs/s, and capture acks fall from 20–33 ms to
+  0.2–0.3 ms.
+- **Today's code** reaches the target on no count measured; it would need an estimated 6–7 servers.
+- **Pinned:** 4 servers carry the target with ~10% headroom, 5 with ~40%.
+- **Cost of the NATS tier (list, approximate):** 3 servers ≈ $2.5/h, 4 ≈ $3.4/h, 5 ≈ $4.2/h.
+- **Open:** yaakov's choice of server count, and whether to build pinned connections in `FixSessionStore`
+  (a connection per placement tag; `prepare.py` renders the URLs).
