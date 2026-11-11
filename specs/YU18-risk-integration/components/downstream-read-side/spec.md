@@ -662,18 +662,35 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     - Its stream holds nothing, its committed cursor stays 0 (FR-DRS-23's idle rule moves a cursor only to a head
       above it), and its resume re-pulls nothing.
     - Partition 0 (account 9900008) committed 1,246,537 on the same replica, with no snapshot failure logged.
-  - The heap is the order view. A memory-only view holds every open order (FR-DRS-30), at 855 B each, measured with
-    300K open orders through the real decode, `OrderView.apply` and the snapshot sets (probe in the run's notes, not
-    shipped).
-    - Stage 1 left 82,160,439 orders resting (`restingAtEnd`). Partition 0 has one account in seven, so about 12M
-      open orders on trade-processor-0, about 10 GB of its 16 GB heap, before replay buffers and garbage headroom.
-    - The other three replicas, with two traded partitions each, ran at 17 GB RSS.
-    - A re-pull holds at most four fetches of 1 MB or less, so it is not the cause.
-    - The bound is the open-order count, which the engine does not limit. A replica needs
-      855 B × (open orders on its partitions) plus headroom, or the open set moved out of the heap. Not built here.
+  - The heap was not the order view, and not the resume: FR-DRS-51. (Amended the same day: this item first blamed the
+    order view's open orders, from the FIX clients' `restingAtEnd` of 82M. That was the clients' belief after 44M lost
+    fill reports; the members held 0–4 open orders, and every order's terminal event was published.)
   - Test: `JetStreamFeedTest#aResumeBeforeAnythingWasHandedOverNamesTheStartNotZero`.
   - The next acceptance run samples the per-partition cursors (`/v2/projection-feed/accounting`: `streams` against
     each partition's committed cursor) and `heap` against `orders.viewSize` every 60 s, with `-Xlog:gc`.
+- FR-DRS-51 (450K acceptance run 4, 2026-11-11): The ledger recon SHALL read the capture stream only as far as the
+  blotter page it classifies. Each subscription stops once every partition it carries that has traded has passed the
+  page's last trade, or once it has nothing more. A partition with no trades SHALL NOT hold the read open.
+  - Why: the read went on until EVERY partition's head passed the page. Run 4's load trades 7 accounts and none maps to
+    partition 1, so its head never moved and each 10 s sweep drained all eight streams to their heads into the reader's
+    `pending` map. That is every trade side, not one page's.
+  - Only the owner of partition 0 runs the recon, so trade-processor-0 alone held them: 283 B a side (measured through
+    the reader's own parse), so 16 GB is about 60.7M sides.
+    - The members had 60.8M sides at 12:01 pm ET, when its JVM stalled 49 s (Hikari "housekeeper delta"). It ran out of
+      heap at 12:05 pm ET with 93.1M published.
+    - Replicas 1–3 own more traded partitions and lived.
+  - Now: `pending` holds a page (RECON_PAGE_SIZE, 1,000) plus at most one fetch (1,000) per stream past it, about 9K
+    sides, under 3 MB. Stopping early decides nothing: a side not read yet stays WAIT until its own partition's head
+    passes it, and the next sweep reads on from there.
+  - The order view's open set follows the members' book plus the read lag, so neither it nor the recon needs a heap
+    sized to the order rate.
+  - Tests:
+    - `ReconLedgerReaderIT#anIdlePartitionDoesNotMakeTheReaderDrainEveryStream`: three partition streams, partition 1
+      empty, 20,000 sides. A 100-side page holds at most 2,100, where the unfixed reader held 20,000.
+    - `LedgerSettlementReconTest#missingIsJudgedAgainstTheSidesOwnPartitionHead` now asserts the rule; it had asserted
+      that an unseen partition holds the read open.
+  - Not changed: at 1,000 sides per 10 s sweep the recon classifies 100 sides/s, so under load its cursor falls behind
+    and stays behind.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

@@ -174,7 +174,7 @@ public final class ProjectionFeedController {
         out.put("orders", m);
       }
     }
-    // FR-DRS-50: the heap beside the order view's size; the order view holds every open order (~855 B each)
+    // FR-DRS-50: the heap, for the acceptance sampler (run 4's out-of-heap was the ledger recon, FR-DRS-51)
     var heap = java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
     out.put("heap", Map.of("usedBytes", heap.getUsed(), "maxBytes", heap.getMax()));
     return out;
