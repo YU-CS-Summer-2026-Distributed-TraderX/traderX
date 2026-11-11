@@ -282,3 +282,65 @@ Run 2 (`acceptance-450k-20261110/fix/`, 600 FIX sessions on 18 gateways, on 316b
   557 MB). Each bucket keeps the 7 d / 1 GiB cap.
 - **Not done:** end to end with 600 FIX clients over the venue (acceptance run 3), and a kind proof with slowed
   answers (the unit tests and the benches cover it).
+
+## After the 450K acceptance run 3 (2026-11-10, `cfb748fb`): fills lost above ~150K/s, and the next cap
+
+Run 3 confirmed run 2's fixes: 81,368,090 end reports matched the driver's STP cancels, and no lease lapsed. FIX
+reached ~133–157K orders/s. Three items came back.
+
+**1. 10,927,047 fills and ends lost from ~150K orders/s: fixed (FR-FFR-18).**
+- **Cause:** a pipelined order was tracked when its answer ran on the session's report thread. That thread sends
+  every report at the store's pace. From the 0.44 step the store was saturated (item 3), so acks waited behind it,
+  and their fills and STP cancels aged out of the early buffer (30 s / 65,536).
+- **Now:** the ack completes on one gateway thread (`fix-acks`), which tracks the order. Its updates wait on the
+  order until its New is sent, then follow it in order.
+  - What waits is bounded by the session's window (1,024 orders, a slot freed when the answer runs) × an order's
+    few updates, with no time limit.
+  - The early buffer now covers only the ack's own hop.
+- **Tests:**
+  - `FixGatewayFillReportTest#aFillWhoseAnswerWaitsBehindTheSessionsReportsIsReported`: the report thread is held,
+    then the early buffer is overrun.
+  - `#updatesForAnAnswerHeldPastTheEarlyAgeAreReported`: the age is scaled to 100 ms and the answer held 10×.
+  - Both fail on the ff684979 acceptor.
+
+**2. The duplicate answer and the resend past the ring: one 47 s outage of CLIENT386.**
+- **What happened:** CLIENT386's socket closed at ~10:18:03 pm ET, and its Logon succeeded only at 10:18:50, 5 s
+  after the load ended.
+  - The gateway kept that session's messages meanwhile: the answers to its 1,024-order window, and the ends of its
+    resting orders, which other sessions on the same account kept cancelling by STP. That was 14,134 messages.
+  - Its ResendRequest therefore reached past the 2,048 kept. 2,048 were resent and 12,086 gap-filled, with an ALERT,
+    as FR-GFS-10's ring specifies. The client reconciles those by OrderStatusRequest.
+- **The resends and the duplicate:** the run-3 driver resent its 1,464 unanswered orders blindly. Past the
+  engine's ~1.7 s duplicate window, that booked them again: the +427 NEW in the history store. One order's original
+  answer then also arrived (resent from the ring): the 1 duplicate answer.
+  - The acceptance lane has fixed the driver: it reconciles by H before resending, and records why each outage
+    began. These are driver effects, not gateway bugs.
+- **Not explained: why the socket closed, and why the Logon took 47 s.** Run 3 kept neither the gateway's INFO
+  lines for the session nor the driver's outage cause.
+  - A likely contributor: a gateway with no client keeps the lease "draining" while a commit is in flight, messages
+    are uncommitted, or it wrote within 1 s (`tick()`). A Logon elsewhere waits 4 s for that, then is refused.
+  - With the store saturated and STP ending the session's orders without pause, the drain could last until the venue
+    went quiet, and the Logon did succeed 5 s after the load ended.
+  - Against that: with 18 gateways and no ClientIP affinity, a retry every 500 ms should reach the draining gateway
+    itself, which may reclaim the session, within seconds. So this is not shown.
+  - The next run should keep, for any session that reconnects: the driver's outage cause, and the gateway lines
+    that acquired, reclaimed or refused it.
+
+**3. The next serial step is still the store: 3 buckets saturated from the 0.44 step.**
+- **Run 3's gateway counters, per 30 s:**
+  - at the 0.22 step: ~196K bodies/s, 3.6 bodies a commit, ~8 ms commits;
+  - from 10:04 pm to the end: ~265K bodies/s flat, every commit 128 bodies (half the 256 bound) at ~290 ms.
+  - The run-wide 37 ms mean averaged those two regimes.
+- **Why that caps a session:** a session has one commit in flight, so its rate is 128 / 0.29 s ≈ 440 bodies/s,
+  ≈ 220 orders/s at ~2 bodies an order. Over 600 sessions that is ~133K orders/s, the cap observed, with the
+  1,024 window full. The gateway, cluster and NATS CPU were all idle because every session waited on its commit.
+- **Already committed, not in run 3:** run 3's image `cfb748fb` rendered 3 buckets. 96ccc17c renders 12, measured
+  at 653K bodies/s on GKE against 375–378K for 3, store alone.
+  - Scaled by run 3's 265K / 378K, the same rig should carry ~460K bodies/s, about 230–270K orders/s.
+- **Beyond that:** on the p4k NATS (c4d-standard-16), one stream takes ~126K bodies/s (3 buckets), and one server
+  tops out near ~220K however many streams it holds (4 streams at ~54K/s each; 8 no faster). That was at 3.4 of
+  12 CPUs, so it is not CPU; what limits it is not measured.
+  - 450K orders/s needs ~850–900K bodies/s, about 4–5 such servers' worth. The proven lever is more NATS servers
+    (FR-DRS-44 places by server). Other levers are fewer stored bodies per order, or more NATS connections per
+    gateway; neither is tested.
+  - Choosing a server count is a production render decision.
