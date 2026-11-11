@@ -28,6 +28,18 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   CPU and every pod on it with its QoS class and CPU requests, so a static CPU manager's exclusive budget can be
   checked against the member's integer request before the pool is recreated.
 
+- **FR-OPL-08 (FIX probe):** `fix-latency-probe.mjs` SHALL apply FR-OPL-02's method to the FIX 4.4 acceptor (port
+  18130): constant rate on a wall-clock schedule, latency from the intended send time (from the write when the timer
+  fired early) plus from the write, epoch-aligned `PROBE-WINDOW` lines and a `PROBE-TOTAL`. It SHALL report two stages,
+  each p50/p90/p99/p99.9/max: **ack**, a NewOrderSingle to the first ExecutionReport for its ClOrdID (New, or Filled
+  for an aggressor answered filled, FR-FFR-01); and **fill**, the crossing sell's send to the ExecutionReport that ends
+  the later of the pair (the aggressor's Filled and the resting buy's fill report, FR-FFR-02). It SHALL stay book- and
+  position-neutral as FR-OPL-02: a lane is one session sending both accounts (`--accounts A,B`, the CompID bound to
+  both) or two sessions each trading its own account (`--creds`, an even count, distinct accounts per pair). It SHALL
+  log on every session before the first order, and exit non-zero on a reject (39=8, 35=3, 35=j), an order that ends
+  without filling, a lost session, a skipped send, or an order unanswered or unended at exit. `l0-baseline.sh
+  fix-probe` SHALL run it as a Job beside `probe`, the credentials mounted from a Secret, never on the command line.
+
 ## Coverage
 
 | Behaviour | FR | Evidence | Result |
@@ -40,3 +52,6 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
 | windows per rate, twice (A, B) | 03 | GKE 2026-11-10, `latency-l0-20261110/table.md` | p50 within ±1–3% between A and B, p99 ±2–5%, p99.9 ±15–20%; see `latency-l0-baseline-20261110.md` |
 | a gateway-only A/B in the same session (C) | 03 | GKE 2026-11-10, `C*-gwspin/` | leader commit unchanged at idle (the control); the gateways' driver on spin: client p50 1,165 → 614 µs at idle, −8% capacity at saturation |
 | engine-node budget listed | 04 | GKE 2026-11-10, `alloc.txt` | 16 capacity, 15,890m allocatable, DaemonSets 433m, member Guaranteed 15 |
+| FIX probe stages from a scripted acceptor | 08 | `test_fix_latency_probe.Stages`, local mock 2026-11-11 | 2 ms ack / 5 ms fill injected: ack p50 in [2, 4.5) ms, fill p50 in [5, 7.5) ms, two acks per fill; an aggressor answered Filled lands its first answer at 5 ms |
+| FIX probe refusals | 08 | `test_fix_latency_probe.Refusals`, local mock 2026-11-11 | a session dropped after 100 orders: exit 1, lostSessions=1, skipped and unanswered > 0; an odd session count without `--accounts` refused |
+| FIX probe on GKE | 08 | not yet run | carried by acceptance run 4 |

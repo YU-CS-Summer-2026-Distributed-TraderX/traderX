@@ -4,6 +4,8 @@
 # disposable p4k rig (namespace pa-proof-400k), never production.
 #   CTX=... EVIDENCE=dir bash l0-baseline.sh floor                  # AeronPingPong RTT: member<->member, gateway<->leader
 #   CTX=... EVIDENCE=dir bash l0-baseline.sh probe T PX SECS        # the constant-rate binary probe Job (500/s, 16 sessions)
+#   CTX=... EVIDENCE=dir CREDS=fix-test-clients.json bash l0-baseline.sh fix-probe T PX SECS   # the FIX probe Job (FR-OPL-08):
+#        500/s over 6 CompIDs of CREDS paired into 3 lanes; PROBE_RATE, PROBE_SESSIONS, PROBE_ACCOUNTS=A,B, FIX_HOST, FIX_PORT
 #   CTX=... EVIDENCE=dir bash l0-baseline.sh block LABEL PER_SESSION T PX [WINDOWS=3]
 #        background binary-load at 8 pods x 64 sessions x PER_SESSION/s (0 = none), then WINDOWS aligned 60 s windows:
 #        every gateway's and the leader's /latency reset at the window start and read at its end, the leader's
@@ -86,6 +88,35 @@ spec:
       volumes: [{name: probe, configMap: {name: l0-probe}}]
 YAML
   log "probe: 500/s x 16 sessions on $T@$PX for ${SECS}s" ;;
+fix-probe)
+  T=${2:?}; PX=${3:?}; SECS=${4:?}; : "${CREDS:?CREDS=provision-fix-test-clients.json}"
+  RATE=${PROBE_RATE:-500}; SESSIONS=${PROBE_SESSIONS:-6}; ACCTS=${PROBE_ACCOUNTS:+, --accounts, \"$PROBE_ACCOUNTS\"}
+  kc delete job l0-fix-probe --ignore-not-found --wait=true >/dev/null
+  kc create configmap l0-fix-probe --from-file=fix-latency-probe.mjs="$HERE/fix-latency-probe.mjs" --dry-run=client -o yaml | kc apply -f - >/dev/null
+  kc create secret generic l0-fix-probe-creds --from-file=creds.json="$CREDS" --dry-run=client -o yaml | kc apply -f - >/dev/null
+  kc apply -f - >/dev/null <<YAML
+apiVersion: batch/v1
+kind: Job
+metadata: {name: l0-fix-probe}
+spec:
+  backoffLimit: 0
+  template:
+    metadata: {annotations: {cluster-autoscaler.kubernetes.io/safe-to-evict: "false"}}
+    spec:
+      restartPolicy: Never
+      nodeSelector: {cloud.google.com/gke-nodepool: p4k-loadgen}
+      tolerations: [{key: traderx-loadgen, operator: Equal, value: "true", effect: NoSchedule}]
+      containers:
+      - name: probe
+        image: node:20-alpine
+        command: [node, /probe/fix-latency-probe.mjs, --creds, /creds/creds.json, --host, "${FIX_HOST:-order-matcher}",
+                  --port, "${FIX_PORT:-18130}", --ticker, "$T", --px, "$PX", --rate, "$RATE", --sessions, "$SESSIONS",
+                  --secs, "$SECS", --warmup, "20", --window, "60"$ACCTS]
+        resources: {requests: {cpu: "1", memory: 512Mi}, limits: {memory: 1Gi}}
+        volumeMounts: [{name: probe, mountPath: /probe}, {name: creds, mountPath: /creds, readOnly: true}]
+      volumes: [{name: probe, configMap: {name: l0-fix-probe}}, {name: creds, secret: {secretName: l0-fix-probe-creds}}]
+YAML
+  log "fix-probe: ${RATE}/s x $SESSIONS FIX sessions on $T@$PX for ${SECS}s" ;;
 block)
   LABEL=${2:?}; PER=${3:?}; T=${4:?}; PX=${5:?}; WINDOWS=${6:-3}; D="$EVIDENCE/$LABEL"; mkdir -p "$D"
   L=$(leader); log "block $LABEL: leader m$L, background $((8 * 64 * PER))/s on $T"
