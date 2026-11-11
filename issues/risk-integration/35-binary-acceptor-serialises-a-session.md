@@ -239,7 +239,7 @@ Run 2 (`acceptance-450k-20261110/fix/`, 600 FIX sessions on 18 gateways, on 316b
   at a time. A commit waits behind its queue: 600 sessions × up to 1,024 uncommitted bodies. Locally the one stream
   also refused publishes (429).
 - **Fix:**
-  - The sessions are spread over one bucket per NATS server, placed as FR-DRS-44 places partitions
+  - The sessions are spread over four buckets per NATS server, placed as FR-DRS-44 places partitions
     (`FIX_SESSION_BUCKETS`, `FIX_SESSION_PLACEMENT`; `prepare.py` renders them).
   - A session may have 256 bodies uncommitted, not 1,024.
 - **Measured** (`FixStoreThroughputIT`, 600 sessions on 18 store clients, 20 s, one local NATS process, two runs
@@ -252,8 +252,23 @@ Run 2 (`acceptance-450k-20261110/fix/`, 600 FIX sessions on 18 gateways, on 316b
   | 3 | 256 | **173–205K** | **0.58–0.76 s** | before FR-GFS-22 only |
   | 3 | 64 | 196K | 0.18 s | (before) |
 
-  One process is the local ceiling, so this shows the stream cap removed, not GKE's rate. With three servers each
-  bucket has its own server.
+  One process is the local ceiling, so this shows the stream cap removed, not GKE's rate.
+- **Measured on GKE** (slot A, 9:04–10:05 pm ET, yaakov's yes): the p4k render's three NATS servers, 600 sessions on
+  18 store clients in 6 pods on p4k-gateway, 120 s per arm, the store alone (no venue). The before arm reproduces
+  run 2: ~2.2 s commits on the one stream on nats-1.
+
+  | buckets | uncommitted | bodies/s | commit avg | commit max | busiest server CPU |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 (before) | 1,024 | 140,099 / 144,080 | 2.21 / 2.16 s | 3.67 / 3.88 s | nats-1 0.6–1.3 of 12 |
+  | 1 | 256 | 131,170 | 0.59 s | 0.97 s | nats-1 1.3 |
+  | 3 | 1,024 | 389,723 | 0.79 s | 1.59 s | 1.9 each |
+  | 3 | 256 | 378,353 / 375,220 | 0.20 s | 0.38 / 0.40 s | 1.8–1.9 each |
+  | **12 (rendered)** | **256** | **652,673** | **0.12 s** | **0.67 s** | 3.4 each |
+  | 24 | 256 | 623,702 | 0.12 s | 2.06 s | 3.5, uneven |
+
+  A stream takes its fenced writes one at a time: throughput follows the number of streams, and the bound sets the
+  wait. Neither NATS (≤3.5 of 12 CPUs) nor the clients (~0.35 CPU a pod) were busy. Twelve buckets, four per server,
+  is the knee, so that is what `prepare.py` renders. No session failed and none was dropped in any GKE arm.
 - **A third finding, from the bench (FR-GFS-22):** a lease that lapsed while its own commit was in flight was retaken
   by writing `K.seq`. That fenced the gateway's own batch out (10071) and dropped the session, which happened in every
   run. The commit in flight is now the retake's fence, and `confirm` waits for it. The sessions that still fail locally
@@ -265,5 +280,5 @@ Run 2 (`acceptance-450k-20261110/fix/`, 600 FIX sessions on 18 gateways, on 316b
   across a FIX day reset.
 - **Size:** at most `FIX_RESEND_WINDOW` (2,048) messages per session, so the store levels off at rate (run 2:
   557 MB). Each bucket keeps the 7 d / 1 GiB cap.
-- **Not done:** GKE at 600 sessions over three servers (needs yaakov's yes), and a kind proof with slowed answers
-  (the unit tests and the benches cover it).
+- **Not done:** end to end with 600 FIX clients over the venue (acceptance run 3), and a kind proof with slowed
+  answers (the unit tests and the benches cover it).

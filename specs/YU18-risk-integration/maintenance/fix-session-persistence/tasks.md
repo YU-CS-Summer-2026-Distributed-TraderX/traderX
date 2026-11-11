@@ -30,8 +30,9 @@
 - [ ] Measure FR-GFS-18 on kind or GKE with the hxb FIX arm, store on.
 - [x] FR-GFS-19 (FR-BSP-02, RI35): `K.seq`'s target held below a pipelined session's undecided orders;
       `FixStoreGroupCommitIT.theStoredTargetStaysBelowAnUndecidedOrder`, both modes.
-- [x] FR-GFS-21/22 (2026-11-10, acceptance run 2's ~85K/s FIX cap): sessions spread over one bucket per NATS server,
+- [x] FR-GFS-21/22 (2026-11-10, acceptance run 2's ~85K/s FIX cap): sessions spread over four buckets per NATS server,
       256 uncommitted per session, a lapsed lease retaken with its commit in flight as the fence. Local bench only.
-- [ ] Measure FR-GFS-21 on GKE (yaakov's yes): 600 sessions, commit metrics per gateway, `KV_FIX_SESSIONS_*` per server.
+- [x] FR-GFS-21 on GKE (2026-11-10, slot A, store alone): 600 sessions 140K → 653K bodies/s, commits 2.2 s → 0.12 s.
+- [ ] FR-GFS-21 end to end with FIX clients: acceptance run 3.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

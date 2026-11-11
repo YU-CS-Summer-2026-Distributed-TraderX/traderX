@@ -67,7 +67,7 @@ class Rendering(unittest.TestCase):
         env={e['name']:e.get('value') for e in module.podspec(gw)['containers'][0]['env']}
         n=module.nats_servers(self.docs)
         self.assertEqual((env.get('FIX_SESSION_BUCKETS'),env.get('FIX_SESSION_PLACEMENT')),
-                         (str(n),','.join(f'nats-{i}' for i in range(n))))
+                         (str(4*n),','.join(f'nats-{i}' for i in range(n))))
         self.assertGreater(n,1)
 
     def test_member_archive_storageclass_is_rendered(self):
