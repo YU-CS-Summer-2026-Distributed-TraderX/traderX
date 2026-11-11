@@ -134,8 +134,6 @@ class Drain(unittest.TestCase):
         self.assertEqual((result['unanswered'], result['restingAtEnd']), (1, 0))
         self.assertEqual(seen['cancels'], result['sent'] - 1)
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class Fills(unittest.TestCase):
@@ -164,3 +162,41 @@ class Fills(unittest.TestCase):
             result = json.loads(Path(d, 'r.json').read_text())
         self.assertEqual((result['filled'], result['duplicateFills'], result['duplicateAnswers']), (result['sent'], 1, 0))
         self.assertEqual(r.returncode, 1, r.stdout)
+
+
+class UnreportedCancels(unittest.TestCase):
+    def test_orders_cancelled_without_a_report_are_counted_not_flooded(self):
+        # Acceptance 450K run 2: the gateway dropped 44M STP cancels, so the client believed them resting and its end
+        # sweep cancelled ~2.2M per pod until Node ran out of heap. Now the sweep stops at --max-end-cancels per session
+        # and the run reports what it believed rests and what the venue said was not open.
+        srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
+        seen = {'cancels': 0}
+        def acceptor():
+            conn, _ = srv.accept(); n = [1]
+            def reply(fields):
+                conn.sendall(frame([fields[0], ('34', n[0]), ('52', '20261110-18:00:00.000')] + fields[1:])); n[0] += 1
+            for f in messages(conn):
+                if f['35'] == 'A': reply([('35', 'A')])
+                if f['35'] == 'D':   # answered New; the venue cancels it at once and never says so
+                    reply([('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
+                if f['35'] == 'F':   # so a cancel finds nothing open
+                    seen['cancels'] += 1
+                    reply([('35', '9'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('434', '1'), ('102', '1')])
+                if f['35'] == '5': reply([('35', '5')]); conn.close(); return
+        threading.Thread(target=acceptor, daemon=True).start()
+        with tempfile.TemporaryDirectory() as d:
+            creds = Path(d, 'creds.json'); creds.write_text(json.dumps({'CLIENT2': {'account': '9900002', 'password': 'p'}}))
+            r = subprocess.run(['node', str(LOAD), '--creds', str(creds), '--px', '1.00', '--rate', '20', '--secs', '1',
+                                '--drain-secs', '4', '--max-end-cancels', '3', '--host', '127.0.0.1',
+                                '--port', str(srv.getsockname()[1]), '--out', str(Path(d, 'r.json'))],
+                               capture_output=True, text=True, timeout=60)
+            result = json.loads(Path(d, 'r.json').read_text())
+        sent = result['sent']
+        self.assertGreater(sent, 3)
+        self.assertEqual((result['unanswered'], result['believedResting'], result['endCancels'], seen['cancels']),
+                         (0, sent, 3, 3))
+        self.assertEqual((result['cancelRejects'], result['restingAtEnd']), (3, sent - 3))
+        self.assertEqual(r.returncode, 1, r.stdout)   # a run that leaves orders it believes resting still fails
+
+if __name__ == '__main__':
+    unittest.main()

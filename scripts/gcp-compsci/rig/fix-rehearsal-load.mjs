@@ -2,7 +2,10 @@
 // test account: limit orders of 1 at one price inside the collar, alternating Buy/Sell, so the accounts cross each
 // other and the book stays small. No TimeInForce: the gateway's default rests (a Day order needs an open trading day,
 // FR-OT08). Every ClOrdID is tracked until its first ExecutionReport, and at the end every order still resting is
-// cancelled, so the run leaves no open test order.
+// cancelled, so the run leaves no open test order: at most --max-end-cancels per session (default 2048). Past that
+// the run does not flood its sockets (acceptance 450K run 2: 19 of 20 pods ran out of heap cancelling ~2.2M orders
+// each that the gateway had cancelled by STP without a report). It reports what it believed rests
+// (believedResting) and what the venue said was not open (cancelRejects), for comparison with the members' openOrders.
 //
 // A gateway that drains logs its sessions out (FR-PRG-07). This client then reconnects through the internal LB with
 // its next MsgSeqNum (never a reset after the first Logon), answers the acceptor's ResendRequest with a GapFill, asks
@@ -11,6 +14,7 @@
 //
 //   node fix-rehearsal-load.mjs --creds FILE --px P [--ticker MSFT] [--rate N/s per session] [--secs S]
 //        [--host 10.90.0.41] [--port 18130] [--out results.json] [--ramp 0.25,0.5,0.75 --step-secs 300]
+//        [--max-end-cancels 2048]
 // FILE is provision-fix-test-clients.json ({CompID: {account, password}}, mode 0600). No password is printed.
 import fs from 'node:fs';
 import net from 'node:net';
@@ -22,6 +26,7 @@ const cfg = {
   secs: Number(flag('--secs', 60)), host: flag('--host', '10.90.0.41'), port: Number(flag('--port', 18130)),
   out: flag('--out', 'results.json'), maxInFlight: Number(flag('--max-in-flight', 5000)),
   drainSecs: Number(flag('--drain-secs', 60)),   // after sending stops: wait this long for answers
+  maxEndCancels: Number(flag('--max-end-cancels', 2048)),   // per session
 };
 if (!cfg.creds || !cfg.px) { console.log('usage: --creds FILE --px PRICE'); process.exit(2); }
 const creds = JSON.parse(fs.readFileSync(cfg.creds, 'utf8'));
@@ -40,14 +45,21 @@ let sending = true, closing = false;
 const bits = () => ({ a: new Uint8Array(1 << 13),
   has(i) { return i >= 0 && i < this.a.length * 8 && ((this.a[i >> 3] >> (i & 7)) & 1) === 1; },
   add(i) { if (i < 0) return; if (i >= this.a.length * 8) { const b = new Uint8Array(Math.max(this.a.length * 2, (i >> 3) + 1)); b.set(this.a); this.a = b; }
-           this.a[i >> 3] |= 1 << (i & 7); } });   // sending: new orders; closing: the final Logout (no reconnect after it)
+           this.a[i >> 3] |= 1 << (i & 7); },
+  del(i) { if (this.has(i)) this.a[i >> 3] &= ~(1 << (i & 7)); } });   // sending: new orders; closing: the final Logout (no reconnect after it)
 
 function session(compId, { account, password }, index) {
   const s = { compId, account, sent: 0, answered: 0, resent: 0, restated: 0, rejected: 0, sessionRejects: 0,
-              duplicateAnswers: 0, filled: 0, duplicateFills: 0, reconnects: [], rejectReasons: {} };
+              duplicateAnswers: 0, filled: 0, duplicateFills: 0, cancelRejects: 0, believedResting: 0, endCancels: 0,
+              reconnects: [], rejectReasons: {} };
   const open = new Map();          // ClOrdID -> fields of the NewOrderSingle, until its first ExecutionReport
-  // answered / filled: one bit per sequence of our own ClOrdIDs (RUN-index-seq), so an hour at rate stays a few MB
-  const answered = bits(), filled = bits(), resting = new Set();   // resting: last status New / PartiallyFilled
+  // One bit per sequence of our own ClOrdIDs (RUN-index-seq), so an hour at rate stays a few MB. resting: last status
+  // New / PartiallyFilled; done: Filled, Canceled, Rejected or not open, never resting again (a late New after its
+  // cancel or fill, as a pipelined answer can be, does not bring it back).
+  const answered = bits(), filled = bits(), resting = bits(), done = bits();
+  let restingCount = 0;
+  const rest = (n) => { if (n >= 0 && !done.has(n) && !resting.has(n)) { resting.add(n); restingCount++; } };
+  const end = (n) => { if (n < 0) return; done.add(n); if (resting.has(n)) { resting.del(n); restingCount--; } };
   const mine = `${RUN}-${index}-`, seqOf = (cl) => (cl.startsWith(mine) && /^\d+$/.test(cl.slice(mine.length)) ? Number(cl.slice(mine.length)) : -1);
   let out = 1, inExpected = 1, sock = null, up = false, first = true, buf = '', next = 0, downAt = null, resendTimer = null, credit = 0;
 
@@ -93,17 +105,17 @@ function session(compId, { account, password }, index) {
         }
         if (f['35'] === '1') { write('0', [['112', f['112']]]); continue; }
         if (f['35'] === '3') { s.sessionRejects++; continue; }
-        if (f['35'] === '9') { resting.delete(f['41']); s.cancelRejects = (s.cancelRejects || 0) + 1; continue; }   // not open any more
+        if (f['35'] === '9') { end(seqOf(f['41'])); s.cancelRejects++; continue; }   // the venue says it is not open
         if (f['35'] === '5') { if (!closing) sock.destroy(); continue; }
         if (f['35'] === '8' && f['11']) {
           const orig = f['41'] || f['11'];   // a cancel's report names the order in OrigClOrdID(41)
           const n = seqOf(orig);
           // every order is a limit of 1: Filled(39=2) is its one fill report; a restatement (150=I) is not a fill
           if (f['39'] === '2' && f['150'] !== 'I' && n >= 0) { if (filled.has(n)) s.duplicateFills++; else { filled.add(n); s.filled++; } }
-          if (['0', '1'].includes(f['39']) && f['150'] !== 'I' && !(n >= 0 && filled.has(n))) resting.add(orig); else if (['2', '4', '8', 'C'].includes(f['39'])) resting.delete(orig);
+          // no OrigClOrdID: the venue cancelled an order of ours to stop a self-trade (ADR-057, cancel-oldest)
+          if (f['39'] === '4' && !f['41'] && n >= 0 && !done.has(n)) s.selfTradeCancelled = (s.selfTradeCancelled || 0) + 1;
+          if (['0', '1'].includes(f['39']) && f['150'] !== 'I') rest(n); else if (['2', '4', '8', 'C'].includes(f['39'])) end(n);
           if (f['41'] && f['39'] === '4') { s.cancelled = (s.cancelled || 0) + 1; continue; }
-          // no OrigClOrdID: the venue cancelled a resting order of ours to stop a self-trade (ADR-057, cancel-oldest)
-          if (f['39'] === '4' && n >= 0 && answered.has(n)) s.selfTradeCancelled = (s.selfTradeCancelled || 0) + 1;
           if (f['150'] === 'I') s.restated++;
           const m = seqOf(f['11']);
           if (m >= 0 && answered.has(m)) { if (f['39'] === '0' && f['150'] !== 'I') s.duplicateAnswers++; continue; }
@@ -131,14 +143,21 @@ function session(compId, { account, password }, index) {
     }
     sock.uncork();
   }, 10);
-  const cancelResting = () => { for (const cl of resting) write('F', [['41', cl], ['11', `${cl}-c`], ['1', account], ['55', cfg.ticker],
-    ['54', (Number(cl.split('-').pop()) + index) % 2 ? 1 : 2], ['60', stamp()]]); };
-  return { s, open, resting, cancelResting, stop: () => { clearInterval(tick); if (up) write('5', []); setTimeout(() => sock.destroy(), 500); } };
+  const cancelResting = () => {
+    s.believedResting = restingCount; sock.cork();
+    for (let n = 0; n < next && s.endCancels < cfg.maxEndCancels; n++) {
+      if (!resting.has(n)) continue;
+      const cl = `${mine}${n}`; s.endCancels++;
+      write('F', [['41', cl], ['11', `${cl}-c`], ['1', account], ['55', cfg.ticker], ['54', (n + 1 + index) % 2 ? 1 : 2], ['60', stamp()]]);
+    }
+    sock.uncork();
+  };
+  return { s, open, resting: () => restingCount, cancelResting, stop: () => { clearInterval(tick); if (up) write('5', []); setTimeout(() => sock.destroy(), 500); } };
 }
 
 const sessions = Object.entries(creds).map(([c, v], i) => session(c, v, i));
 const report = (final) => {
-  const rows = sessions.map(({ s, open, resting }) => ({ ...s, unanswered: open.size, restingAtEnd: resting.size }));
+  const rows = sessions.map(({ s, open, resting }) => ({ ...s, unanswered: open.size, restingAtEnd: resting() }));
   const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
   const out = { run: RUN, startedAt: started.toISOString(), at: new Date().toISOString(), final, px: cfg.px, ramp: rampFactor(),
                 ticker: cfg.ticker, sent: sum('sent'), answered: sum('answered'), unanswered: sum('unanswered'),
@@ -146,7 +165,8 @@ const report = (final) => {
                 filled: sum('filled'), duplicateFills: sum('duplicateFills'),
                 selfTradeCancelled: rows.reduce((a, r) => a + (r.selfTradeCancelled || 0), 0),
                 reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), restingAtEnd: sum('restingAtEnd'),
-                cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), sessions: rows };
+                cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), believedResting: sum('believedResting'),
+                endCancels: sum('endCancels'), cancelRejects: sum('cancelRejects'), sessions: rows };
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));
   console.log(`${out.at} ramp=${out.ramp} sent=${out.sent} answered=${out.answered} unanswered=${out.unanswered} rejected=${out.rejected} `
     + `restated=${out.restated} dupAnswers=${out.duplicateAnswers} filled=${out.filled} dupFills=${out.duplicateFills} reconnects=${out.reconnects}`);
@@ -158,7 +178,7 @@ setTimeout(() => {   // stop sending, then wait for every answer (at most 60 s),
   const t0 = Date.now(); let cancelled = false;
   const wait = setInterval(() => {
     const left = sessions.reduce((a, x) => a + x.open.size, 0);
-    const rest = sessions.reduce((a, x) => a + x.resting.size, 0);
+    const rest = sessions.reduce((a, x) => a + x.resting(), 0);
     // Sweep once every answer is in, or halfway through the wait: an order that is never answered must not leave
     // the others resting (production 2026-10-29: 3 refused at the session layer left one order on the book).
     if (rest > 0 && !cancelled && (left === 0 || Date.now() - t0 > cfg.drainSecs * 500)) {
