@@ -185,6 +185,24 @@ public final class ClusterNodeConfig {
         return v == null || v.isBlank() ? 64 : Integer.parseInt(v.trim());
     }
 
+    /**
+     * Latency L6a (FR-GMR-14): where the member's media driver runs, {@code CLUSTER_MEDIA_DRIVER} = embedded (default:
+     * the Java driver inside this JVM, as every member before it) | external (a driver in another process — the C
+     * {@code aeronmd} sidecar — already running on {@code CLUSTER_AERON_DIR}). External: the {@link Contexts#mediaDriver()}
+     * context is not launched, so CLUSTER_MEDIA_DRIVER_THREADING and the driver agents' idle (CLUSTER_IDLE_STRATEGY*,
+     * CLUSTER_IDLE_SLEEP_MS) do not reach the driver; it takes AERON_THREADING_MODE, AERON_*_IDLE_STRATEGY etc. from its
+     * own environment. Returns true for external.
+     */
+    static boolean externalDriver(final String v) {
+        if (v == null || v.isBlank() || v.trim().equalsIgnoreCase("embedded")) {
+            return false;
+        }
+        if (v.trim().equalsIgnoreCase("external")) {
+            return true;
+        }
+        throw new IllegalArgumentException("unknown CLUSTER_MEDIA_DRIVER: " + v + " (embedded|external)");
+    }
+
     public static Contexts contexts(final int memberId, final List<String> hostnames, final int portBase,
                                     final String aeronDir, final File baseDir,
                                     final ClusteredService service, final boolean cleanStart) {

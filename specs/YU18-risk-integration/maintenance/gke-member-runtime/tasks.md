@@ -48,6 +48,14 @@
 
       Evidence: shared notes `gis-gke-20261110/` (per-arm tables, `extras.md`, `cgroups.txt`, `teardown-proof.txt`).
 
+- [x] FR-GMR-14: `CLUSTER_MEDIA_DRIVER=external`, default `embedded`; `Dockerfile.aeronmd` (C driver, 1.51.0) and
+      `aeronmd-sidecar.py`; SC-GMR-08. 2026-11-11, branch `claude/l6a-c-driver`. Local proof on the Mac's arm64
+      `aeronmd`: one member elected and acked a proof-client order. The linux/amd64 image builds locally (not pushed).
+- [ ] FR-GMR-14 measured on GKE (latency L6a): an `l1-ab.sh` arm with the sidecar applied (`kubectl get sts -o json |
+      aeronmd-sidecar.py --image ... | kubectl replace -f -`, one member at a time), against the same session's Java
+      driver arm at the same driver idle, at 0, ~300K and the 500K setting. Needs the image pushed to the bench
+      registry and a decision on the C driver threads' idle.
+
 ## Still open
 
 

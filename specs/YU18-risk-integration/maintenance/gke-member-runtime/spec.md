@@ -70,6 +70,20 @@
   had parked up to 1 ms between orders at low rate. L0, 2026-11-10, on GKE: client p50 1,165 µs on the default
   against 614 µs with the gateway driver on spin, p99 2,230 → 1,041 µs; pure spin cost 8% of capacity at
   saturation (more, smaller packets).
+- FR-GMR-14 (latency L6a): A member SHALL take its media driver from `CLUSTER_MEDIA_DRIVER`: `embedded` (unset or
+  blank; the Java driver in the member JVM, `ClusteredMediaDriver.launch`, as before) or `external`. Any other value
+  SHALL refuse to start. External SHALL launch no driver: the member waits, bounded by `CLUSTER_EXTERNAL_DRIVER_WAIT_MS`
+  (default 120000), for a driver with a live heartbeat in `CLUSTER_AERON_DIR` (a dead driver's CnC left in the Memory
+  volume does not count), and exits 1 if none comes. It then launches the archive and the consensus module (in that
+  order, as `ClusteredMediaDriver.launch` does) and the service container from the same contexts minus the driver,
+  inside the same mark-file retry loop. SIGTERM closes them and leaves the driver running. The start line SHALL name
+  the mode (`Cluster node up: ... mediaDriver=embedded|external (...)`). Under external the driver's threading and
+  its agents' idle come from the driver's own config (`AERON_THREADING_MODE`, `AERON_<AGENT>_IDLE_STRATEGY`,
+  `AERON_SOCKET_SO_RCVBUF`, ...), not from `CLUSTER_MEDIA_DRIVER_THREADING` or the `CLUSTER_IDLE_STRATEGY*` knobs.
+  The driver for the A/B is the C `aeronmd` at the members' Aeron 1.51.0 (`scripts/gcp-compsci/Dockerfile.aeronmd`),
+  a native sidecar on the member's `shm` volume added by `scripts/bench/latency/aeronmd-sidecar.py`, which mirrors the
+  member's Java driver settings and keeps the pod Guaranteed. No production render changes. Node-local: members may
+  differ (the wire protocol is the same), so it rolls one member at a time.
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the GKE tier.
 
@@ -82,6 +96,13 @@
   `test_member_archive_storageclass_is_rendered` and `test_promtail_ships_this_namespace_from_every_node`.
 - SC-GMR-03: An empty-root CompSci candidate contains the StorageClass, the promtail DaemonSet and
   exactly 21 distinct images in 24 slots.
+- SC-GMR-08: `ClusterNodeConfigTest.mediaDriverDefaultsToEmbeddedAndRefusesUnknown` and
+  `ClusterNodeExternalDriverTest` pass. A one-member node in a child JVM with `CLUSTER_MEDIA_DRIVER=external`, its
+  driver in another process (the test JVM's Java driver, or the C driver with `AERONMD=<path>`), elects (CLOSED), acks
+  an order from `ClusterProofClient`, exits 143 on SIGTERM with the driver still alive; with no driver it exits 1.
+  `test_aeronmd_sidecar` passes: the sidecar mirrors the member's directory, threading, idle (per-agent, member-wide,
+  sleep) and `-Daeron.*` driver properties, takes whole CPUs from the member (requests = limits), and refuses a member
+  that is not Guaranteed or an Aeron dir off the Memory volume.
 - SC-GMR-05: `test_prepare.test_member_log_outlives_its_pod` passes: the render's member claims `data` with
   Retain/Retain, and a member with an ephemeral `/data`, or either retention set to Delete, is refused.
   `MemberDnsCacheTest` passes.

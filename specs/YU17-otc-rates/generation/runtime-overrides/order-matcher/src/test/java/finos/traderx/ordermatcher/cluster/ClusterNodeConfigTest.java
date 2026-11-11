@@ -7,6 +7,8 @@ import java.io.File;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -26,6 +28,16 @@ class ClusterNodeConfigTest {
         assertEquals(64, ClusterNodeConfig.maxSessions(null));
         assertEquals(64, ClusterNodeConfig.maxSessions(""));
         assertEquals(128, ClusterNodeConfig.maxSessions("128"));
+    }
+
+    @Test
+    void mediaDriverDefaultsToEmbeddedAndRefusesUnknown() {
+        assertFalse(ClusterNodeConfig.externalDriver(null));
+        assertFalse(ClusterNodeConfig.externalDriver(" "));
+        assertFalse(ClusterNodeConfig.externalDriver("Embedded"));
+        assertTrue(ClusterNodeConfig.externalDriver(" EXTERNAL "));
+        assertThrows(IllegalArgumentException.class, () -> ClusterNodeConfig.externalDriver("c"));
+        assertNull(System.getenv("CLUSTER_MEDIA_DRIVER"));   // the suite runs today's (embedded) member
     }
 
     @Test

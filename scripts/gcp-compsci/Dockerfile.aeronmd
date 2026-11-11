@@ -1,0 +1,27 @@
+# Latency L6a (FR-GMR-14): the open-source Aeron C media driver, `aeronmd`, at the members' Aeron version (1.51.0), for
+# the member sidecar that CLUSTER_MEDIA_DRIVER=external attaches to (scripts/bench/latency/aeronmd-sidecar.py).
+#   docker build --platform linux/amd64 -f scripts/gcp-compsci/Dockerfile.aeronmd -t traderx-aeronmd:1.51.0 scripts/gcp-compsci
+# The context is unused (everything comes from the pinned source release), so any directory works.
+# Configuration is the C driver's own environment (AERON_DIR, AERON_THREADING_MODE, AERON_*_IDLE_STRATEGY, ...).
+# trixie: Aeron 1.51.0 needs CMake >= 3.30 (bookworm ships 3.25).
+FROM debian:trixie-slim AS build
+ARG AERON_VERSION=1.51.0
+ARG AERON_SHA256=9a2bc09aa84ce5d7fdf5f3454bf3dccd0b1adea0c9f9e25b8f5f4948fcc659dd
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl cmake make gcc g++ libbsd-dev uuid-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL -o aeron.tar.gz "https://github.com/aeron-io/aeron/archive/refs/tags/${AERON_VERSION}.tar.gz" \
+ && echo "${AERON_SHA256}  aeron.tar.gz" | sha256sum -c - \
+ && tar xzf aeron.tar.gz --strip-components=1 && rm aeron.tar.gz
+# aeronmd_s: the driver with libaeron/libaeron_driver linked statically (aeronmd wants the .so files beside it).
+# -rdynamic: AERON_PRINT_CONFIGURATION names each agent's idle strategy through dladdr, which a static link hides.
+# C driver only: the archive's C client needs a Java codegen step, and tests/samples/docs are not shipped.
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_AERON_ARCHIVE_API=OFF -DAERON_TESTS=OFF \
+      -DAERON_UNIT_TESTS=OFF -DAERON_SYSTEM_TESTS=OFF -DAERON_BUILD_SAMPLES=OFF -DAERON_BUILD_DOCUMENTATION=OFF \
+      -DCMAKE_EXE_LINKER_FLAGS=-rdynamic \
+ && cmake --build build --target aeronmd_s -j"$(nproc)" && strip build/binaries/aeronmd_s
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libbsd0 libuuid1 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/binaries/aeronmd_s /usr/local/bin/aeronmd
+ENTRYPOINT ["/usr/local/bin/aeronmd"]
