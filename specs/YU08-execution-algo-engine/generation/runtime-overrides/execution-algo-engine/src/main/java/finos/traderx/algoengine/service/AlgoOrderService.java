@@ -142,6 +142,16 @@ public class AlgoOrderService {
     return state.all();
   }
 
+  /** FR-AE10: whether any parent is RUNNING, i.e. whether a child of this engine can still fill. */
+  public boolean hasRunningParent() {
+    for (ParentOrder order : state.all()) {
+      if (order.getStatus() == finos.traderx.algoengine.model.ParentOrderStatus.RUNNING) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Called by {@code AlgoScheduler} on every tick: submits every due, not-yet-submitted bucket
    * across every running parent order. A submission failure (price fetch or order-matcher call)
    * is logged and left for the next tick — the bucket is only marked submitted after a successful

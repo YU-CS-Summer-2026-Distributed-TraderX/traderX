@@ -71,6 +71,9 @@ SUPPORT_BUDGETS = {
     'loki': ('50m', '128Mi', '500m', '256Mi'),
     'grafana': ('50m', '128Mi', '500m', '256Mi'),
     'otel-collector': ('50m', '128Mi', '500m', '256Mi'),
+    # FR-AE10: subscribed only while an algo parent runs, so at load it parses nothing; a core for a parent's fills,
+    # and room for the event store's replay (it had 100m on the system node, and 192 MB of heap by the JVM default).
+    'execution-algo-engine': ('250m', '512Mi', '1', '768Mi'),
 }
 
 # ADR-096 §1: the production rig at bench parity (hxb f15hf2/b15ho, 400K/s for an hour). Each tier has its own pool
@@ -220,7 +223,7 @@ def configure_private_runtime(docs):
                 cpu,mem,cap,memcap = SUPPORT_BUDGETS[name]
                 c['resources'] = {'requests': {'cpu': cpu, 'memory': mem},
                                   'limits': {'cpu': cap, 'memory': memcap}}
-                if name in ('people-service','account-service','trade-service'):
+                if name in ('people-service','account-service','trade-service','execution-algo-engine'):
                     jvm_options = '-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError'
                     c.setdefault('env', []).append({'name': 'JAVA_TOOL_OPTIONS', 'value': jvm_options})
 

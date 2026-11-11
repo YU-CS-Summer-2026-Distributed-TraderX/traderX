@@ -30,7 +30,8 @@
   positive `limitPrice` derived from the security's current price, unchanged from every other
   caller of that endpoint.
 - FR-AE05: The state SHALL track each child order's fill progress by subscribing to the existing
-  `/accounts/*/orders` broadcast subject and correlating incoming events by `orderId`.
+  order-lifecycle broadcast and correlating incoming events by `orderId`. The subjects are FR-AE10's
+  (amended 2026-11-11; it named `/accounts/*/orders`, which the cluster tier never published).
 - FR-AE06: The state SHALL expose parent-order progress via `GET /algo/orders/{parentOrderId}` and
   `GET /algo/orders`.
 - FR-AE07: The state SHALL append every parent-order state transition (creation, child submission,
@@ -40,6 +41,20 @@
 - FR-AE09: When the configured `DuckDbVolumeProfileSource` returns zero matching rows for a
   security, the state SHALL fall back to `SyntheticVolumeProfileSource`'s weights rather than fail
   or block the parent order.
+- FR-AE10 (2026-11-11, 450K acceptance run 4): the fill subscription SHALL be the order-update
+  subjects only, bare `/orders` and the partitioned `/orders.<p>` (`/orders.*`), never NATS's
+  match-all `>`, and SHALL be held only while a parent order is RUNNING. The scheduler takes it
+  (with a flush, so the server holds the interest) before it submits any bucket, and drops it when
+  no parent runs. A message's newline-separated records (FR-DRS-41) SHALL each be correlated.
+  Run 4 found the `>` subscriber on 100m CPU sent the whole bus at load: 915 slow-consumer cuts
+  from this one client, the server's write deadline stalling producers. Its suffix filter also
+  dropped `/orders.<p>`, so a partitioned bridge's child fills were all lost. The production render
+  sizes it (250m/512Mi requested, 1 CPU/768Mi limits, heap 70% of the limit).
+  - Ceiling: while a parent runs it receives the whole order feed, and above what its CPU parses it
+    is a slow consumer again. The upgrade is to read only its own children.
+  - Tests: `OrderUpdateSubscriberTest` (a batched `/orders.3` message fills its child, which fails
+    on the suffix filter; the subjects only and only while a parent runs; `hasRunningParent`),
+    `test_prepare.test_the_algo_engine_is_sized`.
 
 ## Non-Functional Requirements
 

@@ -195,6 +195,57 @@ class OrderUpdateSubscriberTest {
     assertEquals(ParentOrderStatus.RUNNING, service.get(order.getParentOrderId()).getStatus());
   }
 
+  /** FR-AE10: a partitioned bridge publishes on {@code /orders.<p>}, and a message carries one or more records
+   * (FR-DRS-41). Before FR-AE10 the suffix filter dropped {@code /orders.3} whole, so this child never filled. */
+  @Test
+  void aChildFillInABatchedPartitionMessageFillsItsBucket() throws Exception {
+    AlgoOrderService service = serviceWithSubmittedChild("2549");
+    ParentOrder order = service.all().iterator().next();
+    OrderUpdateSubscriber subscriber = new OrderUpdateSubscriber("nats://unused:4222", service);
+
+    subscriber.onMessage(message("/orders.3", clusterFillPayload("1-9999") + "\n" + clusterFillPayload("1-2549")));
+
+    assertTrue(order.getBuckets().get(0).isFilled(), "the second record of an /orders.<p> message is our child's fill");
+    assertEquals(ParentOrderStatus.COMPLETED, service.get(order.getParentOrderId()).getStatus());
+  }
+
+  /** FR-AE10: the order-update subjects only, never the match-all, and only while a parent runs; the server holds
+   * the interest (flush) before the scheduler can submit a bucket. */
+  @Test
+  void interestIsTheOrderSubjectsOnlyAndOnlyWhileAParentRuns() throws Exception {
+    io.nats.client.Connection conn = mock(io.nats.client.Connection.class);
+    io.nats.client.Dispatcher d = mock(io.nats.client.Dispatcher.class);
+    OrderUpdateSubscriber subscriber = new OrderUpdateSubscriber("nats://unused:4222", mock(AlgoOrderService.class));
+    subscriber.attach(conn, d);
+
+    subscriber.interest(false);
+    verify(d, never()).subscribe(anyString());
+
+    subscriber.interest(true);
+    subscriber.interest(true);
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(d, conn);
+    order.verify(d).subscribe("/orders");
+    order.verify(d).subscribe("/orders.*");
+    order.verify(conn).flush(any());
+    verify(d, org.mockito.Mockito.times(2)).subscribe(anyString());
+    verify(d, never()).subscribe(">");
+    assertTrue(subscriber.subscribed());
+
+    subscriber.interest(false);
+    verify(d).unsubscribe("/orders");
+    verify(d).unsubscribe("/orders.*");
+    assertFalse(subscriber.subscribed());
+  }
+
+  /** FR-AE10: the scheduler's question. A completed parent leaves nothing to listen for. */
+  @Test
+  void aRunningParentAndOnlyARunningParentAsksForInterest() throws Exception {
+    AlgoOrderService service = serviceWithSubmittedChild("2549");
+    assertTrue(service.hasRunningParent());
+    new OrderUpdateSubscriber("nats://unused:4222", service).onMessage(message("/orders", clusterFillPayload("1-2549")));
+    assertFalse(service.hasRunningParent());
+  }
+
   /** A real service holding one running TWAP parent whose single bucket has been submitted, with
    * {@code childOrderId} standing in for what the gateway's {@code POST /orders} returned. */
   private AlgoOrderService serviceWithSubmittedChild(String childOrderId) throws Exception {

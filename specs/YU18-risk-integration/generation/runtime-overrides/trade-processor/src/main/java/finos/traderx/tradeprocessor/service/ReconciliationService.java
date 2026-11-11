@@ -308,10 +308,19 @@ public class ReconciliationService {
         private final Map<String, Long> head = new java.util.HashMap<>();
         void observe(String subject, long tradeSeq) { head.merge(subject, tradeSeq, Math::max); }
         long headOf(String subject) { return head.getOrDefault(subject, 0L); }
-        long min(String[] subjects) {
-            long min = Long.MAX_VALUE;
-            for (String s : subjects) { min = Math.min(min, headOf(s)); }
-            return min;
+        /**
+         * FR-DRS-51: every subject of {@code subjects} this reader has SEEN is at or past {@code target}, and one has been
+         * seen. A subject with no trades (an idle partition) is never seen and never holds the read back.
+         */
+        boolean passed(String[] subjects, long target) {
+            boolean seen = false;
+            for (String s : subjects) {
+                Long h = head.get(s);
+                if (h == null) continue;
+                if (h < target) return false;
+                seen = true;
+            }
+            return seen;
         }
     }
 
@@ -325,6 +334,7 @@ public class ReconciliationService {
         final PartitionHeads heads = new PartitionHeads();
         long headOf(String subject) { return heads.headOf(subject); }
         private final List<io.nats.client.JetStreamSubscription> subs = new java.util.ArrayList<>();
+        private final List<String> filtersBySub = new java.util.ArrayList<>();   // each subscription's filter subject
         private final ObjectMapper json = new ObjectMapper();
 
         /** One subscription per distinct stream: the one capture stream, or one per partition (FR-DRS-32). */
@@ -340,18 +350,29 @@ public class ReconciliationService {
                     .deliverPolicy(io.nats.client.api.DeliverPolicy.ByStartTime)
                     .startTime(java.time.ZonedDateTime.ofInstant(Instant.ofEpochMilli(Math.max(0, startMillis)), java.time.ZoneOffset.UTC))
                     .inactiveThreshold(java.time.Duration.ofMinutes(5)).build();
+                filtersBySub.add(f.getValue());
                 subs.add(nc.jetStream().subscribe(f.getValue(),
                     io.nats.client.PullSubscribeOptions.builder().stream(f.getKey()).configuration(config).build()));
             }
         }
 
-        /** Read until EVERY partition subject has passed the target, or no stream has anything more. */
+        /**
+         * Read each subscription until every partition subject it carries that has traded has passed the target, or it has
+         * nothing more. FR-DRS-51: this read until EVERY partition's head passed the target, and an idle partition's never
+         * does, so a sweep drained every stream to its head into {@link #pending} (run 4: all of stage 1's sides, held on
+         * trade-processor-0 until it ran out of heap). Stopping early decides nothing: a side not read yet is WAIT until
+         * its own partition's head passes it, and the next sweep reads on from here.
+         */
         void readThrough(long targetTradeSeq, long classifiedThrough, String[] subjects) throws Exception {
-            while (heads.min(subjects) < targetTradeSeq) {
-                boolean any = false;
-                for (var sub : subs) {
+            boolean[] done = new boolean[subs.size()];
+            for (boolean any = true; any; ) {
+                any = false;
+                for (int i = 0; i < subs.size(); i++) {
+                    if (done[i]) continue;
+                    var sub = subs.get(i);
                     List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(subs.size() > 1 ? 50 : 500));
-                    any |= !msgs.isEmpty();
+                    if (msgs.isEmpty()) { done[i] = true; continue; }
+                    any = true;
                     for (var m : msgs) {
                       for (byte[] record : finos.traderx.messaging.nats.NatsJSONSubscriber.records(m.getData())) {   // FR-DRS-41
                         var p = json.readTree(record).path("payload");
@@ -364,9 +385,14 @@ public class ReconciliationService {
                             m.metaData().streamSequence()));
                       }
                     }
+                    done[i] = heads.passed(carried(filtersBySub.get(i), subjects), targetTradeSeq);
                 }
-                if (!any) return;
             }
+        }
+
+        /** The partition subjects a subscription's filter carries: {@code /trades.*} all of them, otherwise its own. */
+        static String[] carried(String filter, String[] subjects) {
+            return filter.endsWith(".*") ? subjects : new String[] {filter};
         }
 
         void prune(long classifiedThrough) {

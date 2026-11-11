@@ -1,6 +1,8 @@
 package finos.traderx.tradeprocessor.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import finos.traderx.tradeprocessor.service.ReconciliationService.BlotterEntry;
 import finos.traderx.tradeprocessor.service.ReconciliationService.LedgerSide;
@@ -53,8 +55,11 @@ class LedgerSettlementReconTest {
     assertEquals(Verdict.WAIT, ReconciliationService.classifyOnLedger(lagging, null, heads.headOf("/trades.1"), 10_000, "run-1"));
     heads.observe("/trades.1", 61);
     assertEquals(Verdict.MISSING, ReconciliationService.classifyOnLedger(lagging, null, heads.headOf("/trades.1"), 10_000, "run-1"));
-    assertEquals(61, heads.min(new String[] {"/trades.0", "/trades.1"}));
-    assertEquals(0, heads.min(new String[] {"/trades.0", "/trades.2"}));   // a partition never seen holds the read open
+    assertTrue(heads.passed(new String[] {"/trades.0", "/trades.1"}, 61));
+    assertFalse(heads.passed(new String[] {"/trades.0", "/trades.1"}, 62));   // the lagging partition holds the read open
+    // FR-DRS-51: a partition never seen (no trades) does not; it held the read open until every stream was drained
+    assertTrue(heads.passed(new String[] {"/trades.0", "/trades.2"}, 200));
+    assertFalse(heads.passed(new String[] {"/trades.2"}, 1));   // nothing seen: read on
   }
 
   @Test void tradeSeqIsReadFromEitherIdScheme() {
