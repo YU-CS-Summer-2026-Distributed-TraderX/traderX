@@ -42,7 +42,18 @@ public final class AeronReplicationCodec {
      */
     public static final int INPUT_FLAG_SEQUENCED = 2;
     public static final int SEQUENCED_TAIL_BYTES = 16;
-    public static final int KNOWN_INPUT_FLAGS = INPUT_FLAG_SHADOW | INPUT_FLAG_SEQUENCED;
+    /**
+     * ADR-104 (FR-XOD-19/20): a FIX ORDER_NEW keyed by its session's ClOrdID ring. Templates 1 and 9 then carry a
+     * 16-byte tail after their block, {@code u64 sessionStream, u32 check, u32 msgSeqNum} (little-endian), exclusive of
+     * the ADR-090 tail. POSS_DUP (FIX 43=Y) and POSS_RESEND (97=Y) say the request may be a resend; they need the session
+     * tail. A member older than ADR-104 refuses all three (UNKNOWN_FLAGS), so members roll before gateways.
+     */
+    public static final int INPUT_FLAG_SESSION_KEYED = 4;
+    public static final int INPUT_FLAG_POSS_DUP = 8;
+    public static final int INPUT_FLAG_POSS_RESEND = 16;
+    public static final int SESSION_TAIL_BYTES = 16;
+    public static final int KNOWN_INPUT_FLAGS = INPUT_FLAG_SHADOW | INPUT_FLAG_SEQUENCED | INPUT_FLAG_SESSION_KEYED
+        | INPUT_FLAG_POSS_DUP | INPUT_FLAG_POSS_RESEND;
 
     public static final long ACK_ON_RING = 1L;
     public static final long ACK_JOURNALED = 1L << 1;
@@ -116,17 +127,46 @@ public final class AeronReplicationCodec {
         return baseBytes + SEQUENCED_TAIL_BYTES;
     }
 
+    /** ADR-104: append the session tail to a message just encoded with INPUT_FLAG_SESSION_KEYED; returns the new length. */
+    public static int appendSessionTail(MutableDirectBuffer buffer, int offset, int baseBytes,
+                                        long sessionStream, int check, int msgSeqNum) {
+        buffer.putLong(offset + baseBytes, sessionStream, java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(offset + baseBytes + 8, check, java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(offset + baseBytes + 12, msgSeqNum, java.nio.ByteOrder.LITTLE_ENDIAN);
+        return baseBytes + SESSION_TAIL_BYTES;
+    }
+
     private long tailStreamId;
     private long tailStreamSeq;
+    private long tailSessionStream;
+    private int tailCheck;
+    private int tailMsgSeq;
 
-    /** Length check for a template that may carry the sequenced tail: the flag and the length must agree. */
+    /** Length check for a template that may carry a tail: the flags and the length must agree (FR-XOD-10, FR-XOD-20). */
     private int readSequencedTail(DirectBuffer buffer, int offset, int length, int baseBytes, int flags) {
         final boolean sequenced = (flags & INPUT_FLAG_SEQUENCED) != 0;
-        if (length != baseBytes + (sequenced ? SEQUENCED_TAIL_BYTES : 0)) return WRONG_LENGTH;
+        final boolean keyed = (flags & INPUT_FLAG_SESSION_KEYED) != 0;
+        if (sequenced && keyed) return WRONG_LENGTH;
+        if (!keyed && (flags & (INPUT_FLAG_POSS_DUP | INPUT_FLAG_POSS_RESEND)) != 0) return WRONG_LENGTH;
+        if (length != baseBytes + (sequenced ? SEQUENCED_TAIL_BYTES : keyed ? SESSION_TAIL_BYTES : 0)) return WRONG_LENGTH;
         tailStreamId = sequenced ? buffer.getLong(offset + baseBytes, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
         tailStreamSeq = sequenced ? buffer.getLong(offset + baseBytes + 8, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
         if (sequenced && tailStreamSeq == 0L) return WRONG_LENGTH;   // seq starts at 1; 0 means unsequenced
+        tailSessionStream = keyed ? buffer.getLong(offset + baseBytes, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
+        tailCheck = keyed ? buffer.getInt(offset + baseBytes + 8, java.nio.ByteOrder.LITTLE_ENDIAN) : 0;
+        tailMsgSeq = keyed ? buffer.getInt(offset + baseBytes + 12, java.nio.ByteOrder.LITTLE_ENDIAN) : 0;
+        if (keyed && tailSessionStream == 0L) return WRONG_LENGTH;   // 0 means not session-keyed
         return OK;
+    }
+
+    private void bindTail(final InputEvent target) {
+        target.streamId = tailStreamId;
+        target.streamSeq = tailStreamSeq;
+        target.sessionStream = tailSessionStream;
+        target.sessionCheck = tailCheck;
+        target.msgSeqNum = tailMsgSeq;
+        target.possDup = (inputFlags & INPUT_FLAG_POSS_DUP) != 0;
+        target.possResend = (inputFlags & INPUT_FLAG_POSS_RESEND) != 0;
     }
 
     /** Validate and bind the decoder without mutating a ring slot. */
@@ -163,8 +203,7 @@ public final class AeronReplicationCodec {
         target.side = (byte) inputDecoder.side();
         target.ingressNanos = 0L;
         target.clearOrderInstruction();   // YU18: template 1 is always an UNTYPED command
-        target.streamId = tailStreamId;
-        target.streamSeq = tailStreamSeq;
+        bindTail(target);
     }
 
     /**
@@ -233,8 +272,7 @@ public final class AeronReplicationCodec {
         target.stopPx = instructionDecoder.stopPx();
         target.trailValue = instructionDecoder.trailValue();
         target.admissionSeq = 0L;
-        target.streamId = tailStreamId;
-        target.streamSeq = tailStreamSeq;
+        bindTail(target);
         return OK;
     }
 

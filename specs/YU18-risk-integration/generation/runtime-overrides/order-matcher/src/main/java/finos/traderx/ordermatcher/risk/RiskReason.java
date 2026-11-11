@@ -91,5 +91,11 @@ public enum RiskReason {
      * wrapped a real order onto the reserved ref 0 and then onto ref 1 again. APPENDED, never
      * inserted (the ordinal rides every snapshot order row and every egress ack byte 22).
      */
-    ORDER_REF_EXHAUSTED
+    ORDER_REF_EXHAUSTED,
+    /**
+     * ADR-104 (FR-XOD-22): a FIX NEW that may be a resend (PossDup or PossResend), whose ClOrdID its session's ring
+     * does not hold, on a ring that has evicted orders it may have been: never booked by this request. The client
+     * queries the order's status. APPENDED, never inserted.
+     */
+    SESSION_AGED_OUT
 }

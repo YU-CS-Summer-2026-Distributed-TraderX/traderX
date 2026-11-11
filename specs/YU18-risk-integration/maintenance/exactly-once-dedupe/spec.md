@@ -2,6 +2,8 @@
 
 Status: implemented on `traderX-risk-integration` 2026-10-28; approved by yaakov 2026-10-28. Not deployed: a
 format-14 core rolls only through a snapshot barrier and a whole-cluster restart (ADR-090 §3).
+Amended 2026-11-10 (ADR-104, approved by yaakov): FIX exactly-once moves into the engine as a ClOrdID ring per FIX
+session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept as the `jetstream` option only.
 
 - **Scope:** the deterministic core's request dedupe (`BlpRiskState`, `MatchingEngine.answeredAsDuplicate`,
   `MatchingEngineClusteredService` snapshot/load), the gateway→cluster ingress message, the binary gateway frame
@@ -49,7 +51,7 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
   `next = 1`, so a client that returns after an idle hour SHALL use a new `streamId`.
 - FR-XOD-08: No decision in FR-XOD-01..07 SHALL read `System.currentTimeMillis`, `System.nanoTime`, or the
   gateway-carried `eventTimeMillis`.
-- FR-XOD-09: `SNAPSHOT_FORMAT` SHALL be 14 and SHALL add `T_STREAM` records in stream-index order, each restored at
+- FR-XOD-09: `SNAPSHOT_FORMAT` SHALL be 14 (15 since FR-XOD-23) and SHALL add `T_STREAM` records in stream-index order, each restored at
   its own index. Snapshots of formats 9–13 SHALL load with an empty stream table. Two engines fed the same log
   SHALL write byte-identical snapshots, and a snapshot plus its log tail SHALL equal the full replay.
 - FR-XOD-10: Templates 1 and 9 SHALL carry `(u64 streamId, u64 seq)` as a 16-byte little-endian tail after their
@@ -59,7 +61,8 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
   sequenced frame SHALL be read as `streamId:u32 | seq:u32`, and a sequenced frame with `seq` 0 SHALL be refused
   PROTOCOL_ERROR. The gateway SHALL pass the pair through without interpreting it, and the idempotency key SHALL be
   the client's u64 exactly as before.
-- FR-XOD-12: With `FIX_EXACTLY_ONCE=jetstream`, which requires `FIX_SESSION_STORE=jetstream`, the FIX gateway
+- FR-XOD-12 (superseded for production FIX by FR-XOD-19..25, ADR-104; kept as the `jetstream` option): With
+  `FIX_EXACTLY_ONCE=jetstream`, which requires `FIX_SESSION_STORE=jetstream`, the FIX gateway
   SHALL apply each of the following:
   - It SHALL store each new NewOrderSingle as `K.o.<account>.<seq>` in the session's ADR-086 bucket before it
     submits it. The store is create-if-absent, under the session lease. `seq` counts per account per FIX day.
@@ -70,7 +73,7 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
     (which purges `K.o.*`) starts new streams.
   - A failed or fenced store write SHALL keep the order off the cluster and SHALL end the session, as in
     FR-GFS-02.
-- FR-XOD-13: With FR-XOD-12 enabled, a FIX session's order records SHALL be a ring per account:
+- FR-XOD-13 (superseded with FR-XOD-12): With FR-XOD-12 enabled, a FIX session's order records SHALL be a ring per account:
   - Order `seq` SHALL be stored at `K.<account>.<(seq-1) mod FIX_EXACTLY_ONCE_WINDOW>` (default 8,192) in KV
     bucket `FIX_ORDERS`, which discards its oldest entries at `FIX_ORDER_STORE_BYTES` (default 1 GiB). No order
     record SHALL be kept in `FIX_SESSIONS`.
@@ -106,6 +109,45 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
   - A record the reader refuses SHALL fail the load. It SHALL NOT be skipped by the transport's error handler with
     the load completing at END.
 
+### FIX session ring (ADR-104)
+
+- FR-XOD-19: An ORDER_NEW whose ingress flag `INPUT_FLAG_SESSION_KEYED` is set SHALL carry a session stream, a
+  32-bit ClOrdID check and its MsgSeqNum. Each session stream SHALL have a ring of its last N NEWs (key, check,
+  MsgSeqNum, ref, decision), N = `EXACTLY_ONCE_SESSION_RING`, default 2,048.
+  - A NEW whose key and check are both in the ring SHALL NOT execute. It SHALL be answered as FR-XOD-03 answers a
+    duplicate: the original's ref and state, or its original rejection, never bridged.
+  - A NEW whose key is in the ring under another check SHALL be booked as new. Both entries SHALL stay findable.
+  - The answer SHALL be kept in the ring and SHALL NOT enter the FR-IMRG14 key table (as FR-XOD-05).
+- FR-XOD-20: The session tail SHALL be 16 bytes little-endian after the base input (`u64 sessionStream`,
+  `u32 check`, `u32 msgSeqNum`). `INPUT_FLAG_POSS_DUP` (43=Y) and `INPUT_FLAG_POSS_RESEND` (97=Y) SHALL be valid
+  only with the session flag. A message with both the session and the sequenced flag, a poss flag without the session
+  flag, a session stream of 0, or a tail that disagrees with its flag SHALL be refused `WRONG_LENGTH`.
+- FR-XOD-21: The session table SHALL hold at most `EXACTLY_ONCE_SESSION_STREAMS` (default 1,024) sessions. Only a new
+  session at a full table SHALL evict another: the least recently used one idle at least
+  `EXACTLY_ONCE_STREAM_IDLE_MS`, by the log timestamp. With none, the NEW SHALL be refused `STREAM_LIMIT` with no
+  state change. FR-XOD-08 applies.
+- FR-XOD-22: Once a session's ring has evicted an entry, a NEW marked PossDup or PossResend that misses the ring
+  SHALL NOT be booked. It SHALL be refused `SESSION_AGED_OUT` with ref 0, except a PossDup whose MsgSeqNum (unsigned)
+  is above every MsgSeqNum the ring evicted, which SHALL be booked as new. A NEW marked neither SHALL be booked.
+- FR-XOD-23: `SNAPSHOT_FORMAT` SHALL be 15 and SHALL add `T_SESSION_RING` records, one per 256 entries, in session
+  order and oldest entry first. Formats 9..14 SHALL load with empty rings. A snapshot written with another N SHALL be
+  refused, naming `EXACTLY_ONCE_SESSION_RING`. Each member SHALL restore the bytes it writes (FR-XOD-18).
+- FR-XOD-24: With `FIX_EXACTLY_ONCE=engine`, which requires `FIX_SESSION_STORE=jetstream`, the FIX gateway SHALL send
+  every pipelined NewOrderSingle (FR-BSP-02) with the session flag and tail:
+  - the session stream: FNV-1a 64 of the session and its store's creation time, so every replica names one FIX day the
+    same and the day's reset starts a new ring;
+  - the check: FNV-1a 32 of the qualified ClOrdID, the bytes `clientOrderKey` hashes;
+  - its MsgSeqNum (34), and PossDup (43=Y) and PossResend (97=Y) as the poss flags.
+  - `SESSION_AGED_OUT` SHALL be answered with a BusinessMessageReject (`RefMsgType=D`, `BusinessRejectRefID` = the
+    ClOrdID) whose text begins `EXACTLY_ONCE_AGED_OUT`, never `39=8`.
+  - N SHALL be at least twice the gateway's per-session in-flight bound (`FIX_MAX_QUEUED_WRITES / 2`), so a resend of
+    everything one session can have outstanding is answered from the ring. The production render pins both
+    (FR-PRG-46).
+  - Members SHALL be format 15 before a gateway sets the flag: an older member refuses the unknown flags.
+- FR-XOD-25: A ring answer (DUPLICATE with a ref) that names an order this gateway holds under another ClOrdID is a
+  key-and-check collision. The gateway SHALL resubmit the order once under a salted key and answer the client from that
+  submission. A collision SHALL NOT refuse a real order.
+
 ## Non-functional
 
 - NFR-XOD-01: At 400K/s on the hxb rig, the leader's snapshot halt SHALL NOT exceed that of the same-lane control
@@ -114,6 +156,8 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
   control.
 - NFR-XOD-03: The per-order JetStream write in FR-XOD-12 SHALL be measured with `fix-session-latency.mjs`
   against the ADR-086 baseline before FR-XOD-12 is enabled on any rig.
+- NFR-XOD-04 (ADR-104): Before a format-15 member rolls, the leader's snapshot pause at 400K/s on GKE, with the
+  production FIX session count, SHALL be measured against a format-14 control on the same rig.
 
 ## Test plan
 
@@ -139,6 +183,29 @@ format-14 core rolls only through a snapshot barrier and a whole-cluster restart
 A/B: with the gate disabled in the rendered tree, the four behaviour cases fail. Those are the resend behind the
 window (it names ref 262,148, not 1), the gap, the unknown start, and the beyond-ring duplicate. The other cases pin
 behaviour that holds either way.
+
+`SessionRingTest` (10 cases) covers FR-XOD-19..23:
+
+| Case | Requirement | Fails if |
+|---|---|---|
+| **Run 3:** one session's 1,464 orders, 262,145 other keys and 47 s, then all 1,464 resent with PossResend: book once; the same orders unkeyed (today's path, the negative control) book twice | 19 | a resend books (2,928 sides with the ring off) |
+| A resend inside the window: one unbridged answer with the original ref, booked once | 19 | another ref, or bridged |
+| Past N = 2,048: PossResend and PossDup misses refused `SESSION_AGED_OUT`; a PossDup above the evicted MsgSeqNums books; an unflagged order books; a held resend is its original | 22 | an aged resend books, or the frontier refuses |
+| Same key, other check: booked, and each resend finds its own original | 19 | a collision refuses or shadows |
+| Table full: LRU idle eviction by log time, `LIMIT` otherwise, an evicted session starts empty | 21 | eviction not as stated |
+| Snapshot over 3 chunks, then the same tail on both members: same answers, byte-identical snapshots | 23 | bytes or answers differ |
+| Two members fed one log write the same snapshot | 23, 08 | bytes differ |
+| A format-14 snapshot restores with empty rings | 23 | the load fails |
+| A snapshot written with another N is refused | 23 | it restores |
+| Flag and tail must agree, the tails are exclusive, a reused slot keeps nothing, a pre-ADR-104 member's known flags exclude all three | 20 | a shape is mis-decoded |
+
+`FixSessionRingGatewayTest` covers FR-XOD-24/25 over a raw FIX socket against a venue running `SessionRing` (N = 4):
+every NEW carries one stream, its check, its MsgSeqNum and no poss flag; a 97=Y resend inside the ring is restated
+as its original with the bit set; one past it is a 35=j `EXACTLY_ONCE_AGED_OUT`; a forced ring answer naming another
+ClOrdID's order is resubmitted salted and booked; the shipped N is at least twice `MAX_IN_FLIGHT` (the drift test).
+
+A/B: with the ring's hook disabled in the rendered tree, run 3, the aged rule and the snapshot round trip fail; the
+in-window resend passes either way (FR-IMRG14 still holds it), and the unit cases pin `SessionRing` directly.
 
 `BinarySequencedFrameTest` covers FR-XOD-11: the flag splits the key, the ack carries the expected sequence, an
 unflagged frame is unchanged, and seq 0 is a protocol error.

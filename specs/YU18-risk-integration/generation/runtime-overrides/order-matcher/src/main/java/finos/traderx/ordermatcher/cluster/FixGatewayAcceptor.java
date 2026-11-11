@@ -104,6 +104,8 @@ public final class FixGatewayAcceptor {
     private static final String EXEC_ID_PREFIX = Long.toString(System.currentTimeMillis(), 36)
         + Integer.toString(java.util.concurrent.ThreadLocalRandom.current().nextInt(1296), 36) + "-";
     private FixSessionStore sessionStore;
+    /** ADR-104 ({@code FIX_EXACTLY_ONCE=engine}): each pipelined NEW carries its session tail to the engine's ring. */
+    private volatile boolean sessionKeyed;
 
     /**
      * ClOrdID → orderRef, so a counterparty can cancel by OrigClOrdID (41) alone, as FIX 4.4
@@ -320,6 +322,12 @@ public final class FixGatewayAcceptor {
         return this;
     }
 
+    /** ADR-104 (tests): tag NEWs for the engine's session ring; otherwise {@code FIX_EXACTLY_ONCE=engine} decides. */
+    FixGatewayAcceptor withSessionKeyed() {
+        this.sessionKeyed = true;
+        return this;
+    }
+
     /** ADR-086: persist sessions in this store (tests); otherwise {@code FIX_SESSION_STORE} decides. */
     FixGatewayAcceptor withSessionStore(final FixSessionStore store) {
         this.sessionStore = store;
@@ -338,6 +346,12 @@ public final class FixGatewayAcceptor {
                 throw new IllegalStateException("FIX_EXACTLY_ONCE=jetstream needs FIX_SESSION_STORE=jetstream (ADR-086)");
             }
             sessionStore.sequenceOrders = true;
+        }
+        if ("engine".equals(System.getenv("FIX_EXACTLY_ONCE"))) {   // ADR-104 (FR-XOD-24)
+            if (sessionStore == null) {   // the session-day's creation time must be the same on every replica
+                throw new IllegalStateException("FIX_EXACTLY_ONCE=engine needs FIX_SESSION_STORE=jetstream (ADR-086)");
+            }
+            sessionKeyed = true;
         }
         final SessionSettings settings = new SessionSettings();
         final Properties defaults = new Properties();
@@ -804,9 +818,11 @@ public final class FixGatewayAcceptor {
             throws FieldNotFound {
             final Pipeline p = pipelines.computeIfAbsent(sid, Pipeline::new);
             final int msgSeqNum = order.getHeader().getInt(quickfix.field.MsgSeqNum.FIELD);
+            final int possFlags = sessionKeyed ? possFlags(order.getHeader()) : -1;
             p.slots.acquireUninterruptibly();
             p.hold(msgSeqNum);
-            final CompletableFuture<Void> done = submitNew(sid, clOrdId, accountId, ticker, side, qty, mapped, p, 0)
+            final CompletableFuture<Void> done = submitNew(sid, clOrdId, qualify(sid, clOrdId), accountId, ticker, side,
+                    qty, mapped, p, 0, msgSeqNum, possFlags)
                 .thenApply(result -> {
                     acked(sid, clOrdId, ticker, side, result);
                     return result;
@@ -829,23 +845,85 @@ public final class FixGatewayAcceptor {
             done.whenComplete((v, e) -> p.byClOrdId.remove(clOrdId, done));
         }
 
-        /** FR-XOC-06 for a pipelined order: stranded by a leader change, it is resubmitted under its key. */
+        /**
+         * FR-XOC-06 for a pipelined order: stranded by a leader change, it is resubmitted under its key. ADR-104:
+         * {@code possFlags >= 0} tags it for the engine's session ring, and a ring answer naming another order of this
+         * gateway is a key-and-check collision (FR-XOD-25), resubmitted once under a salted key.
+         */
         private CompletableFuture<OrderSubmitter.ExecResult> submitNew(final SessionID sid, final String clOrdId,
-                                                                       final int accountId, final String ticker,
-                                                                       final char side, final int qty,
-                                                                       final Object mapped, final Pipeline p,
-                                                                       final int attempt) {
+                                                                       final String key, final int accountId,
+                                                                       final String ticker, final char side,
+                                                                       final int qty, final Object mapped,
+                                                                       final Pipeline p, final int attempt,
+                                                                       final int msgSeqNum, final int possFlags) {
             final long elections = submitter.leaderChanges();
             final OrderSubmitter.TypedOrder typed = mapped instanceof OrderSubmitter.TypedOrder t ? t : null;
-            return submitter.submitOrderAsync(qualify(sid, clOrdId), accountId, ticker, side, qty,
-                    typed == null ? (Long) mapped : 0L, typed, acks)
+            final long px = typed == null ? (Long) mapped : 0L;
+            return (possFlags < 0
+                    ? submitter.submitOrderAsync(key, accountId, ticker, side, qty, px, typed, acks)
+                    : submitter.submitSessionKeyedAsync(key, accountId, ticker, side, qty, px, typed, sessionStream(sid),
+                        msgSeqNum, possFlags, acks))
                 .thenCompose(r -> {
+                    if (possFlags >= 0 && key.equals(qualify(sid, clOrdId)) && answersAnotherOrder(key, r)) {
+                        log.warn("FIX order {}: the engine's ring answered with order {} of another ClOrdID; resubmitted"
+                            + " under a salted key", clOrdId, r.orderRef());
+                        return submitNew(sid, clOrdId, key + "\001#", accountId, ticker, side, qty, mapped, p, attempt,
+                            msgSeqNum, possFlags);
+                    }
                     if (r != null || attempt == FAILOVER_RESUBMITS || submitter.leaderChanges() == elections) {
                         return CompletableFuture.completedFuture(r);
                     }
                     log.warn("FIX order {} stranded by a leader change: resubmitted under its key", clOrdId);
-                    return submitNew(sid, clOrdId, accountId, ticker, side, qty, mapped, p, attempt + 1);
+                    return submitNew(sid, clOrdId, key, accountId, ticker, side, qty, mapped, p, attempt + 1, msgSeqNum,
+                        possFlags);
                 });
+        }
+
+        /** FR-XOD-25: a duplicate answer whose ref this gateway holds under another ClOrdID (refs are venue-unique). */
+        private boolean answersAnotherOrder(final String key, final OrderSubmitter.ExecResult r) {
+            if (r == null || r.accepted() || r.riskReason() != DUPLICATE || r.orderRef() <= 0) {
+                return false;
+            }
+            final Integer ref = r.orderRef();
+            synchronized (refByClOrdId) {
+                if (ref.equals(refByClOrdId.get(key))) {
+                    return false;
+                }
+                for (final Map.Entry<String, Integer> e : refByClOrdId.entrySet()) {
+                    if (ref.equals(e.getValue())) {
+                        return true;   // ponytail: a scan, on duplicate answers only (resends); index refs if hot
+                    }
+                }
+            }
+            return false;
+        }
+
+        /** ADR-104: the session-day stream, FNV-1a 64 of the session and its store's creation time (ADR-086 shares it). */
+        private long sessionStream(final SessionID sid) {
+            final Session session = Session.lookupSession(sid);
+            long created = 0L;
+            try {
+                created = session == null ? 0L : session.getStore().getCreationTime().getTime();
+            } catch (final java.io.IOException e) {
+                log.warn("FIX session {}: no store creation time: {}", sid, e.toString());
+            }
+            long h = 0xcbf29ce484222325L;
+            for (final char c : (sid + "/" + created).toCharArray()) {
+                h = (h ^ c) * 0x100000001b3L;
+            }
+            return h == 0L ? 1L : h;
+        }
+
+        /** FR-XOD-20: the NewOrderSingle's PossDup (43) and PossResend (97) as ingress flag bits. */
+        private int possFlags(final quickfix.Message.Header h) throws FieldNotFound {
+            int flags = 0;
+            if (h.isSetField(quickfix.field.PossDupFlag.FIELD) && h.getBoolean(quickfix.field.PossDupFlag.FIELD)) {
+                flags |= finos.traderx.ordermatcher.lmax.AeronReplicationCodec.INPUT_FLAG_POSS_DUP;
+            }
+            if (h.isSetField(quickfix.field.PossResend.FIELD) && h.getBoolean(quickfix.field.PossResend.FIELD)) {
+                flags |= finos.traderx.ordermatcher.lmax.AeronReplicationCodec.INPUT_FLAG_POSS_RESEND;
+            }
+            return flags;
         }
 
         /** The answer to one NewOrderSingle's submit (also a stored order resubmitted by FR-XOD-12's catch-up). */
@@ -859,6 +937,12 @@ public final class FixGatewayAcceptor {
             if (!result.accepted() && result.riskReason() == DUPLICATE && result.orderRef() > 0) {
                 refByClOrdId.put(qualify(sessionId, clOrdId), result.orderRef());
                 sendRestatement(sessionId, clOrdId, accountId, ticker, side, qty, result.orderRef());
+                return;
+            }
+            if (!result.accepted() && result.riskReason() == SESSION_AGED_OUT) {
+                // ADR-104 FR-XOD-22: a resend the session ring may have evicted; never booked by this request
+                sendExactlyOnceReject(sessionId, clOrdId, "EXACTLY_ONCE_AGED_OUT: ClOrdID may be older than the last "
+                    + "orders the engine keeps for this session today; not booked by this request; query its status");
                 return;
             }
             if (!result.accepted() && result.riskReason() == DUPLICATE) {
@@ -1816,6 +1900,8 @@ public final class FixGatewayAcceptor {
     private static final int FAILOVER_RESUBMITS = 2;
     private static final int OUT_OF_SEQUENCE = finos.traderx.ordermatcher.risk.RiskReason.OUT_OF_SEQUENCE.ordinal();
     private static final int STREAM_LIMIT = finos.traderx.ordermatcher.risk.RiskReason.STREAM_LIMIT.ordinal();
+    private static final int SESSION_AGED_OUT =
+        finos.traderx.ordermatcher.risk.RiskReason.SESSION_AGED_OUT.ordinal();
     private static final finos.traderx.ordermatcher.risk.RiskReason[] REASONS =
         finos.traderx.ordermatcher.risk.RiskReason.values();
 

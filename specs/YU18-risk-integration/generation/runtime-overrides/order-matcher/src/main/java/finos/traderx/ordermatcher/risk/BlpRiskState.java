@@ -66,6 +66,8 @@ public final class BlpRiskState {
     // ADR-090: the sequenced NEW being applied. Its own key's answer lives in its stream's ring, not
     // in the key table (FR-XOD-05); 0 = none. sequencedDuplicate: the ring holds its ACCEPTED answer.
     private StreamDedupe streams;
+    private SessionRing sessionRing;
+    private SequencedAnswers answers;   // the gate answering sequencedKey: streams or sessionRing (ADR-104)
     private long sequencedKey;
     private boolean sequencedDuplicate;
     private int maxPositionQuantity;
@@ -429,7 +431,7 @@ public final class BlpRiskState {
             metrics.duplicate();
             duplicateReplay = true;
             decision(RiskReason.ACCEPTED);
-            return streams.duplicateRef();
+            return answers.duplicateRef();
         }
         int slot = idempotencySlot(clientOrderKey, false);
         if (slot < 0) return -1;
@@ -668,7 +670,7 @@ public final class BlpRiskState {
             if (!sequencedDuplicate) return null;
             metrics.duplicate();
             duplicateReplay = true;
-            return decision(REASONS[streams.duplicateDecision()]);
+            return decision(REASONS[answers.duplicateDecision()]);
         }
         int slot = idempotencySlot(key, false);
         if (slot < 0) return null;
@@ -689,7 +691,7 @@ public final class BlpRiskState {
             return decision(reason);   // key-less command: decided but not replay-mapped
         }
         if (key == sequencedKey) {
-            if (!sequencedDuplicate) streams.record(orderRef, (byte) reason.ordinal());
+            if (!sequencedDuplicate) answers.record(orderRef, (byte) reason.ordinal());
             return decision(reason);
         }
         if (idempotencySlot(key, false) < 0 && idempotencyRetentionSize == idempotencyRetentionKeys.length) {
@@ -858,9 +860,19 @@ public final class BlpRiskState {
     /** Answer {@code key} from the stream ring instead of the key table until {@link #endSequenced}.
      *  {@code duplicate}: the ring holds the original ACCEPTED answer (only then may the engine see it). */
     public void beginSequenced(long key, boolean duplicate) {
+        beginSequenced(key, duplicate, streams);
+    }
+
+    /** As {@link #beginSequenced(long, boolean)}, answered from {@code answers} (ADR-104: the session ring). */
+    public void beginSequenced(long key, boolean duplicate, SequencedAnswers answers) {
         sequencedKey = key;
         sequencedDuplicate = duplicate;
+        this.answers = answers;
     }
+
+    public void attachSessionRing(SessionRing ring) { this.sessionRing = ring; }
+
+    public SessionRing sessionRing() { return sessionRing; }
 
     public void endSequenced() { sequencedKey = 0L; }
 
@@ -870,7 +882,7 @@ public final class BlpRiskState {
     /** ADR-100: a sequenced NEW refused before the engine ran (no ref) still records its answer in the ring,
      *  so a resend of that sequence recovers the same refusal instead of a bare DUPLICATE; then ends it. */
     public void refuseSequenced(RiskReason reason) {
-        if (sequencedKey != 0L && !sequencedDuplicate) streams.record(0, (byte) reason.ordinal());
+        if (sequencedKey != 0L && !sequencedDuplicate) answers.record(0, (byte) reason.ordinal());
         sequencedKey = 0L;
     }
 
