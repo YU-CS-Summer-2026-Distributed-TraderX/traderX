@@ -93,7 +93,8 @@ connection completes.
      subject), so it falls back. NATS 2.14 accepts the first and refuses the second with 10071. Production runs
      `nats:2.14-alpine`.
 7. **Bounds.**
-   - A session holds at most `FIX_STORE_MAX_UNCOMMITTED` (1,024) uncommitted bodies, counting the batch in flight
+   - A session holds at most `FIX_STORE_MAX_UNCOMMITTED` (256 since FR-GFS-21, 2026-11-10; 1,024 before: each
+     waiting body is commit latency, and 600 sessions × 1,024 at one stream was ~2 s) uncommitted bodies, counting the batch in flight
      until its commit completes or fails. The next `set()` waits for room, so a slow store slows the sender as it
      did before. The first build stopped counting a batch once it was sent, so 1,025 could be pending (codeX review
      2026-10-30 §12).

@@ -36,8 +36,9 @@ subscription. No engine, wire, snapshot or consensus change.
   the WARN) and `0` (off, logged at startup). `scripts/gcp-compsci/prepare.py` SHALL set `jetstream` on the
   CompSci gateway and refuse a render with any other value.
 - FR-FFR-10: The tracked set SHALL hold at most 65,536 orders. An order SHALL leave it on its FILLED,
-  CANCELED or REJECTED update, on an accepted FIX cancel, or on an update whose epoch prefix differs from the
-  one first seen for its ref.
+  CANCELED or REJECTED update, or on an update whose epoch prefix differs from the one first seen for its ref.
+  An accepted FIX cancel keeps it until the venue's CANCELED, which then ends it unreported (FR-FFR-17; removed at
+  the cancel, that update waited as an untracked order's and aged out counted lost).
 - FR-FFR-11: A fill published while no gateway consumes the feed (every replica down or restarting) is not
   reported unsolicited, and the gateway SHALL NOT report it later from a stale position. The client recovers it with `OrderStatusRequest (H)` or
   `OrderMassStatusRequest (AF)`. With persistent sessions (ADR-086) a fill that arrives while the session is
@@ -47,7 +48,7 @@ subscription. No engine, wire, snapshot or consensus change.
   with `LeavesQty` 0. An order canceled after a partial fill SHALL NOT be reported `CumQty` 0
   ([ADR-088](../../system/adr-088-canceled-order-fill.md)).
 - NFR-FFR-01: An update for an untracked order SHALL cost two byte scans and no JSON parse on the gateway, and a
-  fill one early-buffer entry (FR-FFR-15; it allocated nothing in the overwritten ring that lost them). Every gateway with FIX on receives every order update on the venue; `FIX_FILL_FEED=0` is the
+  fill, cancel or reject one early-buffer entry (FR-FFR-15, FR-FFR-17; it allocated nothing in the overwritten ring that lost them). Every gateway with FIX on receives every order update on the venue; `FIX_FILL_FEED=0` is the
   opt-out for a throughput rig.
 
 - FR-FFR-13: The fill feed SHALL read every capture stream of the base name (`PROJECTION_FEED_STREAM`): the one
@@ -129,4 +130,19 @@ fails.
   one at a time and held every session's tracking behind it. `FixGatewayThroughputIT` with `FIX_GW_BENCH_FILLS=1`
   (32 sessions × 1,024, every order filled, 1 ms venue, one NATS): 4,327–4,658 fill reports/s against 130–136K answers/s
   before; 73,184–82,735/s, every fill, after (the pre-FR-FFR-15 acceptor: 617/s, the rest lost).
+- FR-FFR-17 (2026-11-10, the 450K acceptance run 2): An order the venue ends (CANCELED or REJECTED after acceptance:
+  self-trade prevention, expiry, a trigger refusal) SHALL be reported to its FIX client as an unsolicited
+  ExecutionReport, ExecType and OrdStatus Canceled (or Rejected), `LeavesQty` 0, the `CumQty` and `AvgPx` reported
+  so far (ADR-088), `Text` the venue's reason when it gives one. Run 2's STP canceled 44,071,636 orders and the
+  gateways reported none: only fills were handled for an untracked order, and a tracked one left the set unreported.
+  - Such an update for an order not yet tracked SHALL wait in the early buffer as a fill does (FR-FFR-15), so a cancel
+    that beats the pipelined answer is reported after the order's New; one dropped by age or count SHALL count as
+    `outcome="lost"` on the routed feed, as a fill does (the ALERT names a fill or end).
+  - A cancel the client asked for is answered by its own `OrderCancelRequest` (FR-FFR-12) and SHALL NOT be reported
+    again. A refused or ambiguous client cancel SHALL leave the venue's end reported.
+  - Sent on the session's report thread under the lease, as a fill is (FR-FFR-16, ADR-086 §3); counted in
+    `traderx_fix_end_reports_total`.
+  - `FixGatewayFillReportTest#aVenueCancelThatBeatsThePipelinedAnswerIsReportedAfterTheNew` (fails on the 316b269e
+    acceptor), `#aRefusedClientCancelLeavesTheVenueCancelReported` (fails without clearing the request on refusal),
+    `#aClientCancelIsReportedOnceWhenTheVenueUpdateFollows`.
 

@@ -13,8 +13,10 @@ import quickfix.SessionID;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -154,6 +156,48 @@ class FixStoreGroupCommitIT {
             } finally {
                 a.close();
                 b.close();
+            }
+        }
+    }
+
+    /**
+     * FR-GFS-22: A's lease lapsed while its own commit was in flight (a NATS slow enough to delay renewals), and nobody
+     * served the session meanwhile. Retaking wrote K.seq from the revision A last saw, which fenced A's own commit out
+     * (10071) and dropped a session nobody else wanted: the 2026-11-10 store bench lost hundreds of its 600 that way.
+     * The commit in flight is the retake's fence instead, and confirm waits for it. Falsifiable: the old store confirms
+     * at once and its commit then fails. Someone did serve it: aStalledOwnerIsNotConfirmedAfterAnotherServedTheSessionAndLeft.
+     */
+    @Test
+    void aRetakeWithItsOwnCommitInFlightKeepsTheSession() throws Exception {
+        final SessionID sid = new SessionID("FIX.4.4", "TRADERX", "RETAKE-INFLIGHT");
+        try (Connection nc = Nats.connect(url(NATS))) {
+            final FixSessionStore a = start(NATS, "gw-a");
+            final CountDownLatch hold = new CountDownLatch(1);
+            try {
+                a.renewalsStalled = true;
+                final MessageStore ma = a.create(sid);
+                assertTrue(a.acquire(sid));
+                ((ExecutorService) field(a, "commits")).execute(() -> {
+                    try {
+                        hold.await();   // the commit's K.seq write waits behind this
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                ma.set(1, "8=FIX.4.4\u000134=1\u0001");
+                ma.incrNextSenderMsgSeqNum();
+                nc.keyValue(FixSessionStore.LEASE_BUCKET).delete(FixSessionStore.keyOf(sid));   // A's lease lapses
+                field(ma, "renewedAt", 0L);                                                     // A resumes
+                final CompletableFuture<Boolean> confirmed = CompletableFuture.supplyAsync(() -> a.confirm(sid));
+                Thread.sleep(300);
+                assertFalse(confirmed.isDone(), "not confirmed before its commit shows nobody served it since");
+                hold.countDown();
+                assertTrue(confirmed.get(10, TimeUnit.SECONDS), "retaken: its own commit landed");
+                assertTrue(nc.keyValue(FixSessionStore.BUCKET).get(FixSessionStore.keyOf(sid) + ".seq")
+                    .getValueAsString().startsWith("2 "), "message 1 is committed");
+            } finally {
+                hold.countDown();
+                a.close();
             }
         }
     }

@@ -68,7 +68,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @Timeout(60)
 class FixGatewayFillReportTest {
-    private static final byte NEW = 0, PARTIAL = 1, FILLED = 2;
+    private static final byte NEW = 0, PARTIAL = 1, FILLED = 2, CANCELED = 3;
     private FixGatewayAcceptor acceptor;
     private final List<SocketInitiator> initiators = new CopyOnWriteArrayList<>();
     private final OrderNatsPublisher encoder = new OrderNatsPublisher("", "/orders", "7", null, 16, 1);
@@ -132,10 +132,12 @@ class FixGatewayFillReportTest {
             return f;
         }
 
+        volatile ExecResult cancelAnswer;   // when set, the engine's answer to every cancel
+
         @Override
         public ExecResult submitCancel(final int orderRef) {
             cancels.incrementAndGet();
-            return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
+            return cancelAnswer != null ? cancelAnswer : new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
 
         void answer(final String clOrdId, final int ref) {
@@ -237,6 +239,64 @@ class FixGatewayFillReportTest {
         assertTrue(c.awaitCount(r -> exec(r) == ExecType.TRADE, orders),
             "fill reports: " + c.count(r -> exec(r) == ExecType.TRADE) + " of " + orders);
         assertEquals(0, acceptor.fillsLost());
+    }
+
+    /**
+     * FR-FFR-17: the venue's cancel of an order whose pipelined answer has not run yet (self-trade prevention cancels the
+     * resting order in milliseconds; the 2026-11-10 run's answers took ~7 s) reaches the client, after its New, as an
+     * unsolicited Canceled report. Falsifiable: the gateway dropped every update but a fill for an untracked order, and
+     * reported none of 44M STP cancels.
+     */
+    @Test
+    void aVenueCancelThatBeatsThePipelinedAnswerIsReportedAfterTheNew() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "v1", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(1));
+        acceptor.onOrderUpdate(feed(1, (byte) 0, 5, 5, CANCELED, 0, 0));   // canceled by the venue before the answer
+        submitter.answer("v1", 1);
+        assertNotNull(c.await(r -> is(r, "v1", ExecType.CANCELED)), "the venue's cancel was not reported");
+        assertEquals(List.of(ExecType.NEW, ExecType.CANCELED),
+            c.reports.stream().map(FixGatewayFillReportTest::exec).toList(), "the New, then the Canceled");
+        assertEquals(1, acceptor.endReports());
+    }
+
+    /** FR-FFR-17: a cancel the client asked for is answered once, by its OrderCancelRequest, not again as the venue's. */
+    @Test
+    void aClientCancelIsReportedOnceWhenTheVenueUpdateFollows() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "w2", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(1));
+        submitter.answer("w2", 7);
+        assertNotNull(c.await(r -> is(r, "w2", ExecType.NEW)));
+        sendCancel(c, "w2-x", "w2");
+        assertNotNull(c.await(r -> is(r, "w2-x", ExecType.CANCELED)));
+        acceptor.onOrderUpdate(feed(7, (byte) 0, 5, 5, CANCELED, 0, 0));
+        Thread.sleep(300);
+        assertEquals(1, c.count(r -> exec(r) == ExecType.CANCELED), "one Canceled report");
+        assertEquals(0, acceptor.endReports());
+    }
+
+    /** FR-FFR-17: a client cancel the engine refused (the venue ended the order first) does not mute the venue's end. */
+    @Test
+    void aRefusedClientCancelLeavesTheVenueCancelReported() throws Exception {
+        final GatedSubmitter submitter = new GatedSubmitter();
+        final Client c = new Client("CLIENT1");
+        start(submitter, c);
+        sendOrder(c, "w3", Side.BUY, 5, 50.0);
+        assertTrue(submitter.awaitArrived(1));
+        submitter.answer("w3", 8);
+        assertNotNull(c.await(r -> is(r, "w3", ExecType.NEW)));
+        submitter.cancelAnswer = new OrderSubmitter.ExecResult(false, 8, OutputEvent.KIND_ORDER_CANCELED);
+        sendCancel(c, "w3-x", "w3");
+        Thread.sleep(300);
+        assertEquals(1, submitter.cancels.get(), "the cancel reached the engine");
+        acceptor.onOrderUpdate(feed(8, (byte) 0, 5, 5, CANCELED, 0, 0));
+        assertNotNull(c.await(r -> is(r, "w3", ExecType.CANCELED)), "the venue's cancel was not reported");
+        assertEquals(1, acceptor.endReports());
     }
 
     /** FR-FFR-15: on the routed feed every fill is this gateway's, so one dropped from the early buffer is counted. */

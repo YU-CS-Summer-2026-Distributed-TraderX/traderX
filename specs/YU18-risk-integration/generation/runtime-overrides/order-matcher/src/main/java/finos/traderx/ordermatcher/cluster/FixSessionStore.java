@@ -17,6 +17,7 @@ import io.nats.client.api.KeyValueWatcher;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import io.nats.client.api.StreamInfo;
+import io.nats.client.api.Placement;
 import io.nats.client.api.PublishAck;
 import io.nats.client.impl.Headers;
 import io.nats.client.impl.NatsMessage;
@@ -106,9 +107,13 @@ final class FixSessionStore implements MessageStoreFactory {
      * that does not honour the cross-subject fence, keeps the synchronous path (a claim and a put per message).
      */
     static final boolean GROUP_COMMIT = !"false".equalsIgnoreCase(System.getenv("FIX_STORE_GROUP_COMMIT"));
-    /** Bodies a session may have uncommitted; the next set() waits for room (ADR-099, a count per session as ADR-092). */
+    /**
+     * Bodies a session may have uncommitted; the next set() waits for room (ADR-099, a count per session as ADR-092).
+     * FR-GFS-21: 256, not 1,024. Every waiting body is a commit's latency (600 sessions x 1,024 queued at one server
+     * is seconds), and 256 still covers a commit's round trip at any one session's rate.
+     */
     static final int MAX_UNCOMMITTED =
-        Integer.parseInt(System.getenv().getOrDefault("FIX_STORE_MAX_UNCOMMITTED", "1024"));
+        Integer.parseInt(System.getenv().getOrDefault("FIX_STORE_MAX_UNCOMMITTED", "256"));
     /** A commit not acknowledged within this long drops the session, as a failed synchronous write did. */
     private static final long COMMIT_TIMEOUT_MILLIS = 5_000;
     private static final String EXPECTED_SEQ = "Nats-Expected-Last-Subject-Sequence";
@@ -116,6 +121,34 @@ final class FixSessionStore implements MessageStoreFactory {
     /** JetStream's "wrong last sequence" API error. */
     static final int WRONG_LAST_SEQUENCE = 10071;
     private static final String PREFIX = "$KV." + BUCKET + ".";
+    /**
+     * FR-GFS-21: the sessions' state is spread over this many buckets, each its own stream, a session in bucket
+     * {@code hash(K) mod n} (all of its keys there, so its fence and its seq record stay in one stream). One stream took
+     * every session's fenced bodies one at a time: the 2026-11-10 acceptance run's 600 sessions waited ~2 s per commit
+     * at ~103K bodies/s with its server near idle, and locally the stream refused publishes (429). Bucket 0 is
+     * {@value #BUCKET}, so 1 (the default) is the layout before. Change it only across a FIX day reset: a session whose
+     * bucket moves starts the next day there, as every session does after the reset.
+     */
+    static final int BUCKETS = Math.max(1, Integer.parseInt(System.getenv().getOrDefault("FIX_SESSION_BUCKETS", "1")));
+    /** FR-GFS-21: NATS server tags, comma-separated; bucket i is created on tag {@code i mod n} (as FR-DRS-44 places). */
+    private static final String PLACEMENT = System.getenv("FIX_SESSION_PLACEMENT");
+
+    static String bucketName(final int i) {
+        return i == 0 ? BUCKET : BUCKET + "_" + i;
+    }
+
+    /** FR-GFS-21: a session's bucket, the same on every gateway (String.hashCode is specified). */
+    static int bucketOf(final String key) {
+        return Math.floorMod(key.hashCode(), BUCKETS);
+    }
+
+    private static Placement placement(final int i) {
+        if (PLACEMENT == null || PLACEMENT.isBlank()) {
+            return null;
+        }
+        final String[] tags = PLACEMENT.split(",");
+        return Placement.builder().tags(tags[i % tags.length].trim()).build();
+    }
     private volatile boolean groupCommit;
     private volatile JetStream js;
     /**
@@ -138,7 +171,7 @@ final class FixSessionStore implements MessageStoreFactory {
     // Handed over by the first CONNECTED event (connectAsynchronously): a gateway may start before NATS does.
     private volatile Connection nats;
     // Set once the buckets exist (setUp).
-    private volatile KeyValue kv;
+    private volatile KeyValue[] kvs;   // FR-GFS-21: by bucket
     private volatile KeyValue leases;
     /** FR-XOD-13: ADR-090's order rings, in a bucket of their own so they never evict the session records. */
     private volatile KeyValue orders;
@@ -197,23 +230,28 @@ final class FixSessionStore implements MessageStoreFactory {
             return;
         }
         try {
-            ensureBucket(BUCKET, KeyValueConfiguration.builder().name(BUCKET).maxHistoryPerKey(1)
-                .ttl(Duration.ofDays(7)).maxBucketSize(1L << 30).storageType(StorageType.File).build());
-            discardOldest(nats.jetStreamManagement());
+            final KeyValue[] buckets = new KeyValue[BUCKETS];
+            for (int i = 0; i < BUCKETS; i++) {
+                ensureBucket(bucketName(i), KeyValueConfiguration.builder().name(bucketName(i)).maxHistoryPerKey(1)
+                    .ttl(Duration.ofDays(7)).maxBucketSize(1L << 30).storageType(StorageType.File)
+                    .placement(placement(i)).build());
+                discardOldest(nats.jetStreamManagement(), bucketName(i));
+                buckets[i] = nats.keyValue(bucketName(i));
+            }
             ensureBucket(LEASE_BUCKET, KeyValueConfiguration.builder().name(LEASE_BUCKET).maxHistoryPerKey(1)
                 .ttl(LEASE_TTL).storageType(StorageType.File).build());
             leaseTtl(nats.jetStreamManagement());
             ensureBucket(ORDER_BUCKET, KeyValueConfiguration.builder().name(ORDER_BUCKET).maxHistoryPerKey(1)
                 .ttl(Duration.ofDays(1)).maxBucketSize(ORDER_STORE_BYTES).storageType(StorageType.File).build());
             ordersDiscardOldest(nats.jetStreamManagement());
-            kv = nats.keyValue(BUCKET);
+            kvs = buckets;
             leases = nats.keyValue(LEASE_BUCKET);
             orders = nats.keyValue(ORDER_BUCKET);
             js = nats.jetStream();
             groupCommit = GROUP_COMMIT && fenceHonoured();
             available = true;
-            log.warn("FIX session store available (NATS connected, buckets {} and {}); Logons accepted",
-                BUCKET, LEASE_BUCKET);
+            log.warn("FIX session store available (NATS connected, buckets {} x{} and {}); Logons accepted",
+                BUCKET, BUCKETS, LEASE_BUCKET);
         } catch (final IOException | JetStreamApiException | RuntimeException e) {
             log.warn("FIX session store not ready yet: {}", e.toString());
         }
@@ -226,7 +264,10 @@ final class FixSessionStore implements MessageStoreFactory {
     private boolean fenceHonoured() {
         final String probe = "_fence-probe-" + owner.replaceAll("[^A-Za-z0-9-]", "_");
         try {
-            final boolean honoured = fenceHonoured(kv, js, probe);
+            boolean honoured = true;
+            for (int i = 0; i < BUCKETS && honoured; i++) {   // FR-GFS-21: each bucket may be on another server
+                honoured = fenceHonoured(kvs[i], js, probe, "$KV." + bucketName(i) + ".");
+            }
             if (honoured) {
                 log.info("FIX session store: group commit on (ADR-099)");
             } else {
@@ -238,11 +279,13 @@ final class FixSessionStore implements MessageStoreFactory {
             log.warn("FIX session store: fence check failed ({}); storing synchronously", e.toString());
             return false;
         } finally {
-            try {
-                kv.purge(probe + ".seq");
-                kv.purge(probe + ".m");
-            } catch (final IOException | JetStreamApiException e) {
-                log.debug("FIX session store: probe cleanup: {}", e.toString());
+            for (final KeyValue kv : kvs) {
+                try {
+                    kv.purge(probe + ".seq");
+                    kv.purge(probe + ".m");
+                } catch (final IOException | JetStreamApiException e) {
+                    log.debug("FIX session store: probe cleanup: {}", e.toString());
+                }
             }
         }
     }
@@ -260,6 +303,11 @@ final class FixSessionStore implements MessageStoreFactory {
      * server that ignores the header refused it too, and group commit came on (codeX review 2026-10-30 §4).
      */
     static boolean fenceHonoured(final KeyValue kv, final JetStream js, final String probe)
+            throws IOException, JetStreamApiException {
+        return fenceHonoured(kv, js, probe, PREFIX);
+    }
+
+    static boolean fenceHonoured(final KeyValue kv, final JetStream js, final String probe, final String PREFIX)
             throws IOException, JetStreamApiException {
         final String named = PREFIX + probe + ".seq";
         final long r = kv.put(probe + ".seq", new byte[] { '1' });
@@ -310,12 +358,13 @@ final class FixSessionStore implements MessageStoreFactory {
      * and this store's before the amendment) made a full bucket fail every session's next send, so every gateway
      * dropped every session at once. Applied to a bucket that already exists too: that is the migration.
      */
-    private static void discardOldest(final JetStreamManagement jsm) throws IOException, JetStreamApiException {
-        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + BUCKET).getConfiguration();
+    private static void discardOldest(final JetStreamManagement jsm, final String bucket)
+            throws IOException, JetStreamApiException {
+        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + bucket).getConfiguration();
         if (sc.getDiscardPolicy() != DiscardPolicy.Old) {
             jsm.updateStream(StreamConfiguration.builder(sc).discardPolicy(DiscardPolicy.Old).build());
             log.warn("FIX session store: {} now discards its oldest entries when full, instead of refusing writes"
-                + " (ADR-086 amendment)", BUCKET);
+                + " (ADR-086 amendment)", bucket);
         }
     }
 
@@ -347,15 +396,20 @@ final class FixSessionStore implements MessageStoreFactory {
     /** FR-GFS-15: once a minute, ALERT when the bucket nears its byte cap, where discarding the oldest begins. */
     private void checkCapacity() {
         try {
-            final StreamInfo si = nats.jetStreamManagement().getStreamInfo("KV_" + BUCKET);
-            final long max = si.getConfiguration().getMaxBytes();
-            final boolean near = max > 0 && si.getStreamState().getByteCount() >= max * 9 / 10;
-            if (near && !nearlyFull) {
-                log.error("ALERT FIX session store {} at {} of {} bytes: its oldest entries are being discarded (an"
-                    + " idle session's sequence record among them); sessions x FIX_RESEND_WINDOW ({}) outgrows it",
-                    BUCKET, si.getStreamState().getByteCount(), max, RESEND_WINDOW);
-            } else if (!near && nearlyFull) {
-                log.warn("FIX session store {} back under 90% of its byte cap", BUCKET);
+            boolean near = false;
+            for (int i = 0; i < BUCKETS; i++) {   // FR-GFS-21: any bucket near its cap
+                final StreamInfo si = nats.jetStreamManagement().getStreamInfo("KV_" + bucketName(i));
+                final long max = si.getConfiguration().getMaxBytes();
+                final boolean full = max > 0 && si.getStreamState().getByteCount() >= max * 9 / 10;
+                if (full && !nearlyFull) {
+                    log.error("ALERT FIX session store {} at {} of {} bytes: its oldest entries are being discarded (an"
+                        + " idle session's sequence record among them); sessions x FIX_RESEND_WINDOW ({}) outgrows it",
+                        bucketName(i), si.getStreamState().getByteCount(), max, RESEND_WINDOW);
+                }
+                near |= full;
+            }
+            if (!near && nearlyFull) {
+                log.warn("FIX session store back under 90% of its byte cap");
             }
             nearlyFull = near;
         } catch (final IOException | JetStreamApiException | RuntimeException e) {
@@ -447,6 +501,23 @@ final class FixSessionStore implements MessageStoreFactory {
     boolean confirm(final SessionID sid) {
         final Store store = stores.get(sid);
         synchronized (store) {
+            if (!store.fresh()) {
+                return false;
+            }
+            // FR-GFS-22: retaken with a commit in flight: confirmed only once that commit shows nobody served it since
+            final long deadline = System.currentTimeMillis() + COMMIT_TIMEOUT_MILLIS;
+            try {
+                while (store.fencePending) {
+                    final long left = deadline - System.currentTimeMillis();
+                    if (left <= 0) {
+                        return false;
+                    }
+                    store.wait(left);
+                }
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
             return store.fresh();
         }
     }
@@ -766,6 +837,12 @@ final class FixSessionStore implements MessageStoreFactory {
     private final class Store implements MessageStore {
         final SessionID sid;
         final String key;
+        final int bucket;      // FR-GFS-21
+        final String prefix;   // the bucket's subject prefix
+
+        KeyValue kv() {
+            return kvs[bucket];
+        }
         int sender = 1;
         int target = 1;
         long created = System.currentTimeMillis();
@@ -784,6 +861,7 @@ final class FixSessionStore implements MessageStoreFactory {
         long leaseRevision;      // 0 = not held here
         long renewedAt;          // System.nanoTime() of the last take/renew: a wall-clock step cannot fake freshness
         boolean adoptPending;    // taken, but the acceptor has not seen the log yet
+        boolean fencePending;    // FR-GFS-22: retaken with a commit in flight, whose landing is the retake's fence
         boolean live;
         int inFlight;
         long lastUse;
@@ -804,6 +882,8 @@ final class FixSessionStore implements MessageStoreFactory {
         Store(final SessionID sid) {
             this.sid = sid;
             this.key = keyOf(sid);
+            this.bucket = bucketOf(key);
+            this.prefix = "$KV." + bucketName(bucket) + ".";
             try {
                 if (available) {
                     load();   // otherwise the first Logon's refresh loads it, once the store is up
@@ -904,11 +984,21 @@ final class FixSessionStore implements MessageStoreFactory {
             } catch (final Exception e) {
                 return false;
             }
+            if (committing) {
+                // FR-GFS-22: the commit in flight is fenced on the revision this gateway last saw, as the write below
+                // would be, so it lands only if nobody served the session meanwhile. Writing K.seq here instead
+                // fenced this gateway's own batch out (10071) and dropped the session: a NATS slow enough to lapse
+                // the lease (the 2026-11-10 store bench) dropped hundreds. confirm() waits for it.
+                fencePending = true;
+                log.warn("FIX session {}: lease lapsed while {} was stalled; retaken, fenced by its commit in flight",
+                    sid, owner);
+                return true;
+            }
             try {
                 final byte[] same = (persistedSender + " " + persistedTarget + " " + created)
                     .getBytes(StandardCharsets.UTF_8);
-                seqRevision = seqRevision == 0 ? kv.create(key + ".seq", same)
-                    : kv.update(key + ".seq", same, seqRevision);
+                seqRevision = seqRevision == 0 ? kv().create(key + ".seq", same)
+                    : kv().update(key + ".seq", same, seqRevision);
             } catch (final Exception e) {
                 log.warn("FIX session {}: lease lapsed while {} was stalled and the session was served elsewhere"
                     + " meanwhile ({}); not resumed", sid, owner, e.toString());
@@ -952,6 +1042,7 @@ final class FixSessionStore implements MessageStoreFactory {
             }
             leaseRevision = 0;
             adoptPending = false;
+            fencePending = false;
             epoch++;
             log.info("FIX session {} released by {}", sid, owner);
         }
@@ -984,7 +1075,7 @@ final class FixSessionStore implements MessageStoreFactory {
 
         private void load() throws IOException {
             try {
-                final KeyValueEntry e = kv.get(key + ".seq");
+                final KeyValueEntry e = kv().get(key + ".seq");
                 if (e == null || e.getOperation() != KeyValueOperation.PUT) {
                     sender = 1;
                     target = 1;
@@ -1124,8 +1215,8 @@ final class FixSessionStore implements MessageStoreFactory {
             for (int attempt = 0; ; attempt++) {
                 try {
                     final byte[] value = (sender + " " + durableTarget() + " " + created).getBytes(StandardCharsets.UTF_8);
-                    seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)
-                        : kv.update(key + ".seq", value, seqRevision);
+                    seqRevision = seqRevision == 0 ? kv().create(key + ".seq", value)
+                        : kv().update(key + ".seq", value, seqRevision);
                     return;
                 } catch (final JetStreamApiException e) {
                     if (attempt == 3) {
@@ -1153,14 +1244,14 @@ final class FixSessionStore implements MessageStoreFactory {
             final int batch = uncommitted.size();
             final int claimed = claim;
             final int tgt = durableTarget();
-            final String seqSubject = PREFIX + key + ".seq";
+            final String seqSubject = prefix + key + ".seq";
             try {
                 final Headers fenced = new Headers().put(EXPECTED_SEQ, Long.toString(seqRevision))
                     .put(EXPECTED_SUBJECT, seqSubject);
                 final CompletableFuture<?>[] bodies = new CompletableFuture<?>[uncommitted.size()];
                 int i = 0;
                 for (final Object[] b : uncommitted) {
-                    bodies[i++] = js.publishAsync(NatsMessage.builder().subject(PREFIX + messageKey(key, (int) b[0]))
+                    bodies[i++] = js.publishAsync(NatsMessage.builder().subject(prefix + messageKey(key, (int) b[0]))
                         .headers(fenced).data((byte[]) b[1]).build());
                 }
                 final NatsMessage seq = NatsMessage.builder().subject(seqSubject)
@@ -1197,6 +1288,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 }
                 committing = false;
                 inFlightBodies = 0;
+                fencePending = false;   // FR-GFS-22: landed, nobody served it meanwhile; refused, release() follows
                 if (error == null) {
                     seqRevision = ack.getSeqno();
                     persistedSender = claimed;
@@ -1261,8 +1353,8 @@ final class FixSessionStore implements MessageStoreFactory {
             final int tgt = durableTarget();
             final byte[] value = (nextSender + " " + tgt + " " + created).getBytes(StandardCharsets.UTF_8);
             try {
-                seqRevision = seqRevision == 0 ? kv.create(key + ".seq", value)
-                    : kv.update(key + ".seq", value, seqRevision);
+                seqRevision = seqRevision == 0 ? kv().create(key + ".seq", value)
+                    : kv().update(key + ".seq", value, seqRevision);
                 persistedSender = nextSender;
                 persistedTarget = tgt;
                 claim = nextSender;   // group commit writes synchronously only once quiesced
@@ -1292,7 +1384,7 @@ final class FixSessionStore implements MessageStoreFactory {
 
         /** Each stored value under {@code subject}, oldest first, handed over as it arrives. */
         private void scan(final String subject, final Consumer<String> each) throws IOException {
-            scanEntries(kv, subject, e -> each.accept(e.getValueAsString()));
+            scanEntries(kv(), subject, e -> each.accept(e.getValueAsString()));
         }
 
         /** As {@link #scan}, with each entry's revision. */
@@ -1348,7 +1440,7 @@ final class FixSessionStore implements MessageStoreFactory {
             }
             writeSeq(sequence + 1);   // claim the number first: a body without its claim would be unfenced
             try {
-                kv.put(messageKey(key, sequence), message.getBytes(StandardCharsets.UTF_8));
+                kv().put(messageKey(key, sequence), message.getBytes(StandardCharsets.UTF_8));
             } catch (final JetStreamApiException e) {
                 throw dropped(new IOException(e));
             } catch (final IOException e) {
@@ -1368,7 +1460,7 @@ final class FixSessionStore implements MessageStoreFactory {
             int missing = Math.max(0, from - startSequence);
             try {
                 for (int n = from; n <= endSequence; n++) {
-                    final KeyValueEntry e = kv.get(messageKey(key, n));
+                    final KeyValueEntry e = kv().get(messageKey(key, n));
                     if (e != null && e.getOperation() == KeyValueOperation.PUT && seqOf(e.getValueAsString()) == n) {
                         messages.add(e.getValueAsString());
                     } else {
@@ -1489,8 +1581,8 @@ final class FixSessionStore implements MessageStoreFactory {
         void wipe() throws IOException {
             quiesce();
             try {
-                nats.jetStreamManagement().purgeStream("KV_" + BUCKET,
-                    PurgeOptions.subject("$KV." + BUCKET + "." + key + ".m.>"));
+                nats.jetStreamManagement().purgeStream("KV_" + bucketName(bucket),
+                    PurgeOptions.subject(prefix + key + ".m.>"));
                 nats.jetStreamManagement().purgeStream("KV_" + ORDER_BUCKET,   // ADR-090: the day's order rings
                     PurgeOptions.subject("$KV." + ORDER_BUCKET + "." + key + ".>"));
             } catch (final JetStreamApiException e) {
