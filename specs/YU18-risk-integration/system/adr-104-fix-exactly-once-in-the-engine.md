@@ -66,6 +66,18 @@ NATS write the 450K capture cluster (ADR-103) would also carry.
 
 ## Evidence
 
+NFR-XOD-04, GKE 2026-11-11 (one image, the arm is the gateways' flag; ~360K orders/s; 11 snapshots per arm):
+
+| | Leader halt median (min–max) |
+|---|---|
+| Rings empty (`FIX_EXACTLY_ONCE` unset) | 29 ms (21–35) |
+| 600 full rings (`engine`) | 54 ms (45–72) |
+
+The snapshot callback grows only from 0.3 to 7.4 ms median at 600 rings, and to 15.3 ms at the table's 1,024. The
+rest of the +25 ms is publishing and recording ~30 MB of unpacked ~6 KB records. Smaller chunks that fit the packed
+path are the lever if 54 ms every 300 s is too much. Not built. Evidence: the coordinator notes `snap-pause-20261111/`.
+
+
 `SessionRingTest`: run 3's case (1,464 resends after the key table turns over and 47 s pass) books once keyed and
 twice on today's path; the aged rule and the MsgSeqNum frontier at N = 2,048; collision; LRU; snapshot round trip
 plus a common tail; two members fed one log write the same bytes; format 14 loads empty; another N is refused; the

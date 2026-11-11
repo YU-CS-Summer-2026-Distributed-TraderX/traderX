@@ -158,6 +158,14 @@ session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept a
   against the ADR-086 baseline before FR-XOD-12 is enabled on any rig.
 - NFR-XOD-04 (ADR-104): Before a format-15 member rolls, the leader's snapshot pause at 400K/s on GKE, with the
   production FIX session count, SHALL be measured against a format-14 control on the same rig.
+  Measured 2026-11-11 on GKE (`traderx-snap`, us-east4; image `937eeaf3`). Load ~360K orders/s: binary ~260K/s plus 600
+  FIX sessions at ~98K/s. 11 snapshots per arm:
+  - leader halt median 29 ms (21–35) with empty rings;
+  - 54 ms (45–72) with 600 full rings: +25 ms per snapshot;
+  - the service callback is 0.3 / 7.4 / 15.3 ms median at 0 / 600 / 1,024 full rings, inside its 50 ms budget.
+
+  The extra halt is mostly the ~6 KB `T_SESSION_RING` records going unpacked (FR-XOD-18) through the snapshot
+  publication and recording. Accepting 54 ms, or chunking the records to fit the packed path, is open with yaakov.
 - NFR-XOD-05 (ADR-104): The apply path of a session-tagged NEW SHALL allocate nothing in steady state, once its
   session's arrays exist: a miss (booked, recorded, the oldest entry evicted), a hit and an AGED_OUT refusal, under the
   cluster apply-path gate (NFR-AC01).
