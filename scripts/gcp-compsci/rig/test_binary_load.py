@@ -15,12 +15,15 @@ import collections
 
 
 class Gateway:
-    """reject_every: refuse every Nth NEW (a risk reject); drop: never answer the Nth; dup: answer the Nth twice."""
-    def __init__(self, test, reject_every=0, drop=0, dup=0):
+    """reject_every: refuse every Nth NEW (a risk reject); drop: never answer the Nth; dup: answer the Nth twice.
+    sequenced (FR-XOD-11): every NEW must be flagged, each (account, streamId) counting from 1 with no gap; receipt:
+    answer the Nth REJECTED/DUPLICATE with no ref (FR-XOD-03); oos: answer the Nth REJECTED/OUT_OF_SEQUENCE (FR-XOD-04)."""
+    def __init__(self, test, reject_every=0, drop=0, dup=0, sequenced=True, receipt=0, oos=0):
         self.book = collections.deque()   # resting (side, account), all at one price, FIFO
         self.self_trades, self.buyers, self.sides = 0, set(), collections.defaultdict(set)
         self.orders, self.errors, self.n, self.lock = 0, [], 0, threading.Lock()
         self.reject_every, self.drop, self.dup = reject_every, drop, dup
+        self.sequenced, self.receipt, self.oos, self.streams = sequenced, receipt, oos, {}   # (account, streamId) -> last seq
         self.srv = socket.create_server(('127.0.0.1', 0)); test.addCleanup(self.srv.close)
         class Resolve(BaseHTTPRequestHandler):
             def do_POST(h):
@@ -46,12 +49,18 @@ class Gateway:
             while len(buf) >= 34:
                 n, typ, side, flags = struct.unpack_from('<HBBB', buf)
                 acct, sec, qty, px, cid = struct.unpack_from('<IIiqQ', buf, 6); buf = buf[34:]
-                if (n, typ, flags, sec, qty, px) != (32, 1, 0, 7, 1, 412_500000) or acct not in SETS[0] | SETS[1]:
+                if (n, typ, flags, sec, qty, px) != (32, 1, int(self.sequenced), 7, 1, 412_500000) or acct not in SETS[0] | SETS[1]:
                     self.errors.append((n, typ, side, flags, acct, sec, qty, px))
                 with self.lock:
                     self.n += 1; i = self.n
                     status = 0 if self.reject_every and i % self.reject_every == 0 else 1
-                    kind = 0
+                    kind = risk = ref = 0
+                    if self.sequenced:
+                        key, q = (acct, cid >> 32), cid & 0xffffffff
+                        if cid >> 32 == 0 or q != self.streams.get(key, 0) + 1: self.errors.append(('sequence', acct, cid >> 32, q))
+                        self.streams[key] = q
+                        if i == self.receipt: status, risk = 0, 17
+                        if i == self.oos: status, risk, ref = 0, 34, q
                     if status == 1:
                         if side == 0: self.buyers.add(acct)
                         self.sides[acct].add(side)
@@ -60,7 +69,7 @@ class Gateway:
                         else:
                             self.book.append((side, acct))
                 if i == self.drop: continue
-                ack = struct.pack('<HBBBBIQ', 16, 0x81, status, kind, 0, i, cid)
+                ack = struct.pack('<HBBBBIQ', 16, 0x81, status, kind, risk, ref if risk else i, cid)
                 conn.sendall(ack * (2 if i == self.dup else 1))
         conn.close()
 
@@ -68,7 +77,8 @@ class Gateway:
         out = Path(tempfile.mkdtemp()) / 'r.json'
         p = subprocess.run(['node', str(LOAD), '--resolve', f'http://127.0.0.1:{self.http.server_port}', '--ticker', ticker,
                             '--px', '412.5', '--host', '127.0.0.1', '--port', str(self.srv.getsockname()[1]), '--sessions', '4',
-                            '--rate', '500', '--secs', '3', '--phase-secs', '1', '--pause-ms', '300', '--out', str(out), *extra],
+                            '--rate', '500', '--secs', '3', '--phase-secs', '1', '--pause-ms', '300', '--out', str(out),
+                            *(() if self.sequenced else ('--unsequenced',)), *extra],
                            capture_output=True, text=True, timeout=60)
         return p, json.loads(out.read_text()) if out.exists() else None
 
@@ -104,6 +114,38 @@ class BinaryLoad(unittest.TestCase):
         p, r = g.run()
         self.assertEqual(p.returncode, 1); self.assertEqual(r['duplicates'], 1)
 
+
+    def test_sequenced_frames_give_each_session_account_its_own_fresh_stream(self):
+        # FR-XOD-11: the engine keys a stream by (account, streamId), and a session trades 8 accounts.
+        g = Gateway(self)
+        p, r = g.run()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(g.errors, [])
+        self.assertTrue(r['sequenced']); self.assertGreater(r['sent'], 1000); self.assertEqual(r['streams'], 4 * 8)
+        first = set(g.streams)
+        self.assertEqual(len({s for _, s in first}), 4 * 8)   # 4 sessions x 8 accounts, one stream each
+        g.run()                                                # a second run starts new streams at 1, never a reused one
+        self.assertEqual(g.errors, []); self.assertFalse(first & (set(g.streams) - first))
+        self.assertEqual(len(g.streams), 2 * len(first))
+
+    def test_a_sequenced_duplicate_fails_the_run(self):
+        # FR-XOD-03's DUPLICATE with no ref needs a resend, and this load never resends: a frame reached the engine twice
+        g = Gateway(self, receipt=50)
+        p, r = g.run()
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertEqual((r['sequencedDuplicates'], r['rejected'], r['outOfSequence']), (1, 0, 0))
+
+    def test_unsequenced_sends_the_old_frame(self):
+        # --unsequenced, for members older than ADR-090 (BINARY_SEQUENCED=refuse): flags 0, the run's own clOrdIds
+        g = Gateway(self, sequenced=False, reject_every=7)
+        p, r = g.run()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(g.errors, []); self.assertFalse(r['sequenced']); self.assertEqual(r['streams'], 0)
+
+    def test_out_of_sequence_fails_the_run(self):
+        g = Gateway(self, oos=50)
+        p, r = g.run()
+        self.assertEqual(p.returncode, 1); self.assertEqual((r['outOfSequence'], r['rejected']), (1, 0))
 
     def test_the_pods_run_on_loadgen_pool_once_against_the_lookup_only_resolve(self):
         p = subprocess.run([str(LOAD.with_name('binary-load.sh')), '3', 'node:20.18.0-alpine', '--', '--ticker', 'MSFT', '--px', '1'],
