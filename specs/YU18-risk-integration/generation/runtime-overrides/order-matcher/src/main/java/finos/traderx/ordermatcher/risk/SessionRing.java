@@ -1,5 +1,8 @@
 package finos.traderx.ordermatcher.risk;
 
+import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
+
 /**
  * ADR-104 (FR-XOD-19..25): FIX exactly-once in the core. Each FIX session-day ({@code sessionStream}, which the
  * gateway derives from the session key and the FIX day's creation time, the same on every replica) keeps its last
@@ -25,8 +28,19 @@ public final class SessionRing implements SequencedAnswers {
     public static final int LIMIT = 3;
 
     private static final byte PENDING = -1;
-    /** FR-XOD-23: entries per snapshot record, so a full ring never needs one message larger than ~6 KB. */
+    /** Format 15's T_SESSION_RING entries per record (~6 KB, unpacked): read on load, written by tests only. */
     public static final int CHUNK = 256;
+    /** FR-XOD-23 format 16: {@link #writeHead}'s bytes, {int s, long stream, long lastUsed, long inserted,
+     *  long evictedMaxMsgSeq, int n}. */
+    public static final int HEAD_BYTES = 40;
+    /** {@link #writeEntries}: {int s, int start, int count}, then the entries column by column: count longs (key),
+     *  count ints each (check, msgSeq, ref), count bytes (decision). 21 bytes per entry; column-major so each column
+     *  is one sequential copy (measured ~2.5x faster to write than entry-major). */
+    public static final int ENTRIES_HEADER_BYTES = 12;
+    public static final int ENTRY_BYTES = 21;
+    /** Entries per record: the most that pack into one 1,376-byte snapshot message with the record type and the
+     *  packer's length slot, 4 + 4 + 4 + 12 + 21 x 64 = 1,368 (FR-XOD-18 then sends no ring record unpacked). */
+    public static final int ENTRIES_PER_RECORD = 64;
 
     private final int n;
     private final int maxSessions;
@@ -49,6 +63,9 @@ public final class SessionRing implements SequencedAnswers {
 
     private int currentSession = -1;         // the entry the last admit() opened or found
     private int current = -1;
+    private int restoring = -1;              // format 16 load: the session whose head was read last, or -1
+    private int restoreHeld;                 // its entries, as the head declared them
+    private int restoreNext;                 // its next expected entry
 
     public SessionRing(final int n, final int maxSessions, final long idleMillis) {
         if (n < 1 || maxSessions < 1 || idleMillis < 0) {
@@ -202,6 +219,126 @@ public final class SessionRing implements SequencedAnswers {
         return t;
     }
 
+    /** Format 16 entry records for session s: oldest entry first, {@link #ENTRIES_PER_RECORD} each. */
+    public int entryRecords(final int s) {
+        final int held = (int) Math.min(n, inserted[s]);
+        return (held + ENTRIES_PER_RECORD - 1) / ENTRIES_PER_RECORD;
+    }
+
+    /** Session s's head record body at {@code at}; returns its length ({@link #HEAD_BYTES}). Allocates nothing. */
+    public int writeHead(final int s, final MutableDirectBuffer b, final int at) {
+        b.putInt(at, s);
+        b.putLong(at + 4, sessionStreams[s]);
+        b.putLong(at + 12, lastUsed[s]);
+        b.putLong(at + 20, inserted[s]);
+        b.putLong(at + 28, evictedMaxMsgSeq[s]);
+        b.putInt(at + 36, n);
+        return HEAD_BYTES;
+    }
+
+    /** Entry record c of session s at {@code at}, straight from the ring's arrays; returns its length. Allocates nothing. */
+    public int writeEntries(final int s, final int c, final MutableDirectBuffer b, final int at) {
+        final int held = (int) Math.min(n, inserted[s]);
+        final int start = c * ENTRIES_PER_RECORD;
+        final int count = Math.max(0, Math.min(ENTRIES_PER_RECORD, held - start));
+        b.putInt(at, s);
+        b.putInt(at + 4, start);
+        b.putInt(at + 8, count);
+        final long[] k = keys[s];
+        final int[] ch = checks[s], ms = msgSeqs[s], rf = refs[s];
+        final byte[] d = decisions[s];
+        final int col = at + ENTRIES_HEADER_BYTES;
+        // the record's entries are ring positions p0.. in order, wrapping once at most: one run, or two
+        int e = (int) ((inserted[s] - held + start) % n);
+        for (int i = 0; i < count; e = 0) {
+            final int run = Math.min(count - i, n - e);
+            for (int j = 0; j < run; j++) b.putLong(col + 8 * (i + j), k[e + j]);
+            for (int j = 0; j < run; j++) b.putInt(col + 8 * count + 4 * (i + j), ch[e + j]);
+            for (int j = 0; j < run; j++) b.putInt(col + 12 * count + 4 * (i + j), ms[e + j]);
+            for (int j = 0; j < run; j++) b.putInt(col + 16 * count + 4 * (i + j), rf[e + j]);
+            b.putBytes(col + 20 * count + i, d, e, run);
+            i += run;
+        }
+        return ENTRIES_HEADER_BYTES + ENTRY_BYTES * count;
+    }
+
+    /** Restore one {@link #writeHead} record: opens the session with no entries. Sessions arrive in index order, each
+     *  complete before the next. Fails closed, as {@link #restore}. */
+    public void restoreHead(final DirectBuffer b, final int at, final int length) {
+        final int s = b.getInt(at);
+        final long stream = b.getLong(at + 4);
+        final long ins = b.getLong(at + 20);
+        final int ringN = b.getInt(at + 36);
+        if (length != HEAD_BYTES) {
+            throw new IllegalStateException("snapshot corrupt: session ring head " + s + " of " + length + " bytes");
+        }
+        if (ringN != n) {
+            throw new IllegalStateException("snapshot session rings were written with EXACTLY_ONCE_SESSION_RING " + ringN
+                + ", this member runs " + n + " (FR-XOD-23)");
+        }
+        requireRestoreComplete();
+        if (ins < 0) {
+            throw new IllegalStateException("snapshot corrupt: session ring " + s);
+        }
+        if (s != used || s >= maxSessions || findSession(stream) >= 0) {
+            throw new IllegalStateException("snapshot session index " + s + " (expected " + used
+                + ", EXACTLY_ONCE_SESSION_STREAMS " + maxSessions + ")");
+        }
+        used++;
+        open(s, stream);
+        lastUsed[s] = b.getLong(at + 12);
+        evictedMaxMsgSeq[s] = b.getLong(at + 28);
+        restoreHeld = (int) Math.min(n, ins);
+        restoreNext = 0;
+        restoring = s;
+        inserted[s] = ins - restoreHeld;   // the entries go back at their own ring positions, as restore() puts them
+        if (restoreHeld == 0) restoring = -1;   // held is 0 only for a session that was never sent an entry
+    }
+
+    /** Restore one {@link #writeEntries} record of the session whose head came last; contiguous, in order. */
+    public void restoreEntries(final DirectBuffer b, final int at, final int length) {
+        final int s = b.getInt(at);
+        final int start = b.getInt(at + 4);
+        final int count = b.getInt(at + 8);
+        if (restoring < 0 || s != restoring) {
+            throw new IllegalStateException("snapshot corrupt: session ring " + s + " entries without their head");
+        }
+        if (start != restoreNext || count < 1 || count > restoreHeld - start
+            || length != ENTRIES_HEADER_BYTES + ENTRY_BYTES * count) {
+            throw new IllegalStateException("snapshot corrupt: session ring " + s + " entries " + start + "+" + count
+                + " (expected from " + restoreNext + " of " + restoreHeld + ", " + length + " bytes)");
+        }
+        final long[] k = keys[s];
+        final int[] ch = checks[s], ms = msgSeqs[s], rf = refs[s];
+        final byte[] d = decisions[s];
+        final int col = at + ENTRIES_HEADER_BYTES;
+        // entries go back at their own ring positions, in insertion order, and are indexed as admit() indexed them
+        for (int i = 0; i < count; i++) {
+            final int e = (int) (inserted[s] % n);
+            k[e] = b.getLong(col + 8 * i);
+            ch[e] = b.getInt(col + 8 * count + 4 * i);
+            ms[e] = b.getInt(col + 12 * count + 4 * i);
+            rf[e] = b.getInt(col + 16 * count + 4 * i);
+            d[e] = b.getByte(col + 20 * count + i);
+            index(s, e);
+            inserted[s]++;
+        }
+        restoreNext = start + count;
+        if (restoreNext == restoreHeld) {
+            restoring = -1;
+            restoreHeld = restoreNext = 0;   // a restored ring is field-for-field the one format 15's path restores
+        }
+    }
+
+    /** Fails if a format 16 session's head declared entries the stream did not carry. Called at each head and at the
+     *  end of the load. */
+    public void requireRestoreComplete() {
+        if (restoring >= 0) {
+            throw new IllegalStateException("snapshot incomplete: session ring " + restoring + " restored "
+                + restoreNext + " of " + restoreHeld + " entries");
+        }
+    }
+
     /** Restore one {@link #tuple}; sessions arrive in index order, each session's chunks in order. Fails closed. */
     public void restore(final long[] t) {
         final int s = (int) t[0];
@@ -221,6 +358,7 @@ public final class SessionRing implements SequencedAnswers {
                 throw new IllegalStateException("snapshot session index " + s + " (expected " + used
                     + ", EXACTLY_ONCE_SESSION_STREAMS " + maxSessions + ")");
             }
+            requireRestoreComplete();
             used++;
             open(s, t[1]);
         } else if (s != used - 1 || sessionStreams[s] != t[1]) {
@@ -250,6 +388,7 @@ public final class SessionRing implements SequencedAnswers {
         used = 0;
         currentSession = -1;
         current = -1;
+        restoring = -1;
     }
 
     // ----- sessions ------------------------------------------------------------------------------

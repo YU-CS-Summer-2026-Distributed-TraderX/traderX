@@ -274,7 +274,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // restores with no streams, which is exactly the state before any sequenced order was sent.
     // Format 15 (ADR-104): adds the OPTIONAL T_SESSION_RING records. MIN_READABLE stays 9: an older snapshot restores
     // with empty session rings, the state before any session-keyed order was sent.
-    static final int SNAPSHOT_FORMAT = 15; // account tuples append self-match group (13); T_STREAM (14); T_SESSION_RING (15)
+    // Format 16 (ADR-104 §5): the rings as T_SESSION_HEAD + T_SESSION_ENTRIES (64 entries, 21 bytes each), records that
+    // fit one packed snapshot message. Serialization only: format 15's T_SESSION_RING still loads, into the same state.
+    static final int SNAPSHOT_FORMAT = 16; // account tuples append self-match group (13); T_STREAM (14); T_SESSION_RING (15); compact rings (16)
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -351,6 +353,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_STREAM = 21;
     /** Format 15 (ADR-104): one chunk of one session ring, {@link SessionRing#tuple}, sessions in index order. */
     static final int T_SESSION_RING = 22;
+    /** Format 16 (ADR-104 §5): one session's head, {@link SessionRing#writeHead}, sessions in index order. */
+    static final int T_SESSION_HEAD = 23;
+    /** Format 16: up to 64 of that session's entries, {@link SessionRing#writeEntries}, oldest first, after its head. */
+    static final int T_SESSION_ENTRIES = 24;
 
     /** {orderRef, accountId, securityId, side, qty, limitPx, clientOrderKey, eventTimeMillis} --
      *  the complete replicated content of a queued ORDER_NEW. {@code seq}, {@code ingressNanos} and
@@ -606,6 +612,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private volatile long egressDropped, egressClosing;
     boolean egressCoalesce = EGRESS_COALESCE; // package-private for tests
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
+    /** ADR-104 format 16: one ring record at most; a fixed buffer, since ExpandableArrayBuffer's per-put capacity
+     *  check halves the column copies' speed (3.7 vs 7.6 ms for 600 full rings, measured). */
+    private final UnsafeBuffer ringRecordBuffer = new UnsafeBuffer(new byte[4 + Math.max(SessionRing.HEAD_BYTES,
+        SessionRing.ENTRIES_HEADER_BYTES + SessionRing.ENTRY_BYTES * SessionRing.ENTRIES_PER_RECORD)]);
 
     private Cluster cluster;
     // Initialized so a clusterless harness (a capturing test session) can reach offerEgress;
@@ -2254,13 +2264,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         for (int i = 0, n = risk.streams().size(); i < n; i++) {
             writeTuple(writer, T_STREAM, risk.streams().tuple(i));
         }
-        // ADR-104: session rings in index order, each in chunks oldest entry first; restore rebuilds each ring in place.
-        final SessionRing ring = risk.sessionRing();
-        for (int s = 0, n = ring.size(); s < n; s++) {
-            for (int c = 0, k = ring.chunks(s); c < k; c++) {
-                writeTuple(writer, T_SESSION_RING, ring.tuple(s, c));
-            }
-        }
+        writeSessionRings(writer);
         // YU17 contracts in booking order. That order is load-bearing twice over: it is what the
         // rendered cut iterates (so restore must reproduce it exactly, byte for byte), and the
         // idempotency table remembers a contract by its INDEX in this list — restoring them in a
@@ -2650,6 +2654,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 }
                 risk.sessionRing().restore(tuple);
             }
+            case T_SESSION_HEAD -> risk.sessionRing().restoreHead(buffer, offset + 4, length - 4);
+            case T_SESSION_ENTRIES -> risk.sessionRing().restoreEntries(buffer, offset + 4, length - 4);
             case T_RUN_IDENTITY -> {
                 long present=buffer.getLong(offset+4);
                 if (present!=0 && present!=1) {throw new IllegalStateException("RUN_SNAPSHOT_INVALID");}
@@ -2712,6 +2718,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 + Integer.toBinaryString(missing) + " (required " + Integer.toBinaryString(REQUIRED_RECORD_TYPES)
                 + ", seen " + Integer.toBinaryString(recordTypesSeen) + ")");
         }
+        risk.sessionRing().requireRestoreComplete();   // ADR-104 format 16: every head's entries arrived
         if (queuedOrders.size() != restoredQueueDepth) {
             throw new IllegalStateException("snapshot incomplete: session declared queueDepth "
                 + restoredQueueDepth + " but " + queuedOrders.size() + " queued rows were read");
@@ -2773,6 +2780,21 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 idle.idle();
             } else {
                 idle.reset();
+            }
+        }
+    }
+
+    /** ADR-104 format 16: session rings in index order, a head then its entries oldest first, written straight from
+     *  the ring's arrays (nothing allocated, NFR-XOD-05); every record fits one packed message. */
+    void writeSessionRings(final SnapshotWriter writer) {
+        final SessionRing ring = risk.sessionRing();
+        final UnsafeBuffer b = ringRecordBuffer;
+        for (int s = 0, n = ring.size(); s < n; s++) {
+            b.putInt(0, T_SESSION_HEAD);
+            writer.write(b, 0, 4 + ring.writeHead(s, b, 4));
+            for (int c = 0, k = ring.entryRecords(s); c < k; c++) {
+                b.putInt(0, T_SESSION_ENTRIES);
+                writer.write(b, 0, 4 + ring.writeEntries(s, c, b, 4));
             }
         }
     }

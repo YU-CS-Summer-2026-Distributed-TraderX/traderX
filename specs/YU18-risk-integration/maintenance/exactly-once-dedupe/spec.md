@@ -3,7 +3,7 @@
 Status: implemented on `traderX-risk-integration` 2026-10-28; approved by yaakov 2026-10-28. Not deployed: a
 format-14 core rolls only through a snapshot barrier and a whole-cluster restart (ADR-090 §3).
 Amended 2026-11-10 (ADR-104, approved by yaakov): FIX exactly-once moves into the engine as a ClOrdID ring per FIX
-session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept as the `jetstream` option only.
+session-day (FR-XOD-19..25, snapshot format 15, compact rings in format 16, NFR-XOD-04), FR-XOD-12/13 kept as the `jetstream` option only.
 
 - **Scope:** the deterministic core's request dedupe (`BlpRiskState`, `MatchingEngine.answeredAsDuplicate`,
   `MatchingEngineClusteredService` snapshot/load), the gateway→cluster ingress message, the binary gateway frame
@@ -129,9 +129,19 @@ session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept a
 - FR-XOD-22: Once a session's ring has evicted an entry, a NEW marked PossDup or PossResend that misses the ring
   SHALL NOT be booked. It SHALL be refused `SESSION_AGED_OUT` with ref 0, except a PossDup whose MsgSeqNum (unsigned)
   is above every MsgSeqNum the ring evicted, which SHALL be booked as new. A NEW marked neither SHALL be booked.
-- FR-XOD-23: `SNAPSHOT_FORMAT` SHALL be 15 and SHALL add `T_SESSION_RING` records, one per 256 entries, in session
-  order and oldest entry first. Formats 9..14 SHALL load with empty rings. A snapshot written with another N SHALL be
-  refused, naming `EXACTLY_ONCE_SESSION_RING`. Each member SHALL restore the bytes it writes (FR-XOD-18).
+- FR-XOD-23: `SNAPSHOT_FORMAT` SHALL be 16 (format 15 added the rings; 16 re-frames them, ADR-104 §5). Each session,
+  in session order, SHALL be written as one `T_SESSION_HEAD` (type 23: index, stream, last use, inserted, highest
+  evicted MsgSeqNum, N; 44 bytes) followed by `T_SESSION_ENTRIES` (type 24) records of at most 64 entries each, oldest
+  first, 21 bytes per entry after a 12-byte `{index, start, count}`, column by column (count keys, checks,
+  MsgSeqNums, refs, then decisions).
+  - Every ring record SHALL fit one packed snapshot message (4 + 4 + 4 + 12 + 21 × 64 = 1,368 ≤ 1,376 bytes), so
+    the packed writer sends none unpacked.
+  - The ring section SHALL be written from the ring's arrays without allocating (NFR-XOD-05).
+  - Format 15's `T_SESSION_RING` records (256 entries each) SHALL still load, into a ring identical field for field
+    to the one format 16 restores. Formats 9..14 SHALL load with empty rings.
+  - A snapshot written with another N SHALL be refused, naming `EXACTLY_ONCE_SESSION_RING`. Entries without their
+    head, out of order, overlapping, overrunning their record, or fewer than the head declares SHALL be refused.
+  - Each member SHALL restore the bytes it writes (FR-XOD-18).
 - FR-XOD-24: With `FIX_EXACTLY_ONCE=engine`, which requires `FIX_SESSION_STORE=jetstream`, the FIX gateway SHALL send
   every pipelined NewOrderSingle (FR-BSP-02) with the session flag and tail:
   - the session stream: FNV-1a 64 of the session and its store's creation time, so every replica names one FIX day the
@@ -143,7 +153,7 @@ session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept a
   - N SHALL be at least twice the gateway's per-session in-flight bound (`FIX_MAX_QUEUED_WRITES / 2`), so a resend of
     everything one session can have outstanding is answered from the ring. The production render pins both
     (FR-PRG-46).
-  - Members SHALL be format 15 before a gateway sets the flag: an older member refuses the unknown flags.
+  - Members SHALL be format 15 or later before a gateway sets the flag: an older member refuses the unknown flags.
 - FR-XOD-25: A ring answer (DUPLICATE with a ref) that names an order this gateway holds under another ClOrdID is a
   key-and-check collision. The gateway SHALL resubmit the order once under a salted key and answer the client from that
   submission. A collision SHALL NOT refuse a real order.
@@ -164,8 +174,12 @@ session-day (FR-XOD-19..25, snapshot format 15, NFR-XOD-04), FR-XOD-12/13 kept a
   - 54 ms (45–72) with 600 full rings: +25 ms per snapshot;
   - the service callback is 0.3 / 7.4 / 15.3 ms median at 0 / 600 / 1,024 full rings, inside its 50 ms budget.
 
-  The extra halt is mostly the ~6 KB `T_SESSION_RING` records going unpacked (FR-XOD-18) through the snapshot
-  publication and recording. Accepting 54 ms, or chunking the records to fit the packed path, is open with yaakov.
+  The extra halt scales with the ring's bytes (~30 MB, ~0.84 ms per MB through the callback, the snapshot
+  publication and the recording), not with packing: a 6 KB record already spreads its offer cost over ~5 frames.
+  Format 16 (FR-XOD-23, yaakov 2026-11-11) cuts the ring to ~26 MB of records that all pack and removes the per-record
+  `long[]`. Locally (Mac, 5 interleaved JVM runs, ADR-104 Evidence) the callback at 600 / 1,024 full rings falls from
+  5.1 / 8.6 to 3.8 / 6.5 ms median, and `onTakeSnapshot` over IPC from 10.2 / 30.9 to 8.5 / 14.9 ms. The GKE halt at
+  format 16 is not yet measured.
 - NFR-XOD-05 (ADR-104): The apply path of a session-tagged NEW SHALL allocate nothing in steady state, once its
   session's arrays exist: a miss (booked, recorded, the oldest entry evicted), a hit and an AGED_OUT refusal, under the
   cluster apply-path gate (NFR-AC01).
@@ -195,7 +209,7 @@ A/B: with the gate disabled in the rendered tree, the four behaviour cases fail.
 window (it names ref 262,148, not 1), the gap, the unknown start, and the beyond-ring duplicate. The other cases pin
 behaviour that holds either way.
 
-`SessionRingTest` (10 cases) covers FR-XOD-19..23:
+`SessionRingTest` (16 cases, 21 runs) covers FR-XOD-19..23:
 
 | Case | Requirement | Fails if |
 |---|---|---|
@@ -208,6 +222,12 @@ behaviour that holds either way.
 | Two members fed one log write the same snapshot | 23, 08 | bytes differ |
 | A format-14 snapshot restores with empty rings | 23 | the load fails |
 | A snapshot written with another N is refused | 23 | it restores |
+| Format 16 round trip at N = 256 and 2,048 on empty, partial, full, wrapped and mixed rings: every tuple as the original, and field for field (indexes included) the ring format 15's path restores | 23 | a field or index differs (dropping one `index()` on restore fails it) |
+| Format 16 service round trip with full, partial and empty rings; no type 22 written | 23 | bytes differ |
+| A format 15 snapshot (type-22 rings) loads into the state format 16 loads, and re-snapshots as the original | 23 | a field differs |
+| Two independent restores of one packed snapshot plus one tail (held, aged-out, new, new session): same answers, rings and books as each other and the writer | 23, 08 | bytes or answers differ |
+| **Every ring record fits one 1,376-byte packed message**, and every packed message is a `T_PACKED` container; control: format 15's 6,212-byte chunk fails the same check | 23 | a ring record is too large (fails at 256 entries per record) |
+| Format 16 fails closed: another N, entries without head, gap, overlap, overrun, a missing last record (at END too) | 23 | a torn stream restores |
 | Flag and tail must agree, the tails are exclusive, a reused slot keeps nothing, a pre-ADR-104 member's known flags exclude all three | 20 | a shape is mis-decoded |
 
 `FixSessionRingGatewayTest` covers FR-XOD-24/25 over a raw FIX socket against a venue running `SessionRing` (N = 4):
@@ -220,7 +240,9 @@ exact-zero windows of 1M events): with the ring full and evicting, a tagged new 
 of an evicted ClOrdID (AGED_OUT), ticks and a cancel of an unknown ref, each message encoded in place. It fails on
 any allocation in those paths, and asserts that hits and AGED_OUT answers really happened. Its first run measured
 28,000,056 bytes per window: `RiskReason.values()` cloned the enum array for every resend answered with its original
-rejection, in the session ring and in the ADR-090 stream gate alike (now one cached array).
+rejection, in the session ring and in the ADR-090 stream gate alike (now one cached array). Its second case covers the
+format 16 snapshot writer: the ring section of 600 full rings (~26 MB) through the production `SnapshotPacker`
+allocates exactly zero bytes in two consecutive windows (format 15 built a 776-long `long[]` per record).
 
 A/B: with the ring's hook disabled in the rendered tree, run 3, the aged rule and the snapshot round trip fail; the
 in-window resend passes either way (FR-IMRG14 still holds it), and the unit cases pin `SessionRing` directly.
