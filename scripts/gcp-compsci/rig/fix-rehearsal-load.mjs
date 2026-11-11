@@ -17,6 +17,12 @@
 // model, so an order booked within its lag reads as unknown; the settle time is that margin. Each outage records
 // when the socket closed, the Logout text or socket error that closed it, and the Logon attempts it took.
 //
+// With FIX exactly-once on the gateway (ADR-090, FR-XOD-12..14), a resend of a ClOrdID the gateway holds is answered
+// from the original. One older than its rings gets a BusinessMessageReject (35=j, RefMsgType D) whose text begins
+// EXACTLY_ONCE_AGED_OUT or EXACTLY_ONCE_COMMITTED_REF_UNKNOWN. That is a receipt (committed once, its answer lost):
+// it is counted (exactlyOnceAgedOut, exactlyOnceRefUnknown), the order is taken as answered, and its status is asked
+// for. It is never resent again, even when the status reads unknown (unknownAfterReceipt).
+//
 //   node fix-rehearsal-load.mjs --creds FILE --px P [--ticker MSFT] [--rate N/s per session] [--secs S]
 //        [--host 10.90.0.41] [--port 18130] [--out results.json] [--ramp 0.25,0.5,0.75 --step-secs 300]
 //        [--max-end-cancels 2048] [--reconcile-settle-ms 10000]
@@ -57,12 +63,13 @@ const bits = () => ({ a: new Uint8Array(1 << 13),
 function session(compId, { account, password }, index) {
   const s = { compId, account, sent: 0, answered: 0, resent: 0, restated: 0, rejected: 0, sessionRejects: 0,
               duplicateAnswers: 0, filled: 0, duplicateFills: 0, cancelRejects: 0, believedResting: 0, endCancels: 0,
-              statusRequests: 0, foundBooked: 0, foundFilled: 0, reconnects: [], rejectReasons: {} };
+              statusRequests: 0, foundBooked: 0, foundFilled: 0, exactlyOnceAgedOut: 0, exactlyOnceRefUnknown: 0,
+              unknownAfterReceipt: 0, businessRejects: 0, reconnects: [], rejectReasons: {} };
   const open = new Map();          // ClOrdID -> fields of the NewOrderSingle, until its first ExecutionReport
   // One bit per sequence of our own ClOrdIDs (RUN-index-seq), so an hour at rate stays a few MB. resting: last status
   // New / PartiallyFilled; done: Filled, Canceled, Rejected or not open, never resting again (a late New after its
   // cancel or fill, as a pipelined answer can be, does not bring it back).
-  const answered = bits(), filled = bits(), resting = bits(), done = bits();
+  const answered = bits(), filled = bits(), resting = bits(), done = bits(), receipted = bits();   // receipted: never resent
   let restingCount = 0;
   const rest = (n) => { if (n >= 0 && !done.has(n) && !resting.has(n)) { resting.add(n); restingCount++; } };
   const end = (n) => { if (n < 0) return; done.add(n); if (resting.has(n)) { resting.del(n); restingCount--; } };
@@ -83,8 +90,9 @@ function session(compId, { account, password }, index) {
     ['38', 1], ['40', 2], ['44', cfg.px], ['60', stamp()]], resend ? [['97', 'Y']] : []);
   // FR-PRG-44: ask, then resend only what the venue does not know (the 150=I answers below)
   const asking = new Set();
-  const reconcileOpen = () => { sock.cork(); for (const [cl, side] of open) { if (asking.has(cl)) continue; asking.add(cl); s.statusRequests++;
-    write('H', [['11', cl], ['1', account], ['55', cfg.ticker], ['54', side]]); } sock.uncork(); };
+  const ask = (cl, side) => { if (asking.has(cl)) return; asking.add(cl); s.statusRequests++;
+    write('H', [['11', cl], ['1', account], ['55', cfg.ticker], ['54', side]]); };
+  const reconcileOpen = () => { sock.cork(); for (const [cl, side] of open) ask(cl, side); sock.uncork(); };
   const reconcileLater = () => { clearTimeout(resendTimer); resendTimer = setTimeout(reconcileOpen, cfg.settleMs); };
 
   const connect = () => {
@@ -115,6 +123,16 @@ function session(compId, { account, password }, index) {
         }
         if (f['35'] === '1') { write('0', [['112', f['112']]]); continue; }
         if (f['35'] === '3') { s.sessionRejects++; continue; }
+        if (f['35'] === 'j') {   // FR-XOD-13/14: an exactly-once receipt for a resend, or any other business reject
+          const why = /^EXACTLY_ONCE_(AGED_OUT|COMMITTED_REF_UNKNOWN)/.exec(f['58'] || ''), cl = f['379'], k = seqOf(cl || '');
+          if (f['372'] !== 'D' || !why || k < 0) { s.businessRejects++; continue; }
+          why[1] === 'AGED_OUT' ? s.exactlyOnceAgedOut++ : s.exactlyOnceRefUnknown++;
+          receipted.add(k);
+          const side = open.get(cl);
+          if (open.delete(cl)) { answered.add(k); s.answered++; }
+          if (side !== undefined) ask(cl, side);   // query its status; do not resend it
+          continue;
+        }
         if (f['35'] === '9') { end(seqOf(f['41'])); s.cancelRejects++; continue; }   // the venue says it is not open
         if (f['35'] === '5') {   // a Logout that ends the session, or one that refuses a Logon during an outage
           if (closing) continue;
@@ -127,7 +145,11 @@ function session(compId, { account, password }, index) {
           // "unknown order" (OrdStatus Rejected), and only then is it resent. Neither is a restatement nor a reject.
           if (f['150'] === 'I' && (asking.delete(f['11']) || (f['39'] === '8' && /^unknown order/.test(f['58'] || '')))) {
             const cl = f['11'], k = seqOf(cl);
-            if (f['39'] === '8' && /^unknown order/.test(f['58'] || '')) { if (open.has(cl)) { order(cl, open.get(cl), true); s.resent++; } continue; }
+            if (f['39'] === '8' && /^unknown order/.test(f['58'] || '')) {
+              if (receipted.has(k)) s.unknownAfterReceipt++;   // committed once by the receipt; never resent
+              else if (open.has(cl)) { order(cl, open.get(cl), true); s.resent++; }
+              continue;
+            }
             s.foundBooked++;
             if (f['39'] === '2' && k >= 0 && !filled.has(k)) { filled.add(k); s.foundFilled++; }   // its fill report was lost
             if (['0', '1'].includes(f['39'])) rest(k); else if (['2', '4', '8', 'C'].includes(f['39'])) end(k);
@@ -193,6 +215,8 @@ const report = (final) => {
                 selfTradeCancelled: rows.reduce((a, r) => a + (r.selfTradeCancelled || 0), 0),
                 reconnects: rows.reduce((a, r) => a + r.reconnects.length, 0), restingAtEnd: sum('restingAtEnd'),
                 resent: sum('resent'), statusRequests: sum('statusRequests'), foundBooked: sum('foundBooked'), foundFilled: sum('foundFilled'),
+                exactlyOnceAgedOut: sum('exactlyOnceAgedOut'), exactlyOnceRefUnknown: sum('exactlyOnceRefUnknown'),
+                unknownAfterReceipt: sum('unknownAfterReceipt'), businessRejects: sum('businessRejects'),
                 cancelledAtEnd: rows.reduce((a, r) => a + (r.cancelled || 0), 0), believedResting: sum('believedResting'),
                 endCancels: sum('endCancels'), cancelRejects: sum('cancelRejects'), sessions: rows };
   fs.writeFileSync(cfg.out, JSON.stringify(out, null, 2));

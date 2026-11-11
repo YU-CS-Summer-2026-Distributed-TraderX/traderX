@@ -221,6 +221,26 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     and is not this row's.
 
   `test_fix_load.Drain`.
+- **FR-PRG-45** (2026-11-11, exactly-once on for the acceptance, ADR-090): The rehearsal loads SHALL speak the
+  exactly-once wire.
+  - Binary (`binary-load.mjs --sequenced`, FR-XOD-11):
+    - every NEW SHALL set flags bit 0 and carry `streamId (high u32) | seq (low u32)`;
+    - there SHALL be one stream per (session, account), with `streamId` = the run's random nonce XOR
+      `(session << 3 | account index)`, never 0, so a run never continues an earlier run's stream. That is 1,024
+      streams for 8 pods × 16 sessions × 8 accounts, under `EXACTLY_ONCE_MAX_STREAMS`;
+    - `seq` SHALL count each stream's NEWs from 1;
+    - DUPLICATE with orderRef 0 (FR-XOD-03) SHALL be counted `duplicateReceipts` and is not a failure;
+    - OUT_OF_SEQUENCE and STREAM_LIMIT SHALL be counted and SHALL fail the run;
+    - the loads never resend.
+  - FIX (`fix-rehearsal-load.mjs`, FR-XOD-13/14): a BusinessMessageReject for a NewOrderSingle whose text begins
+    `EXACTLY_ONCE_AGED_OUT` or `EXACTLY_ONCE_COMMITTED_REF_UNKNOWN` is a receipt.
+    - It SHALL be counted (`exactlyOnceAgedOut`, `exactlyOnceRefUnknown`), and its order SHALL be taken as answered
+      and asked for by H.
+    - That order SHALL NOT be resent again, even when its status reads unknown (`unknownAfterReceipt`).
+    - Any other BusinessMessageReject SHALL be counted `businessRejects`.
+  - Neither load depends on a resend being booked again. FR-PRG-44's reconcile-before-resend stands.
+
+  `test_binary_load` (sequenced, receipt, out of sequence), `test_fix_load.ExactlyOnce`.
 - **FR-PRG-39:** Only the last epoch's archive SHALL be kept (yaakov 2026-11-08: "Keep only the last one"; all trade
   data is synthetic). Once epoch L's archive is complete (rig-epoch `archived`, its three member-disk snapshots
   `traderx-L-m{0,1,2}` READY and `arc_L_trades` present), the fresh epoch's `up` SHALL delete every older epoch's

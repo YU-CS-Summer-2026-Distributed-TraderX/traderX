@@ -213,5 +213,54 @@ class UnreportedCancels(unittest.TestCase):
         self.assertEqual((result['cancelRejects'], result['restingAtEnd']), (3, sent - 3))
         self.assertEqual(r.returncode, 1, r.stdout)   # a run that leaves orders it believes resting still fails
 
+
+class ExactlyOnce(unittest.TestCase):
+    def test_an_aged_out_resend_is_a_receipt_and_is_never_resent_again(self):
+        # ADR-090 (FR-XOD-13/14): a resend older than the gateway's ring is answered 35=j EXACTLY_ONCE_AGED_OUT, which
+        # means "committed once; query its status, do not resend". The client asks (H) and leaves it, even if unknown.
+        srv = socket.create_server(('127.0.0.1', 0)); self.addCleanup(srv.close)
+        seen = {'resends': [], 'status': 0}
+        out = [1]
+        def reply(conn, fields):
+            conn.sendall(frame([fields[0], ('34', out[0]), ('52', '20261111-02:00:00.000')] + fields[1:])); out[0] += 1
+        def acceptor():
+            conn, _ = srv.accept(); orders = 0; held = None
+            for f in messages(conn):   # connection 1: the 5th order is never answered, then a drain
+                if f['35'] == 'A': reply(conn, [('35', 'A')]); continue
+                if f['35'] != 'D': continue
+                orders += 1
+                if orders == 5: held = f['11']; continue
+                reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
+                if orders == 8: reply(conn, [('35', '5'), ('58', 'gateway draining')]); conn.close(); break
+            conn, _ = srv.accept()
+            for f in messages(conn):
+                if f['35'] == 'A': reply(conn, [('35', 'A')]); continue
+                if f['35'] == 'H':
+                    seen['status'] += 1
+                    known = f['11'] != held   # the held order reads unknown, both times
+                    reply(conn, [('35', '8'), ('11', f['11']), ('39', '0' if known else '8'), ('150', 'I')]
+                          + ([] if known else [('58', 'unknown order; resend with OrderID (37)')]))
+                if f['35'] == 'D' and f.get('97') == 'Y':
+                    seen['resends'].append(f['11'])
+                    reply(conn, [('35', 'j'), ('45', f['34']), ('372', 'D'), ('379', f['11']), ('380', '0'),
+                                 ('58', 'EXACTLY_ONCE_AGED_OUT: older than the ring; query its status')])
+                elif f['35'] == 'D':
+                    reply(conn, [('35', '8'), ('11', f['11']), ('39', '0'), ('150', '0')])
+                if f['35'] == 'F': reply(conn, [('35', '8'), ('11', f['11']), ('41', f['41']), ('39', '4'), ('150', '4')])
+                if f['35'] == '5': reply(conn, [('35', '5')]); conn.close(); return
+        threading.Thread(target=acceptor, daemon=True).start()
+        with tempfile.TemporaryDirectory() as d:
+            creds = Path(d, 'creds.json'); creds.write_text(json.dumps({'CLIENT2': {'account': '9900002', 'password': 'p'}}))
+            r = subprocess.run(['node', str(LOAD), '--creds', str(creds), '--px', '1.00', '--rate', '200', '--secs', '2',
+                                '--drain-secs', '6', '--reconcile-settle-ms', '100', '--host', '127.0.0.1',
+                                '--port', str(srv.getsockname()[1]), '--out', str(Path(d, 'r.json'))],
+                               capture_output=True, text=True, timeout=60)
+            result = json.loads(Path(d, 'r.json').read_text())
+        self.assertEqual(len(seen['resends']), 1, seen)   # resent once, on the first "unknown order"; never again
+        self.assertEqual((result['exactlyOnceAgedOut'], result['exactlyOnceRefUnknown'], result['businessRejects']), (1, 0, 0))
+        self.assertEqual((result['resent'], result['unknownAfterReceipt']), (1, 1))
+        self.assertEqual((result['unanswered'], result['rejected'], result['restingAtEnd']), (0, 0, 0))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)   # a receipt is not a failure
+
 if __name__ == '__main__':
     unittest.main()
