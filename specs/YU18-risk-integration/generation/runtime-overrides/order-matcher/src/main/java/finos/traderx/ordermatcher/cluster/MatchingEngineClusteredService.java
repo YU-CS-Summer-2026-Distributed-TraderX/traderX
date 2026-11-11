@@ -1498,7 +1498,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     return true;
                 }
                 if (decision >= 0) {
-                    refuseSequenced(session, RiskReason.values()[decision], 0);   // its original rejection
+                    refuseSequenced(session, REASONS[decision], 0);   // its original rejection
                 } else if (!streams.beyondWindow() && (risk.knowsKey(key) || queuedByClientKey.containsKey(key))) {
                     return true;   // admitted but answered elsewhere (PRE_OPEN queue): the key table answers it
                 } else {
@@ -1533,7 +1533,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     return true;
                 }
                 if (decision >= 0) {
-                    refuseSequenced(session, RiskReason.values()[decision], 0);   // its original rejection
+                    refuseSequenced(session, REASONS[decision], 0);   // its original rejection
                 } else if (risk.knowsKey(key) || queuedByClientKey.containsKey(key)) {
                     return true;   // admitted but answered elsewhere (PRE_OPEN queue): the key table answers it
                 } else {
@@ -1543,6 +1543,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         return false;
     }
+
+    /** NFR-XOD-05: {@code values()} clones the array, so a resend answered with its original rejection allocated. */
+    private static final RiskReason[] REASONS = RiskReason.values();
 
     private void refuseSequenced(final ClientSession session, final RiskReason reason, final int orderRef) {
         ackBuffer.putLong(0, appliedSeq);

@@ -205,6 +205,7 @@ def clusterAllocationGate = tasks.register('clusterAllocationGateTest', Test) {
   classpath = sourceSets.test.runtimeClasspath
   filter {
     includeTestsMatching 'finos.traderx.ordermatcher.cluster.ClusterServiceAllocationGateTest.*'
+    includeTestsMatching 'finos.traderx.ordermatcher.cluster.SessionRingAllocationGateTest.*'   // ADR-104
   }
   systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '1000000')
   systemProperty 'gate.warmupEvents', System.getProperty('gate.warmupEvents', '250000')
@@ -232,6 +233,7 @@ tasks.named('test', Test) {
     excludeTestsMatching 'finos.traderx.ordermatcher.lmax.OrderTypesAllocationGateTest.*'
     excludeTestsMatching 'finos.traderx.ordermatcher.lmax.AeronTransportAllocationGateTest.*'
     excludeTestsMatching 'finos.traderx.ordermatcher.cluster.ClusterServiceAllocationGateTest.*'
+    excludeTestsMatching 'finos.traderx.ordermatcher.cluster.SessionRingAllocationGateTest.*'
   }
   // YU13: each @SpringBootTest context warm-starts a book per seed security, and the crossing
   // book's per-security level arrays are a few MB each (band = BOOK_LEVELS ticks). Across the
