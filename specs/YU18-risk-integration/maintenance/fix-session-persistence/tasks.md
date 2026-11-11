@@ -34,5 +34,8 @@
       256 uncommitted per session, a lapsed lease retaken with its commit in flight as the fence. Local bench only.
 - [x] FR-GFS-21 on GKE (2026-11-10, slot A, store alone): 600 sessions 140K → 653K bodies/s, commits 2.2 s → 0.12 s.
 - [ ] FR-GFS-21 end to end with FIX clients: acceptance run 3.
+- [x] FR-GFS-24 (2026-11-11): each bucket on its own server's connection; one server's loss fails only its sessions;
+      `prepare.py` renders `NATS_SERVERS` (5) × 4 buckets and the per-server URLs. `FixStorePinnedIT`, `test_prepare`.
+- [ ] FR-GFS-24 on GKE (yaakov's yes, ≈ $10–15): store + capture on the chosen count with the real store.
 - [ ] Ship in a `traderx` rollout (yaakov approves): the first roll resets every live session once.
 - [ ] Fresh-epoch runbook step executed on the next wipe (FR-GFS-13).

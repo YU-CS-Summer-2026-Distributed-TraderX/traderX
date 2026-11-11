@@ -153,6 +153,33 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
   the store's answer depended on arrival order, and `FixStoreGroupCommitIT.aReplacedOwnersLateWriteNeverOverwritesTheNewOwners`
   failed about one run in five. `FixStoreGroupCommitIT.aResendReadAfterTheRefusalHasArrivedStillFails` makes the read
   only after the refusal is back; it fails on the previous store.
+- FR-GFS-24 (2026-11-11, slot B): With `FIX_SESSION_SERVER_URLS` (each server's own client URL, in
+  `FIX_SESSION_PLACEMENT`'s order), the store SHALL write and read each bucket only on a connection to the server
+  that holds it, bucket i on server i mod n. That covers its bodies, `K.seq` compare-and-sets, synchronous writes,
+  loads and resend reads. The lease and order buckets, and bucket creation's checks, stay on the main connection;
+  the lease, the fence and the `K.seq` CAS are unchanged.
+  - **Why:** through the one Service URL a server relayed the publishes for the streams it does not hold, and each
+    server plateaued at ~450K msgs/s in, counting relayed copies, at ~3.3 of 16 cores.
+    - Slot B, 600 sessions, store alone: 3/4/5 servers took 476–726K/805K/964K bodies/s through the Service, and
+      859K/1.15M/1.45M pinned.
+    - With the capture at 301 MB/s: 543K/718K/594–838K through the Service, and 700K/995K/1.26M pinned, with capture
+      acks at 0.2–0.3 ms instead of 20–33 ms.
+    - 450K FIX is ~900K bodies/s plus the capture: 4 pinned servers carry it with ~10% headroom, 5 with ~40%.
+  - **One server's connection lost:** the store SHALL fail closed for that server's buckets only, as ADR-086 §7 does
+    for all of NATS. Their live sessions are dropped and their Logons refused until it reconnects; the other buckets'
+    sessions are served on. A dropped bucket has no other connection, so none of its writes goes to another server.
+    Every server's connection SHALL be up before the store first serves.
+  - **Render:** `scripts/gcp-compsci/prepare.py` SHALL render the gateway's URLs (`nats-<i>.nats-headless`), four
+    buckets per server and the server count from one parameter, `NATS_SERVERS`: 5 pending yaakov's choice of 4 or 5
+    (FR-PRG-41). `rig.sh` sizes `nats-pool` from the same number. `validate()` SHALL refuse URLs not naming every
+    server in placement order, and a bucket count that is not a multiple of the servers.
+  - **Tests:**
+    - `FixStorePinnedIT`, two independent servers: each bucket's stream exists only on its own server; the
+      unpinned control writes both buckets through the main server; losing one server's connection ends only its
+      sessions, which are taken again once it returns. The first and the last fail when every bucket is on the
+      main connection.
+    - `test_prepare`: the per-server URLs, the drift check, a 3-server render through the parameter, and
+      `rig.sh`'s pool size.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` (every bucket, FR-GFS-21) with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.

@@ -60,7 +60,7 @@ SMOKE_ACCOUNT=42422   # fix-smoke.mjs's default account, whose orders the smoke 
 # ADR-103 (FR-PRG-05, FR-PRG-41): members and NATS on c4d-standard-16, three NATS servers (one per node).
 pool_machine(){ case $1 in default-pool) echo e2-standard-4;; engine-pool) echo c4d-standard-16;;
   nats-pool) echo c4d-standard-16;; gateway-pool) echo c4d-standard-8;; history-pool) echo "${HISTORY_MACHINE:-c4d-standard-8}";; esac; }
-NATS_SERVERS=${NATS_SERVERS:-3}   # the nats StatefulSet's replicas: one server per nats-pool node
+NATS_SERVERS=${NATS_SERVERS:-5}   # the nats StatefulSet's replicas: one server per nats-pool node; prepare.py's NATS_SERVERS (FR-GFS-24)
 pool_nodes(){ case $1 in default-pool) echo "$DEFAULT_NODES";; engine-pool) echo 3;; nats-pool) echo "$NATS_SERVERS";;
   gateway-pool) echo "$GATEWAYS";; history-pool) echo 1;; esac; }
 # history-pool (FR-THT-02): ClickHouse and history-feed, the trade history's system of record (ADR-102).

@@ -69,6 +69,27 @@ class Rendering(unittest.TestCase):
         self.assertEqual((env.get('FIX_SESSION_BUCKETS'),env.get('FIX_SESSION_PLACEMENT')),
                          (str(4*n),','.join(f'nats-{i}' for i in range(n))))
         self.assertGreater(n,1)
+        # FR-GFS-24: each server's own client URL, in placement order, so bucket i is written on server i mod n
+        self.assertEqual(env.get('FIX_SESSION_SERVER_URLS'),
+                         ','.join(f'nats://nats-{i}.nats-headless.traderx.svc.cluster.local:4222' for i in range(n)))
+        self.assertEqual(n,module.NATS_SERVERS)
+
+    def test_the_rig_sizes_nats_pool_to_the_rendered_servers(self):
+        # FR-GFS-24: one server per nats-pool node; a pool of fewer leaves servers Pending, their buckets unwritable
+        rig=(Path(__file__).with_name('rig')/'rig.sh').read_text()
+        self.assertEqual(int(re.search(r'^NATS_SERVERS=\$\{NATS_SERVERS:-(\d+)\}',rig,re.M).group(1)),module.NATS_SERVERS)
+
+    def test_the_nats_server_count_is_a_render_parameter(self):
+        # FR-GFS-24: yaakov's 4-or-5 is the one constant; a 3-server render keeps every per-server value in step
+        with tempfile.TemporaryDirectory() as t:
+            module.prepare(Path(t)/'c','test-candidate','10.93.0.10',nats_servers_count=3)
+            docs=list(yaml.safe_load_all((Path(t)/'c/candidate.yaml').read_text()))
+        module.validate(docs)
+        gw=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway')
+        env={e['name']:e.get('value') for e in module.podspec(gw)['containers'][0]['env']}
+        self.assertEqual(module.nats_servers(docs),3)
+        self.assertEqual(env['FIX_SESSION_BUCKETS'],'12')
+        self.assertEqual(env['FIX_SESSION_SERVER_URLS'].count('nats-headless'),3)
 
     def test_member_archive_storageclass_is_rendered(self):
         # Members claim a retained volume of this class; a render without it leaves them Pending.
@@ -508,11 +529,12 @@ class NatsCluster(unittest.TestCase):
         tp=module.read_model_workload(docs)
         return {e['name']:e.get('value') for e in module.podspec(tp)['containers'][0]['env']}
 
-    def test_three_servers_one_per_node_each_on_its_own_hyperdisk(self):
-        sts=self.sts(self.rows); pod=module.podspec(sts); conf=self.conf(self.rows)['nats.conf']
-        self.assertEqual(sts['spec']['replicas'],3)
+    def test_the_rendered_servers_one_per_node_each_on_its_own_hyperdisk(self):
+        # FR-GFS-24: NATS_SERVERS servers (5 pending yaakov's 4-or-5), the routes naming every one
+        sts=self.sts(self.rows); pod=module.podspec(sts); conf=self.conf(self.rows)['nats.conf']; n=module.NATS_SERVERS
+        self.assertEqual(sts['spec']['replicas'],n)
         self.assertEqual(sts['spec']['serviceName'],'nats-headless')
-        self.assertEqual(sorted(re.findall(r'nats://(nats-\d)\.nats-headless\.traderx\.svc',conf)),['nats-0','nats-1','nats-2'])
+        self.assertEqual(sorted(re.findall(r'nats://(nats-\d)\.nats-headless\.traderx\.svc',conf)),[f'nats-{i}' for i in range(n)])
         self.assertRegex(conf,r'(?m)^\s*server_name: POD_NAME$'); self.assertRegex(conf,r'(?m)^\s*server_tags: \["POD_NAME"\]$')
         self.assertIn('POD_NAME',' '.join(pod['containers'][0]['args']))
         self.assertIn({'name':'POD_NAME','valueFrom':{'fieldRef':{'fieldPath':'metadata.name'}}},pod['containers'][0]['env'])
@@ -527,13 +549,14 @@ class NatsCluster(unittest.TestCase):
 
     def test_the_partitioned_capture_is_placed_over_every_server_and_each_store_holds_its_share(self):
         env=self.tp_env(self.snap)
-        self.assertEqual(env['PROJECTION_FEED_STREAM_PLACEMENT'],'nats-0,nats-1,nats-2')
+        n=module.NATS_SERVERS
+        self.assertEqual(env['PROJECTION_FEED_STREAM_PLACEMENT'],','.join(f'nats-{i}' for i in range(n)))
         retention=int(env['PROJECTION_FEED_STREAM_MAX_BYTES'])
         self.assertEqual(retention,module.stream_retention_bytes(450_000,30))
         store=int(re.search(r'max_file_store: (\d+)G',self.conf(self.snap)['nats.conf']).group(1))
         fills=int(env['FILLS_STREAM_MAX_BYTES'])
-        self.assertEqual(store,module.store_per_server_gb(retention,8,3,fills))
-        self.assertGreater(store*10**9,retention*3//8+fills)        # three of eight partitions and the fills stream on the fullest server
+        self.assertEqual(store,module.store_per_server_gb(retention,8,n,fills))
+        self.assertGreater(store*10**9,retention*(-(-8//n))//8+fills)   # ceil(8/n) of eight partitions and the fills stream on the fullest server
         self.assertLess(store*10**9,retention)                      # not sized for the whole feed on one server
         claim=next(t for t in self.sts(self.snap)['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
         self.assertGreater(int(claim['spec']['resources']['requests']['storage'][:-2])*2**30,store*10**9)
@@ -551,7 +574,11 @@ class NatsCluster(unittest.TestCase):
         def placement(docs):
             tp=module.read_model_workload(docs)
             next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_STREAM_PLACEMENT')['value']='nats-0,nats-1'
-        for docs,change,message in ((self.rows,replicas,'fewer than three'),(self.rows,route,'routes must name every server'),
+        def urls(docs):
+            gw=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway')
+            e=next(e for e in module.podspec(gw)['containers'][0]['env'] if e['name']=='FIX_SESSION_SERVER_URLS')
+            e['value']=','.join(e['value'].split(',')[::-1])   # every server named, in the wrong order
+        for docs,change,message in ((self.rows,replicas,'fewer than three'),(self.rows,urls,'its own server'),(self.rows,route,'routes must name every server'),
                                     (self.rows,name,'named and tagged'),(self.rows,spread,'one per node'),
                                     (self.rows,claim,'retained per-server claim'),(self.rows,disk,'Hyperdisk'),
                                     (self.snap,placement,'placed over every server')):

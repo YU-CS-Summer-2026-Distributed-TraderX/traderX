@@ -373,16 +373,42 @@ def set_env(c, values):
 
 
 FIX_SESSION_BUCKETS_PER_SERVER = 4   # FR-GFS-21, GKE 2026-11-10: 1/3/12/24 buckets 140K/378K/653K/624K bodies/s
+# FR-GFS-24 (slot B, 2026-11-11): 450K FIX is ~900K session-store bodies/s plus the capture's ~300 MB/s. Pinned, 4
+# servers carried 995K + capture and 5 carried 1.26M + capture. 5 pending yaakov's choice of 4 or 5.
+NATS_SERVERS = 5
+
+
+def nats_server_count(docs, n):
+    """FR-GFS-24: the NATS cluster at n servers. The StatefulSet's replicas, and the routes naming every server
+    (FR-PRG-41's check), in the base's namespace and form."""
+    nats = next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')
+    nats['spec']['replicas'] = n
+    cm = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')
+    conf = cm['data']['nats.conf']
+    m = re.search(r'(?m)^(\s*)routes: \[\n(.*?)\n\s*\]', conf, re.S)
+    first = re.search(r'nats://nats-0(\.nats-headless\.[^:]+):6222', m.group(2))
+    indent = re.match(r'\s*', m.group(2)).group(0)
+    routes = ',\n'.join(f'{indent}nats://nats-{i}{first.group(1)}:6222' for i in range(n))
+    cm['data']['nats.conf'] = conf[:m.start(2)] + routes + conf[m.end(2):]
+
+
+def nats_server_urls(docs):
+    """FR-GFS-24: each server's own client URL, as the routes name it, in placement order."""
+    conf = next(d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'nats-server-config')['data']['nats.conf']
+    host = re.search(r'nats://nats-0(\.nats-headless\.[^:]+):6222', conf).group(1)
+    return ','.join(f'nats://nats-{i}{host}:4222' for i in range(nats_servers(docs)))
 
 
 def fix_session_buckets(docs):
     """FR-GFS-21: the gateways spread their FIX sessions over four buckets per NATS server, bucket i on server i mod N
     (as FR-DRS-44 places partitions). One FIX_SESSIONS stream on one server capped the 2026-11-10 acceptance run's
-    FIX near 85K orders/s with ~2 s commits: a stream takes its fenced writes one at a time."""
+    FIX near 85K orders/s with ~2 s commits: a stream takes its fenced writes one at a time. FR-GFS-24: each bucket is
+    written on a connection to its own server, never relayed by another."""
     servers = nats_servers(docs)
     gw = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway')
     set_env(podspec(gw)['containers'][0], {'FIX_SESSION_BUCKETS': str(FIX_SESSION_BUCKETS_PER_SERVER * servers),
-                                                   'FIX_SESSION_PLACEMENT': placement(servers)})
+                                                   'FIX_SESSION_PLACEMENT': placement(servers),
+                                                   'FIX_SESSION_SERVER_URLS': nats_server_urls(docs)})
 
 
 def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
@@ -685,6 +711,15 @@ def validate_nats_cluster(docs, require):
     sc = next((d for d in docs if d['kind'] == 'StorageClass' and d['metadata']['name'] == sc_name), None)
     require(sc is not None and sc.get('parameters', {}).get('type') == 'hyperdisk-balanced',
             "NATS: a server's claim is not on a rendered Hyperdisk Balanced class (FR-PRG-41)")
+    gw = next((d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cluster-gateway'), None)
+    gw_env = {e['name']: e.get('value') for e in podspec(gw)['containers'][0].get('env', [])} if gw else {}
+    if gw_env.get('FIX_SESSION_STORE') == 'jetstream':
+        host = re.search(r'nats://nats-0(\.nats-headless\.[^:]+):6222', conf)
+        require(gw_env.get('FIX_SESSION_PLACEMENT') == placement(n)
+                and gw_env.get('FIX_SESSION_SERVER_URLS') == ','.join(f'nats://nats-{i}{host.group(1) if host else ""}:4222' for i in range(n))
+                and int(gw_env.get('FIX_SESSION_BUCKETS') or 0) % n == 0 and int(gw_env.get('FIX_SESSION_BUCKETS') or 0) >= n,
+                "FIX session store: each bucket must be placed on, and written to, its own server: placement, server URLs "
+                "(one per server, in order) and a bucket count that is a multiple of the servers (FR-GFS-21, FR-GFS-24)")
     tp = read_model_workload(docs)
     env = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])} if tp else {}
     if env.get('PROJECTION_FEED_STREAM_LAYOUT') == 'partition':
@@ -985,7 +1020,7 @@ def validate(docs, declared=None):
 
 def prepare(output, tag, dns, published_path=None, public_path=None, population_path=None, exception_published=None,
             fix_test_clients=False, binary_port=None, no_bridges=False, throughput=False, read_model='rows', partitions=None,
-            history_hot_days=0, purge=False, read_model_replicas=None):
+            history_hot_days=0, purge=False, read_model_replicas=None, nats_servers_count=NATS_SERVERS):
     unmapped = unmapped_test_accounts()
     assert not unmapped, f'load test accounts with no counterparty in {COUNTERPARTIES.name}: {unmapped} (FR-PRG-43)'
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -1134,6 +1169,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     raw = raw.replace('.traderx.svc.', f'.{NAMESPACE}.svc.')  # member/ingress FQDNs follow the namespace
     docs = list(yaml.safe_load_all(raw))
     configure_private_runtime(docs)
+    nats_server_count(docs, nats_servers_count)
     clients = load_clients(7 if fix_test_clients is True else int(fix_test_clients or 0)) if fix_test_clients else {}
     if clients:
         add_fix_test_clients(docs, clients)
