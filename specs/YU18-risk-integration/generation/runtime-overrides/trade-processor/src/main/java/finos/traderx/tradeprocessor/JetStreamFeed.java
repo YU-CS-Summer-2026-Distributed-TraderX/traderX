@@ -137,6 +137,17 @@ public final class JetStreamFeed {
     return tags[partition % tags.length].trim();
   }
 
+  /**
+   * FR-DRS-52: the server TRADERX_FILLS is placed on. {@code FILLS_STREAM_PLACEMENT} names it; unset, it is tag
+   * {@code P mod n}, a server holding the fewest partitions (p mod n gives the first P mod n tags one more). It had
+   * been partition 0's server, which under the 5-server render already leads FEED_P0 and FEED_P5: run 5's nats-0 ran
+   * 84-87% disk-busy at 450K and stopped delivering fills.
+   */
+  static String fillsPlacementTag(String fillsPlacement, String placement, int partitionCount) {
+    if (fillsPlacement != null && !fillsPlacement.isBlank()) return fillsPlacement.trim();
+    return placementTag(placement, Math.max(1, partitionCount));
+  }
+
   /** A stream is where it should be when it carries the tag; no tag asked for is wherever the server put it. */
   static boolean placed(Placement have, String tag) {
     return tag == null || (have != null && have.getTags() != null && have.getTags().contains(tag));

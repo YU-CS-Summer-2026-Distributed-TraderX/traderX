@@ -31,7 +31,7 @@ class FillsRouterIT {
   void eachGatewaysSubjectHoldsOnlyItsOwnOrdersEvents() throws Exception {
     String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
     try (Connection nc = Nats.connect(url)) {
-      FillsRouter router = new FillsRouter(nc, "TRADERX_FILLS", 64L << 20, Duration.ofMinutes(5));
+      FillsRouter router = new FillsRouter(nc, "TRADERX_FILLS", 64L << 20, Duration.ofMinutes(5), null);
       FillsRouter.Batch b1 = new FillsRouter.Batch();
       b1.add("gw-a", FillsRouter.bytes("{\"id\":\"7-1\",\"status\":\"NEW\"}"));
       b1.add("gw-b", FillsRouter.bytes("{\"id\":\"7-2\",\"status\":\"NEW\"}"));

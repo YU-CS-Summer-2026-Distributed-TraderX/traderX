@@ -558,6 +558,7 @@ class NatsCluster(unittest.TestCase):
         env=self.tp_env(self.snap)
         n=module.NATS_SERVERS
         self.assertEqual(env['PROJECTION_FEED_STREAM_PLACEMENT'],','.join(f'nats-{i}' for i in range(n)))
+        self.assertEqual((n,env['FILLS_STREAM_PLACEMENT']),(5,'nats-3'))   # FR-DRS-52: one partition there; nats-0 leads FEED_P0 and FEED_P5
         retention=int(env['PROJECTION_FEED_STREAM_MAX_BYTES'])
         self.assertEqual(retention,module.stream_retention_bytes(450_000,30))
         store=int(re.search(r'max_file_store: (\d+)G',self.conf(self.snap)['nats.conf']).group(1))
@@ -581,6 +582,9 @@ class NatsCluster(unittest.TestCase):
         def placement(docs):
             tp=module.read_model_workload(docs)
             next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='PROJECTION_FEED_STREAM_PLACEMENT')['value']='nats-0,nats-1'
+        def fills(docs):
+            tp=module.read_model_workload(docs)
+            next(e for e in module.podspec(tp)['containers'][0]['env'] if e['name']=='FILLS_STREAM_PLACEMENT')['value']='nats-0'
         def urls(docs):
             gw=next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway')
             e=next(e for e in module.podspec(gw)['containers'][0]['env'] if e['name']=='FIX_SESSION_SERVER_URLS')
@@ -588,7 +592,7 @@ class NatsCluster(unittest.TestCase):
         for docs,change,message in ((self.rows,replicas,'fewer than three'),(self.rows,urls,'its own server'),(self.rows,route,'routes must name every server'),
                                     (self.rows,name,'named and tagged'),(self.rows,spread,'one per node'),
                                     (self.rows,claim,'retained per-server claim'),(self.rows,disk,'Hyperdisk'),
-                                    (self.snap,placement,'placed over every server')):
+                                    (self.snap,placement,'placed over every server'),(self.snap,fills,'fewest partitions, not nats-0 with 2')):
             with self.assertRaisesRegex(AssertionError,message,msg=message): module.validate(broken(docs,change))
 
 

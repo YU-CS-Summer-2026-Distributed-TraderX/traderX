@@ -698,6 +698,23 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - Not changed: at 1,000 sides per 10 s sweep the recon classifies 100 sides/s, so under load its cursor falls behind
     and stays behind.
 
+- FR-DRS-52 (450K acceptance run 5, 2026-11-11): `TRADERX_FILLS` (FR-DRS-48) SHALL be placed on a NATS server that
+  holds the fewest capture partitions. `FILLS_STREAM_PLACEMENT` names its tag. Unset, it is tag `P mod n` of
+  `PROJECTION_FEED_STREAM_PLACEMENT`: partition `p` goes to tag `p mod n` (FR-DRS-44), which gives the first `P mod n`
+  servers one partition more, so tag `P mod n` holds the fewest. With no placement either, the server places it.
+  - Why: the fills stream had been created through the single-stream path, which takes partition 0's tag. Under the
+    5-server render that is nats-0, which already holds FEED_P0 and FEED_P5. In run 5's 450K step its disk ran 84-87%
+    busy (PSI ~30%), fill delivery stopped, the gateways evicted 118M tracked orders (FR-FFR-19) and 81.3M fills were
+    lost. Moving partition 0 does not help: fills follows it.
+  - The production render sets `FILLS_STREAM_PLACEMENT=nats-3` (8 partitions over 5 servers; nats-3 holds FEED_P3
+    only). `prepare.py`'s validate refuses a fills stream on a server holding more partitions than the least-loaded one.
+  - A stream already on another server is moved to its tag by a placement update, as FR-DRS-44's are.
+  - Not changed: each server's `max_file_store` is still sized for ceil(P/N) partitions plus the fills stream
+    (FR-PRG-41), which over-provisions the fills server by one partition's share.
+  - Tests: `JetStreamFeedTest#theFillsStreamIsPlacedOnALeastLoadedServer` (nats-3 for 8 over 5; the override wins; for 1-8
+    servers and 1-16 partitions the chosen server holds the minimum; partition 0's tag fails it);
+    `test_prepare.NatsCluster` (the render places it on nats-3; nats-0 is refused). Not yet on GKE.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.
