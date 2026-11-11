@@ -478,7 +478,7 @@ public final class JetStreamFeed {
             log.error("JetStream feed {} could not subscribe; this partition is NOT being projected", filterSubject, x);
             return;
           }
-          log.warn("JetStream feed {} could not resubscribe at {}: {}", filterSubject, last + 1, x.toString());
+          log.warn("JetStream feed {} could not resubscribe at {}: {}", filterSubject, resumeAt(consumer, last), x.toString());
           try { Thread.sleep(1000); } catch (InterruptedException ie) { return; }
           continue;
         }
@@ -492,7 +492,7 @@ public final class JetStreamFeed {
         if (Thread.currentThread().isInterrupted()) { return; }
         // E.g. an ephemeral consumer the server deleted past its inactive threshold while the apply thread held this
         // one at a barrier (FR-DRS-35): a new consumer resumes after the last message handed to the handler.
-        log.warn("JetStream feed {} fetch failed: {}; resuming at stream sequence {}", filterSubject, x.toString(), last + 1);
+        log.warn("JetStream feed {} fetch failed: {}; resuming at stream sequence {}", filterSubject, x.toString(), resumeAt(consumer, last));
         sub = drop(sub);
         try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
         continue;
@@ -505,7 +505,7 @@ public final class JetStreamFeed {
         long end = msgs.get(msgs.size() - 1).metaData().consumerSequence();
         if (first != expect || end - first != msgs.size() - 1) {
           log.warn("JetStream feed {} deliveries {}..{} expected from {}: some were delivered and never reached this feed;"
-              + " resuming at stream sequence {}", filterSubject, first, end, expect, last + 1);
+              + " resuming at stream sequence {}", filterSubject, first, end, expect, resumeAt(consumer, last));
           sub = drop(sub);
           continue;
         }
@@ -526,7 +526,7 @@ public final class JetStreamFeed {
             if (info.getNumPending() == 0 && info.getNumAckPending() == 0) { idle.accept(head); }
           } catch (JetStreamApiException gone) {
             if (gone.getErrorCode() != 404) { log.debug("JetStream feed {} idle check failed: {}", filterSubject, gone.toString()); continue; }
-            log.warn("JetStream feed {} consumer is gone ({}); resuming at stream sequence {}", filterSubject, gone.getMessage(), last + 1);
+            log.warn("JetStream feed {} consumer is gone ({}); resuming at stream sequence {}", filterSubject, gone.getMessage(), resumeAt(consumer, last));
             sub = drop(sub);
           } catch (Exception x) {
             log.debug("JetStream feed {} idle check failed: {}", filterSubject, x.toString());
@@ -540,11 +540,23 @@ public final class JetStreamFeed {
         last = msgs.get(msgs.size() - 1).metaData().streamSequence();
       } catch (Exception x) {
         if (Thread.currentThread().isInterrupted()) { return; }
-        log.error("JetStream feed {} batch of {} failed; redelivering it from stream sequence {}", filterSubject, msgs.size(), last + 1, x);
+        log.error("JetStream feed {} batch of {} failed; redelivering it from stream sequence {}", filterSubject, msgs.size(), resumeAt(consumer, last), x);
         sub = drop(sub);
         try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
       }
     }
+  }
+
+  /**
+   * Where {@link #resume} restarts, for the logs. Before anything was handed over ({@code last} = -1) it is the consumer's
+   * own start, i.e. the cursor the feed was started from, not 0: run 4 (2026-11-11) read "resuming at stream sequence 0"
+   * (it printed {@code last + 1}) as a feed that lost its cursor, when the cursor itself was 0 (FR-DRS-50).
+   */
+  static String resumeAt(ConsumerConfiguration consumer, long last) {
+    if (last >= 0) return String.valueOf(last + 1);
+    if (consumer.getDurable() != null) return "the ack floor + 1 of durable " + consumer.getDurable();
+    return consumer.getDeliverPolicy() == DeliverPolicy.ByStartSequence ? consumer.getStartSequence() + " (its start)"
+        : "its start (" + consumer.getDeliverPolicy() + ")";
   }
 
   /**

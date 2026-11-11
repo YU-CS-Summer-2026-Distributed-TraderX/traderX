@@ -42,4 +42,12 @@ class JetStreamFeedTest {
     org.assertj.core.api.Assertions.assertThat(JetStreamFeed.placed(elsewhere, "nats-1")).as("on another server").isFalse();
     org.assertj.core.api.Assertions.assertThat(JetStreamFeed.placed(elsewhere, "nats-0")).as("on its server").isTrue();
   }
+
+  /** FR-DRS-50: a feed that fails before it handed anything over resumes at its own start, and says so. */
+  @Test void aResumeBeforeAnythingWasHandedOverNamesTheStartNotZero() {
+    assertEquals("1333923", JetStreamFeed.resumeAt(JetStreamFeed.fromSequence("/trades.0", 5, 100), 1333922));
+    assertEquals("1246538 (its start)", JetStreamFeed.resumeAt(JetStreamFeed.fromSequence("/trades.0", 1246538, 100), -1));
+    assertEquals("its start (all)", JetStreamFeed.resumeAt(JetStreamFeed.fromSequence("/trades.1", 1, 100), -1));
+    assertEquals("the ack floor + 1 of durable tp-orders-p1", JetStreamFeed.resumeAt(JetStreamFeed.durable("tp-orders-p1", "/orders.1"), -1));
+  }
 }

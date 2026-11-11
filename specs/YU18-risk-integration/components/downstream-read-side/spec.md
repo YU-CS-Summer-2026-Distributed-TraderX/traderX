@@ -651,6 +651,29 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     16 lanes did this at the promotion. Silence now counts only while publishes wait for receipts, and a catch-up's
     stream read does not count either. `/health` `bridges.*.reconnects` counts dropped connections.
     `ReceiptLanesIT#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`.
+- FR-DRS-50 (450K acceptance run 4, 2026-11-11): A feed's log SHALL name where a resume really starts. Before the feed
+  has handed anything over, that is the consumer's own start, the cursor the feed was started from, and never a bare
+  `last + 1`. `/v2/projection-feed` SHALL report the heap (`heap.usedBytes`, `heap.maxBytes`) beside the order view's
+  `viewSize`.
+  - Why: run 4 read `fetch failed: … Output queue is full; resuming at stream sequence 0` on trade-processor-0's
+    `/trades.1` as a feed that had lost its cursor, followed by an out-of-heap.
+  - Partition 1's cursor was really 0. The 600 FIX sessions trade 7 accounts, 9900002–9900008, which map to
+    partitions 0 and 2–7 (account mod 8), so partition 1 carries no load at all.
+    - Its stream holds nothing, its committed cursor stays 0 (FR-DRS-23's idle rule moves a cursor only to a head
+      above it), and its resume re-pulls nothing.
+    - Partition 0 (account 9900008) committed 1,246,537 on the same replica, with no snapshot failure logged.
+  - The heap is the order view. A memory-only view holds every open order (FR-DRS-30), at 855 B each, measured with
+    300K open orders through the real decode, `OrderView.apply` and the snapshot sets (probe in the run's notes, not
+    shipped).
+    - Stage 1 left 82,160,439 orders resting (`restingAtEnd`). Partition 0 has one account in seven, so about 12M
+      open orders on trade-processor-0, about 10 GB of its 16 GB heap, before replay buffers and garbage headroom.
+    - The other three replicas, with two traded partitions each, ran at 17 GB RSS.
+    - A re-pull holds at most four fetches of 1 MB or less, so it is not the cause.
+    - The bound is the open-order count, which the engine does not limit. A replica needs
+      855 B × (open orders on its partitions) plus headroom, or the open set moved out of the heap. Not built here.
+  - Test: `JetStreamFeedTest#aResumeBeforeAnythingWasHandedOverNamesTheStartNotZero`.
+  - The next acceptance run samples the per-partition cursors (`/v2/projection-feed/accounting`: `streams` against
+    each partition's committed cursor) and `heap` against `orders.viewSize` every 60 s, with `-Xlog:gc`.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
