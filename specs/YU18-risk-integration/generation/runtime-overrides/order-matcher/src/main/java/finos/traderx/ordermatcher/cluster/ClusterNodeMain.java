@@ -24,7 +24,10 @@ import java.util.List;
  *    {@code HOSTNAME} (StatefulSet pod name) when unset;
  *  - {@code CLUSTER_HOSTNAMES}: comma-separated member hostnames indexed by member id;
  *  - {@code CLUSTER_PORT_BASE} (default 21800), {@code CLUSTER_BASE_DIR} (default /data),
- *    {@code CLUSTER_AERON_DIR} (default /dev/shm/aeron-cluster).
+ *    {@code CLUSTER_AERON_DIR} (default /dev/shm/aeron-cluster);
+ *  - {@code CLUSTER_MEDIA_DRIVER} (FR-GMR-14): embedded (default, the Java driver in this JVM) | external (no driver
+ *    here: wait up to {@code CLUSTER_EXTERNAL_DRIVER_WAIT_MS}, default 120000, for a live driver's CnC in
+ *    CLUSTER_AERON_DIR, e.g. the C {@code aeronmd} sidecar, and attach the archive, consensus module and service to it).
  *
  * Health (stdlib HTTP on {@code HEALTH_PORT}, default 8080): {@code /health} reports member id,
  * role, applied sequence, trades, and snapshot count; {@code /ready} is 200 once the service
@@ -98,7 +101,12 @@ public final class ClusterNodeMain {
         // a concluded context cannot be reused. 60s = 6x the mark-file liveness timeout, margin
         // for the CPU starvation that caused the kill; past that, an active mark file means
         // another LIVE process owns the dirs, which waiting cannot fix — terminal.
-        ClusteredMediaDriver launchedDriver = null;
+        // FR-GMR-14: external = the same contexts minus the driver, attached to one already running in aeronDir.
+        final boolean externalDriver = ClusterNodeConfig.externalDriver(System.getenv("CLUSTER_MEDIA_DRIVER"));
+        if (externalDriver) {
+            awaitExternalDriver(aeronDir, Long.parseLong(env("CLUSTER_EXTERNAL_DRIVER_WAIT_MS", "120000")));
+        }
+        AutoCloseable launchedDriver = null;
         ClusteredServiceContainer launchedContainer = null;
         final long markFileDeadline = System.currentTimeMillis() + 60_000;
         while (true) {
@@ -120,7 +128,7 @@ public final class ClusterNodeMain {
                 Runtime.getRuntime().halt(70);
             });
             try {
-                launchedDriver = ClusteredMediaDriver.launch(
+                launchedDriver = externalDriver ? launchOnExternalDriver(contexts, aeronDir) : ClusteredMediaDriver.launch(
                     contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
                 launchedContainer = ClusteredServiceContainer.launch(contexts.container());
                 break;
@@ -144,7 +152,7 @@ public final class ClusterNodeMain {
                 Thread.sleep(2_000);
             }
         }
-        final ClusteredMediaDriver driver = launchedDriver;
+        final AutoCloseable driver = launchedDriver;
         final ClusteredServiceContainer container = launchedContainer;
         final HttpServer health = healthServer(healthPort, memberId, hostnames, service, recon);
         startSnapshotTrigger(aeronDir, service);
@@ -158,15 +166,47 @@ public final class ClusterNodeMain {
             // (143, nothing closed), so "up" is the point from which a TERM closes the member cleanly.
             System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
                 + " portBase=" + portBase + " baseDir=" + baseDir + " idle=[" + ClusterNodeConfig.describeIdle()
-                + "] archiveThreading=" + ClusterNodeConfig.archiveThreading(System.getenv("CLUSTER_ARCHIVE_THREADING")));
+                + "] archiveThreading=" + ClusterNodeConfig.archiveThreading(System.getenv("CLUSTER_ARCHIVE_THREADING"))
+                + " mediaDriver=" + (externalDriver
+                ? "external (threading and driver idle from the external driver's AERON_* config)" : "embedded"));
             barrier.await();
             STOPPING.set(true);
             System.out.println("Cluster node stopping: shutdown signal received");
             health.stop(0);
             CloseHelper.quietCloseAll(container, driver);
             // FR-GMR-04's evidence: printed only after the container, archive and media driver closed.
-            System.out.println("Cluster node down: service container, archive and media driver closed");
+            System.out.println("Cluster node down: service container, archive and "
+                + (externalDriver ? "consensus module closed (external media driver left running)" : "media driver closed"));
         }
+    }
+
+    /** Bounded wait for an external driver (FR-GMR-14): a CnC whose heartbeat is live, so a dead driver's stale
+     *  file left in a Memory emptyDir does not count. Same exit as the mark-file wait: halt, so the pod restarts. */
+    private static void awaitExternalDriver(final String aeronDir, final long waitMs) throws InterruptedException {
+        final long deadline = System.currentTimeMillis() + waitMs;
+        while (!io.aeron.CommonContext.isDriverActive(new File(aeronDir), 10_000, msg -> { })) {
+            if (System.currentTimeMillis() > deadline) {
+                System.err.println("CLUSTER_MEDIA_DRIVER=external: no live media driver in " + aeronDir + " after "
+                    + waitMs + " ms");
+                Runtime.getRuntime().halt(1);
+            }
+            System.out.println("Waiting for external media driver: " + aeronDir);
+            Thread.sleep(500);
+        }
+    }
+
+    /** ClusteredMediaDriver.launch without its MediaDriver: archive, then consensus module, closed in reverse. */
+    private static AutoCloseable launchOnExternalDriver(final ClusterNodeConfig.Contexts contexts, final String aeronDir) {
+        final io.aeron.archive.Archive archive = io.aeron.archive.Archive.launch(contexts.archive());
+        final io.aeron.cluster.ConsensusModule consensusModule;
+        try {
+            consensusModule = io.aeron.cluster.ConsensusModule.launch(
+                contexts.consensusModule().aeronDirectoryName(aeronDir));
+        } catch (final RuntimeException e) {
+            CloseHelper.quietClose(archive);
+            throw e;
+        }
+        return () -> CloseHelper.closeAll(consensusModule, archive);
     }
 
     private static void awaitDns(final List<String> hostnames) throws InterruptedException {

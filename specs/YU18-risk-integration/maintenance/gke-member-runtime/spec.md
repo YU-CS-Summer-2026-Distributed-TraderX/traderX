@@ -81,6 +81,20 @@
   may differ, so it rolls one member at a time.
 - FR-GMR-13 (latency L2): The archive's threading SHALL come from `CLUSTER_ARCHIVE_THREADING` (SHARED, DEDICATED,
   INVOKER). Unset SHALL be SHARED, as before. Any other value SHALL refuse to start. Node-local, as FR-GMR-12.
+- FR-GMR-14 (latency L6a): A member SHALL take its media driver from `CLUSTER_MEDIA_DRIVER`: `embedded` (unset or
+  blank; the Java driver in the member JVM, `ClusteredMediaDriver.launch`, as before) or `external`. Any other value
+  SHALL refuse to start. External SHALL launch no driver: the member waits, bounded by `CLUSTER_EXTERNAL_DRIVER_WAIT_MS`
+  (default 120000), for a driver with a live heartbeat in `CLUSTER_AERON_DIR` (a dead driver's CnC left in the Memory
+  volume does not count), and exits 1 if none comes. It then launches the archive and the consensus module (in that
+  order, as `ClusteredMediaDriver.launch` does) and the service container from the same contexts minus the driver,
+  inside the same mark-file retry loop. SIGTERM closes them and leaves the driver running. The start line SHALL name
+  the mode (`Cluster node up: ... mediaDriver=embedded|external (...)`). Under external the driver's threading and
+  its agents' idle come from the driver's own config (`AERON_THREADING_MODE`, `AERON_<AGENT>_IDLE_STRATEGY`,
+  `AERON_SOCKET_SO_RCVBUF`, ...), not from `CLUSTER_MEDIA_DRIVER_THREADING` or the `CLUSTER_IDLE_STRATEGY*` knobs.
+  The driver for the A/B is the C `aeronmd` at the members' Aeron 1.51.0 (`scripts/gcp-compsci/Dockerfile.aeronmd`),
+  a native sidecar on the member's `shm` volume added by `scripts/bench/latency/aeronmd-sidecar.py`, which mirrors the
+  member's Java driver settings and keeps the pod Guaranteed. No production render changes. Node-local: members may
+  differ (the wire protocol is the same), so it rolls one member at a time.
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the GKE tier.
 
@@ -100,6 +114,13 @@
   `CLUSTER_ARCHIVE_THREADING=dedicated`, exactly the sender and the service spin, every other agent runs lowpark, and
   the archive is DEDICATED. With the sender wired to the member-wide idle instead, that test fails (negative control,
   2026-11-10).
+- SC-GMR-08: `ClusterNodeConfigTest.mediaDriverDefaultsToEmbeddedAndRefusesUnknown` and
+  `ClusterNodeExternalDriverTest` pass. A one-member node in a child JVM with `CLUSTER_MEDIA_DRIVER=external`, its
+  driver in another process (the test JVM's Java driver, or the C driver with `AERONMD=<path>`), elects (CLOSED), acks
+  an order from `ClusterProofClient`, exits 143 on SIGTERM with the driver still alive; with no driver it exits 1.
+  `test_aeronmd_sidecar` passes: the sidecar mirrors the member's directory, threading, idle (per-agent, member-wide,
+  sleep) and `-Daeron.*` driver properties, takes whole CPUs from the member (requests = limits), and refuses a member
+  that is not Guaranteed or an Aeron dir off the Memory volume.
 - SC-GMR-05: `test_prepare.test_member_log_outlives_its_pod` passes: the render's member claims `data` with
   Retain/Retain, and a member with an ephemeral `/data`, or either retention set to Delete, is refused.
   `MemberDnsCacheTest` passes.
