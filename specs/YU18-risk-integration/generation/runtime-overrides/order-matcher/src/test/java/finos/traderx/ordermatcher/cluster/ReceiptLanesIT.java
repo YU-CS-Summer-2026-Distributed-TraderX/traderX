@@ -255,10 +255,11 @@ class ReceiptLanesIT {
     }
 
     /**
-     * FR-DRS-38, past the ring: a lane keeps only its last records once published, so an outage longer than that
-     * loses the older ones - loudly. Sides 1..4 are stored, NATS freezes, sides 5..24 are published into the frozen
-     * socket by a lane whose 16-slot ring keeps the last 8 it published, and NATS restarts: the lane counts a gap
-     * (newest evicted side 16 is past the stream's last, 4), still republishes the 8 it kept, in order, and then 25.
+     * FR-DRS-38, past the ring: an outage longer than the lane's ring loses the oldest records the stream never stored -
+     * loudly. Sides 1..4 are stored, NATS freezes, sides 5..24 are published into the frozen socket by a lane with a
+     * 16-slot ring, and NATS restarts. The lane released nothing the stream had not confirmed (FR-DRS-49; before it, it
+     * kept only the last 8), so the apply thread overwrote 5..8: it counts a gap (the oldest it holds, 9, is past the
+     * stream's last, 4), republishes the 16 it holds, in order, and then 25.
      */
     @Test
     void aNatsOutageLongerThanTheRingIsALoudGap() throws Exception {
@@ -274,13 +275,13 @@ class ReceiptLanesIT {
             js.killAndStart();
             final long caught = System.nanoTime() + Duration.ofSeconds(20).toNanos();
             while (trades.gaps() == 0 && System.nanoTime() < caught) { Thread.sleep(20); }
-            trade(trades, 25); // after the catch-up, so the ring it read held 17..24
-            awaitStored(js.url, 13, 0);
+            trade(trades, 25); // after the catch-up, so the ring it read held 9..24
+            awaitStored(js.url, 21, 0);
             Thread.sleep(500);
             try (Connection nc = Nats.connect(js.url)) {
                 final List<Long> seqs = stored(nc, "/trades", "id").stream()
                     .map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList();
-                assertEquals(List.of(1L, 2L, 3L, 4L, 17L, 18L, 19L, 20L, 21L, 22L, 23L, 24L, 25L), seqs,
+                assertEquals(List.of(1L, 2L, 3L, 4L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L, 21L, 22L, 23L, 24L, 25L), seqs,
                     "the kept sides, in order, after the gap");
             }
             assertEquals(1, trades.gaps(), "the gap is counted");
@@ -378,6 +379,87 @@ class ReceiptLanesIT {
             assertEquals(want, stored(nc, "/trades", "id").stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList(),
                 "the kept sides, in order, after the gap");
             assertEquals(1, trades.gaps(), "the hole is counted: " + trades.json());
+            trades.stop();
+        }
+    }
+
+    /**
+     * FR-DRS-49: a leader dies with more than {@value ReceiptLanes#KEEP} records the stream never stored (11-09: a stalled
+     * volume, then a full archive killed the leader with 1.9M sides unacked). NATS freezes after sides and order events
+     * 1..100 are stored; both members apply 101..100,100, the leader publishing them into the frozen socket; NATS is
+     * killed, so none of them is stored, the leader dies and the follower is promoted. It kept every record the stream
+     * had not confirmed, not just its last 65,536, so each subject reads back every record once, in order.
+     */
+    @Test
+    void aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor() throws Exception {
+        final int stored = 100, more = 100_000;
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final TradeNatsPublisher oldTrades = new TradeNatsPublisher(js.url, "/trades", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            final OrderNatsPublisher oldOrders = new OrderNatsPublisher(js.url, "/orders", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            final OrderNatsPublisher orders = new OrderNatsPublisher(js.url, "/orders", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            trades.role(false);
+            orders.role(false);
+            oldTrades.start();
+            oldOrders.start();
+            trades.start();
+            orders.start();
+            for (int seq = 1; seq <= stored; seq++) { trade(oldTrades, seq); order(oldOrders, seq, 0); trade(trades, seq); order(orders, seq, 0); }
+            awaitStored(js.url, stored, stored);
+
+            js.pause();
+            for (int seq = stored + 1; seq <= stored + more; seq++) { trade(oldTrades, seq); order(oldOrders, seq, 0); trade(trades, seq); order(orders, seq, 0); }
+            final long sent = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+            while ((oldTrades.published() < stored + more || oldOrders.published() < stored + more
+                || !trades.json().contains("\"queuedByPartition\":[0]") || !orders.json().contains("\"queuedByPartition\":[0]"))
+                && System.nanoTime() < sent) { Thread.sleep(20); }
+            assertEquals(stored + more, oldTrades.published(), "the leader sent its tail into the frozen socket");
+            js.killAndStart();     // NATS never reads it
+            oldTrades.stop();      // the leader dies
+            oldOrders.stop();
+            trades.role(true);
+            orders.role(true);
+            awaitStored(js.url, stored + more, stored + more);
+            Thread.sleep(500);     // a duplicate would land after the counts are reached
+
+            try (Connection nc = Nats.connect(js.url)) {
+                assertEquals(tradeIds(false, stored + more), stored(nc, "/trades", "id"), "each trade side once, in apply order: " + trades.json());
+                final List<String> want = new ArrayList<>();
+                for (int seq = 1; seq <= stored + more; seq++) { want.add(seq + "/0"); }
+                assertEquals(want, positions(nc), "each order event once, in apply order: " + orders.json());
+            }
+            assertEquals(more, trades.replayed(), "the successor republished the dead leader's whole tail");
+            assertEquals(0, trades.gaps() + orders.gaps(), trades.json() + " " + orders.json());
+            trades.stop();
+            orders.stop();
+        }
+    }
+
+    /**
+     * FR-DRS-38's stall check counts silence only while publishes wait for receipts. A lane that followed for longer than
+     * the 5 s window and is then promoted keeps its connection: before, its first publish read as 5 s without a receipt
+     * and every lane reconnected and caught up a second time (GKE 2026-11-10 run E3: all 16 lanes at the promotion).
+     */
+    @Test
+    void aPromotionDoesNotReadTheTimeSpentFollowingAsSilence() throws Exception {
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            trades.role(false);
+            trades.start();
+            for (int seq = 1; seq <= 10; seq++) { trade(trades, seq); }
+            Thread.sleep(6_000);   // following, past the stall window
+            trades.role(true);
+            for (int seq = 11; seq <= 2_000; seq++) { trade(trades, seq); }
+            awaitStored(js.url, 2_000, 0);
+            Thread.sleep(1_500);   // the stall check runs while idle
+            assertEquals("0", ReceiptLanes.field(trades.json().getBytes(StandardCharsets.UTF_8), "reconnects"),
+                "the promotion kept its connection: " + trades.json());
+            try (Connection nc = Nats.connect(js.url)) {
+                assertEquals(tradeIds(false, 2_000), stored(nc, "/trades", "id"), "each side once, in order");
+            }
+            assertEquals(0, trades.gaps());
             trades.stop();
         }
     }
