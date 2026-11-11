@@ -36,14 +36,14 @@ arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 
   # latency: its probe died on ECONNREFUSED and the blocks ran without it).
   kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" wait --for=condition=Ready pod -l app=cluster-gateway --timeout=600s >/dev/null
   bash "$B" probe "LP$label" "$PX" 1800
-  # its first window lands at the first whole minute after a 20 s warm-up: up to ~140 s, so poll for 180 s
+  # a window is printed one window after it closes, after a 20 s warm-up: up to ~200 s, so poll for 300 s
   local active="" i
-  for i in $(seq 1 18); do
+  for i in $(seq 1 30); do
     sleep 10; active=$(kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" get job l0-probe -o jsonpath='{.status.active}')
     [ "$active" = 1 ] || { log "REFUSED arm $label: the probe is not running (active=$active)"; exit 1; }
     case "$(kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" logs job/l0-probe 2>/dev/null)" in   # whole read, not grep -q
       *PROBE-WINDOW*) break ;; esac
-    [ "$i" -lt 18 ] || { log "REFUSED arm $label: the probe has written no window in 180 s"; exit 1; }
+    [ "$i" -lt 30 ] || { log "REFUSED arm $label: the probe has written no window in 300 s"; exit 1; }
   done
   case " $rates " in *" 0 "*) bash "$B" block "$label-0" 0 "LP$label" "$PX" 2 ;; esac
   case " $rates " in *" 300 "*) bash "$B" block "$label-300" "$PER300" "L3$label" "$PX" 3 ;; esac
