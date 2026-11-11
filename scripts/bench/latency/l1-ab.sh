@@ -29,7 +29,7 @@ arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 
   local label=$1 a=$3 rates=${4:-0 300 500} env=(CLUSTER_IDLE_STRATEGY=lowpark)
   if [ "$2" = busyspin ]; then env+=("${SPIN[@]}"); else env+=("${NOSPIN[@]}"); fi
   if [ "$a" = DEDICATED ]; then env+=(CLUSTER_ARCHIVE_THREADING=DEDICATED); else env+=(CLUSTER_ARCHIVE_THREADING-); fi
-  EXPECT_IDLE=$(idle "$2") EXPECT_ARCHIVE=$a bash "$B" arm "$label" "${env[@]}"
+  EXPECT_IDLE=$(idle "$2") EXPECT_ARCHIVE=$a EXPECT_DRIVER=${EXPECT_DRIVER:-} bash "$B" arm "$label" "${env[@]}"
   [ -z "${ARM_POST:-}" ] || bash "$B" $ARM_POST   # e.g. ARM_POST="pin 14": after the roll, before the probe
   # A member roll restarts the gateways' cluster sessions: wait for every gateway to be Ready before the probe, and
   # refuse the arm unless the probe is running and has written its first window (S' 2026-11-11 measured no client
@@ -65,6 +65,10 @@ ensure_cycle_flags(){   # once: the thresholds go into the members' JVM options 
 # cores, 2026-11-11), so it cannot tell a 15-CPU shared member from exclusive cores.
 cpuset_width(){ kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" exec order-matcher-cluster-0 -c cluster-node -- \
   cat /sys/fs/cgroup/cpuset.cpus.effective | tr ',' '\n' | awk -F- '{n += ($2 == "" ? 1 : $2 - $1 + 1)} END {print n}'; }
+# binary-load is sequenced by default since ADR-090; members built before it (the l1-eab81f9f images) never answer its
+# stream probes, so it sends nothing (2026-11-11). SEQUENCED=1 for exactly-once builds.
+[ "${SEQUENCED:-0}" = 1 ] || export LOAD_FLAGS=${LOAD_FLAGS:---unsequenced}
+kc_(){ kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" "$@"; }
 OFF_BUSY=net.core.busy_read=0,net.core.busy_poll=0
 OFF_WMEM=net.core.wmem_max=212992,net.core.wmem_default=212992   # the kernel's defaults, stated
 ARMS=("$@"); [ ${#ARMS[@]} -gt 0 ] || ARMS=(N S L1 L2 L12)
@@ -84,13 +88,42 @@ for a in "${ARMS[@]}"; do
     # Latency session 3 (2026-11-11): busy-spin on SHARED cores (production keeps shared, latency-static-cpu-20261111),
     # kernel busy-read and wider send buffers on that shape, then static cores with and without per-thread pinning.
     # Each node-config arm states every knob it touches, so no arm inherits the previous one's sysctls.
-    Nsh)    arm Nsh lowpark SHARED ;;
+    Nsh)    NODE_SYSCTLS=$OFF_BUSY,$OFF_WMEM bash "$B" shared 15; arm Nsh lowpark SHARED ;;
     L1sh)   arm L1sh busyspin SHARED ;;
     L1shbr) NODE_SYSCTLS=$OFF_WMEM,net.core.busy_read=50,net.core.busy_poll=50 bash "$B" shared 15; arm L1shbr busyspin SHARED ;;
     L1shwm) NODE_SYSCTLS=$OFF_BUSY,net.core.wmem_max=16777216,net.core.wmem_default=4194304 bash "$B" shared 15; arm L1shwm busyspin SHARED ;;
     L1st)   NODE_SYSCTLS=$OFF_BUSY,$OFF_WMEM bash "$B" static "$MEMBER_CPU"; arm L1st busyspin SHARED ;;
     L1pin)  ARM_POST="pin $MEMBER_CPU" arm L1pin busyspin SHARED ;;
-    Nsh2)   NODE_SYSCTLS=$OFF_BUSY,$OFF_WMEM bash "$B" shared 15; arm Nsh2 lowpark SHARED 500 ;;   # S again, last: shared, static, shared, static
+    Nsh2)   NODE_SYSCTLS=$OFF_BUSY,$OFF_WMEM bash "$B" shared 15; arm Nsh2 lowpark SHARED 500 ;;
+    # L6a (FR-GMR-14): the external-mode build on the embedded driver at 15 and at 12 CPUs (the member's share in
+    # the C arm), then the C driver sidecar (3 CPUs) beside a 12-CPU member. E vs E12 is the CPU share alone,
+    # E12 vs C is the driver alone. After C the StatefulSet is restored, so later arms run the embedded driver.
+    # A newer engine: never roll one member at a time onto it (mixed versions replaying one log can diverge). Stop
+    # all three, switch, start all three; the gateways take the matching image (its egress format).
+    L1shE)  : "${L6A_IMAGE:?}" "${L6A_GW_IMAGE:?}"
+            kc_ scale sts/order-matcher-cluster --replicas=0 >/dev/null
+            until [ -z "$(kc_ get pods -l app=order-matcher-cluster -o name)" ]; do sleep 5; done
+            kc_ set image sts/order-matcher-cluster "cluster-node=$L6A_IMAGE" >/dev/null
+            kc_ set resources sts/order-matcher-cluster -c cluster-node --requests=cpu=15 --limits=cpu=15 >/dev/null
+            kc_ scale sts/order-matcher-cluster --replicas=3 >/dev/null
+            kc_ set image deploy/cluster-gateway "gateway=$L6A_GW_IMAGE" >/dev/null
+            kc_ rollout status deploy/cluster-gateway --timeout=1200s >/dev/null
+            EXPECT_DRIVER=embedded arm L1shE busyspin SHARED ;;
+    L1shE12) kc_ set resources sts/order-matcher-cluster -c cluster-node --requests=cpu=12 --limits=cpu=12 >/dev/null
+            EXPECT_DRIVER=embedded arm L1shE12 busyspin SHARED ;;
+    L1shC)  : "${AERONMD_IMAGE:?}"
+            kc_ set resources sts/order-matcher-cluster -c cluster-node --requests=cpu=15 --limits=cpu=15 >/dev/null
+            kc_ get sts order-matcher-cluster -o json > "$EVIDENCE/sts-embedded.json"
+            # the arm's env first, so the sidecar mirrors the busy-spin agents (sender/receiver -> noop)
+            kc_ set env sts/order-matcher-cluster -c cluster-node "${SPIN[@]}" CLUSTER_IDLE_STRATEGY=lowpark CLUSTER_ARCHIVE_THREADING- >/dev/null
+            kc_ get sts order-matcher-cluster -o json | python3 "$HERE/aeronmd-sidecar.py" --image "$AERONMD_IMAGE" --cpu 3 \
+              > "$EVIDENCE/sts-cdriver.json"
+            kc_ replace -f "$EVIDENCE/sts-cdriver.json" >/dev/null
+            EXPECT_DRIVER=external arm L1shC busyspin SHARED
+            for m in 0 1 2; do kc_ logs "order-matcher-cluster-$m" -c aeronmd > "$EVIDENCE/aeronmd-m$m.log" 2>&1 || true; done
+            jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp, .metadata.generation, .status)' \
+              "$EVIDENCE/sts-embedded.json" | kc_ replace -f - >/dev/null
+            kc_ rollout status sts/order-matcher-cluster --timeout=1800s >/dev/null; log "L1shC: StatefulSet restored to the embedded driver" ;;   # S again, last: shared, static, shared, static
     N)   cs=$(cpuset_width)
          [ "$cs" -gt 15 ] || { log "REFUSED arm N: m0's cpuset is $cs CPUs, already exclusive; N needs the shared pool"; exit 1; }
          arm N lowpark SHARED ;;

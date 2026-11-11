@@ -65,7 +65,9 @@ policy(){ op /risk/control/policy "{\"policyVersion\":$(date +%s),\"killSwitch\"
 # and one failed read is retried after 3 s, so a refusal is the load's state, not an API hiccup (2026-11-10, arm S).
 load_once(){ local p bad=0; [ "$(kc get pods -l job-name=binary-load --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 8 ] || return 1
   for p in $(kc get pods -l job-name=binary-load --no-headers -o custom-columns=:metadata.name); do
-    case $(kc logs "$p" --tail=1 2>/dev/null) in *' rejected=0 '*) ;; *) bad=1 ;; esac; done; [ $bad = 0 ]; }
+    # sent=0 with rejected=0 passed this check on 2026-11-11 (session 3): a sequenced load against pre-ADR-090
+    # members waited on its stream probes and never sent, and four blocks measured an idle leader.
+    case $(kc logs "$p" --tail=1 2>/dev/null) in *' sent=0 '*) bad=1 ;; *' rejected=0 '*) ;; *) bad=1 ;; esac; done; [ $bad = 0 ]; }
 load_ok(){ load_once || { sleep 3; load_once; }; }
 
 pp_pair(){   # pp_pair LABEL PING_POD PING_CONTAINER PONG_POD PONG_CONTAINER IDLE
@@ -174,7 +176,7 @@ spec:
         image: node:20-alpine
         command: [node, /load/binary-load.mjs, --resolve, "http://order-matcher:18110", --ticker, "$T", --px, "$PX",
                   --sessions, "64", --rate, "$PER", --secs, "3600", --ramp, "0.5", --step-secs, "60",
-                  --phase-secs, "300", --pause-ms, "4000", --max-in-flight, "800", --out, /tmp/results.json]
+                  --phase-secs, "300", --pause-ms, "4000", --max-in-flight, "800", --out, /tmp/results.json${LOAD_FLAGS:+, $LOAD_FLAGS}]
         resources: {requests: {cpu: "1500m", memory: 1Gi}, limits: {memory: 2Gi}}
         volumeMounts: [{name: load, mountPath: /load}]
       volumes: [{name: load, configMap: {name: binary-load}}]
@@ -236,6 +238,9 @@ arm)
     case $up in *"idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE"*) ;;
       *) log "REFUSED arm $LABEL: m$m started with '${up#*baseDir=}', not idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE"; exit 1 ;; esac
   done
+  if [ -n "${EXPECT_DRIVER:-}" ]; then for m in 0 1 2; do   # FR-GMR-14: the start line names the media driver mode
+    case $(kc logs "order-matcher-cluster-$m" -c cluster-node | first_line 'Cluster node up') in *"mediaDriver=$EXPECT_DRIVER"*) ;;
+      *) log "REFUSED arm $LABEL: m$m does not report mediaDriver=$EXPECT_DRIVER"; exit 1 ;; esac; done; fi
   until L=$(leader 2>/dev/null); do sleep 5; done
   log "arm $LABEL: members rolled, leader m$L; idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE; $(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[?(@.name=="cluster-node")].resources.limits.cpu}') CPU" ;;
 static|shared)
