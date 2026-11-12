@@ -50,7 +50,7 @@ public final class OutputEvent {
     public int flags;
     public boolean publishNats;   // bridge this update onto the 009 NATS subjects
 
-    public int orderRef;
+    public long orderRef;
     public int accountId;
     public int securityId;
     public byte side;

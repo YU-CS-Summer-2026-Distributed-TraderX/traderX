@@ -37,7 +37,7 @@ class BinarySequencedFrameTest {
 
     int send(BinaryGatewayAcceptor acc, int flags, long clOrdId, UnsafeBuffer ack) {
         final UnsafeBuffer in = new UnsafeBuffer(new byte[32]);
-        in.putByte(0, (byte) 1);
+        in.putByte(0, (byte) BinaryGatewayAcceptor.MSG_NEW);
         in.putByte(2, (byte) flags);
         in.putInt(4, 7, LE);
         in.putInt(12, 1, LE);
@@ -51,7 +51,7 @@ class BinarySequencedFrameTest {
         // ADR-096 §6: in front of pre-ADR-090 members a sequenced message must never reach the cluster.
         final BinaryGatewayAcceptor acc = new BinaryGatewayAcceptor(fake, 0);
         acc.refuseSequenced = true;
-        final UnsafeBuffer ack = new UnsafeBuffer(new byte[18]);
+        final UnsafeBuffer ack = new UnsafeBuffer(new byte[2 + BinaryGatewayAcceptor.ACK_PAYLOAD_LEN]);
         send(acc, 1, (0xABCDL << 32) | 9L, ack);
         assertEquals(null, seen, "nothing submitted");
         assertEquals(BinaryGatewayAcceptor.STATUS_PROTOCOL_ERROR, ack.getByte(3));
@@ -63,14 +63,14 @@ class BinarySequencedFrameTest {
     @Test
     void theFlagSplitsTheKeyAndTheAckCarriesTheExpectedSequence() {
         final BinaryGatewayAcceptor acc = new BinaryGatewayAcceptor(fake, 0);
-        final UnsafeBuffer ack = new UnsafeBuffer(new byte[18]);
+        final UnsafeBuffer ack = new UnsafeBuffer(new byte[2 + BinaryGatewayAcceptor.ACK_PAYLOAD_LEN]);
         send(acc, 1, (0xABCDL << 32) | 9L, ack);
         assertEquals(0xABCDL, seen[1]);
         assertEquals(9L, seen[2]);
         assertEquals((0xABCDL << 32) | 9L, seen[0], "the key is the client's u64, as unsequenced");
         assertEquals(0, ack.getByte(3), "REJECTED");
         assertEquals(RiskReason.OUT_OF_SEQUENCE.ordinal(), ack.getByte(5));
-        assertEquals(3, ack.getInt(6, LE), "the expected seq in orderRef");
+        assertEquals(3, ack.getLong(6, LE), "the expected seq in orderRef (u64 since ADR-105)");
 
         send(acc, 0, (0xABCDL << 32) | 9L, ack);
         assertEquals(1, seen.length, "no flag: the unsequenced path, unchanged");

@@ -51,7 +51,7 @@ class OrderTypesBaselineTest {
         e.limitPx = limitPx;
         e.eventTimeMillis = 1_000 + nextSeq;
         engine.onEvent(e, nextSeq++, true);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     private int market(int accountId, byte side, int qty) {
@@ -75,7 +75,7 @@ class OrderTypesBaselineTest {
         long cursor = ring.getCursor();
         for (long s = drainedTo + 1; s <= cursor; s++) {
             OutputEvent e = ring.get(s);
-            out.add(new Emitted(e.kind, e.orderRef, e.remainingQty, e.lastExecPx, e.lastFillQty,
+            out.add(new Emitted(e.kind, Math.toIntExact(e.orderRef), e.remainingQty, e.lastExecPx, e.lastFillQty,
                 e.tradePx, e.tradeQty));
         }
         drainedTo = cursor;

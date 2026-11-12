@@ -17,8 +17,7 @@ class AccountTableOverflowTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -40,6 +39,6 @@ class AccountTableOverflowTest {
         o.type = InputEvent.TYPE_ORDER_NEW; o.accountId = 129; o.securityId = 0;
         o.side = InputEvent.SIDE_BUY; o.qty = 1; o.limitPx = 100 * PX;
         apply(s, o);
-        assertEquals(RiskReason.UNKNOWN_ACCOUNT.ordinal(), s.engine().orderState((int) s.nextOrderRef() - 1)[10]);
+        assertEquals(RiskReason.UNKNOWN_ACCOUNT.ordinal(), s.engine().orderState(s.nextOrderRef() - 1)[10]);
     }
 }

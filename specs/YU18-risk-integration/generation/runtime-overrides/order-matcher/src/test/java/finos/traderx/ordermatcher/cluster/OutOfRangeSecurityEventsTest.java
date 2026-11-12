@@ -16,8 +16,7 @@ class OutOfRangeSecurityEventsTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     @Test void outOfRangeSecurityOnTickAndMarketTradeDoesNotThrow() {

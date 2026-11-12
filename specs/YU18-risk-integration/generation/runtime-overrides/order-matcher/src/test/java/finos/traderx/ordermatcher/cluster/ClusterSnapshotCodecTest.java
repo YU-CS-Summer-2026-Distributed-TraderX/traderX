@@ -37,10 +37,10 @@ class ClusterSnapshotCodecTest {
     // externalTradeLegs at 60. A 52-byte buffer here is not a smaller header, it is a read past
     // the end of one — the restore reads both fields unconditionally, exactly as MIN_READABLE ==
     // SNAPSHOT_FORMAT lets it.
-    private static final int HEADER_BYTES = 68;
+    private static final int HEADER_BYTES = 76;   // format 17 (ADR-105) appends the first order ref at 68
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private long timestamp = 1_000_000_000_000L;
 
 
@@ -102,12 +102,12 @@ class ClusterSnapshotCodecTest {
         // Terminal transitions in NON-ascending ref order: cancel 3, then 1. The retention ring
         // is [3, 1]; a restore ordered by ref would flip it to [1, 3] and later evict a
         // different order than a never-restarted replica.
-        apply(source, cancel(3));
-        apply(source, cancel(1));
-        assertArrayEquals(new int[] { 3, 1 }, source.engine().terminalOrderRefsFifo());
+        apply(source, cancel(R(3)));
+        apply(source, cancel(R(1)));
+        assertArrayEquals(new long[] { R(3), R(1) }, source.engine().terminalOrderRefsFifo());
 
         final MatchingEngineClusteredService restored = restore(source);
-        assertArrayEquals(new int[] { 3, 1 }, restored.engine().terminalOrderRefsFifo(),
+        assertArrayEquals(new long[] { R(3), R(1) }, restored.engine().terminalOrderRefsFifo(),
             "terminal eviction order must be replica-identical after recovery");
         assertEquals(source.engine().openOrderTuples().size(), restored.engine().openOrderTuples().size());
         assertEquals(source.risk().reservedNotional(ACCOUNT), restored.risk().reservedNotional(ACCOUNT),
@@ -124,15 +124,15 @@ class ClusterSnapshotCodecTest {
         apply(restored, newOrder(InputEvent.SIDE_BUY, 100 * PX, 77L));
         assertEquals(4, restored.engine().openOrderTuples().size(),
             "duplicate retry creates no order");
-        assertEquals(4, restored.engine().openOrderTuples().stream().mapToLong(t -> t[0]).max().orElse(0),
+        assertEquals(R(4), restored.engine().openOrderTuples().stream().mapToLong(t -> t[0]).max().orElse(0),
             "no new ref appears for a replayed duplicate");
     }
 
     @Test
     void orderRecordsRemainByteIdenticalToLegacyOrdering() {
         final MatchingEngineClusteredService source = newLiveService();
-        apply(source, cancel(3));
-        apply(source, cancel(1));
+        apply(source, cancel(R(3)));
+        apply(source, cancel(R(1)));
 
         final List<byte[]> actual = captureOrderRecords(source);
         final List<byte[]> legacy = legacyOrderRecords(source);
@@ -281,6 +281,7 @@ class ClusterSnapshotCodecTest {
         final UnsafeBuffer header = new UnsafeBuffer(new byte[HEADER_BYTES]);
         header.putInt(0, MatchingEngineClusteredService.T_HEADER);
         header.putInt(4, 2);
+        header.putLong(68, 1L);   // first order ref (format 17)
         assertThrows(IllegalStateException.class, () -> target.onSnapshotRecord(header, 0));
     }
 
@@ -337,6 +338,7 @@ class ClusterSnapshotCodecTest {
         final UnsafeBuffer header = new UnsafeBuffer(new byte[HEADER_BYTES]);
         header.putInt(0, MatchingEngineClusteredService.T_HEADER);
         header.putInt(4, MatchingEngineClusteredService.SNAPSHOT_FORMAT + 1);
+        header.putLong(68, 1L);   // first order ref (format 17)
         assertThrows(IllegalStateException.class, () -> target.onSnapshotRecord(header, 0));
     }
 
@@ -348,6 +350,7 @@ class ClusterSnapshotCodecTest {
         final UnsafeBuffer header = new UnsafeBuffer(new byte[HEADER_BYTES]);
         header.putInt(0, MatchingEngineClusteredService.T_HEADER);
         header.putInt(4, 1);
+        header.putLong(68, 1L);   // first order ref (format 17)
         assertThrows(IllegalStateException.class, () -> target.onSnapshotRecord(header, 0));
     }
 
@@ -490,21 +493,21 @@ class ClusterSnapshotCodecTest {
 
     /** The pre-fix order phase, retained here as an executable byte-order contract. */
     private List<byte[]> legacyOrderRecords(final MatchingEngineClusteredService source) {
-        final int[] terminalFifo = source.engine().terminalOrderRefsFifo();
-        final IntHashSet terminalSet = new IntHashSet(terminalFifo.length * 2);
+        final long[] terminalFifo = source.engine().terminalOrderRefsFifo();
+        final org.agrona.collections.LongHashSet terminalSet = new org.agrona.collections.LongHashSet(terminalFifo.length * 2);
         final List<long[]> allOrders = source.engine().allOrderTuples();
         final List<byte[]> records = new ArrayList<>(allOrders.size());
-        for (final int ref : terminalFifo) {
+        for (final long ref : terminalFifo) {
             terminalSet.add(ref);
         }
         for (final long[] order : allOrders) {
-            if (!terminalSet.contains((int) order[0])) {
+            if (!terminalSet.contains(order[0])) {
                 records.add(orderRecord(order));
             }
         }
-        for (final int ref : terminalFifo) {
+        for (final long ref : terminalFifo) {
             for (final long[] order : allOrders) {
-                if ((int) order[0] == ref) {
+                if (order[0] == ref) {
                     records.add(orderRecord(order));
                     break;
                 }
@@ -555,6 +558,7 @@ class ClusterSnapshotCodecTest {
         final UnsafeBuffer header = new UnsafeBuffer(new byte[HEADER_BYTES]);
         header.putInt(0, MatchingEngineClusteredService.T_HEADER);
         header.putInt(4, MatchingEngineClusteredService.SNAPSHOT_FORMAT);
+        header.putLong(68, 1L);   // first order ref (format 17)
         header.putLong(8, nextRef);
         header.putLong(16, highestIssued);
         header.putLong(24, appliedSeq);
@@ -589,9 +593,8 @@ class ClusterSnapshotCodecTest {
 
     /** Apply through the real ingress path: SBE-encoded, decoded by onSessionMessage. */
     private void apply(final MatchingEngineClusteredService service, final InputEvent event) {
-        codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0);
         service.onSessionMessage(null, ++timestamp, ingressBuffer, 0,
-            AeronReplicationCodec.INPUT_BYTES, null);
+            codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0), null);
     }
 
     private InputEvent newOrder(final byte side, final long limitPx, final long clientOrderKey) {
@@ -632,7 +635,12 @@ class ClusterSnapshotCodecTest {
         return e;
     }
 
-    private InputEvent cancel(final int orderRef) {
+    /** The epoch's n-th order reference (ADR-105: a fresh epoch starts at 2^32 + 1). */
+    static long R(final long n) {
+        return MatchingEngineClusteredService.FIRST_ORDER_REF - 1 + n;
+    }
+
+    private InputEvent cancel(final long orderRef) {
         final InputEvent e = new InputEvent();
         e.type = InputEvent.TYPE_ORDER_CANCEL;
         e.orderRef = orderRef;

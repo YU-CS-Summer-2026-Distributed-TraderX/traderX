@@ -100,7 +100,7 @@ class FixGatewayFillReportTest {
         }
 
         @Override
-        public ExecResult submitCancel(final int orderRef) {
+        public ExecResult submitCancel(final long orderRef) {
             if (cancelAnswer != null) {
                 return cancelAnswer;
             }
@@ -135,7 +135,7 @@ class FixGatewayFillReportTest {
         volatile ExecResult cancelAnswer;   // when set, the engine's answer to every cancel
 
         @Override
-        public ExecResult submitCancel(final int orderRef) {
+        public ExecResult submitCancel(final long orderRef) {
             cancels.incrementAndGet();
             return cancelAnswer != null ? cancelAnswer : new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
@@ -384,8 +384,8 @@ class FixGatewayFillReportTest {
     }
 
     /** Tracks {@code ref} as CLIENT1's working order whose New was sent (what {@code answered} does). */
-    private void track(final int ref) throws Exception {
-        final java.lang.reflect.Method m = FixGatewayAcceptor.class.getDeclaredMethod("track", int.class,
+    private void track(final long ref) throws Exception {
+        final java.lang.reflect.Method m = FixGatewayAcceptor.class.getDeclaredMethod("track", long.class,
             SessionID.class, String.class, String.class, char.class);
         m.setAccessible(true);
         m.invoke(acceptor, ref, new SessionID("FIX.4.4", "TRADERX", "CLIENT1"), "o" + ref, "IBM", '1');

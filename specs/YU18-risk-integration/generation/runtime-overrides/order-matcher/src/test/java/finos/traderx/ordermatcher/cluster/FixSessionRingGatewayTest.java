@@ -89,7 +89,7 @@ class FixSessionRingGatewayTest {
         }
 
         @Override
-        public ExecResult submitCancel(final int orderRef) {
+        public ExecResult submitCancel(final long orderRef) {
             return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
     }

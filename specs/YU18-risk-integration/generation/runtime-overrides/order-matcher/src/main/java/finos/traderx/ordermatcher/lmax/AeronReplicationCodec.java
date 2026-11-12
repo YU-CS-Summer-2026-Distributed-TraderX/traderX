@@ -52,8 +52,17 @@ public final class AeronReplicationCodec {
     public static final int INPUT_FLAG_POSS_DUP = 8;
     public static final int INPUT_FLAG_POSS_RESEND = 16;
     public static final int SESSION_TAIL_BYTES = 16;
+    /**
+     * ADR-105 (FR-ERH-F17): an order reference above 32 bits. The {@code uint32} field then carries its low half and an
+     * 8-byte tail after the block carries the whole ref, {@code u64 orderRef} (little-endian). Set by the encoder, never
+     * by a caller, and only when the ref needs it, so every narrower message and every old log is byte for byte as it
+     * was. Only CANCEL and REPLACE name a ref (a NEW's is assigned in the apply), and neither takes the ADR-090 or ADR-104
+     * tail, so the tails are exclusive. A member older than ADR-105 refuses the flag (UNKNOWN_FLAGS).
+     */
+    public static final int INPUT_FLAG_WIDE_REF = 32;
+    public static final int WIDE_REF_TAIL_BYTES = 8;
     public static final int KNOWN_INPUT_FLAGS = INPUT_FLAG_SHADOW | INPUT_FLAG_SEQUENCED | INPUT_FLAG_SESSION_KEYED
-        | INPUT_FLAG_POSS_DUP | INPUT_FLAG_POSS_RESEND;
+        | INPUT_FLAG_POSS_DUP | INPUT_FLAG_POSS_RESEND | INPUT_FLAG_WIDE_REF;
 
     public static final long ACK_ON_RING = 1L;
     public static final long ACK_JOURNALED = 1L << 1;
@@ -101,21 +110,40 @@ public final class AeronReplicationCodec {
     private long recordingPosition;
     private long journalForceNanos;
 
-    public void encodeInput(MutableDirectBuffer buffer, int offset, InputEvent event,
-                            long primaryInputSeq, long epoch, int flags) {
+    /** Returns the bytes written: {@link #INPUT_BYTES}, plus the ADR-105 tail when the ref needs one. */
+    public int encodeInput(MutableDirectBuffer buffer, int offset, InputEvent event,
+                           long primaryInputSeq, long epoch, int flags) {
+        final boolean wide = wideRef(event, flags);
         inputEncoder.wrapAndApplyHeader(buffer, offset, headerEncoder)
             .inputSeq(primaryInputSeq)
             .eventTimeMillis(event.eventTimeMillis)
             .limitPx(event.limitPx)
             .priceTicks(event.priceTicks)
-            .orderRef(Integer.toUnsignedLong(event.orderRef))
+            .orderRef(event.orderRef & 0xFFFF_FFFFL)
             .accountId(Integer.toUnsignedLong(event.accountId))
             .securityId(Integer.toUnsignedLong(event.securityId))
             .qty(event.qty)
             .leaderEpoch(epoch)
             .commandType((short) Byte.toUnsignedInt(event.type))
             .side((short) Byte.toUnsignedInt(event.side))
-            .flags(flags);
+            .flags(wide ? flags | INPUT_FLAG_WIDE_REF : flags);
+        return wide ? appendWideRef(buffer, offset, INPUT_BYTES, event.orderRef) : INPUT_BYTES;
+    }
+
+    /** ADR-105: the ref needs the tail. A caller that also asked for the ADR-090/104 tail has built a message no member
+     *  decodes, so refuse it here, before the offer. */
+    private static boolean wideRef(final InputEvent event, final int flags) {
+        if ((event.orderRef >>> 32) == 0) return false;
+        if ((flags & (INPUT_FLAG_SEQUENCED | INPUT_FLAG_SESSION_KEYED | INPUT_FLAG_WIDE_REF)) != 0) {
+            throw new IllegalArgumentException("order ref " + event.orderRef + " with input flags " + flags);
+        }
+        return true;
+    }
+
+    private static int appendWideRef(final MutableDirectBuffer buffer, final int offset, final int baseBytes,
+                                     final long orderRef) {
+        buffer.putLong(offset + baseBytes, orderRef, java.nio.ByteOrder.LITTLE_ENDIAN);
+        return baseBytes + WIDE_REF_TAIL_BYTES;
     }
 
     /** ADR-090: append the sequenced tail to a message just encoded at {@code offset} with
@@ -141,14 +169,20 @@ public final class AeronReplicationCodec {
     private long tailSessionStream;
     private int tailCheck;
     private int tailMsgSeq;
+    private long tailOrderRef;
 
     /** Length check for a template that may carry a tail: the flags and the length must agree (FR-XOD-10, FR-XOD-20). */
     private int readSequencedTail(DirectBuffer buffer, int offset, int length, int baseBytes, int flags) {
         final boolean sequenced = (flags & INPUT_FLAG_SEQUENCED) != 0;
         final boolean keyed = (flags & INPUT_FLAG_SESSION_KEYED) != 0;
-        if (sequenced && keyed) return WRONG_LENGTH;
+        final boolean wide = (flags & INPUT_FLAG_WIDE_REF) != 0;
+        if (sequenced && keyed || wide && (sequenced || keyed)) return WRONG_LENGTH;
         if (!keyed && (flags & (INPUT_FLAG_POSS_DUP | INPUT_FLAG_POSS_RESEND)) != 0) return WRONG_LENGTH;
-        if (length != baseBytes + (sequenced ? SEQUENCED_TAIL_BYTES : keyed ? SESSION_TAIL_BYTES : 0)) return WRONG_LENGTH;
+        if (length != baseBytes + (sequenced ? SEQUENCED_TAIL_BYTES : keyed ? SESSION_TAIL_BYTES
+            : wide ? WIDE_REF_TAIL_BYTES : 0)) return WRONG_LENGTH;
+        // ADR-105: one encoding per ref. A tail naming a ref that fits 32 bits was not written by this codec.
+        tailOrderRef = wide ? buffer.getLong(offset + baseBytes, java.nio.ByteOrder.LITTLE_ENDIAN) : -1L;
+        if (wide && ((tailOrderRef >>> 32) == 0 || tailOrderRef < 0)) return WRONG_LENGTH;
         tailStreamId = sequenced ? buffer.getLong(offset + baseBytes, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
         tailStreamSeq = sequenced ? buffer.getLong(offset + baseBytes + 8, java.nio.ByteOrder.LITTLE_ENDIAN) : 0L;
         if (sequenced && tailStreamSeq == 0L) return WRONG_LENGTH;   // seq starts at 1; 0 means unsequenced
@@ -195,7 +229,7 @@ public final class AeronReplicationCodec {
         target.eventTimeMillis = inputDecoder.eventTimeMillis();
         target.limitPx = inputDecoder.limitPx();
         target.priceTicks = inputDecoder.priceTicks();
-        target.orderRef = (int) inputDecoder.orderRef();
+        target.orderRef = tailOrderRef >= 0 ? tailOrderRef : inputDecoder.orderRef();
         target.accountId = (int) inputDecoder.accountId();
         target.securityId = (int) inputDecoder.securityId();
         target.qty = inputDecoder.qty();
@@ -211,21 +245,22 @@ public final class AeronReplicationCodec {
      * exactly as template 1, so the member's ingress handling (request id in inputSeq, the
      * sequenced generator's orderRef overwrite) is the same code path.
      */
-    public void encodeOrderInstruction(MutableDirectBuffer buffer, int offset, InputEvent event,
-                                       long primaryInputSeq, long epoch, int flags) {
+    public int encodeOrderInstruction(MutableDirectBuffer buffer, int offset, InputEvent event,
+                                      long primaryInputSeq, long epoch, int flags) {
+        final boolean wide = wideRef(event, flags);
         instructionEncoder.wrapAndApplyHeader(buffer, offset, headerEncoder)
             .inputSeq(primaryInputSeq)
             .eventTimeMillis(event.eventTimeMillis)
             .limitPx(event.limitPx)
             .priceTicks(event.priceTicks)
-            .orderRef(Integer.toUnsignedLong(event.orderRef))
+            .orderRef(event.orderRef & 0xFFFF_FFFFL)
             .accountId(Integer.toUnsignedLong(event.accountId))
             .securityId(Integer.toUnsignedLong(event.securityId))
             .qty(event.qty)
             .leaderEpoch(epoch)
             .commandType((short) Byte.toUnsignedInt(event.type))
             .side((short) Byte.toUnsignedInt(event.side))
-            .flags(flags)
+            .flags(wide ? flags | INPUT_FLAG_WIDE_REF : flags)
             .orderType((short) Byte.toUnsignedInt(event.orderType))
             .timeInForce((short) Byte.toUnsignedInt(event.tif))
             .pegReference((short) Byte.toUnsignedInt(event.pegRef))
@@ -235,6 +270,7 @@ public final class AeronReplicationCodec {
             .reserved(0)
             .stopPx(event.stopPx)
             .trailValue(event.trailValue);
+        return wide ? appendWideRef(buffer, offset, ORDER_INSTRUCTION_BYTES, event.orderRef) : ORDER_INSTRUCTION_BYTES;
     }
 
     /** YU18: decode template 9 into {@code target}; fails closed exactly as template 1 does. */
@@ -256,7 +292,7 @@ public final class AeronReplicationCodec {
         target.eventTimeMillis = instructionDecoder.eventTimeMillis();
         target.limitPx = instructionDecoder.limitPx();
         target.priceTicks = instructionDecoder.priceTicks();
-        target.orderRef = (int) instructionDecoder.orderRef();
+        target.orderRef = tailOrderRef >= 0 ? tailOrderRef : instructionDecoder.orderRef();
         target.accountId = (int) instructionDecoder.accountId();
         target.securityId = (int) instructionDecoder.securityId();
         target.qty = instructionDecoder.qty();
@@ -386,8 +422,8 @@ public final class AeronReplicationCodec {
     /** {@code sequencedTail}: the length may also carry the ADR-090 tail; the flags decide which (readSequencedTail). */
     private int validateHeader(DirectBuffer buffer, int offset, int length, int expectedLength,
                                boolean sequencedTail, int templateId, int blockLength, int version) {
-        if (length != expectedLength
-            && !(sequencedTail && length == expectedLength + SEQUENCED_TAIL_BYTES)) return WRONG_LENGTH;
+        if (length != expectedLength && !(sequencedTail && (length == expectedLength + SEQUENCED_TAIL_BYTES
+            || length == expectedLength + WIDE_REF_TAIL_BYTES))) return WRONG_LENGTH;
         headerDecoder.wrap(buffer, offset);
         if (headerDecoder.schemaId() != InputEventMessageDecoder.SCHEMA_ID) return WRONG_SCHEMA;
         if (headerDecoder.templateId() != templateId) return WRONG_TEMPLATE;
@@ -409,7 +445,7 @@ public final class AeronReplicationCodec {
         hash = mixLong(hash, inputDecoder.eventTimeMillis());
         hash = mixLong(hash, inputDecoder.limitPx());
         hash = mixLong(hash, inputDecoder.priceTicks());
-        hash = mixInt(hash, (int) inputDecoder.orderRef());
+        hash = mixLong(hash, tailOrderRef >= 0 ? tailOrderRef : inputDecoder.orderRef());
         hash = mixInt(hash, (int) inputDecoder.accountId());
         hash = mixInt(hash, (int) inputDecoder.securityId());
         hash = mixInt(hash, inputDecoder.qty());
@@ -423,7 +459,7 @@ public final class AeronReplicationCodec {
         hash = mixLong(hash, event.eventTimeMillis);
         hash = mixLong(hash, event.limitPx);
         hash = mixLong(hash, event.priceTicks);
-        hash = mixInt(hash, event.orderRef);
+        hash = mixLong(hash, event.orderRef);
         hash = mixInt(hash, event.accountId);
         hash = mixInt(hash, event.securityId);
         hash = mixInt(hash, event.qty);

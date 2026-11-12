@@ -165,7 +165,7 @@ class PipelineTaskDeadlineTest {
         Thread owner(FutureTask<?> task){var t=new Thread(task,"pipeline-owner-fixture");owners.add(t);t.start();return t;}
         int available()throws Exception{var permits=ClusterGatewayMain.Inflight.class.getDeclaredField("permits");permits.setAccessible(true);return((Semaphore)permits.get(inflight)).availablePermits();}
         void ack(ClusterGatewayMain.PendingOrder pending)throws Exception{
-            var buffer=new UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);buffer.putLong(0,99);buffer.putInt(8,17);buffer.putByte(12,OutputEvent.KIND_ORDER_ACCEPTED);buffer.putLong(24,pending.requestId);
+            var buffer=new UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);buffer.putLong(0,99);MatchingEngineClusteredService.putAckRef(buffer,17);buffer.putByte(12,OutputEvent.KIND_ORDER_ACCEPTED);buffer.putLong(24,pending.requestId);
             Method egress=ClusterGatewayMain.class.getDeclaredMethod("onEgress",long.class,long.class,DirectBuffer.class,int.class,int.class,io.aeron.logbuffer.Header.class);egress.setAccessible(true);egress.invoke(gateway,7L,0L,buffer,0,buffer.capacity(),null);
         }
         void wireWitness(ClusterGatewayMain.PendingOrder pending) {

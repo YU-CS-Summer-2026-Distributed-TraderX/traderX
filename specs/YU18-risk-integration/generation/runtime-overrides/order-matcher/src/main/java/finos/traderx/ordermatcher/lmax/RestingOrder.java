@@ -52,7 +52,7 @@ public final class RestingOrder implements finos.traderx.ordermatcher.risk.Reser
     public static final byte SUSPEND_REFERENCE = 1;
     public static final byte SUSPEND_RISK = 2;
 
-    public int orderRef;
+    public long orderRef;
     public int accountId;
     public int securityId;
     public byte side;

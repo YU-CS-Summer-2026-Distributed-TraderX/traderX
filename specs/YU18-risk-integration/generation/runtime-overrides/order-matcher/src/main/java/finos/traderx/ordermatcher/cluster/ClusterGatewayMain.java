@@ -863,9 +863,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // record would return silent garbage from adjacent memory, every lookup would miss, and the
         // gateway would 504 forever while looking connected — so refuse the record and say why,
         // once per streak, rather than guess.
-        if (length != MatchingEngineClusteredService.EGRESS_ACK_LENGTH) {
+        // ADR-105: the format word too. A coalesced message from a 32-byte member can split into records of the right
+        // length (4 x 40 = 5 x 32); only the word tells them apart.
+        if (length != MatchingEngineClusteredService.EGRESS_ACK_LENGTH
+                || !MatchingEngineClusteredService.ackFormatOk(buffer, offset)) {
             if (egressLengthRefused++ == 0) {
                 System.out.println("GATEWAY-ACK-FORMAT-MISMATCH egress length " + length
+                    + (length == MatchingEngineClusteredService.EGRESS_ACK_LENGTH ? " without the ADR-105 format word" : "")
                     + " != " + MatchingEngineClusteredService.EGRESS_ACK_LENGTH
                     + " — members and this gateway are running mixed ack formats; roll them together");
             }
@@ -945,14 +949,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         if (p != null) {
                             if (client != null) {
                                 inflight.ackHistory.completed(requestId, buffer.getLong(offset),
-                                    buffer.getInt(offset + 8), kind, buffer.getByte(offset + 22));
+                                    MatchingEngineClusteredService.ackRef(buffer, offset), kind, buffer.getByte(offset + 22));
                             }
                             completePipelinedHead(p, buffer, offset, kind);
                         } else if (requestId != 0) {
                             pipelineAcksUnmatched++;
                             if (client == null) inflight.ackHistory.unknownSession();
                             else inflight.ackHistory.unmatched(requestId, buffer.getLong(offset),
-                                buffer.getInt(offset + 8), kind, buffer.getByte(offset + 22));
+                                MatchingEngineClusteredService.ackRef(buffer, offset), kind, buffer.getByte(offset + 22));
                         }
                     }
                 }
@@ -1210,14 +1214,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * cancel can interleave with the fence's own orderRef-0 NOT_FOUND ack.
      */
     @Override
-    public ExecResult submitCancel(final int orderRef) {
+    public ExecResult submitCancel(final long orderRef) {
         return submitCancel(orderRef, 0);
     }
 
     /** G3: {@code accountId} is the caller's ownership claim; the engine rejects NOT_ENTITLED when
      *  it names an account other than the order's. 0 = no claim (unchecked). */
     @Override
-    public ExecResult submitCancel(final int orderRef, final int accountId) {
+    public ExecResult submitCancel(final long orderRef, final int accountId) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // 0 is the reserved fence ref
         }
@@ -1236,14 +1240,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * whole lineage (8 is already YU15's {@code RiskExtractMessage}).
      */
     @Override
-    public ExecResult submitReplace(final int orderRef, final String clOrdId, final int qty,
+    public ExecResult submitReplace(final long orderRef, final String clOrdId, final int qty,
                                     final long limitPxTicks) {
         return submitReplace(orderRef, clOrdId, qty, limitPxTicks, 0);
     }
 
     /** G3: with the caller's ownership claim (0 = none). */
     @Override
-    public ExecResult submitReplace(final int orderRef, final String clOrdId, final int qty,
+    public ExecResult submitReplace(final long orderRef, final String clOrdId, final int qty,
                                     final long limitPxTicks, final int accountId) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
@@ -1352,7 +1356,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     /** Binary fast-path atomic replace (lever 4): {@link #submitReplace(int, String, int, long)}
      *  with the client's numeric idempotency key used directly rather than hashed from a String. */
     @Override
-    public ExecResult submitReplace(final int orderRef, final long clientKey, final int qty,
+    public ExecResult submitReplace(final long orderRef, final long clientKey, final int qty,
                                     final long limitPxTicks) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
@@ -1363,7 +1367,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     /** FR-BSP-01: the binary REPLACE without waiting. */
     @Override
-    public CompletableFuture<ExecResult> submitReplaceAsync(final int orderRef, final long clientKey, final int qty,
+    public CompletableFuture<ExecResult> submitReplaceAsync(final long orderRef, final long clientKey, final int qty,
                                                            final long limitPxTicks, final Executor completions) {
         if (orderRef <= 0) {
             return CompletableFuture.completedFuture(new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND));
@@ -1374,7 +1378,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     /** FR-BSP-01: the binary CANCEL (no ownership claim) without waiting. */
     @Override
-    public CompletableFuture<ExecResult> submitCancelAsync(final int orderRef, final Executor completions) {
+    public CompletableFuture<ExecResult> submitCancelAsync(final long orderRef, final Executor completions) {
         if (orderRef <= 0) {
             return CompletableFuture.completedFuture(new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND));
         }
@@ -1395,14 +1399,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     /** YU18 typed REPLACE (FR-OT29). */
     @Override
-    public ExecResult submitTypedReplace(final int orderRef, final String clOrdId, final int qty,
+    public ExecResult submitTypedReplace(final long orderRef, final String clOrdId, final int qty,
                                          final TypedOrder typed) {
         return submitTypedReplace(orderRef, clOrdId, qty, typed, 0);
     }
 
     /** G3: with the caller's ownership claim (0 = none). */
     @Override
-    public ExecResult submitTypedReplace(final int orderRef, final String clOrdId, final int qty,
+    public ExecResult submitTypedReplace(final long orderRef, final String clOrdId, final int qty,
                                          final TypedOrder typed, final int accountId) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND);
@@ -1640,12 +1644,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 event.trailMode = p.typed.trailMode();
                 event.trailValue = p.typed.trailValue();
                 event.admissionSeq = 0L;
-                codec.encodeOrderInstruction(orderBuffer, 0, event, p.requestId, 0, flags);
-                bytes = AeronReplicationCodec.ORDER_INSTRUCTION_BYTES;
+                bytes = codec.encodeOrderInstruction(orderBuffer, 0, event, p.requestId, 0, flags);
             } else {
                 event.clearOrderInstruction();
-                codec.encodeInput(orderBuffer, 0, event, p.requestId, 0, flags);
-                bytes = AeronReplicationCodec.INPUT_BYTES;
+                bytes = codec.encodeInput(orderBuffer, 0, event, p.requestId, 0, flags);
             }
             if (p.streamSeq != 0L) {   // ADR-090: the stream pair, uninterpreted here (FR-XOD-11)
                 bytes = AeronReplicationCodec.appendSequencedTail(orderBuffer, 0, bytes, p.streamId, p.streamSeq);
@@ -1699,7 +1701,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final byte riskReason = buffer.getByte(offset + 22);
         // NEW: orderRef is engine-assigned and carried in the ack. CANCEL/REPLACE: the ack echoes the
         // target ref, but emitOrderNotFound hardcodes 0, so trust the request's ref for those.
-        final int ref = p.type == InputEvent.TYPE_ORDER_NEW ? buffer.getInt(offset + 8) : p.orderRef;
+        final long ref = p.type == InputEvent.TYPE_ORDER_NEW ? MatchingEngineClusteredService.ackRef(buffer, offset) : p.orderRef;
         final boolean accepted;
         if (p.type == InputEvent.TYPE_ORDER_CANCEL) {
             // Gone from the book. A retried cancel of an already-CANCELED order also reports CANCELED
@@ -1787,7 +1789,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 400, "{\"error\":\"orderRef, quantity and limitPrice required\"}");
                 return;
             }
-            final int orderRef = body.get("orderRef").asInt();
+            final long orderRef = requestOrderRef(body.get("orderRef"));
+            if (orderRef < 0) {
+                respond(exchange, 400, "{\"error\":\"orderRef must be a whole number from 1 to " + MatchingEngineClusteredService.MAX_ORDER_REF + "\"}");
+                return;
+            }
             final ExecResult r;
             if (typedReplace) {
                 // YU18 (FR-OT29): the side is the ORDER's, which only the engine holds; the side
@@ -1824,7 +1830,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
     }
 
-    /** POST /cancel {"orderRef":N} — 200 canceled, 409 already terminal, 404 unknown. */
+    /**
+     * ADR-105: a request's orderRef, or -1 unless it is a whole number in [1, MAX_ORDER_REF], given as a JSON number or
+     * as digits. {@code asInt()} kept the low 32 bits of a wider value, which names a different order.
+     */
+    static long requestOrderRef(final JsonNode n) {
+        final long v = n.isIntegralNumber() && n.canConvertToLong() ? n.asLong()
+            : n.isTextual() && n.asText().matches("[0-9]{1,16}") ? Long.parseLong(n.asText()) : -1L;
+        return v >= 1 && v <= MatchingEngineClusteredService.MAX_ORDER_REF ? v : -1L;
+    }
+
+    /** POST /cancel {"orderRef":N} — 200 canceled, 409 already terminal, 404 unknown, 400 not a ref. */
     private void handleCancel(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -1839,7 +1855,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 400, "{\"error\":\"orderRef required\"}");
                 return;
             }
-            final int orderRef = body.get("orderRef").asInt();
+            final long orderRef = requestOrderRef(body.get("orderRef"));
+            if (orderRef < 0) {
+                respond(exchange, 400, "{\"error\":\"orderRef must be a whole number from 1 to " + MatchingEngineClusteredService.MAX_ORDER_REF + "\"}");
+                return;
+            }
             final ExecResult r = submitCancel(orderRef, claim);
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
@@ -3473,9 +3493,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     /** Offer the current {@code event} with backpressure retry (owner thread only). */
     private void offerBlocking() {
-        codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+        final int bytes = codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
         final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
-        while (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) < 0) {
+        while (client.offer(orderBuffer, 0, bytes) < 0) {
             client.pollEgress();
             if (System.currentTimeMillis() > deadline) {
                 throw new IllegalStateException("ingress offer timed out");
@@ -3844,13 +3864,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     /** orderRef out of the read model's epoch-qualified id {@code <epoch>-<orderRef>}; -1 if malformed. */
-    private static int refOf(final String id) {
+    private static long refOf(final String id) {
         final int dash = id.lastIndexOf('-');
         if (dash < 0) {
             return -1;
         }
         try {
-            return Integer.parseInt(id.substring(dash + 1));
+            return Long.parseLong(id.substring(dash + 1));
         } catch (final NumberFormatException e) {
             return -1;
         }
@@ -3867,7 +3887,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final int qty;           // NEW / REPLACE
         final long limitPx;      // NEW / REPLACE
         final long clientKey;    // idempotency key (0 = none); NEW / REPLACE
-        final int orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
+        final long orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
         final int securityId;    // binary NEW only: pre-resolved id (ticker == null); -1 = resolve via ticker
         final CompletableFuture<ExecResult> future = new CompletableFuture<>();
         /** YU18: non-null for a typed NEW / REPLACE, which is encoded as SBE template 9. */
@@ -3912,12 +3932,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         int sessionFlags;
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
-                     final int qty, final long limitPx, final long clientKey, final int orderRef) {
+                     final int qty, final long limitPx, final long clientKey, final long orderRef) {
             this(type, accountId, ticker, side, qty, limitPx, clientKey, orderRef, -1);
         }
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
-                     final int qty, final long limitPx, final long clientKey, final int orderRef,
+                     final int qty, final long limitPx, final long clientKey, final long orderRef,
                      final int securityId) {
             this.type = type;
             this.accountId = accountId;

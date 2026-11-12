@@ -26,8 +26,7 @@ class TargetedRequestOwnershipTest {
     final List<long[]> acks = new ArrayList<>();   // {kind, orderRef, riskReason}
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -37,7 +36,7 @@ class TargetedRequestOwnershipTest {
         return e;
     }
 
-    InputEvent targeted(byte type, int ref, int acct, int qty, long px) {
+    InputEvent targeted(byte type, long ref, int acct, int qty, long px) {
         InputEvent e = new InputEvent();
         e.type = type; e.orderRef = ref; e.accountId = acct; e.qty = qty; e.limitPx = px;
         return e;
@@ -61,7 +60,7 @@ class TargetedRequestOwnershipTest {
         return s;
     }
 
-    int ref(MatchingEngineClusteredService s) { return (int) s.nextOrderRef() - 1; }
+    long ref(MatchingEngineClusteredService s) { return s.nextOrderRef() - 1; }
 
     @Test void foreignCancelIsRefusedAndOrderStands() {
         final MatchingEngineClusteredService s = withRestingOrder();

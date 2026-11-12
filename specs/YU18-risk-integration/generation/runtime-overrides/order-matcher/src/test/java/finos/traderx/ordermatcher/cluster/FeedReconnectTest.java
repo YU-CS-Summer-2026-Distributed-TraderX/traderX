@@ -197,7 +197,7 @@ class FeedReconnectTest {
                 var input=new InputEvent();assertEquals(AeronReplicationCodec.OK,codec.tryDecodeInput(bytes,offset,length,input));assertEquals(InputEvent.TYPE_PRICE_TICK,input.type);tickAttempts++;if(throwAfterTick){ticks.add(input);throw new io.aeron.exceptions.AeronException("synthetic exception after possibly accepted frame");}long result=onTick.getAsLong();if(result>=0)ticks.add(input);return result;
             });
         }
-        void ack(long request,int id,long nativeSession){var bytes=new UnsafeBuffer(new byte[21]);bytes.putInt(8,id);bytes.putByte(12,MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED);bytes.putLong(13,request);listener.onMessage(nativeSession,0,bytes,0,21,null);}
+        void ack(long request,int id,long nativeSession){var bytes=new UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);MatchingEngineClusteredService.putAckRef(bytes,id);bytes.putByte(12,MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED);bytes.putLong(13,request);listener.onMessage(nativeSession,0,bytes,0,bytes.capacity(),null);}
     }
     static final class Fixture implements AutoCloseable{
         final Clock clock=new Clock();final MediaDriver driver=mock(MediaDriver.class);final Connection broker=mock(Connection.class);final Dispatcher dispatcher=mock(Dispatcher.class);

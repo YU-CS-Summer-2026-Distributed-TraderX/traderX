@@ -16,8 +16,7 @@ class PartialFillReleaseTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -43,7 +42,7 @@ class PartialFillReleaseTest {
         InputEvent t = new InputEvent(); t.type = InputEvent.TYPE_PRICE_TICK; t.securityId = 0; t.priceTicks = 100 * PX;
         apply(s, t);
         apply(s, order(1, InputEvent.SIDE_BUY, 1_000_000, 100 * PX));
-        final int big = (int) s.nextOrderRef() - 1;
+        final long big = s.nextOrderRef() - 1;
         apply(s, order(2, InputEvent.SIDE_SELL, 900_000, 100 * PX));
         long[] st = s.engine().orderState(big);
         assertEquals(RestingOrder.STATUS_PARTIALLY_FILLED, st[0]);

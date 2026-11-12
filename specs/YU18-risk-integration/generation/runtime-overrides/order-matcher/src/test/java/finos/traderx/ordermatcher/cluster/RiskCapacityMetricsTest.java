@@ -57,7 +57,7 @@ class RiskCapacityMetricsTest {
         final var service = seeded();
         try (final Endpoint endpoint = new Endpoint(service)) {
             apply(service, order(A, (byte)0, 10, PX));
-            final int buyRef = (int)service.nextOrderRef() - 1;
+            final long buyRef = service.nextOrderRef() - 1;
             String body = endpoint.scrape();
             assertEquals(10 * PX, member(body, TOTAL));
             assertEquals(10 * PX, account(body, RESERVED, A));
@@ -312,10 +312,9 @@ class RiskCapacityMetricsTest {
 
     private void apply(final MatchingEngineClusteredService service, final InputEvent event) {
         final var codec = new AeronReplicationCodec();
-        final var buffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+        final var buffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
         event.eventTimeMillis = ++timestamp;
-        codec.encodeInput(buffer, 0, event, 0, 0, 0);
-        service.onSessionMessage(null, timestamp, buffer, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        service.onSessionMessage(null, timestamp, buffer, 0, codec.encodeInput(buffer, 0, event, 0, 0, 0), null);
     }
 
     /** Parse real samples; missing or duplicate series are failures, never interpreted as zero. */

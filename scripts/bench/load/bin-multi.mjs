@@ -15,10 +15,10 @@
 // even connections BUY on ACCT_BUY, odd SELL on ACCT_SELL, both at PRICE -> they cross in the one engine.
 //
 // Wire (all little-endian, incl. the 2-byte length prefix), matching BinaryGatewayAcceptor:
-//   NEW  frame = [u16 len=32][u8 type=1][u8 side(0=BUY,1=SELL)][2 pad][u32 acct][u32 sec][i32 qty]
+//   NEW  frame = [u16 len=32][u8 type=0x11][u8 side(0=BUY,1=SELL)][2 pad][u32 acct][u32 sec][i32 qty]
 //                [i64 limitPx x1e6][u64 clOrdId]
-//   ACK  frame = [u16 len=16][u8 0x81][u8 status(1=acc,0=rej,2=ambig,3=proto)][u8 kind][u8 riskReason]
-//                [u32 orderRef][u64 clOrdId echo]
+//   ACK  frame = [u16 len=20][u8 0x82][u8 status(1=acc,0=rej,2=ambig,3=proto)][u8 kind][u8 riskReason]
+//                [u64 orderRef][u64 clOrdId echo]                                     (ADR-105: 64-bit refs)
 import net from 'node:net';
 import http from 'node:http';
 
@@ -80,7 +80,7 @@ const memNextRef = () => (MEMBER
 function frameNew(side, account, security, qty, pxTicks, clOrdId) {
   const b = Buffer.allocUnsafe(2 + 32);
   b.writeUInt16LE(32, 0);                    // length prefix
-  b.writeUInt8(1, 2);                        // payload[0] msgType = NEW
+  b.writeUInt8(0x11, 2);                     // payload[0] msgType = NEW (ADR-105)
   b.writeUInt8(side, 3);                     // payload[1] side (0=BUY,1=SELL)
   b.writeUInt16LE(0, 4);                     // payload[2..3] pad
   b.writeUInt32LE(account, 6);               // payload[4]
@@ -131,7 +131,7 @@ class Conn {
       const len = this.acc.readUInt16LE(0);
       if (this.acc.length < 2 + len) break;
       const p = 2; // payload start
-      const clOrdId = Number(this.acc.readBigUInt64LE(p + 8));
+      const clOrdId = Number(this.acc.readBigUInt64LE(p + 12));
       const intended = this.inflight.get(clOrdId);
       if (intended !== undefined) {
         this.inflight.delete(clOrdId);

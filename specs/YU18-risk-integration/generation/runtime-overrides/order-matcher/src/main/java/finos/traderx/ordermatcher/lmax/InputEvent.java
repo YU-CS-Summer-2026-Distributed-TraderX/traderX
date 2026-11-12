@@ -214,7 +214,7 @@ public final class InputEvent {
 
     public long seq;              // global sequence number (the ring sequence)
     public byte type;
-    public int orderRef;          // numeric part of the external ord-013-%04d id
+    public long orderRef;         // ADR-105: 64-bit; the external id is <epoch>-<ref>, FIX ord-<ref>
     public int accountId;
     public int securityId;        // ticker mapped to int at the gateway
     public byte side;
@@ -325,15 +325,15 @@ public final class InputEvent {
     // obviously wrong rather than subtly wrong.
 
     public void setSwapDates(final int effectiveEpochDay, final int maturityEpochDay) {
-        this.orderRef = (effectiveEpochDay & 0xFFFF) | ((maturityEpochDay & 0xFFFF) << 16);
+        this.orderRef = (effectiveEpochDay & 0xFFFFL) | ((maturityEpochDay & 0xFFFFL) << 16);
     }
 
     public int swapEffectiveEpochDay() {
-        return orderRef & 0xFFFF;
+        return (int) (orderRef & 0xFFFF);
     }
 
     public int swapMaturityEpochDay() {
-        return (orderRef >>> 16) & 0xFFFF;
+        return (int) ((orderRef >>> 16) & 0xFFFF);
     }
 
     /** Convention-table index (see {@code SwapConventions}); rides the free securityId slot. */

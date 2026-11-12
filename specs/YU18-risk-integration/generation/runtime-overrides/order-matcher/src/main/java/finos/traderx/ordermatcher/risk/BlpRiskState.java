@@ -36,12 +36,12 @@ public final class BlpRiskState {
     private final long[] contractMultiplier;
     // idempotency (bounded; oldest key evicted at capacity — the retention frontier, FR-IMRG14)
     private final long[] idempotencyKeys;
-    private final int[] idempotencyOrderRefs;
+    private final long[] idempotencyOrderRefs;
     private final byte[] idempotencyDecisions;
     private final long[] idempotencyRetentionKeys;
     // {orderRef, decision} in retention order beside idempotencyRetentionKeys, and each table slot's
     // ring index (moved with the slot), so a snapshot walks three arrays in order instead of one hash probe per entry
-    private final int[] idempotencyRetentionOrderRefs;
+    private final long[] idempotencyRetentionOrderRefs;
     private final byte[] idempotencyRetentionDecisions;
     private final int[] idempotencySlotRing;
     // entitlements (unused until the auth roadmap item feeds principals; principalKey 0 skips)
@@ -93,12 +93,12 @@ public final class BlpRiskState {
         this.contractMultiplier = new long[maxSecurities];
         this.idempotencyKeys = new long[keysCapacity];
         java.util.Arrays.fill(this.idempotencyKeys, EMPTY_KEY);
-        this.idempotencyOrderRefs = new int[keysCapacity];
+        this.idempotencyOrderRefs = new long[keysCapacity];
         this.idempotencyDecisions = new byte[keysCapacity];
         java.util.Arrays.fill(this.idempotencyDecisions, (byte) -1);
         this.idempotencyRetentionKeys = new long[Math.max(1, idempotencyCapacity)];
         java.util.Arrays.fill(this.idempotencyRetentionKeys, EMPTY_KEY);
-        this.idempotencyRetentionOrderRefs = new int[this.idempotencyRetentionKeys.length];
+        this.idempotencyRetentionOrderRefs = new long[this.idempotencyRetentionKeys.length];
         this.idempotencyRetentionDecisions = new byte[this.idempotencyRetentionKeys.length];
         this.idempotencySlotRing = new int[keysCapacity];
         this.entitlementKeys = new long[tableSize(maxAccounts * 16)];
@@ -249,7 +249,7 @@ public final class BlpRiskState {
      * into the account/exposure aggregates and onto {@code target} (FR-IMRG13). Never partially
      * reserves. clientOrderKey 0 = no idempotency key (pre-state journals, key-less clients).
      */
-    public RiskReason decideAndReserve(long clientOrderKey, long principalKey, int orderRef,
+    public RiskReason decideAndReserve(long clientOrderKey, long principalKey, long orderRef,
                                        int accountId, int securityId, byte side, int currentPosition,
                                        int quantity, long validationPrice, long eventTimeMillis,
                                        ReservationHolder target) {
@@ -398,7 +398,7 @@ public final class BlpRiskState {
      *                      of creating a second one. Must be &gt; 0 — the table reads 0 as "no ref".
      */
     public RiskReason decideSwapBooking(long clientOrderKey, long principalKey, int accountId,
-                                        long notionalTicks, int contractRef) {
+                                        long notionalTicks, long contractRef) {
         duplicateReplay = false;
         if (clientOrderKey != 0L) {
             RiskReason previous = previousDecision(clientOrderKey);
@@ -425,7 +425,7 @@ public final class BlpRiskState {
     }
 
     /** Original accepted orderRef for a retried key, or -1. Sets {@link #duplicateReplay}. */
-    public int existingOrderRef(long clientOrderKey) {
+    public long existingOrderRef(long clientOrderKey) {
         if (sequencedKey != 0L && clientOrderKey == sequencedKey) {
             if (!sequencedDuplicate) return -1;
             metrics.duplicate();
@@ -615,7 +615,7 @@ public final class BlpRiskState {
     }
 
     /** Re-insert a snapshotted idempotency entry; call in retention order to preserve eviction. */
-    public void bootstrapIdempotency(long key, int orderRef, byte decisionOrdinal) {
+    public void bootstrapIdempotency(long key, long orderRef, byte decisionOrdinal) {
         if (key == 0L || key == EMPTY_KEY) return;
         if (!canRemember(key)) return;
         int slot = idempotencySlot(key, true);
@@ -686,7 +686,7 @@ public final class BlpRiskState {
         return idempotencySlot(key, true) >= 0;
     }
 
-    private RiskReason remember(long key, int orderRef, RiskReason reason) {
+    private RiskReason remember(long key, long orderRef, RiskReason reason) {
         if (key == 0L) {
             return decision(reason);   // key-less command: decided but not replay-mapped
         }

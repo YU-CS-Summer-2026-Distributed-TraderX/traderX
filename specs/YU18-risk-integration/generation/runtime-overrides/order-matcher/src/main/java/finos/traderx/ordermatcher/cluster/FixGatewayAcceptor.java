@@ -118,10 +118,10 @@ public final class FixGatewayAcceptor {
      * orders. In-memory sessions keep it gateway-local: after a move, cancel by OrderID.
      */
     private static final int CLORDID_MAP_CAPACITY = 65_536;
-    private final Map<String, Integer> refByClOrdId = Collections.synchronizedMap(
+    private final Map<String, Long> refByClOrdId = Collections.synchronizedMap(
         new LinkedHashMap<>(1024, 0.75f, true) {
             @Override
-            protected boolean removeEldestEntry(final Map.Entry<String, Integer> eldest) {
+            protected boolean removeEldestEntry(final Map.Entry<String, Long> eldest) {
                 return size() > CLORDID_MAP_CAPACITY;
             }
         });
@@ -137,9 +137,9 @@ public final class FixGatewayAcceptor {
     static final int TRACKED_CAPACITY = Integer.parseInt(System.getenv().getOrDefault("FIX_TRACKED_ORDERS", "524288"));
     int trackedCapacity = TRACKED_CAPACITY;   // not final: tests shorten it
     private final AtomicLong trackedEvicted = new AtomicLong();
-    private final Map<Integer, Tracked> tracked = new LinkedHashMap<>(1024, 0.75f, false) {
+    private final Map<Long, Tracked> tracked = new LinkedHashMap<>(1024, 0.75f, false) {
         @Override
-        protected boolean removeEldestEntry(final Map.Entry<Integer, Tracked> eldest) {
+        protected boolean removeEldestEntry(final Map.Entry<Long, Tracked> eldest) {
             if (size() <= trackedCapacity) {
                 return false;
             }
@@ -172,7 +172,7 @@ public final class FixGatewayAcceptor {
         final long at = System.nanoTime();
         final List<byte[]> msgs = new java.util.ArrayList<>(1);
     }
-    private final LinkedHashMap<Integer, Early> early = new LinkedHashMap<>(1024);
+    private final LinkedHashMap<Long, Early> early = new LinkedHashMap<>(1024);
     /** Only this gateway's own orders' fills arrive (FR-FFR-14), so a fill evicted unmatched is a lost report. */
     boolean ownFillsOnly = "routed".equals(System.getenv("FIX_FILL_FEED"));   // not final: tests set it
     private final AtomicLong fillsLost = new AtomicLong();
@@ -517,9 +517,9 @@ public final class FixGatewayAcceptor {
      * than adopting a short one.
      */
     private void adopt(final SessionID sid, final FixSessionStore.SentLog sent) {
-        final Map<Integer, Tracked> open = new LinkedHashMap<>(1024, 0.75f, false) {
+        final Map<Long, Tracked> open = new LinkedHashMap<>(1024, 0.75f, false) {
             @Override
-            protected boolean removeEldestEntry(final Map.Entry<Integer, Tracked> eldest) {
+            protected boolean removeEldestEntry(final Map.Entry<Long, Tracked> eldest) {
                 return size() > TRACKED_CAPACITY;
             }
         };
@@ -535,7 +535,7 @@ public final class FixGatewayAcceptor {
                         || m.getChar(ExecType.FIELD) == ExecType.ORDER_STATUS) {
                         return;   // a status answer reports the read model; it tells the session no fill
                     }
-                    final int ref = Integer.parseInt(m.getString(OrderID.FIELD).substring(4));
+                    final long ref = Long.parseLong(m.getString(OrderID.FIELD).substring(4));
                     final String key = sid.getTargetCompID() + '\001' + m.getString(ClOrdID.FIELD);
                     if (m.getChar(ExecType.FIELD) == ExecType.CANCELED) {
                         refByClOrdId.remove(key);
@@ -567,7 +567,7 @@ public final class FixGatewayAcceptor {
             throw new java.io.UncheckedIOException(e);
         }
         synchronized (feedLock) {
-            for (final Map.Entry<Integer, Tracked> e : open.entrySet()) {
+            for (final Map.Entry<Long, Tracked> e : open.entrySet()) {
                 final Tracked a = e.getValue();
                 Tracked t = tracked.get(e.getKey());
                 if (t == null) {
@@ -894,12 +894,12 @@ public final class FixGatewayAcceptor {
             if (r == null || r.accepted() || r.riskReason() != DUPLICATE || r.orderRef() <= 0) {
                 return false;
             }
-            final Integer ref = r.orderRef();
+            final Long ref = r.orderRef();
             synchronized (refByClOrdId) {
                 if (ref.equals(refByClOrdId.get(key))) {
                     return false;
                 }
-                for (final Map.Entry<String, Integer> e : refByClOrdId.entrySet()) {
+                for (final Map.Entry<String, Long> e : refByClOrdId.entrySet()) {
                     if (ref.equals(e.getValue())) {
                         return true;   // ponytail: a scan, on duplicate answers only (resends); index refs if hot
                     }
@@ -992,7 +992,7 @@ public final class FixGatewayAcceptor {
             final long seq = stored > 0 ? stored : sessionStore.recordOrder(sid, accountId, clOrdId, raw);
             OrderSubmitter.ExecResult r = submitAt(sid, clOrdId, accountId, ticker, side, qty, mapped, seq);
             if (r != null && !r.accepted() && r.riskReason() == OUT_OF_SEQUENCE) {
-                for (long s = Integer.toUnsignedLong(r.orderRef()); s >= 1 && s < seq; s++) {
+                for (long s = r.orderRef(); s >= 1 && s < seq; s++) {
                     if (!resubmitStored(sid, accountId, s)) {
                         break;
                     }
@@ -1013,7 +1013,7 @@ public final class FixGatewayAcceptor {
             // FR-XOD-13: an answer says what the engine expects next; nothing below it can be asked for again
             if (r != null && (r.accepted() || r.riskReason() != STREAM_LIMIT)) {
                 sessionStore.answeredBelow(sid, accountId,
-                    !r.accepted() && r.riskReason() == OUT_OF_SEQUENCE ? Integer.toUnsignedLong(r.orderRef()) : seq + 1);
+                    !r.accepted() && r.riskReason() == OUT_OF_SEQUENCE ? r.orderRef() : seq + 1);
             }
             return r;
         }
@@ -1058,7 +1058,7 @@ public final class FixGatewayAcceptor {
             final String ticker = cancel.isSetField(Symbol.FIELD)
                 ? cancel.getString(Symbol.FIELD).trim().toUpperCase() : "";
 
-            final int orderRef = resolveOrderRef(cancel, qualify(sessionId, origClOrdId));
+            final long orderRef = resolveOrderRef(cancel, qualify(sessionId, origClOrdId));
             if (orderRef <= 0) {
                 sendCancelReject(sessionId, "NONE", clOrdId, origClOrdId, OrdStatus.REJECTED,
                     CxlRejReason.UNKNOWN_ORDER, "unknown OrigClOrdID; resend with OrderID (37)");
@@ -1097,7 +1097,7 @@ public final class FixGatewayAcceptor {
 
         private static final String AGED_OUT = "order already terminal; its final state is no longer retained";
 
-        private void cancelRequested(final int orderRef, final boolean requested) {
+        private void cancelRequested(final long orderRef, final boolean requested) {
             synchronized (feedLock) {
                 final Tracked t = tracked.get(orderRef);
                 if (t != null) {
@@ -1111,10 +1111,10 @@ public final class FixGatewayAcceptor {
          * from an accepted or DUPLICATE answer, so the order existed and has left terminal retention: it is terminal
          * (DONE_FOR_DAY, as the restatement says without a read model), never "no such order" / OrderID NONE.
          */
-        private boolean agedOut(final SessionID sessionId, final String origClOrdId, final int orderRef,
+        private boolean agedOut(final SessionID sessionId, final String origClOrdId, final long orderRef,
                                 final OrderSubmitter.ExecResult result) {
             return result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND
-                && Integer.valueOf(orderRef).equals(refByClOrdId.get(qualify(sessionId, origClOrdId)));
+                && Long.valueOf(orderRef).equals(refByClOrdId.get(qualify(sessionId, origClOrdId)));
         }
 
         /**
@@ -1171,7 +1171,7 @@ public final class FixGatewayAcceptor {
             final long limitPxTicks = replace.isSetField(Price.FIELD)
                 ? Math.round(replace.getDouble(Price.FIELD) * 1_000_000d) : 0L;
 
-            final int orderRef = resolveOrderRef(replace, qualify(sessionId, origClOrdId));
+            final long orderRef = resolveOrderRef(replace, qualify(sessionId, origClOrdId));
             if (orderRef <= 0) {
                 sendCancelReject(sessionId, "NONE", clOrdId, origClOrdId, OrdStatus.REJECTED,
                     CxlRejReason.UNKNOWN_ORDER, "unknown OrigClOrdID; resend with OrderID (37)",
@@ -1243,7 +1243,7 @@ public final class FixGatewayAcceptor {
             final String clOrdId = req.getString(ClOrdID.FIELD);
             final char side = req.isSetField(Side.FIELD)
                 && req.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B';
-            final int orderRef = resolveOrderRef(req, qualify(sessionId, clOrdId));
+            final long orderRef = resolveOrderRef(req, qualify(sessionId, clOrdId));
 
             // ADR-093: a ClOrdID this gateway holds no ref for (another replica booked it, or its ref was lost past
             // ADR-090's answer ring) is found by the key the gateway submits it under; the read model scopes it.
@@ -1342,14 +1342,14 @@ public final class FixGatewayAcceptor {
                 ordStatusOfName(v.status()), v.security());
         }
 
-        private ExecutionReport statusReport(final int orderRef, final char side, final int qty,
+        private ExecutionReport statusReport(final long orderRef, final char side, final int qty,
                                              final int remaining, final char ordStatus,
                                              final String security) {
             return statusReport(orderRef, side, qty, remaining, qty - remaining, ordStatus, security);
         }
 
         /** ExecutionReport(150=OrderStatus) skeleton; caller adds ClOrdID and/or MassStatusReqID. */
-        private ExecutionReport statusReport(final int orderRef, final char side, final int qty,
+        private ExecutionReport statusReport(final long orderRef, final char side, final int qty,
                                              final int remaining, final int cum, final char ordStatus,
                                              final String security) {
             final ExecutionReport report = new ExecutionReport(
@@ -1387,19 +1387,19 @@ public final class FixGatewayAcceptor {
             };
         }
 
-        private int resolveOrderRef(final quickfix.Message request, final String qualifiedOrigClOrdId)
+        private long resolveOrderRef(final quickfix.Message request, final String qualifiedOrigClOrdId)
             throws FieldNotFound {
             if (request.isSetField(OrderID.FIELD)) {
                 final String orderId = request.getString(OrderID.FIELD);
                 if (orderId.startsWith("ord-")) {
                     try {
-                        return Integer.parseInt(orderId.substring(4));
+                        return Long.parseLong(orderId.substring(4));
                     } catch (final NumberFormatException ignore) {
                         // fall through to the OrigClOrdID map
                     }
                 }
             }
-            final Integer mapped = refByClOrdId.get(qualifiedOrigClOrdId);
+            final Long mapped = refByClOrdId.get(qualifiedOrigClOrdId);
             return mapped == null ? -1 : mapped;
         }
 
@@ -1414,7 +1414,7 @@ public final class FixGatewayAcceptor {
 
         private void sendCancelReport(final SessionID sessionId, final String clOrdId,
                                       final String origClOrdId, final String ticker, final char side,
-                                      final int orderRef, final OrderCancelRequest cancel) {
+                                      final long orderRef, final OrderCancelRequest cancel) {
             // FR-FIX05: a cancel ends the order, not its fills. What this gateway reported filled
             // (tracked, or rebuilt from the session store on adoption) stands in the Canceled report.
             int cum = 0;
@@ -1525,7 +1525,7 @@ public final class FixGatewayAcceptor {
          * comes from the read model when one is configured; without one only "terminal" is known (DONE_FOR_DAY).
          */
         private void sendRestatement(final SessionID sessionId, final String clOrdId, final int accountId,
-                                     final String ticker, final char side, final int qty, final int orderRef) {
+                                     final String ticker, final char side, final int qty, final long orderRef) {
             OrderStatusSource.OrderView found = null;
             final List<OrderStatusSource.OrderView> orders =
                 statusSource == null ? null : statusSource.orders(accountId, true);
@@ -1593,7 +1593,7 @@ public final class FixGatewayAcceptor {
      * busy venue) free of parsing and allocation.
      */
     public void onOrderUpdate(final byte[] json) {
-        final int ref = feedRef(json);
+        final long ref = feedRef(json);
         if (ref <= 0) {
             return;
         }
@@ -1614,8 +1614,8 @@ public final class FixGatewayAcceptor {
     /** Under {@link #feedLock}: drop the oldest early fills past the age or count bound, and count them. */
     private void expireEarly() {
         final long now = System.nanoTime();
-        for (final java.util.Iterator<Map.Entry<Integer, Early>> it = early.entrySet().iterator(); it.hasNext(); ) {
-            final Map.Entry<Integer, Early> e = it.next();
+        for (final java.util.Iterator<Map.Entry<Long, Early>> it = early.entrySet().iterator(); it.hasNext(); ) {
+            final Map.Entry<Long, Early> e = it.next();
             if (early.size() <= EARLY_CAPACITY && now - e.getValue().at < earlyMaxAgeNanos) {
                 return;
             }
@@ -1632,7 +1632,7 @@ public final class FixGatewayAcceptor {
     }
 
     /** An order answered terminal (filled or canceled by its own ack) is never tracked: its early fills are its own. */
-    private void discardEarly(final int ref) {
+    private void discardEarly(final long ref) {
         synchronized (feedLock) {
             early.remove(ref);
         }
@@ -1662,7 +1662,7 @@ public final class FixGatewayAcceptor {
     }
 
     /** After the New: what waited on the order (FR-FFR-18), oldest first; an order not tracked at its ack, tracked now. */
-    private void answered(final int ref, final SessionID session, final String clOrdId, final String symbol,
+    private void answered(final long ref, final SessionID session, final String clOrdId, final String symbol,
                           final char side) {
         synchronized (feedLock) {
             final Tracked t = tracked.get(ref);
@@ -1683,7 +1683,7 @@ public final class FixGatewayAcceptor {
         }
     }
 
-    private void track(final int ref, final SessionID session, final String clOrdId, final String symbol,
+    private void track(final long ref, final SessionID session, final String clOrdId, final String symbol,
                        final char side) {
         synchronized (feedLock) {
             final Tracked t = new Tracked(session, clOrdId, symbol, side);
@@ -1693,7 +1693,7 @@ public final class FixGatewayAcceptor {
     }
 
     /** Under {@link #feedLock}: apply the early fills for {@code ref}, oldest first. */
-    private void replayEarly(final int ref, final Tracked t) {
+    private void replayEarly(final long ref, final Tracked t) {
         final Early e = early.remove(ref);
         if (e != null) {
             for (final byte[] m : e.msgs) {
@@ -1705,7 +1705,7 @@ public final class FixGatewayAcceptor {
     /** Under {@link #feedLock}. Reports the quantity this update adds over what the session has
      *  been told; a NEW, a redelivery or a stale state adds none, and a missed message folds into
      *  the next one's LastQty, so CumQty is always the engine's. */
-    private void applyUpdate(final int ref, final Tracked t, final byte[] json) {
+    private void applyUpdate(final long ref, final Tracked t, final byte[] json) {
         final com.fasterxml.jackson.databind.JsonNode p;
         try {
             p = JSON.readTree(json).path("payload");
@@ -1792,7 +1792,7 @@ public final class FixGatewayAcceptor {
     }
 
     /** FR-FFR-17: the unsolicited Canceled (or Rejected) report of an order the venue ended; what was filled stands. */
-    private ExecutionReport endReport(final Tracked t, final int ref, final com.fasterxml.jackson.databind.JsonNode p,
+    private ExecutionReport endReport(final Tracked t, final long ref, final com.fasterxml.jackson.databind.JsonNode p,
                                       final boolean canceled) {
         final ExecutionReport report = new ExecutionReport(
             new OrderID("ord-" + ref),
@@ -1814,7 +1814,7 @@ public final class FixGatewayAcceptor {
     }
 
     /** The unsolicited fill ExecutionReport (ADR-084 §3); {@code t.notional} already includes it. */
-    private ExecutionReport fillReport(final Tracked t, final int ref, final int qty, final int cum,
+    private ExecutionReport fillReport(final Tracked t, final long ref, final int qty, final int cum,
                                        final int lastQty, final double lastPx) {
         final int leaves = qty - cum;
         final ExecutionReport report = new ExecutionReport(
@@ -1874,8 +1874,8 @@ public final class FixGatewayAcceptor {
     private static final byte[] CANCELED_STATUS = "\"status\":\"CANCELED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final byte[] REJECTED_STATUS = "\"status\":\"REJECTED\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
-    /** The orderRef of {@code "id":"<epoch>-<orderRef>"}, or -1. */
-    static int feedRef(final byte[] json) {
+    /** The orderRef of {@code "id":"<epoch>-<orderRef>"}, or -1. ADR-105: 64-bit, bounded by the engine's ceiling. */
+    static long feedRef(final byte[] json) {
         final int start = indexOf(json, ID_KEY, 0);
         if (start < 0) {
             return -1;
@@ -1890,12 +1890,12 @@ public final class FixGatewayAcceptor {
         }
         long ref = 0;
         for (int k = digitsFrom; k < i; k++) {
-            if (json[k] < '0' || json[k] > '9' || ref > Integer.MAX_VALUE) {
+            if (json[k] < '0' || json[k] > '9' || ref > MatchingEngineClusteredService.MAX_ORDER_REF) {
                 return -1;
             }
             ref = ref * 10 + (json[k] - '0');
         }
-        return i > digitsFrom && ref <= Integer.MAX_VALUE ? (int) ref : -1;
+        return i > digitsFrom && ref <= MatchingEngineClusteredService.MAX_ORDER_REF ? ref : -1;
     }
 
     private static int indexOf(final byte[] hay, final byte[] needle, final int from) {

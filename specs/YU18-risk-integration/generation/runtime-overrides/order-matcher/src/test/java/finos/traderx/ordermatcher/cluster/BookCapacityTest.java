@@ -30,8 +30,7 @@ class BookCapacityTest {
             codec.encodeOrderInstruction(in, 0, e, 0, 0, 0);
             s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
         } else {
-            codec.encodeInput(in, 0, e, 0, 0, 0);
-            s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
         }
     }
 
@@ -47,7 +46,7 @@ class BookCapacityTest {
     /** The reason byte of the order the NEW just created. */
     byte decide(MatchingEngineClusteredService s, int sec, boolean typed) {
         apply(s, order(sec, typed));
-        return (byte) s.engine().orderState((int) s.nextOrderRef() - 1)[10];
+        return (byte) s.engine().orderState(s.nextOrderRef() - 1)[10];
     }
 
     MatchingEngineClusteredService member() {

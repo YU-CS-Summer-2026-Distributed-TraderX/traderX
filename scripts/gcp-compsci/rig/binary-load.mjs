@@ -114,7 +114,7 @@ function session(index) {
     if (!cfg.sequenced) return;
     sock.write(Buffer.concat(ACCOUNTS.map((account, a) => {   // each stream's probe: where does it continue?
       const b = Buffer.alloc(34); probing.add(a);
-      b.writeUInt16LE(32, 0); b[2] = 1; b[3] = 0; b[4] = 1;
+      b.writeUInt16LE(32, 0); b[2] = 0x11; b[3] = 0; b[4] = 1;   // ADR-105: NEW is type 0x11
       b.writeUInt32LE(account, 6); b.writeUInt32LE(SECURITY, 10); b.writeInt32LE(1, 14); b.writeBigInt64LE(PX, 18);
       b.writeUInt32LE(PROBE, 26); b.writeUInt32LE(streams[a], 30);
       return b;
@@ -125,7 +125,7 @@ function session(index) {
   const frame = (side) => {
     if (++seq > 0xffffff && !cfg.sequenced) throw Error('session sequence exhausted');   // u24 in an unsequenced clOrdId
     const accounts = SETS[side === 0 ? role : 1 - role], b = Buffer.alloc(34), account = accounts[picks[side]++ % accounts.length];
-    b.writeUInt16LE(32, 0); b[2] = 1; b[3] = side;
+    b.writeUInt16LE(32, 0); b[2] = 0x11; b[3] = side;
     b.writeUInt32LE(account, 6); b.writeUInt32LE(SECURITY, 10); b.writeInt32LE(1, 14); b.writeBigInt64LE(PX, 18);
     if (cfg.sequenced) {   // FR-XOD-11: flags bit 0; clOrdId = streamId (high) | seq (low), this account's stream
       const a = ACCOUNTS.indexOf(account), q = ++seqs[a];
@@ -138,9 +138,10 @@ function session(index) {
   };
   sock.on('data', (chunk) => {
     buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
-    for (; buf.length >= 18; buf = buf.subarray(18)) {
-      if (buf.readUInt16LE(0) !== 16 || buf[2] !== 0x81) { s.protocolErrors++; sock.destroy(); return; }
-      const status = buf[3], kind = buf[4], risk = buf[5], ref = buf.readUInt32LE(6), lo = buf.readUInt32LE(10), hi = buf.readUInt32LE(14);
+    // ADR-105: the ack is type 0x82, 20 bytes, its ref a u64 (refs start at 2^32 + 1; exact as a Number below 2^53)
+    for (; buf.length >= 22; buf = buf.subarray(22)) {
+      if (buf.readUInt16LE(0) !== 20 || buf[2] !== 0x82) { s.protocolErrors++; sock.destroy(); return; }
+      const status = buf[3], kind = buf[4], risk = buf[5], ref = Number(buf.readBigUInt64LE(6)), lo = buf.readUInt32LE(14), hi = buf.readUInt32LE(18);
       let q, sentUpTo;
       if (cfg.sequenced) {
         const a = streamOf.get(hi);

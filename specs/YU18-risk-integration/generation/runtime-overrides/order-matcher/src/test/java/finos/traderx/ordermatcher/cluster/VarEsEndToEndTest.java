@@ -674,7 +674,7 @@ class VarEsEndToEndTest {
         in.readFully(ack);
         assertEquals(BinaryGatewayAcceptor.ACK_TYPE, ack[0] & 0xFF, "ack frame");
         final UnsafeBuffer a = new UnsafeBuffer(ack);
-        assertEquals(clOrdId, a.getLong(8, ByteOrder.LITTLE_ENDIAN), "ack echoes the client's clOrdId");
+        assertEquals(clOrdId, a.getLong(12, ByteOrder.LITTLE_ENDIAN), "ack echoes the client's clOrdId (ADR-105: after the u64 ref)");
         lastAckReason = ack[3];
         return ack[1];
     }

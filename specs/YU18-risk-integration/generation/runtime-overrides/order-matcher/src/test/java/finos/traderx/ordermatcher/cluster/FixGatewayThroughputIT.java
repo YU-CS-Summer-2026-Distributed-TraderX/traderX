@@ -85,7 +85,7 @@ class FixGatewayThroughputIT {
                 window.acquireUninterruptibly();
             }
             final ExecResult r = new ExecResult(true, ref.getAndIncrement(), OutputEvent.KIND_ORDER_ACCEPTED);
-            fill(r.orderRef());
+            fill(Math.toIntExact(r.orderRef()));
             if (venueMs == 0) {
                 if (window != null) {
                     window.release();
@@ -122,12 +122,12 @@ class FixGatewayThroughputIT {
                 }
             }
             final ExecResult r = new ExecResult(true, ref.getAndIncrement(), OutputEvent.KIND_ORDER_ACCEPTED);
-            fill(r.orderRef());
+            fill(Math.toIntExact(r.orderRef()));
             return r;
         }
 
         @Override
-        public ExecResult submitCancel(final int orderRef, final int accountId) {
+        public ExecResult submitCancel(final long orderRef, final int accountId) {
             return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
     }

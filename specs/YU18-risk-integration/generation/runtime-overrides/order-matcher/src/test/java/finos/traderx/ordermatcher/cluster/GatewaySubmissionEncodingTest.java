@@ -56,11 +56,49 @@ class GatewaySubmissionEncodingTest {
             assertTrue(decoded.seq>0,"offered message carries the gateway correlation id");
             if(typed) {assertEquals(OrderTypes.STOP_LIMIT,decoded.orderType);assertEquals(OrderTypes.GTC,decoded.tif);assertEquals(110_000_000L,decoded.stopPx);}
             var ack=new UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);
-            ack.putLong(0,42);ack.putInt(8,7);ack.putByte(12,OutputEvent.KIND_ORDER_ACCEPTED);ack.putLong(24,decoded.seq);
+            ack.putLong(0,42);MatchingEngineClusteredService.putAckRef(ack,7);ack.putByte(12,OutputEvent.KIND_ORDER_ACCEPTED);ack.putLong(24,decoded.seq);
             Method egress=ClusterGatewayMain.class.getDeclaredMethod("onEgress",long.class,long.class,DirectBuffer.class,int.class,int.class,io.aeron.logbuffer.Header.class);
             egress.setAccessible(true);egress.invoke(gateway,1L,0L,ack,0,ack.capacity(),null);
             var completed=result.get(3,TimeUnit.SECONDS);assertNotNull(completed);assertTrue(completed.accepted());assertEquals(7,completed.orderRef());
             verify(client,times(1)).offer(any(DirectBuffer.class),eq(0),eq(wire.capacity()));
+        } finally {submitter.shutdownNow();assertTrue(submitter.awaitTermination(3,TimeUnit.SECONDS));}
+    }
+    /** ADR-105: a cancel of a ref above 32 bits leaves the gateway with the wide tail and completes from a 40-byte ack;
+     *  an ack without the format word completes nothing. */
+    @Test @SuppressWarnings("unchecked")
+    void wideCancelCarriesItsTailAndCompletesFromTheWideAck() throws Exception {
+        final long wide=(1L<<32)+5;
+        var gateway=new ClusterGatewayMain();var client=mock(AeronCluster.class);
+        when(client.clusterSessionId()).thenReturn(1L);
+        field("client").set(gateway,client);
+        Queue<FutureTask<?>> tasks=(Queue<FutureTask<?>>)field("tasks").get(gateway);
+        var offered=new AtomicReference<UnsafeBuffer>();
+        when(client.offer(any(DirectBuffer.class),anyInt(),anyInt())).thenAnswer(call->{
+            DirectBuffer source=call.getArgument(0);int offset=call.getArgument(1),length=call.getArgument(2);
+            byte[] copy=new byte[length];source.getBytes(offset,copy);offered.set(new UnsafeBuffer(copy));return 1L;
+        });
+        ExecutorService submitter=Executors.newSingleThreadExecutor();
+        try {
+            Future<OrderSubmitter.ExecResult> result=submitter.submit(()->gateway.submitCancel(wide,11));
+            FutureTask<?> task=null;long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+            while(task==null && System.nanoTime()<deadline) {task=tasks.poll();if(task==null) Thread.sleep(1);}
+            assertNotNull(task);task.run();
+            UnsafeBuffer wire=offered.get();
+            assertEquals(AeronReplicationCodec.INPUT_BYTES+AeronReplicationCodec.WIDE_REF_TAIL_BYTES,wire.capacity());
+            var codec=new AeronReplicationCodec();var decoded=new InputEvent();
+            assertEquals(AeronReplicationCodec.OK,codec.tryDecodeInput(wire,0,wire.capacity(),decoded));
+            assertEquals(InputEvent.TYPE_ORDER_CANCEL,decoded.type);
+            assertEquals(wide,decoded.orderRef,"the whole ref reaches the log, not its low half (5)");
+            Method egress=ClusterGatewayMain.class.getDeclaredMethod("onEgress",long.class,long.class,DirectBuffer.class,int.class,int.class,io.aeron.logbuffer.Header.class);
+            egress.setAccessible(true);
+            var stale=new UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);   // no format word
+            stale.putLong(0,43);stale.putInt(8,(int)wide);stale.putByte(12,OutputEvent.KIND_ORDER_CANCELED);stale.putLong(24,decoded.seq);
+            egress.invoke(gateway,1L,0L,stale,0,stale.capacity(),null);
+            assertTrue(!result.isDone(),"an ack without the ADR-105 format word completes nothing");
+            var ack=new UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);
+            ack.putLong(0,44);MatchingEngineClusteredService.putAckRef(ack,wide);ack.putByte(12,OutputEvent.KIND_ORDER_CANCELED);ack.putLong(24,decoded.seq);
+            egress.invoke(gateway,1L,0L,ack,0,ack.capacity(),null);
+            var completed=result.get(3,TimeUnit.SECONDS);assertTrue(completed.accepted());assertEquals(wide,completed.orderRef());
         } finally {submitter.shutdownNow();assertTrue(submitter.awaitTermination(3,TimeUnit.SECONDS));}
     }
     private static Field field(String name) throws Exception {

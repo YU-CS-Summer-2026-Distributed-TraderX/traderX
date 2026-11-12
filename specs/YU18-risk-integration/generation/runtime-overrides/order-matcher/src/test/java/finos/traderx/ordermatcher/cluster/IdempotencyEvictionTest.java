@@ -27,8 +27,7 @@ class IdempotencyEvictionTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -60,7 +59,7 @@ class IdempotencyEvictionTest {
         apply(s, tick);
 
         apply(s, order(1, InputEvent.SIDE_BUY, 10, KEY));
-        final int originalRef = (int) s.nextOrderRef() - 1;
+        final long originalRef = s.nextOrderRef() - 1;
         apply(s, order(2, InputEvent.SIDE_SELL, 10, 0L));   // fills the original -> terminal
         assertEquals(10, s.engine().positionQuantity(1, 0));
         assertEquals(1L, acks.stream().filter(a -> a[0] == OutputEvent.KIND_ORDER_FILLED && a[1] == originalRef)
@@ -72,12 +71,12 @@ class IdempotencyEvictionTest {
 
         acks.clear();
         apply(s, order(1, InputEvent.SIDE_BUY, 10, KEY));    // the client retries the same key
-        final int retryRef = (int) s.nextOrderRef() - 1;
+        final long retryRef = s.nextOrderRef() - 1;
         assertNull(s.engine().orderState(retryRef), "no second order was created");
         assertEquals(0L, s.risk().reservedNotional(1), "nothing reserved");
         assertEquals(1, acks.size(), "exactly one answer");
         assertEquals(OutputEvent.KIND_ORDER_REJECTED, (byte) acks.get(0)[0]);
-        assertEquals(originalRef, (int) acks.get(0)[1], "the answer names the ORIGINAL ref");
+        assertEquals(originalRef, acks.get(0)[1], "the answer names the ORIGINAL ref");
         assertEquals(RiskReason.DUPLICATE.ordinal(), (int) acks.get(0)[2]);
         assertEquals(0L, acks.get(0)[3], "the DUPLICATE answer never reaches the order bridge (suspect 17)");
 
@@ -102,14 +101,14 @@ class IdempotencyEvictionTest {
         tick.type = InputEvent.TYPE_PRICE_TICK; tick.securityId = 0; tick.priceTicks = 100 * PX;
         apply(s, tick);
         apply(s, order(1, InputEvent.SIDE_BUY, 10, KEY));
-        final int originalRef = (int) s.nextOrderRef() - 1;
+        final long originalRef = s.nextOrderRef() - 1;
         apply(s, order(2, InputEvent.SIDE_SELL, 10, 0L));   // fills it
 
         outs.clear();
         apply(s, order(1, InputEvent.SIDE_BUY, 10, KEY));    // the retry
         assertEquals(1, outs.size(), "exactly one output");
         assertEquals(OutputEvent.KIND_ORDER_FILLED, (byte) outs.get(0)[0], "the original's state");
-        assertEquals(originalRef, (int) outs.get(0)[1]);
+        assertEquals(originalRef, outs.get(0)[1]);
         assertEquals(0L, outs.get(0)[2], "a restatement is not bridged");
         assertEquals(10, s.engine().positionQuantity(1, 0));
     }

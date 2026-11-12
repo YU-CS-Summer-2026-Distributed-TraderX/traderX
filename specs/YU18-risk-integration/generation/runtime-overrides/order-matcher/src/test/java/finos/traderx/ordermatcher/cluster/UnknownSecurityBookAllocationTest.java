@@ -21,8 +21,7 @@ class UnknownSecurityBookAllocationTest {
             codec.encodeOrderInstruction(in, 0, e, 0, 0, 0);
             s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
         } else {
-            codec.encodeInput(in, 0, e, 0, 0, 0);
-            s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
         }
     }
 
@@ -33,7 +32,7 @@ class UnknownSecurityBookAllocationTest {
         return e;
     }
 
-    int lastRef(MatchingEngineClusteredService s) { return (int) s.nextOrderRef() - 1; }
+    long lastRef(MatchingEngineClusteredService s) { return s.nextOrderRef() - 1; }
 
     @Test void unknownSecurityIsRefusedWithoutAllocatingABook() {
         final MatchingEngineClusteredService s = new MatchingEngineClusteredService();

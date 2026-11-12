@@ -259,7 +259,7 @@ public final class OutputPublisher {
     // carried the real ref the whole time, which is why nothing else noticed.
     private static void writeTradeBooked(OutputEvent e, int accountId, int securityId, byte side,
                                          int fillQty, long tradePx, long tradeSeq, long inputSeq,
-                                         long updatedAtMillis, long ingressNanos, int orderRef) {
+                                         long updatedAtMillis, long ingressNanos, long orderRef) {
         e.kind = OutputEvent.KIND_TRADE_BOOKED;
         e.orderRef = orderRef;
         e.inputSeq = inputSeq;

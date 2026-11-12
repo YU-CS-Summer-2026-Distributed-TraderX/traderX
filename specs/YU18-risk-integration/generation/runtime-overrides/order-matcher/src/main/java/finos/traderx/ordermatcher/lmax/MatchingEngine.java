@@ -4,7 +4,7 @@ import com.lmax.disruptor.EventHandler;
 import finos.traderx.ordermatcher.risk.BlpRiskState;
 import finos.traderx.ordermatcher.risk.RiskReason;
 import org.agrona.BitUtil;
-import org.agrona.collections.Int2ObjectHashMap;
+import org.agrona.collections.Long2ObjectHashMap;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
@@ -93,7 +93,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // count, never shrunk) — the unbounded index that decayed throughput and OOM'd the 33M-order
     // soak (2026-07-21 postmortem). Presized in the constructor so it never rehashes after
     // warmup (zero steady-state allocation, NGC-01).
-    private final Int2ObjectHashMap<RestingOrder> ordersByRef;
+    private final Long2ObjectHashMap<RestingOrder> ordersByRef;
     private final LimitBook[] booksBySecurity;   // per-security two-sided book (lazy, log-driven)
     private int booksAllocated;   // ADR-079 §6: books in booksBySecurity, snapshot-restored ones included
     private int maxActiveBooks;   // ADR-079 §6: consensus cap; maxSecurities unless the service sets one
@@ -116,7 +116,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // paced sustained throughput via GC and eventually OOM'd). FIFO of terminal orderRefs in transition
     // order; BLP thread only, allocation-free. An aged-out ref resolves to not-found (404), as one never
     // created — the durable record lives in the journal. terminalCap <= 0 disables eviction (unbounded).
-    private final int[] terminalRing;
+    private final long[] terminalRing;
     private final int terminalCap;
     private int terminalHead;
     private int terminalCount;
@@ -280,9 +280,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // at 2x that over a 0.55 load factor => threshold ~2.2x expected entries, so the map
         // never rehashes after warmup (NGC-01). terminalCap 0 = unbounded retention (tests).
         final int steadyOrders = Math.max(16, this.terminalCap + Math.max(initialPoolSize, 1024));
-        this.ordersByRef = new Int2ObjectHashMap<>(
+        this.ordersByRef = new Long2ObjectHashMap<>(
             BitUtil.findNextPositivePowerOfTwo(steadyOrders * 2), 0.55f);
-        this.terminalRing = this.terminalCap > 0 ? new int[this.terminalCap] : null;
+        this.terminalRing = this.terminalCap > 0 ? new long[this.terminalCap] : null;
         this.pendHead = new RestingOrder[maxSecurities];
         this.pendTail = new RestingOrder[maxSecurities];
         this.pendCount = new int[maxSecurities];
@@ -447,7 +447,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // ----- bootstrap (single-threaded, before the ring goes live) -----------------------
 
     /** Warm the in-memory book from the read-model at startup (spec: warm-on-start). */
-    public void bootstrapOrder(int orderRef, int accountId, int securityId, byte side, int quantity,
+    public void bootstrapOrder(long orderRef, int accountId, int securityId, byte side, int quantity,
                                int remaining, long limitPx, byte status, long lastExecPx,
                                int lastFillQty, long createdAtMillis, long updatedAtMillis) {
         bootstrapOrder(orderRef, accountId, securityId, side, quantity, remaining, limitPx, status,
@@ -458,7 +458,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      *  reservation (FR-IMRG21); re-accumulates open-order reservations into the risk aggregates.
      *  Open rows arrive in ascending orderRef order — arrival order — so re-appending them into
      *  their price levels reproduces the exact FIFO time priority of the original book. */
-    public void bootstrapOrder(int orderRef, int accountId, int securityId, byte side, int quantity,
+    public void bootstrapOrder(long orderRef, int accountId, int securityId, byte side, int quantity,
                                int remaining, long limitPx, byte status, byte riskReason,
                                long lastExecPx, int lastFillQty, long createdAtMillis,
                                long updatedAtMillis, long reservedNotional, int reservedQty) {
@@ -665,8 +665,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * map iterates in hash order, so callers needing the established ascending-ref snapshot
      * byte order (ADR-046) take this sorted copy instead.
      */
-    public int[] snapshotOrderRefsAscending() {
-        final int[] refs = new int[ordersByRef.size()];
+    public long[] snapshotOrderRefsAscending() {
+        final long[] refs = new long[ordersByRef.size()];
         int n = 0;
         for (final RestingOrder o : ordersByRef.values()) {
             refs[n++] = o.orderRef;
@@ -680,7 +680,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * absent/evicted ref. This keeps snapshot serialization O(retained orders) without exposing
      * mutable pooled orders or allocating one tuple per row.
      */
-    public boolean copySnapshotOrderTuple(final int orderRef, final long[] target) {
+    public boolean copySnapshotOrderTuple(final long orderRef, final long[] target) {
         if (target.length < SNAPSHOT_ORDER_TUPLE_LENGTH) {
             throw new IllegalArgumentException(
                 "snapshot order tuple needs " + SNAPSHOT_ORDER_TUPLE_LENGTH + " fields");
@@ -718,11 +718,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * a different set and later answer cancel-of-terminal differently (not-found vs unchanged) —
      * a replicated-state divergence. Empty when eviction is disabled (order is then irrelevant).
      */
-    public int[] terminalOrderRefsFifo() {
+    public long[] terminalOrderRefsFifo() {
         if (terminalRing == null) {
-            return new int[0];
+            return new long[0];
         }
-        int[] out = new int[terminalCount];
+        long[] out = new long[terminalCount];
         for (int i = 0; i < terminalCount; i++) {
             int index = terminalHead + i;
             if (index >= terminalCap) {
@@ -793,7 +793,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         if (risk == null || e.clientOrderKey() == 0L) {
             return false;
         }
-        final int originalRef = risk.existingOrderRef(e.clientOrderKey());
+        final long originalRef = risk.existingOrderRef(e.clientOrderKey());
         if (originalRef < 0) {
             return false;   // never accepted under this key: decideAndReserve re-answers the rejection
         }
@@ -2656,11 +2656,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     /** Cold path: every live DAY order, ascending orderRef, then each touched security settles. */
     private void expireDayOrders(InputEvent e) {
-        final int[] refs = snapshotOrderRefsAscending();
+        final long[] refs = snapshotOrderRefsAscending();
         final boolean[] touched = new boolean[booksBySecurity.length];
         final int saved = unsolicited;
         unsolicited = OutputEvent.FLAG_RESTING_UPDATE;
-        for (final int ref : refs) {
+        for (final long ref : refs) {
             final RestingOrder o = lookup(ref);
             if (o != null && o.isOpen() && o.tif == OrderTypes.DAY) {
                 touched[o.securityId] = true;
@@ -2700,7 +2700,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private boolean extStaged;
 
     /** True for orders that carry typed state (written as T_ORDER_EXT). */
-    public boolean copyOrderExtension(final int orderRef, final long[] t) {
+    public boolean copyOrderExtension(final long orderRef, final long[] t) {
         final RestingOrder o = lookup(orderRef);
         if (o == null || (o.orderType == OrderTypes.LEGACY && o.tif == OrderTypes.TIF_NONE)) {
             return false;
@@ -2762,7 +2762,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * every level's exact FIFO, including orders that replenished, repriced or were replaced to a
      * tail), then open non-resting orders (pending, suspended) in ascending ref.
      */
-    public int[] snapshotOpenRefsInRestoreOrder() {
+    public long[] snapshotOpenRefsInRestoreOrder() {
         final java.util.List<RestingOrder> resting = new java.util.ArrayList<>();
         final java.util.List<RestingOrder> held = new java.util.ArrayList<>();
         for (final RestingOrder o : ordersByRef.values()) {
@@ -2772,8 +2772,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             (o.isResting() ? resting : held).add(o);
         }
         resting.sort((a, b) -> Long.compare(a.bookSeq, b.bookSeq));
-        held.sort((a, b) -> Integer.compare(a.orderRef, b.orderRef));
-        final int[] out = new int[resting.size() + held.size()];
+        held.sort((a, b) -> Long.compare(a.orderRef, b.orderRef));
+        final long[] out = new long[resting.size() + held.size()];
         int n = 0;
         for (final RestingOrder o : resting) {
             out[n++] = o.orderRef;
@@ -2848,7 +2848,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     /** Test/edge read of one order's typed state as {status, remaining, displayed, limitPx,
      *  stopPx, watermark, riskPx, suspendReason, reservedNotional, reservedQty, riskReason}. */
-    public long[] orderState(int orderRef) {
+    public long[] orderState(long orderRef) {
         final RestingOrder o = lookup(orderRef);
         if (o == null) {
             return null;
@@ -3056,7 +3056,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return book == null ? 0 : book.depth(side, outPx, outQty, max);
     }
 
-    private RestingOrder lookup(int orderRef) {
+    private RestingOrder lookup(long orderRef) {
         return ordersByRef.get(orderRef);
     }
 
@@ -3081,12 +3081,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * at the open→terminal transition (fill-to-zero, cancel, rejection, or a terminal warm-start
      * row) — republished terminal orders do not re-enter the ring.
      */
-    private void markTerminal(int orderRef) {
+    private void markTerminal(long orderRef) {
         if (terminalRing == null) {
             return;   // eviction disabled (terminalCap <= 0): unbounded retention, pre-Tier-2B behavior
         }
         if (terminalCount == terminalCap) {
-            int oldest = terminalRing[terminalHead];
+            long oldest = terminalRing[terminalHead];
             terminalHead = terminalHead + 1 == terminalCap ? 0 : terminalHead + 1;
             terminalCount--;
             evictOrder(oldest);
@@ -3101,7 +3101,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     /** Drop an aged-out terminal order from the ref index and return its entry to the pool (BLP thread).
      *  It was already off the book (unlinked at the terminal transition), so this only frees memory. */
-    private void evictOrder(int orderRef) {
+    private void evictOrder(long orderRef) {
         RestingOrder o = ordersByRef.remove(orderRef);
         if (o == null) {
             return;

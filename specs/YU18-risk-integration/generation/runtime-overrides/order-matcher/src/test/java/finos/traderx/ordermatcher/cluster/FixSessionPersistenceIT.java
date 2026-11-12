@@ -76,7 +76,7 @@ class FixSessionPersistenceIT {
         }
 
         @Override
-        public ExecResult submitCancel(final int orderRef, final int accountId) {
+        public ExecResult submitCancel(final long orderRef, final int accountId) {
             return new ExecResult(true, orderRef, OutputEvent.KIND_ORDER_CANCELED);
         }
     }

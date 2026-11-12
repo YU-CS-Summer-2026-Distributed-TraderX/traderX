@@ -26,7 +26,8 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
-import org.agrona.collections.IntHashSet;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -276,7 +277,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // with empty session rings, the state before any session-keyed order was sent.
     // Format 16 (ADR-104 §5): the rings as T_SESSION_HEAD + T_SESSION_ENTRIES (64 entries, 21 bytes each), records that
     // fit one packed snapshot message. Serialization only: format 15's T_SESSION_RING still loads, into the same state.
-    static final int SNAPSHOT_FORMAT = 16; // account tuples append self-match group (13); T_STREAM (14); T_SESSION_RING (15); compact rings (16)
+    // Format 17 (ADR-105): 64-bit order refs. The session ring's entry carries its ref as a long (25 bytes, 53 entries a
+    // record) and the header appends the epoch's first ref at 68. Every other ref column was already 8 bytes. A format 16
+    // snapshot still restores, with first ref 1 (every epoch before ADR-105 started there).
+    static final int SNAPSHOT_FORMAT = 17; // account tuples append self-match group (13); T_STREAM (14); T_SESSION_RING (15); compact rings (16); 64-bit refs (17)
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -557,7 +561,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     /** RI33 (FR-AAD-02): an account control's committed decision; id at 13, outcome at 8. */
     public static final byte KIND_ACCOUNT_CONTROL = 108;
 
-    // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
+    // long appliedSeq, long orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
     //  22 riskReason   — RiskReason ordinal, so a synchronous /trades reject can answer WHY
     //                    (YU12 3394186 put this at 21; moved here because 21 is taken above);
@@ -576,7 +580,32 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     //                    format are unchanged; only this egress record grew, 24 -> 32. A 24-byte
     //                    reader against this writer is a mixed-version fleet and is refused loudly
     //                    at the gateway's length check — members and gateways roll together.
-    static final int EGRESS_ACK_LENGTH = 32;
+    //
+    // ADR-105 (format 2, 40 bytes): every field above keeps its offset. 8..11 hold the low half of the
+    // order ref (or the int result a non-order ack carries there), 32..35 its high half, and 36..39 the
+    // format word EGRESS_ACK_FORMAT. Write both halves with putAckRef, read them with ackRef, and
+    // check the word with ackFormatOk before reading anything else: a 32-byte reader splits a
+    // coalesced 160-byte message (4 x 40 = 5 x 32) into records that pass its length check, and the
+    // word is what turns that same mistake into a refusal in the other direction.
+    static final int EGRESS_ACK_LENGTH = 40;
+    static final int EGRESS_ACK_FORMAT = 0x0AC4_0002;
+
+    /** ADR-105: the ack's 64-bit ref at 8..11 + 32..35, and the format word at 36. */
+    static void putAckRef(final MutableDirectBuffer b, final long ref) {
+        b.putInt(8, (int) ref);
+        b.putInt(32, (int) (ref >>> 32));
+        b.putInt(36, EGRESS_ACK_FORMAT);
+    }
+
+    /** ADR-105: the 64-bit ref of the ack record at {@code o}. A non-order ack's int result reads back sign-extended. */
+    public static long ackRef(final DirectBuffer b, final int o) {
+        return Integer.toUnsignedLong(b.getInt(o + 8)) | ((long) b.getInt(o + 32) << 32);
+    }
+
+    /** ADR-105: the record at {@code o} is a format 2 ack. Readers refuse any record that is not. */
+    public static boolean ackFormatOk(final DirectBuffer b, final int o) {
+        return b.getInt(o + 36) == EGRESS_ACK_FORMAT;
+    }
 
     /**
      * Egress coalescing (wire change, opt-in by {@code CLUSTER_EGRESS_COALESCE=true}, default off):
@@ -640,19 +669,24 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private long applyRequestId;
     private boolean stampFirstApplyAsLeader; // Phase-0 SLO clock: armed on LEADER, fires once
 
-    private long nextOrderRef = 1;
     /**
-     * ADR-100: the last order reference this epoch can issue. The wire carries the ref as an int
-     * (SBE, ack bytes 8..11, snapshot order rows), so {@code (int) nextOrderRef++} past this value
-     * would stamp a real order with 0 (the reserved "no order" ref every /trades ticket booking
-     * carries) and then recycle 1, 2, ... while idempotency and the read model still hold the
-     * originals. A NEW that arrives once {@code nextOrderRef} is past this is refused before it
-     * consumes anything; the epoch is then closed to new orders until a fresh epoch.
+     * ADR-105: the first order reference of an epoch, 2^32 + 1. A ref is 64-bit everywhere it is held or carried, so
+     * starting above 32 bits makes a missed int fail on the epoch's first order rather than hours into a trading day.
+     * An epoch that started before ADR-105 started at 1 and keeps counting from where it is ({@link #firstOrderRef}).
      */
-    static final long MAX_ORDER_REF = Integer.MAX_VALUE;
+    static final long FIRST_ORDER_REF = (1L << 32) + 1;
+    /**
+     * ADR-100, widened by ADR-105: the last order reference an epoch can issue. 2^53 - 1, so a ref stays exact as a JSON
+     * number in JavaScript (the console, the load drivers): 634 years at 450K/s. A NEW that arrives once
+     * {@code nextOrderRef} is past this is refused before it consumes anything; the epoch is then closed to new orders.
+     */
+    static final long MAX_ORDER_REF = (1L << 53) - 1;
+    private long nextOrderRef = FIRST_ORDER_REF;
+    /** ADR-105: this epoch's first ref, replicated (format 17 header): FIRST_ORDER_REF, or 1 for an older epoch. */
+    private long firstOrderRef = FIRST_ORDER_REF;
     /**
      * YU17 (ADR-072): how many of the refs {@link #nextOrderRef} has issued went to REPLAYED TAPE
-     * FLOW rather than to an operator. {@code nextOrderRef - 1 - externalOrderRefs} is the
+     * FLOW rather than to an operator. {@code nextOrderRef - firstOrderRef - externalOrderRefs} is the
      * operator-only count, and the replay cannot move it by construction.
      *
      * <p>This is the counter ADR-072 is about. `lib-consensus-readings.sh` retreated to the
@@ -933,7 +967,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             System.out.println("BOOK-CAPACITY maxActiveBooks=" + engine.maxActiveBooks() + " bookLevels=" + engine.bookLevels()
                 + " maxHeapBytes=" + Runtime.getRuntime().maxMemory() + " compressedOops=" + compressedOops());
         }
-        this.nextOrderRef = 1;
+        this.nextOrderRef = FIRST_ORDER_REF;
+        this.firstOrderRef = FIRST_ORDER_REF;
         this.externalOrderRefs = 0;
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
@@ -1019,7 +1054,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             final boolean valid = event.accountId > 0 && event.limitPx > 0;
             if (valid) engine.onEvent(event, appliedSeq, true);
             ackBuffer.putLong(0, appliedSeq);
-            ackBuffer.putInt(8, valid ? 0 : 1);
+            putAckRef(ackBuffer, valid ? 0 : 1);
             ackBuffer.putByte(12, KIND_SELF_MATCH_GROUP);
             ackBuffer.putLong(13, event.clientOrderKey());
             ackBuffer.putByte(21, (byte) 0);ackBuffer.putByte(22, (byte) 0);ackBuffer.putByte(23, (byte) 0);
@@ -1105,7 +1140,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // The generator is replicated state advanced by the committed message itself
             // (ADR-046). A duplicate retry also consumes a value — deterministic on every
             // member and replay, and never reused; the engine then answers from idempotency.
-            event.orderRef = (int) nextOrderRef++;
+            event.orderRef = nextOrderRef++;
             highestIssuedRef = Math.max(highestIssuedRef, event.orderRef);
             // YU17 (ADR-072). Counted HERE, beside the increment it shadows, and on exactly the
             // same condition — including the rejected and the retried, because they consume a ref
@@ -1161,7 +1196,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // the ingress inputSeq slot. Byte 8: 0 = the member holds the account, 1 = refused
             // (F7: table full, ignored). Egress only: the apply above is unchanged on every member.
             ackBuffer.putLong(0, appliedSeq);
-            ackBuffer.putInt(8, risk.knowsAccount(event.accountId) ? 0 : 1);
+            putAckRef(ackBuffer, risk.knowsAccount(event.accountId) ? 0 : 1);
             ackBuffer.putByte(12, KIND_ACCOUNT_CONTROL);
             ackBuffer.putLong(13, applyRequestId);
             ackBuffer.putByte(21, (byte) 0);ackBuffer.putByte(22, (byte) 0);ackBuffer.putByte(23, (byte) 0);
@@ -1235,7 +1270,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             }
         }
         ackBuffer.putLong(0, appliedSeq);
-        ackBuffer.putInt(8, id);
+        putAckRef(ackBuffer, id);
         ackBuffer.putByte(12, KIND_SYMBOL_REGISTERED);
         ackBuffer.putLong(13, codec.symbolRequestId());
         // FR-ERH-F14: 1 when this registration created the symbol, 0 when it already existed. An
@@ -1346,6 +1381,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // Generators: read BEFORE the rebuild zeroes them.
         final long keptAppliedSeq = appliedSeq;
         final long keptNextOrderRef = nextOrderRef;
+        final long keptFirstOrderRef = firstOrderRef;
         final long keptHighestIssuedRef = highestIssuedRef;
         final long keptExternalOrderRefs = externalOrderRefs;
         final long keptTradeCounter = engine.tradeCounter();
@@ -1362,6 +1398,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // ---- restore the generators, so no identifier is ever issued twice --------------------
         appliedSeq = keptAppliedSeq;
         nextOrderRef = keptNextOrderRef;
+        firstOrderRef = keptFirstOrderRef;
         highestIssuedRef = keptHighestIssuedRef;
         externalOrderRefs = keptExternalOrderRefs;
         engine.bootstrapTradeCounter(keptTradeCounter);
@@ -1411,7 +1448,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putLong(0, appliedSeq);
         // What was actually dropped, so the caller can report a cleared venue as cleared and an
         // already-empty one as already empty -- the two look identical from a 200 alone.
-        ackBuffer.putInt(8, clearedOrders);
+        putAckRef(ackBuffer, clearedOrders);
         ackBuffer.putByte(12, KIND_SANDBOX_RESET);
         ackBuffer.putLong(13, event.clientOrderKey());
         ackBuffer.putByte(21, (byte) clearedContracts);
@@ -1453,7 +1490,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         drainOutputs(session);
 
         ackBuffer.putLong(0, appliedSeq);
-        ackBuffer.putInt(8, outcome);
+        putAckRef(ackBuffer, outcome);
         ackBuffer.putByte(12, KIND_BUSINESS_DAY);
         ackBuffer.putLong(13, event.clientOrderKey());
         ackBuffer.putByte(21, (byte) 0);
@@ -1478,7 +1515,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             else if (runPhase!=3) {outcome=1;}
         } else {outcome=1;}
         ++appliedSeq;
-        ackBuffer.putLong(0,appliedSeq);ackBuffer.putInt(8,runPhase);
+        ackBuffer.putLong(0,appliedSeq);putAckRef(ackBuffer, runPhase);
         ackBuffer.putByte(12,KIND_RUN_CONTROL);ackBuffer.putLong(13,request);
         ackBuffer.putByte(21,(byte)outcome);ackBuffer.putByte(22,(byte)0);ackBuffer.putByte(23,(byte)0);
         ackBuffer.putLong(24,0);offerEgress(session);
@@ -1499,7 +1536,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 risk.beginSequenced(key, false);
                 return true;
             }
-            case StreamDedupe.GAP -> refuseSequenced(session, RiskReason.OUT_OF_SEQUENCE, (int) streams.expected());
+            case StreamDedupe.GAP -> refuseSequenced(session, RiskReason.OUT_OF_SEQUENCE, streams.expected());
             case StreamDedupe.LIMIT -> refuseSequenced(session, RiskReason.STREAM_LIMIT, 0);
             default -> {
                 final byte decision = streams.duplicateDecision();
@@ -1557,9 +1594,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     /** NFR-XOD-05: {@code values()} clones the array, so a resend answered with its original rejection allocated. */
     private static final RiskReason[] REASONS = RiskReason.values();
 
-    private void refuseSequenced(final ClientSession session, final RiskReason reason, final int orderRef) {
+    private void refuseSequenced(final ClientSession session, final RiskReason reason, final long orderRef) {
         ackBuffer.putLong(0, appliedSeq);
-        ackBuffer.putInt(8, orderRef);
+        putAckRef(ackBuffer, orderRef);
         ackBuffer.putByte(12, OutputEvent.KIND_ORDER_REJECTED);
         ackBuffer.putLong(13, 0L);
         ackBuffer.putByte(21, (byte) 0);
@@ -1571,7 +1608,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     private void rejectRunInput(final ClientSession session) {
         // Admission barrier: no ID allocation, book mutation, or projection event.
-        ackBuffer.putLong(0,appliedSeq);ackBuffer.putInt(8,0);
+        ackBuffer.putLong(0,appliedSeq);putAckRef(ackBuffer, 0);
         ackBuffer.putByte(12,event.type==InputEvent.TYPE_TRADE_NEW
             ? OutputEvent.KIND_TRADE_REJECTED : OutputEvent.KIND_ORDER_REJECTED);
         ackBuffer.putLong(13,0);ackBuffer.putByte(21,(byte)0);
@@ -1606,7 +1643,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         drainOutputs(session);
 
         ackBuffer.putLong(0, appliedSeq);
-        ackBuffer.putInt(8, phase);
+        putAckRef(ackBuffer, phase);
         ackBuffer.putByte(12, KIND_SESSION_PHASE);
         ackBuffer.putLong(13, event.clientOrderKey());
         ackBuffer.putByte(21, (byte) 0);
@@ -1714,9 +1751,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     /** Remove a queued order by ref and ack it CANCELED; false when the ref names no queued order
      *  (in which case the cancel belongs to the engine). Linear scan over a cold-path list. */
-    private boolean cancelQueued(final int orderRef) {
+    private boolean cancelQueued(final long orderRef) {
         for (int i = 0; i < queuedOrders.size(); i++) {
-            if ((int) queuedOrders.get(i)[0] == orderRef) {
+            if (queuedOrders.get(i)[0] == orderRef) {
                 final long[] row = queuedOrders.remove(i);
                 reindexQueueKeys();
                 emitQueuedTerminal(row, RiskReason.ACCEPTED);
@@ -1766,7 +1803,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         queuedByClientKey.clear();
         for (final long[] row : released) {
             releaseEvent.type = InputEvent.TYPE_ORDER_NEW;
-            releaseEvent.orderRef = (int) row[0];
+            releaseEvent.orderRef = row[0];
             releaseEvent.accountId = (int) row[1];
             releaseEvent.securityId = (int) row[2];
             releaseEvent.side = (byte) row[3];
@@ -1828,7 +1865,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     private void loadSessionOrder(final long[] row) {
         sessionOrder.reset();
-        sessionOrder.orderRef = (int) row[0];
+        sessionOrder.orderRef = row[0];
         sessionOrder.accountId = (int) row[1];
         sessionOrder.securityId = (int) row[2];
         sessionOrder.side = (byte) row[3];
@@ -1932,9 +1969,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // duplicated 10mm swap confirmation is precisely the failure the idempotency table exists
         // for. The store index (+1, since 0 is the table's "no ref" sentinel) is what was
         // remembered against the key, so the original id is a direct lookup.
-        final int priorRef = clientKey == 0L ? -1 : risk.existingOrderRef(clientKey);
+        final long priorRef = clientKey == 0L ? -1 : risk.existingOrderRef(clientKey);
         if (priorRef > 0 && priorRef <= contracts.size()) {
-            contractId = contracts.get(priorRef - 1)[0];
+            contractId = contracts.get((int) (priorRef - 1))[0];
             booked = true;
         } else if (contracts.size() >= MAX_CONTRACTS) {
             reason = (byte) RiskReason.CAPACITY.ordinal();
@@ -1981,7 +2018,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
 
         ackBuffer.putLong(0, contractId);
-        ackBuffer.putInt(8, booked ? 1 : 0);
+        putAckRef(ackBuffer, booked ? 1 : 0);
         ackBuffer.putByte(12, KIND_SWAP_BOOKED);
         ackBuffer.putLong(13, clientKey);   // correlation, as the symbol/extract acks use this slot
         ackBuffer.putByte(21, (byte) 0);
@@ -2048,7 +2085,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             extractBridge.offer(appliedSeq, cut, lastExtractCutSha);
         }
         ackBuffer.putLong(0, appliedSeq);
-        ackBuffer.putInt(8, positions.size());
+        putAckRef(ackBuffer, positions.size());
         ackBuffer.putByte(12, KIND_RISK_EXTRACT_MARKED);
         ackBuffer.putLong(13, codec.extractRequestId());
         ackBuffer.putByte(21, (byte) 0);
@@ -2226,7 +2263,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // the disagreement the quiesce in lib-consensus-readings.sh exists to refuse.
         snapshotBuffer.putLong(52, externalOrderRefs);
         snapshotBuffer.putLong(60, engine.externalTradeLegs());
-        writer.write(snapshotBuffer, 0, 68);
+        snapshotBuffer.putLong(68, firstOrderRef);   // format 17 (ADR-105)
+        writer.write(snapshotBuffer, 0, 76);
 
         writeTuple(writer, T_POLICY, risk.policyTuple());
         for (final long[] account : risk.accountTuples()) {
@@ -2329,17 +2367,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // their levels in the exact original FIFO), then retained terminal rows in exact
         // eviction-FIFO order — restore re-marks terminals in write order, keeping eviction
         // replica-identical.
-        final int[] terminalFifo = engine.terminalOrderRefsFifo();
-        final IntHashSet terminalSet = new IntHashSet(terminalFifo.length * 2);
+        final long[] terminalFifo = engine.terminalOrderRefsFifo();
+        final LongHashSet terminalSet = new LongHashSet(terminalFifo.length * 2);
         final long[] orderTuple = new long[MatchingEngine.SNAPSHOT_ORDER_TUPLE_LENGTH];
-        for (final int ref : terminalFifo) {
+        for (final long ref : terminalFifo) {
             terminalSet.add(ref);
         }
         // YU18 format 11: open rows in BOOK-APPEND order (every level's exact FIFO, including orders
         // that replenished, repriced or replaced to a tail), then held open orders (pending,
         // suspended); a typed order's T_ORDER_EXT immediately precedes its row.
         final long[] extTuple = new long[MatchingEngine.ORDER_EXT_TUPLE_LENGTH];
-        for (final int ref : engine.snapshotOpenRefsInRestoreOrder()) {
+        for (final long ref : engine.snapshotOpenRefsInRestoreOrder()) {
             if (!terminalSet.contains(ref) && engine.copySnapshotOrderTuple(ref, orderTuple)) {
                 if (engine.copyOrderExtension(ref, extTuple)) {
                     writeTuple(writer, T_ORDER_EXT, extTuple);
@@ -2347,7 +2385,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 writeTuple(writer, T_ORDER, orderTuple);
             }
         }
-        for (final int ref : terminalFifo) {
+        for (final long ref : terminalFifo) {
             if (engine.copySnapshotOrderTuple(ref, orderTuple)) {
                 if (engine.copyOrderExtension(ref, extTuple)) {
                     writeTuple(writer, T_ORDER_EXT, extTuple);
@@ -2412,15 +2450,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 // it is refused above.
                 externalOrderRefs = buffer.getLong(offset + 52);
                 engine.bootstrapExternalTradeLegs(buffer.getLong(offset + 60));
+                firstOrderRef = format >= 17 ? buffer.getLong(offset + 68) : 1L;
+                if (firstOrderRef != 1L && firstOrderRef != FIRST_ORDER_REF) {
+                    throw new IllegalStateException("snapshot corrupt: first order ref " + firstOrderRef);
+                }
                 // Fail closed, the same posture every other restored identifier takes: more
                 // replayed refs than refs ISSUED is arithmetic this build cannot have written, and
                 // the operator counter derived from it would go NEGATIVE — a proof would then read
                 // "no order of mine was sequenced" off a corrupt subtraction. Stated as the
-                // subtraction itself rather than as `>= nextOrderRef`, because the generator is
-                // 1-based and refs issued is nextOrderRef - 1.
-                if (externalOrderRefs < 0 || externalOrderRefs > Math.max(0L, nextOrderRef - 1)) {
+                // subtraction itself rather than as `>= nextOrderRef`, because refs issued is
+                // nextOrderRef - firstOrderRef.
+                if (externalOrderRefs < 0 || externalOrderRefs > Math.max(0L, nextOrderRef - firstOrderRef)) {
                     throw new IllegalStateException("snapshot corrupt: externalOrderRefs "
-                        + externalOrderRefs + " exceeds the " + Math.max(0L, nextOrderRef - 1)
+                        + externalOrderRefs + " exceeds the " + Math.max(0L, nextOrderRef - firstOrderRef)
                         + " ref(s) nextOrderRef " + nextOrderRef + " says were issued");
                 }
                 snapshotHeaderSeen = true;
@@ -2455,7 +2497,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             }
             case T_IDEMPOTENCY -> risk.bootstrapIdempotency(
                 buffer.getLong(offset + 4),
-                (int) buffer.getLong(offset + 12),
+                buffer.getLong(offset + 12),
                 (byte) buffer.getLong(offset + 20));
             case T_BOOK -> {
                 // Format 8 (design §2.4): {securityId, baseLevel, tickPx}. Restore reads the GRID
@@ -2527,7 +2569,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     throw new IllegalStateException(
                         "snapshot incomplete: order ref " + ref + " >= nextOrderRef " + nextOrderRef);
                 }
-                engine.bootstrapOrder((int) ref,
+                engine.bootstrapOrder(ref,
                     (int) buffer.getLong(offset + 12),   // accountId
                     (int) buffer.getLong(offset + 20),   // securityId
                     (byte) buffer.getLong(offset + 28),  // side
@@ -2655,7 +2697,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 risk.sessionRing().restore(tuple);
             }
             case T_SESSION_HEAD -> risk.sessionRing().restoreHead(buffer, offset + 4, length - 4);
-            case T_SESSION_ENTRIES -> risk.sessionRing().restoreEntries(buffer, offset + 4, length - 4);
+            case T_SESSION_ENTRIES -> risk.sessionRing().restoreEntries(buffer, offset + 4, length - 4, restoredFormat >= 17);
             case T_RUN_IDENTITY -> {
                 long present=buffer.getLong(offset+4);
                 if (present!=0 && present!=1) {throw new IllegalStateException("RUN_SNAPSHOT_INVALID");}
@@ -2729,9 +2771,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         // ADR-100: a header past the ceiling + 1 was written by a build that wrapped refs; refuse it
         // rather than inherit duplicate references (the ceiling + 1 itself is a legitimately exhausted epoch).
-        if (nextOrderRef < 1 || nextOrderRef > MAX_ORDER_REF + 1 || highestIssuedRef > MAX_ORDER_REF) {
+        if (nextOrderRef < firstOrderRef || nextOrderRef > MAX_ORDER_REF + 1 || highestIssuedRef > MAX_ORDER_REF) {
             throw new IllegalStateException("snapshot incomplete: nextOrderRef " + nextOrderRef
-                + " / highestIssuedRef " + highestIssuedRef + " outside [1, " + (MAX_ORDER_REF + 1) + "]");
+                + " / highestIssuedRef " + highestIssuedRef + " outside [" + firstOrderRef + ", " + (MAX_ORDER_REF + 1)
+                + "]");
         }
         // YU18 format 11, checked after every inherited invariant so those keep their own refusal.
         if (restoredFormat >= 11 && (recordTypesSeen & (1 << T_ORDER_TYPES)) == 0) {
@@ -2894,7 +2937,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 }
             }
             ackBuffer.putLong(0, out.inputSeq);
-            ackBuffer.putInt(8, out.orderRef);
+            putAckRef(ackBuffer, out.orderRef);
             ackBuffer.putByte(12, out.kind);
             ackBuffer.putLong(13, out.tradeSeq);
             // Correlation class (FR-LOB07): counterparty resting-order updates never complete an
@@ -3048,12 +3091,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * flow. Exported as {@code traderx_cluster_operator_next_order_ref} and read by
      * `scripts/proofs/lib-consensus-readings.sh` in place of the raw generator.
      *
-     * <p>Offset by the generator's 1-based start so it is a COUNT, not a next-value: a fresh epoch
-     * reads 0 here and {@code nextOrderRef} 1, which is what makes "no order of mine was
-     * sequenced" expressible as an unchanged reading on a rig that has never traded.
+     * <p>Offset by the epoch's first ref so it is a COUNT, not a next-value: a fresh epoch reads 0
+     * here and {@code nextOrderRef} {@link #FIRST_ORDER_REF}, which is what makes "no order of mine
+     * was sequenced" expressible as an unchanged reading on a rig that has never traded.
      */
     public long operatorOrderRefs() {
-        return nextOrderRef - 1 - externalOrderRefs;
+        return nextOrderRef - firstOrderRef - externalOrderRefs;
     }
 
     /** YU17 (ADR-072): the replayed half, exported so the library's own admission test — name a

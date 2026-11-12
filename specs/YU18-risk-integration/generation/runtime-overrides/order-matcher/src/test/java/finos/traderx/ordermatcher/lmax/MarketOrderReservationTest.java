@@ -101,7 +101,7 @@ class MarketOrderReservationTest {
         e.type = InputEvent.TYPE_ORDER_NEW; e.orderRef = ++refs; e.accountId = account; e.securityId = SEC;
         e.side = side; e.qty = qty; e.limitPx = limitPx; e.eventTimeMillis = 1_000 + seq;
         engine.onEvent(e, seq++, true);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     private int market(int account, byte side, int qty) { return limit(account, side, qty, Px.NONE); }

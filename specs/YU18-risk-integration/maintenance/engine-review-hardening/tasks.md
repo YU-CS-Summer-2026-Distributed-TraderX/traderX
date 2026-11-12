@@ -18,6 +18,11 @@
       0 and 1 again; wrapped snapshot headers refused; `traderx_cluster_order_ref_headroom`; `/trades` tickets carry
       `bookingSource: TICKET` and no `sourceOrderId`. `OrderRefExhaustionTest` fails on the previous service (refs
       -2147483648, -2147483647, -2147483646 issued). Deterministic core: fresh epoch, same image on all members.
+- [x] FR-ERH-F17 (ADR-105, 2026-11-11, after L0 hit 2^31 on slot A at 3:50 pm ET): 64-bit refs from 2^32 + 1 to
+      2^53 - 1; the log's wide-ref tail; snapshot format 17; the 40-byte ack with its format word in every reader; the
+      binary wire's new type codes (old ones refused in their own layout); REST refs read whole. `OrderRefWideningTest`
+      fails on the previous service (2,147,483,647 issued, then two ORDER_REF_EXHAUSTED). Load tools moved to the new
+      wire. Roll: fresh epoch, same image on members and gateways (ADR-105 Consequences).
       Amended (codeX pass 3 §15): the ceiling is checked after deduplication; a retry of the last accepted order
       and a sequenced resend recover their answer with no ref (two more cases, both fail on the first cut).
 - [x] FR-ERH-F16: `/health?digest=1` and `/recon/shadow-state` expose the member's and a strict full-log replay's

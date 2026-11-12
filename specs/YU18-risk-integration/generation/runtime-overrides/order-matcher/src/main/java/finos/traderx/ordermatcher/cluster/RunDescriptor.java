@@ -91,12 +91,12 @@ public final class RunDescriptor {
 
  public void control(finos.traderx.ordermatcher.lmax.InputEvent e,byte operation) {
   e.type=finos.traderx.ordermatcher.lmax.InputEvent.TYPE_RUN_CONTROL;e.side=operation;
-  e.limitPx=word(0);e.priceTicks=word(1);e.orderRef=(int)(word(2)>>>32);e.accountId=(int)word(2);
+  e.limitPx=word(0);e.priceTicks=word(1);e.orderRef=word(2)>>>32;e.accountId=(int)word(2);   // ADR-105: unsigned, never the wide tail
   e.securityId=(int)(word(3)>>>32);e.qty=(int)word(3);e.eventTimeMillis=0;
  }
  public boolean matches(finos.traderx.ordermatcher.lmax.InputEvent e) {
   return e.limitPx==word(0) && e.priceTicks==word(1)
-   && (((long)e.orderRef<<32)|Integer.toUnsignedLong(e.accountId))==word(2)
+   && ((e.orderRef<<32)|Integer.toUnsignedLong(e.accountId))==word(2)
    && (((long)e.securityId<<32)|Integer.toUnsignedLong(e.qty))==word(3);
  }
 }

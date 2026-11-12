@@ -39,7 +39,7 @@ class OrderTypesServiceTest {
     private static final long PX = 1_000_000L;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingress = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingress = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private final UnsafeBuffer typedIngress = new UnsafeBuffer(new byte[AeronReplicationCodec.ORDER_INSTRUCTION_BYTES]);
     private long timestamp = 1_000_000_000_000L;
     private long keys = 1;
@@ -102,8 +102,7 @@ class OrderTypesServiceTest {
             s.onSessionMessage(session, ++timestamp, typedIngress, 0,
                 AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
         } else {
-            codec.encodeInput(ingress, 0, e, 0, 0, 0);
-            s.onSessionMessage(session, ++timestamp, ingress, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            s.onSessionMessage(session, ++timestamp, ingress, 0, codec.encodeInput(ingress, 0, e, 0, 0, 0), null);
         }
         return session;
     }
@@ -152,11 +151,11 @@ class OrderTypesServiceTest {
         return apply(s, e);
     }
 
-    private static int refOf(final Capture c) {
+    private static long refOf(final Capture c) {
         for (final byte[] r : c.egress) {
             final UnsafeBuffer ack = new UnsafeBuffer(r);
             if (ack.getByte(21) == 0 && OutputEvent.isOrderLifecycleKind(ack.getByte(12))) {
-                return ack.getInt(8);
+                return MatchingEngineClusteredService.ackRef(ack, 0);
             }
         }
         throw new AssertionError("no direct ack");
@@ -172,11 +171,11 @@ class OrderTypesServiceTest {
         throw new AssertionError("no business-day ack");
     }
 
-    private static long[] state(final MatchingEngineClusteredService s, final int ref) {
+    private static long[] state(final MatchingEngineClusteredService s, final long ref) {
         return s.engine().orderState(ref);
     }
 
-    private long[] lastUpdate(final int ref) {
+    private long[] lastUpdate(final long ref) {
         long[] found = null;
         for (final long[] u : updates) {
             if (u[0] == ref) {
@@ -221,10 +220,10 @@ class OrderTypesServiceTest {
     @Test
     void sc36_releasedOrdersKeepTheirOriginalSubmissionSequenceInTheLatchOrder() {
         final MatchingEngineClusteredService s = seeded();
-        final int a = refOf(apply(s, typed(A, InputEvent.SIDE_SELL, 1, OrderTypes.STOP, OrderTypes.GTC, 0L, 149 * PX)));
+        final long a = refOf(apply(s, typed(A, InputEvent.SIDE_SELL, 1, OrderTypes.STOP, OrderTypes.GTC, 0L, 149 * PX)));
         phase(s, MatchingEngineClusteredService.PHASE_PRE_OPEN);
-        final int b = refOf(apply(s, typed(B, InputEvent.SIDE_BUY, 1, OrderTypes.STOP, OrderTypes.GTC, 0L, 149 * PX)));
-        final int c = refOf(apply(s, typed(C, InputEvent.SIDE_SELL, 1, OrderTypes.STOP, OrderTypes.GTC, 0L, 149 * PX)));
+        final long b = refOf(apply(s, typed(B, InputEvent.SIDE_BUY, 1, OrderTypes.STOP, OrderTypes.GTC, 0L, 149 * PX)));
+        final long c = refOf(apply(s, typed(C, InputEvent.SIDE_SELL, 1, OrderTypes.STOP, OrderTypes.GTC, 0L, 149 * PX)));
         apply(s, order(D, InputEvent.SIDE_SELL, 1, 149 * PX));
         apply(s, order(E, InputEvent.SIDE_BUY, 1, 0L));   // a queued market order: prints 149 at its turn
         updates.clear();
@@ -253,10 +252,10 @@ class OrderTypesServiceTest {
         final MatchingEngineClusteredService s = seeded();
         assertEquals(MatchingEngine.DAY_APPLIED, dayOutcome(day(s, InputEvent.BUSINESS_DAY_START, 20260921)));
         apply(s, order(B, InputEvent.SIDE_BUY, 1, 149 * PX));   // a non-peg reference for the peg
-        final int dayLimit = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
-        final int gtcLimit = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L)));
-        final int dayStop = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.STOP, OrderTypes.DAY, 0L, 160 * PX)));
-        final int dayPeg = refOf(apply(s, peg(C, InputEvent.SIDE_BUY, 1, 149 * PX, OrderTypes.DAY)));
+        final long dayLimit = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
+        final long gtcLimit = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L)));
+        final long dayStop = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.STOP, OrderTypes.DAY, 0L, 160 * PX)));
+        final long dayPeg = refOf(apply(s, peg(C, InputEvent.SIDE_BUY, 1, 149 * PX, OrderTypes.DAY)));
         final long reservedA = s.risk().reservedNotional(A);
         final long reservedC = s.risk().reservedNotional(C);
         final long[][] before = { state(s, dayLimit), state(s, gtcLimit), state(s, dayStop), state(s, dayPeg) };
@@ -275,25 +274,25 @@ class OrderTypesServiceTest {
     void sc44_thePreOpenQueueKeepsItsBehaviourAndDayEndRemovesOnlyDayEntries() {
         final MatchingEngineClusteredService s = seeded();
         phase(s, MatchingEngineClusteredService.PHASE_PRE_OPEN);
-        final int refused = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
+        final long refused = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
         assertEquals(RiskReason.NO_TRADING_DAY.ordinal(), lastUpdate(refused)[3], "no open day: refused at queue time");
         day(s, InputEvent.BUSINESS_DAY_START, 20260921);
 
-        final int day1 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
-        final int gtc1 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L)));
+        final long day1 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
+        final long gtc1 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L)));
         phase(s, MatchingEngineClusteredService.PHASE_CLOSED);
         assertEquals(RiskReason.SESSION_CANCELED.ordinal(), lastUpdate(day1)[3], "decision (b) unchanged");
         assertEquals(RiskReason.SESSION_CANCELED.ordinal(), lastUpdate(gtc1)[3]);
 
         phase(s, MatchingEngineClusteredService.PHASE_PRE_OPEN);
-        final int day2 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
-        final int gtc2 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L)));
+        final long day2 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
+        final long gtc2 = refOf(apply(s, typed(A, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L)));
         phase(s, MatchingEngineClusteredService.PHASE_OPEN);
         assertEquals(RestingOrder.STATUS_NEW, (byte) state(s, day2)[0], "released at the open");
         assertEquals(RestingOrder.STATUS_NEW, (byte) state(s, gtc2)[0]);
 
         phase(s, MatchingEngineClusteredService.PHASE_PRE_OPEN);
-        final int day3 = refOf(apply(s, typed(B, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
+        final long day3 = refOf(apply(s, typed(B, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.DAY, 148 * PX, 0L)));
         apply(s, typed(B, InputEvent.SIDE_BUY, 1, OrderTypes.LIMIT, OrderTypes.GTC, 148 * PX, 0L));
         assertEquals(2, s.queueDepth());
         assertEquals(MatchingEngine.DAY_APPLIED, dayOutcome(day(s, InputEvent.BUSINESS_DAY_END, 20260921)));
@@ -405,10 +404,10 @@ class OrderTypesServiceTest {
             "the untyped queued order releases");
     }
 
-    private static int refOfOpen(final MatchingEngineClusteredService s, final int account) {
+    private static long refOfOpen(final MatchingEngineClusteredService s, final int account) {
         for (final long[] o : s.engine().openOrderTuples()) {
             if (o[4] == account) {
-                return (int) o[0];
+                return o[0];
             }
         }
         throw new AssertionError("no open order for " + account);
@@ -447,9 +446,9 @@ class OrderTypesServiceTest {
     @Test
     void sc31_aRiskSuspendedPegSurvivesASnapshotExactly() {
         final MatchingEngineClusteredService s = seeded();
-        final int a150 = refOf(apply(s, order(C, InputEvent.SIDE_SELL, 1, 150 * PX + PX / 2)));
+        final long a150 = refOf(apply(s, order(C, InputEvent.SIDE_SELL, 1, 150 * PX + PX / 2)));
         apply(s, order(C, InputEvent.SIDE_SELL, 1, 151 * PX));
-        final int peg = refOf(apply(s, peg(A, InputEvent.SIDE_SELL, 10, 150 * PX, OrderTypes.GTC)));
+        final long peg = refOf(apply(s, peg(A, InputEvent.SIDE_SELL, 10, 150 * PX, OrderTypes.GTC)));
         apply(s, control(A, false));
         final InputEvent cancel = new InputEvent();
         cancel.type = InputEvent.TYPE_ORDER_CANCEL;

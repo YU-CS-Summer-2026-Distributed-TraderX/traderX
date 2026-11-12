@@ -75,9 +75,9 @@ class FixFillFeedIT {
             final List<Integer> core = new CopyOnWriteArrayList<>();
             try (CutProxy proxy = new CutProxy(NATS.getHost(), NATS.getMappedPort(4222));
                  Connection js = ClusterGatewayMain.connectFillFeed(proxy.url(), "jetstream", "TRADERX_FEED",
-                     b -> durable.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)));
+                     b -> durable.add(Math.toIntExact(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b))));
                  Connection cs = ClusterGatewayMain.connectFillFeed(proxy.url(), "core", "TRADERX_FEED",
-                     b -> core.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                     b -> core.add(Math.toIntExact(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b))))) {
                 // The cross begins: ref 1's NEW and its first partial reach both.
                 admin.publish("/orders.1", update(1, 10, (byte) 0, 0));
                 admin.publish("/orders.1", update(1, 6, (byte) 1, 4));
@@ -123,7 +123,7 @@ class FixFillFeedIT {
             jsm.addStream(StreamConfiguration.builder().name("TRADERX_FILLS").storageType(StorageType.File)
                 .subjects("/fills.>").build());
             try (Connection mine = ClusterGatewayMain.subscribeRouted(Nats.connect(url), url, "gw-a", "TRADERX_FILLS",
-                     b -> got.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                     b -> got.add(Math.toIntExact(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b))))) {
                 final byte[] batch = concat(update(1, 10, (byte) 0, 0), update(1, 6, (byte) 1, 4));
                 admin.jetStream().publish("/fills.gw-a", batch);                  // one message, two events
                 admin.jetStream().publish("/fills.gw-b", update(2, 10, (byte) 0, 0));   // another gateway's order
@@ -159,7 +159,7 @@ class FixFillFeedIT {
             }
             final List<Integer> got = new CopyOnWriteArrayList<>();
             try (Connection js = ClusterGatewayMain.connectFillFeed(url, "jetstream", "TRADERX_FEED",
-                     b -> got.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                     b -> got.add(Math.toIntExact(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b))))) {
                 admin.publish("/orders.0", update(1, 10, (byte) 0, 0));
                 admin.publish("/orders.1", update(2, 10, (byte) 0, 0));
                 admin.publish("/orders.0", update(1, 0, (byte) 2, 10));

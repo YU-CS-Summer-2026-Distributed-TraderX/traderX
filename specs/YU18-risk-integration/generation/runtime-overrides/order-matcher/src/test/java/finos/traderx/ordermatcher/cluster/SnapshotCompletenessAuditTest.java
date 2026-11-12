@@ -43,7 +43,7 @@ class SnapshotCompletenessAuditTest {
     private static final long PX = 1_000_000L;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private final UnsafeBuffer symbolBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
     private long timestamp = 1_000_000_000_000L;
 
@@ -390,9 +390,8 @@ class SnapshotCompletenessAuditTest {
                 AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
             return;
         }
-        codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0);
         service.onSessionMessage(null, ++timestamp, ingressBuffer, 0,
-            AeronReplicationCodec.INPUT_BYTES, null);
+            codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0), null);
     }
 
     private List<byte[]> records(final MatchingEngineClusteredService service) {

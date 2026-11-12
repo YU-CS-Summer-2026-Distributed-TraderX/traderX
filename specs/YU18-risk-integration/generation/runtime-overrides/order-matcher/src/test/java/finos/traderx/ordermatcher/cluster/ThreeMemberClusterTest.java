@@ -76,7 +76,7 @@ class ThreeMemberClusterTest {
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent ingress = new InputEvent();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private final List<long[]> acks = new ArrayList<>(); // {orderRef, kind, tradeSeq}
     private String bridgeUrl; // NATS for the members' bridges; null = no bridge (the default)
     private int segmentLength; // 0: ClusterNodeConfig's archive segments and log terms
@@ -610,9 +610,9 @@ class ThreeMemberClusterTest {
         assertEquals(sb.risk().policyVersion(), sa.risk().policyVersion());
     }
 
-    private static List<Integer> toList(final int[] values) {
-        final List<Integer> out = new ArrayList<>(values.length);
-        for (final int v : values) {
+    private static List<Long> toList(final long[] values) {
+        final List<Long> out = new ArrayList<>(values.length);
+        for (final long v : values) {
             out.add(v);
         }
         return out;

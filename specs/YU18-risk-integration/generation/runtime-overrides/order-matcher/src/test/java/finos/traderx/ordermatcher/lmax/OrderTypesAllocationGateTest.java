@@ -59,7 +59,7 @@ class OrderTypesAllocationGateTest {
         e.ingressNanos = 0L;
         e.seq = seq;
         engine.onEvent(e, seq++, true);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     private int limit(final int acct, final byte side, final int qty, final long px) {

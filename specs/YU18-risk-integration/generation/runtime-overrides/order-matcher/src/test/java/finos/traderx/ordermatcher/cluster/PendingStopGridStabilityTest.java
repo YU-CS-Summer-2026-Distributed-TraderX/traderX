@@ -28,8 +28,7 @@ class PendingStopGridStabilityTest {
             codec.encodeOrderInstruction(in, 0, e, 0, 0, 0);
             s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
         } else {
-            codec.encodeInput(in, 0, e, 0, 0, 0);
-            s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
         }
     }
 
@@ -74,7 +73,7 @@ class PendingStopGridStabilityTest {
         final InputEvent stop = order(1, InputEvent.SIDE_SELL, 5, 8_999_990L);
         stop.orderType = OrderTypes.STOP_LIMIT; stop.tif = OrderTypes.GTC; stop.stopPx = 9_000_000L;
         apply(s, stop);
-        final int stopRef = (int) s.nextOrderRef() - 1;
+        final long stopRef = s.nextOrderRef() - 1;
         assertEquals(RestingOrder.STATUS_PENDING_TRIGGER, s.engine().orderState(stopRef)[0]);
         assertEquals(10L, s.engine().bookTickPxOf(0));
 

@@ -180,7 +180,7 @@ class GatewayAckMetricsTest {
         submit(A,'B',10,PRICE);
         byte[] original=directRecord(OutputEvent.KIND_ORDER_ACCEPTED,1);
         byte[] wrongSeq=original.clone();UnsafeBuffer b=new UnsafeBuffer(wrongSeq);b.putLong(0,b.getLong(0)+1);b.putByte(12,OutputEvent.KIND_ORDER_FILLED);deliver(SESSION,wrongSeq);
-        byte[] wrongRef=original.clone();b=new UnsafeBuffer(wrongRef);b.putInt(8,999);b.putByte(12,OutputEvent.KIND_ORDER_FILLED);deliver(SESSION,wrongRef);
+        byte[] wrongRef=original.clone();b=new UnsafeBuffer(wrongRef);MatchingEngineClusteredService.putAckRef(b,999);b.putByte(12,OutputEvent.KIND_ORDER_FILLED);deliver(SESSION,wrongRef);
         byte[] wrongReason=original.clone();wrongReason[12]=OutputEvent.KIND_ORDER_FILLED;wrongReason[22]=99;deliver(SESSION,wrongReason);
         assertEquals(3,reason("unknown"));assertEquals(0,reason("continuation"));assertEquals(1,metric("pipelineAcksCompleted"));
     }
@@ -256,7 +256,7 @@ class GatewayAckMetricsTest {
     }
     static byte[] ack(long request,long seq,int ref,byte kind) {
         byte[] bytes=new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH];var b=new UnsafeBuffer(bytes);
-        b.putLong(0,seq);b.putInt(8,ref);b.putByte(12,kind);b.putLong(24,request);return bytes;
+        b.putLong(0,seq);MatchingEngineClusteredService.putAckRef(b,ref);b.putByte(12,kind);b.putLong(24,request);return bytes;
     }
     static ClusterGatewayMain.PendingOrder pending(long id,long deadline) {
         var p=new ClusterGatewayMain.PendingOrder(InputEvent.TYPE_ORDER_NEW,A,"IBM",'B',10,PRICE,0,0);

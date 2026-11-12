@@ -32,7 +32,7 @@ public final class StreamDedupe implements SequencedAnswers {
     private final long[] streamIds;
     private final long[] nexts;
     private final long[] lastUsed;
-    private final int[] ringRefs;       // index * window + (seq - 1) % window
+    private final long[] ringRefs;       // index * window + (seq - 1) % window
     private final byte[] ringDecisions;
     private int used;                   // indices [0, used) are occupied; only eviction reuses one
 
@@ -54,7 +54,7 @@ public final class StreamDedupe implements SequencedAnswers {
         this.streamIds = new long[maxStreams];
         this.nexts = new long[maxStreams];
         this.lastUsed = new long[maxStreams];
-        this.ringRefs = new int[maxStreams * window];
+        this.ringRefs = new long[maxStreams * window];
         this.ringDecisions = new byte[maxStreams * window];
     }
 
@@ -103,7 +103,7 @@ public final class StreamDedupe implements SequencedAnswers {
     public long expected() { return expected; }
 
     /** After ADMIT: the answer to remember for this sequence. */
-    public void record(final int orderRef, final byte decision) {
+    public void record(final long orderRef, final byte decision) {
         if (current < 0) return;
         final int pos = ringPos(current, currentSeq);
         ringRefs[pos] = orderRef;
@@ -116,7 +116,7 @@ public final class StreamDedupe implements SequencedAnswers {
     }
 
     /** After DUPLICATE: the original order ref, 0 when none is held. */
-    public int duplicateRef() {
+    public long duplicateRef() {
         return inWindow() ? ringRefs[ringPos(current, currentSeq)] : 0;
     }
 
@@ -152,7 +152,7 @@ public final class StreamDedupe implements SequencedAnswers {
         t[6] = n;
         for (int i = 0; i < n; i++) {
             final int pos = ringPos(index, next - n + i);
-            t[7 + i] = ((long) ringRefs[pos] << 8) | (ringDecisions[pos] & 0xffL);
+            t[7 + i] = (ringRefs[pos] << 8) | (ringDecisions[pos] & 0xffL);
         }
         return t;
     }
@@ -182,7 +182,7 @@ public final class StreamDedupe implements SequencedAnswers {
         insert(index);
         for (int i = 0; i < n; i++) {
             final int pos = ringPos(index, next - n + i);
-            ringRefs[pos] = (int) (t[7 + i] >> 8);
+            ringRefs[pos] = t[7 + i] >> 8;
             ringDecisions[pos] = (byte) t[7 + i];
         }
     }
