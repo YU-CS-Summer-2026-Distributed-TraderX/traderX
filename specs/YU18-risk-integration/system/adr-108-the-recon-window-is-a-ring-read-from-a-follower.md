@@ -1,6 +1,6 @@
 # ADR-108: The recon's engine window is a ring of primitives, read from a follower
 
-Status: proposed (recon-throughput lane, 2026-11-12); needs yaakov's acceptance. Component:
+Status: accepted (yaakov, 2026-11-12, in the recon-throughput lane's chat, after the GKE proof). Component:
 [downstream read side](../components/downstream-read-side/spec.md) (FR-DRS-59). Builds on FR-DRS-56.
 (ADR-106 and FR-DRS-57 are the bridge-overflow lane's; 107 and 58 are left for the latency-tail lane.)
 
