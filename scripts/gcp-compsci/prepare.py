@@ -132,6 +132,12 @@ def validate_routed_fills(docs, require):
     tenv = {e['name']: e.get('value') for e in podspec(tp)['containers'][0].get('env', [])} if tp else {}
     require(tenv.get('PROJECTION_FEED_MODE') == 'jetstream' and tenv.get('FILLS_ROUTE', 'true') != '0',
             'FIX_FILL_FEED=routed needs the read model on the jetstream feed with its fills router on (FR-DRS-48)')
+    streams = env.get('FILLS_STREAMS', {}).get('value') or '1'
+    require(streams == (tenv.get('FILLS_STREAMS') or '1'),
+            f"the gateways read {streams} fills streams and the router writes {tenv.get('FILLS_STREAMS') or '1'}: "
+            'a gateway would read a stream its fills are not routed to (FR-DRS-53)')
+    require(int(streams) == 1 or int(streams) % nats_servers(docs) == 0,
+            'the fills streams must be a multiple of the NATS servers, each server holding its share (FR-DRS-53)')
 
 
 def secret_env(container, name, secret, key):
@@ -339,6 +345,9 @@ MEMBER_ARCHIVE_HOURS = 3
 # default, is the kind figure: ~5 s at 450K.
 FILLS_BYTES_PER_ORDER = 588 * 3 // 2
 FILLS_WINDOW_MINUTES = 3
+# FR-DRS-53: the fills spread over four streams per NATS server, the gateways hashed onto them (as FR-GFS-21's FIX
+# buckets). One stream with every gateway's filtered consumer on it delivered ~2.6K of ~6.4K msgs/s in run 5's rerun.
+FILLS_STREAMS_PER_SERVER = 4
 
 
 def stream_retention_bytes(rate=READ_MODEL_RATE, minutes=READ_MODEL_OUTAGE_MINUTES):
@@ -358,12 +367,13 @@ def nats_servers(docs):
     return next(d for d in docs if d['kind'] == 'StatefulSet' and d['metadata']['name'] == 'nats')['spec']['replicas']
 
 
-def store_per_server_gb(retention, partitions, servers, fills=0):
+def store_per_server_gb(retention, partitions, servers, fills=0, fills_streams=1):
     """FR-PRG-41: one server's file store holds the partitions placed on it (ceil(P/N) of P, FR-DRS-44), plus 25% for
-    the EOD streams and compaction, plus the fills stream (FR-DRS-48; one server holds it, every server is sized for
-    it: one ConfigMap, one claim template)."""
+    the EOD streams and compaction, plus the fills streams placed on it (FR-DRS-48, FR-DRS-53: ceil(S/N) of S; with one
+    stream one server holds it all, and every server is sized for it: one ConfigMap, one claim template)."""
     held = -(-partitions // servers)
-    return -(-(retention * held // partitions + fills) * 5 // 4 // 10**9)
+    fills_held = fills * -(-fills_streams // servers) // fills_streams
+    return -(-(retention * held // partitions + fills_held) * 5 // 4 // 10**9)
 
 
 def placement(servers):
@@ -429,12 +439,15 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
     retention = stream_retention_bytes()
     fills = fills_retention_bytes()
     servers = nats_servers(docs)
-    store_gb = store_per_server_gb(retention, partitions, servers, fills)
+    fills_streams = FILLS_STREAMS_PER_SERVER * servers
+    store_gb = store_per_server_gb(retention, partitions, servers, fills, fills_streams)
     for doc in docs:
         name, kind = doc['metadata']['name'], doc['kind']
         pod = podspec(doc)
         if kind == 'StatefulSet' and name == 'order-matcher-cluster':
             set_env(pod['containers'][0], {'BRIDGE_PARTITIONS': str(partitions)})
+        elif kind == 'Deployment' and name == 'cluster-gateway':
+            set_env(pod['containers'][0], {'FILLS_STREAMS': str(fills_streams)})   # FR-DRS-53: the router's count
         elif kind == 'Deployment' and name == 'trade-processor':
             c = pod['containers'][0]
             set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
@@ -442,7 +455,8 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
                         'FILLS_STREAM_PLACEMENT': fills_placement(partitions, servers),
                         'TRADE_PROJECTION_MODE': 'snapshot', 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000',
                         'PROJECTION_FEED_STREAM_MAX_BYTES': str(retention), 'PROJECTION_FEED_STREAM_MAX_AGE_HOURS': '2',
-                        'FILLS_STREAM_MAX_BYTES': str(fills), 'FILLS_STREAM_MAX_AGE_MINUTES': str(FILLS_WINDOW_MINUTES)})
+                        'FILLS_STREAM_MAX_BYTES': str(fills), 'FILLS_STREAM_MAX_AGE_MINUTES': str(FILLS_WINDOW_MINUTES),
+                        'FILLS_STREAMS': str(fills_streams)})
             jvm = next(e for e in c['env'] if e['name'] == 'JAVA_TOOL_OPTIONS')
             kept = [t for t in jvm['value'].split() if not t.startswith(('-Xms', '-Xmx', '-XX:MaxRAMPercentage', '-XX:+Use',
                                                                           '-XX:+ZGenerational', '-XX:+ExitOnOutOfMemoryError'))]

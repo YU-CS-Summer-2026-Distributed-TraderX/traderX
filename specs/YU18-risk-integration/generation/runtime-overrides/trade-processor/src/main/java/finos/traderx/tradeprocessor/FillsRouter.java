@@ -33,8 +33,12 @@ import org.slf4j.LoggerFactory;
 final class FillsRouter {
   private static final Logger log = LoggerFactory.getLogger(FillsRouter.class);
   static final String SUBJECT_PREFIX = "/fills.";
+  /** FR-DRS-53: with S > 1 fills streams, stream {@code <stream>_<k>} captures {@code /fillsk.<k>.>}. A prefix of its
+   *  own: {@code /fills.<k>.>} would overlap a single stream's {@code /fills.>}, which NATS refuses. */
+  static final String SHARD_PREFIX = "/fillsk.";
   private final JetStream js;
   private final String stream;
+  private final int shards;
   private final AtomicLong routed = new AtomicLong();     // events
   private final AtomicLong messages = new AtomicLong();
   private final AtomicLong acked = new AtomicLong();
@@ -43,12 +47,36 @@ final class FillsRouter {
 
   /** Creates (or brings to its limits) the fills stream on the server tagged {@code tag} (FR-DRS-52) and binds to it. */
   FillsRouter(Connection nc, String stream, long maxBytes, Duration maxAge, String tag) throws Exception {
+    this(nc, stream, maxBytes, maxAge, tag, 1, null);
+  }
+
+  /**
+   * FR-DRS-53: {@code shards} > 1 creates that many streams, {@code <stream>_<k>}, each holding its share of the bytes
+   * and placed on tag {@code k mod n} of {@code placement} as the capture partitions are (FR-DRS-44). One stream read by
+   * every gateway's filtered consumer was run 5's ceiling: ~6.4K msgs/s in, ~2.6K/s out over 18 consumers on one server.
+   */
+  FillsRouter(Connection nc, String stream, long maxBytes, Duration maxAge, String tag, int shards, String placement) throws Exception {
     this.stream = stream;
-    JetStreamFeed.ensureStreamOn(nc, stream, maxBytes, maxAge, tag, SUBJECT_PREFIX + ">");
+    this.shards = Math.max(1, shards);
+    if (this.shards == 1) {
+      JetStreamFeed.ensureStreamOn(nc, stream, maxBytes, maxAge, tag, SUBJECT_PREFIX + ">");
+    } else {
+      for (int k = 0; k < this.shards; k++) {
+        JetStreamFeed.ensureStreamOn(nc, stream + "_" + k, maxBytes / this.shards, maxAge, JetStreamFeed.placementTag(placement, k),
+            SHARD_PREFIX + k + ".>");
+      }
+    }
     this.js = nc.jetStream();
   }
 
   static String subject(String gateway) { return SUBJECT_PREFIX + gateway; }
+
+  /** FR-DRS-53: the gateway's stream of {@code shards}. The gateway computes the same (ClusterGatewayMain.fillsShard). */
+  static int shard(String gateway, int shards) { return Math.floorMod(gateway.hashCode(), shards); }
+
+  static String subject(String gateway, int shards) {
+    return shards <= 1 ? subject(gateway) : SHARD_PREFIX + shard(gateway, shards) + "." + gateway;
+  }
 
   /** The records of one view batch grouped by the gateway of their order; one message per gateway, in order. */
   static final class Batch {
@@ -76,10 +104,10 @@ final class FillsRouter {
       byGateway.computeIfAbsent(e.getKey(), k -> new AtomicLong()).addAndGet(e.getValue().size());
       CompletableFuture<PublishAck> f;
       try {
-        f = js.publishAsync(subject(e.getKey()), body);
+        f = js.publishAsync(subject(e.getKey(), shards), body);
       } catch (RuntimeException x) {
         failed.incrementAndGet();
-        log.warn("fills router: publish to {} refused: {}", subject(e.getKey()), x.toString());
+        log.warn("fills router: publish to {} refused: {}", subject(e.getKey(), shards), x.toString());
         continue;
       }
       f.whenComplete((ack, x) -> { if (x == null && ack != null && !ack.hasError()) { acked.incrementAndGet(); } else { failed.incrementAndGet(); } });
@@ -89,6 +117,7 @@ final class FillsRouter {
   Map<String, Object> stats() {
     Map<String, Object> m = new java.util.LinkedHashMap<>();
     m.put("stream", stream);
+    m.put("streams", shards);
     m.put("routed", routed.get());
     m.put("messages", messages.get());
     m.put("acked", acked.get());

@@ -50,8 +50,45 @@ class FillsRouterIT {
     }
   }
 
+  /**
+   * FR-DRS-53: over four streams, each gateway's events are in its own shard's stream and on its own subject, and no
+   * stream holds more than half of them. Falsifiable: with one stream (the single-stream shape, FILLS_STREAMS=1) that
+   * stream holds all of them, every gateway's consumer filtering it on one server (run 5's ceiling).
+   */
+  @Test
+  void theFillsAreSpreadOverStreamsEachGatewayInItsShard() throws Exception {
+    String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+    int shards = 4;
+    try (Connection nc = Nats.connect(url)) {
+      FillsRouter router = new FillsRouter(nc, "SPREAD_FILLS", 64L << 20, Duration.ofMinutes(5), null, shards, null);
+      for (int batch = 0; batch < 3; batch++) {
+        FillsRouter.Batch b = new FillsRouter.Batch();
+        for (int g = 0; g < 12; g++) { b.add("gw-" + g, FillsRouter.bytes("{\"id\":\"" + g + "-" + batch + "\"}")); }
+        router.route(b);
+      }
+      long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+      while ((long) router.stats().get("acked") < 36 && System.nanoTime() < deadline) { Thread.sleep(20); }
+      assertThat(router.stats()).containsEntry("acked", 36L).containsEntry("failed", 0L);
+      var jsm = nc.jetStreamManagement();
+      List<String> streams = jsm.getStreamNames().stream().filter(n -> n.startsWith("SPREAD_FILLS")).sorted().toList();
+      long total = 0, most = 0;
+      for (String n : streams) { long c = jsm.getStreamInfo(n).getStreamState().getMsgCount(); total += c; most = Math.max(most, c); }
+      assertThat(total).isEqualTo(36);
+      assertThat(most).as("the most any one of %s holds", streams).isLessThanOrEqualTo(total / 2);
+      for (int g = 0; g < 12; g++) {
+        String gw = "gw-" + g;
+        assertThat(read(nc, "SPREAD_FILLS_" + FillsRouter.shard(gw, shards), FillsRouter.subject(gw, shards)))
+            .containsExactly("{\"id\":\"" + g + "-0\"}", "{\"id\":\"" + g + "-1\"}", "{\"id\":\"" + g + "-2\"}");
+      }
+    }
+  }
+
   private static List<String> read(Connection nc, String subject) throws Exception {
-    JetStreamSubscription sub = nc.jetStream().subscribe(subject, PullSubscribeOptions.builder().stream("TRADERX_FILLS").build());
+    return read(nc, "TRADERX_FILLS", subject);
+  }
+
+  private static List<String> read(Connection nc, String stream, String subject) throws Exception {
+    JetStreamSubscription sub = nc.jetStream().subscribe(subject, PullSubscribeOptions.builder().stream(stream).build());
     List<String> out = new ArrayList<>();
     for (Message m : sub.fetch(10, Duration.ofSeconds(2))) { out.add(new String(m.getData(), StandardCharsets.UTF_8)); m.ack(); }
     sub.unsubscribe();

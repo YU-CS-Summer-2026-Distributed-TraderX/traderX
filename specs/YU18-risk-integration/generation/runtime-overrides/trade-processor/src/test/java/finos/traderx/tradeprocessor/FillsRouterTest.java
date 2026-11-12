@@ -24,6 +24,16 @@ class FillsRouterTest {
     assertThat(FillsRouter.subject("gw-a")).isEqualTo("/fills.gw-a");
   }
 
+  /** FR-DRS-53: the gateway's shard is floorMod(String.hashCode, S). ClusterGatewayMainTest pins the same values: the
+   *  router and the gateway must agree, or a gateway reads a stream nothing is routed to. */
+  @Test
+  void aGatewaysShardIsPinned() {
+    assertThat(FillsRouter.shard("gw-a", 20)).isEqualTo(4);
+    assertThat(FillsRouter.shard("cluster-gateway-6f8d9c7b5-x2k4q", 20)).isEqualTo(17);   // a negative hashCode
+    assertThat(FillsRouter.subject("gw-b", 20)).isEqualTo("/fillsk.5.gw-b");
+    assertThat(FillsRouter.subject("gw-b", 1)).isEqualTo("/fills.gw-b");
+  }
+
   @Test
   void theViewKeepsTheGatewayNamedAtBooking() {
     OrderView view = new OrderView(10);

@@ -2972,17 +2972,43 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      *  exists this throws, and {@link #retryFillFeed} retries with backoff as for the capture stream. */
     static io.nats.client.Connection subscribeRouted(final io.nats.client.Connection nats, final String url,
                                                      final java.util.function.Consumer<byte[]> sink) throws Exception {
-        return subscribeRouted(nats, url, env(ClusterClientAuth.GATEWAY_ID, ""), env("FILLS_STREAM", "TRADERX_FILLS"), sink);
+        return subscribeRouted(nats, url, env(ClusterClientAuth.GATEWAY_ID, ""), env("FILLS_STREAM", "TRADERX_FILLS"),
+            Integer.parseInt(env("FILLS_STREAMS", "1")), sink);
     }
 
     static io.nats.client.Connection subscribeRouted(final io.nats.client.Connection nats, final String url, final String id,
                                                      final String stream, final java.util.function.Consumer<byte[]> sink)
         throws Exception {
+        return subscribeRouted(nats, url, id, stream, 1, sink);
+    }
+
+    /** FR-DRS-53: the gateway's fills stream of {@code streams}, floorMod(String.hashCode, S); the read model's
+     *  FillsRouter.shard computes the same, and both tests pin the same values. */
+    static int fillsShard(final String id, final int streams) {
+        return Math.floorMod(id.hashCode(), streams);
+    }
+
+    /** FR-DRS-53: {stream, subject} this gateway reads: the single stream's {@code /fills.<id>}, or with S > 1 streams
+     *  {@code <stream>_<k>}'s {@code /fillsk.<k>.<id>}. */
+    static String[] routedShape(final String id, final String stream, final int streams) {
+        if (streams <= 1) {
+            return new String[] {stream, "/fills." + id};
+        }
+        final int k = fillsShard(id, streams);
+        return new String[] {stream + "_" + k, "/fillsk." + k + "." + id};
+    }
+
+    static io.nats.client.Connection subscribeRouted(final io.nats.client.Connection nats, final String url, final String id,
+                                                     final String base, final int streams,
+                                                     final java.util.function.Consumer<byte[]> sink)
+        throws Exception {
         if (id == null || id.isBlank()) {
             throw new IllegalStateException("FIX_FILL_FEED=routed needs " + ClusterClientAuth.GATEWAY_ID
                 + ": the name this gateway connects to the cluster with, and its fills subject");
         }
-        final String subject = "/fills." + id;
+        final String[] shape = routedShape(id, base, streams);
+        final String stream = shape[0];
+        final String subject = shape[1];
         nats.jetStreamManagement().getStreamInfo(stream);   // not there yet: retried by retryFillFeed
         final io.nats.client.Dispatcher d = nats.createDispatcher();
         // FR-DRS-41's shape on the routed subject too: one message, one or more events, in the order's own order.

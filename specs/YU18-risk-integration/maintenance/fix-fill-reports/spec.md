@@ -74,6 +74,8 @@ subscription. No engine, wire, snapshot or consensus change.
     model's `TRADERX_FILLS` stream (`FILLS_STREAM`), from "new", through the same `onOrderUpdate` path and the same
     record splitting as the capture (FR-DRS-41), and SHALL refuse to start the feed without `GATEWAY_ID`; until the
     stream exists it retries as `jetstream` mode does (FR-FGM-05). `jetstream` and `core` modes are unchanged.
+    With `FILLS_STREAMS` = S > 1 (FR-DRS-53, the production render) it reads `/fillsk.<k>.<GATEWAY_ID>` of
+    `TRADERX_FILLS_<k>`, k = floorMod(GATEWAY_ID.hashCode(), S), the stream the router sends its fills to.
   - What reaches the subject is FR-DRS-48's: every update of an order whose booking event named this gateway, in
     the order's own order, batched per view batch. An order the read model never saw booked (evicted, or booked
     before the replica's first message after a restart with no snapshot of it) is not routed; the acceptor reports

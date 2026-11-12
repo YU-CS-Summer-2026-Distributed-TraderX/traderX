@@ -715,6 +715,44 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     servers and 1-16 partitions the chosen server holds the minimum; partition 0's tag fails it);
     `test_prepare.NatsCluster` (the render places it on nats-3; nats-0 is refused). Not yet on GKE.
 
+- FR-DRS-53 (450K acceptance run 5 rerun, 2026-11-11): The routed fills SHALL be spread over `FILLS_STREAMS` = S
+  streams. Gateway `g` goes to stream `k = floorMod(g.hashCode(), S)`.
+  - With S > 1:
+    - stream `<FILLS_STREAM>_<k>` captures `/fillsk.<k>.>`, holds `FILLS_STREAM_MAX_BYTES / S` with the same maxAge, and is
+      placed on tag `k mod n` of `PROJECTION_FEED_STREAM_PLACEMENT`, as FR-DRS-44 places partitions;
+    - the router publishes `/fillsk.<k>.<g>`;
+    - the gateway (FR-FFR-14) reads that subject of that stream through its ordered consumer (DeliverPolicy.New, with the
+      same resume as before).
+  - S = 1, the default, is the single `TRADERX_FILLS` on `/fills.<g>` placed by FR-DRS-52. Kind and the proofs keep it.
+  - The production render sets 4 streams per NATS server (20 under five) on trade-processor and on cluster-gateway.
+    `prepare.py`'s validate refuses two things: counts that differ, because a gateway would read a stream nothing is
+    routed to; and a count that is not a multiple of the servers.
+  - Each server's `max_file_store` counts ceil(S/N)/S of the fills (FR-PRG-41).
+  - Why: after FR-DRS-52 took the disk out of it, the rerun's one stream took in ~6.4K msgs/s and delivered ~2.6K/s to
+    18 per-gateway filtered consumers on one server (7.2 cores). The slowest consumer was ~3 min behind against the
+    3-min maxAge: 91.8M fills lost and 109.3M tracked orders evicted (FR-FFR-19).
+    - Each filtered consumer passes over every gateway's messages, so the work was ~18× the ingest on one server.
+    - Over 20 streams it is ~1.9× in total, spread over the five servers. That expectation is unmeasured until the
+      next GKE run.
+  - Why a fixed set and not a stream per gateway: `GATEWAY_ID` is the Deployment pod's name, so it changes on every
+    restart, and per-gateway streams would need creation on demand and garbage collection.
+  - `/fillsk.` is a prefix of its own because `/fills.<k>.>` would overlap a single stream's `/fills.>`, which NATS
+    refuses. Old and new streams therefore coexist while pods roll.
+  - Moving a live system: a router and a gateway on different shapes never meet, so trade-processor and the gateways
+    roll together, between sessions. The old `TRADERX_FILLS` stops growing and ages to empty in 3 min; deleting it is
+    an operator step. Rolling back is S = 1 on both sides.
+  - The shard function is written once in each module (`FillsRouter.shard`, `ClusterGatewayMain.fillsShard`). Both
+    tests pin the same values (`FillsRouterTest#aGatewaysShardIsPinned`, `RoutedFillsShardTest`).
+  - Tests:
+    - `FillsRouterIT#theFillsAreSpreadOverStreamsEachGatewayInItsShard`: 4 streams and 12 gateways. Each gateway's events
+      are in its own shard's stream, and no stream holds more than half. At one stream it fails: that stream holds all
+      36.
+    - `FixFillFeedIT#routedModeReadsItsShard`: the gateway reads its shard, and a gateway sharing its stream is
+      filtered out.
+    - `test_prepare.NatsCluster#test_the_gateways_and_the_router_agree_on_the_fills_streams`.
+  - Not yet on GKE. The gateways still connect through the `nats` Service, so a push crosses a route from the stream's
+    server (FR-GFS-24 pins only the session store's publishes).
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

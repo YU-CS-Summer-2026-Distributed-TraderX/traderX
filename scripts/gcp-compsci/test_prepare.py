@@ -563,11 +563,24 @@ class NatsCluster(unittest.TestCase):
         self.assertEqual(retention,module.stream_retention_bytes(450_000,30))
         store=int(re.search(r'max_file_store: (\d+)G',self.conf(self.snap)['nats.conf']).group(1))
         fills=int(env['FILLS_STREAM_MAX_BYTES'])
-        self.assertEqual(store,module.store_per_server_gb(retention,8,n,fills))
-        self.assertGreater(store*10**9,retention*(-(-8//n))//8+fills)   # ceil(8/n) of eight partitions and the fills stream on the fullest server
+        self.assertEqual(int(env['FILLS_STREAMS']),4*n)   # FR-DRS-53
+        self.assertEqual(store,module.store_per_server_gb(retention,8,n,fills,4*n))
+        self.assertGreater(store*10**9,retention*(-(-8//n))//8+fills//n)   # ceil(8/n) of eight partitions and a fifth of the fills on the fullest server
+        self.assertLess(module.store_per_server_gb(retention,8,n,fills,4*n),module.store_per_server_gb(retention,8,n,fills))
         self.assertLess(store*10**9,retention)                      # not sized for the whole feed on one server
         claim=next(t for t in self.sts(self.snap)['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
         self.assertGreater(int(claim['spec']['resources']['requests']['storage'][:-2])*2**30,store*10**9)
+
+    def test_the_gateways_and_the_router_agree_on_the_fills_streams(self):
+        # FR-DRS-53: 4 per server on both sides; a mismatch, or a count that is not a multiple of the servers, is refused
+        def gw(docs): return module.podspec(next(d for d in docs if d['kind']=='Deployment' and d['metadata']['name']=='cluster-gateway'))['containers'][0]
+        genv={e['name']:e.get('value') for e in gw(self.snap)['env']}
+        self.assertEqual((genv['FILLS_STREAMS'],self.tp_env(self.snap)['FILLS_STREAMS']),(str(4*module.NATS_SERVERS),)*2)
+        docs=copy.deepcopy(self.snap); module.set_env(gw(docs),{'FILLS_STREAMS':'1'})
+        with self.assertRaisesRegex(AssertionError,'a gateway would read a stream'): module.validate(docs)
+        docs=copy.deepcopy(self.snap); module.set_env(gw(docs),{'FILLS_STREAMS':'7'})
+        module.set_env(module.podspec(module.read_model_workload(docs))['containers'][0],{'FILLS_STREAMS':'7'})
+        with self.assertRaisesRegex(AssertionError,'multiple of the NATS servers'): module.validate(docs)
 
     def test_drift_is_refused(self):
         def broken(docs,change):

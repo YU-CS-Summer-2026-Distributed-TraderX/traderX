@@ -136,6 +136,37 @@ class FixFillFeedIT {
         }
     }
 
+    /** FR-DRS-53: over four fills streams the gateway reads its shard's stream on its own subject; gw-e shares gw-a's
+     *  stream (both shard 0) and is filtered out, and the single stream's subject is not read. */
+    @Test
+    void routedModeReadsItsShard() throws Exception {
+        final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+        try (Connection admin = Nats.connect(url)) {
+            final JetStreamManagement jsm = admin.jetStreamManagement();
+            for (final String name : jsm.getStreamNames()) {
+                jsm.deleteStream(name);
+            }
+            for (int k = 0; k < 4; k++) {
+                jsm.addStream(StreamConfiguration.builder().name("SHARD_FILLS_" + k).storageType(StorageType.File)
+                    .subjects("/fillsk." + k + ".>").build());
+            }
+            jsm.addStream(StreamConfiguration.builder().name("SHARD_FILLS").storageType(StorageType.File).subjects("/fills.>").build());
+            assertEquals(ClusterGatewayMain.fillsShard("gw-a", 4), ClusterGatewayMain.fillsShard("gw-e", 4));
+            final List<Integer> got = new CopyOnWriteArrayList<>();
+            try (Connection mine = ClusterGatewayMain.subscribeRouted(Nats.connect(url), url, "gw-a", "SHARD_FILLS", 4,
+                     b -> got.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                final String own = ClusterGatewayMain.routedShape("gw-a", "SHARD_FILLS", 4)[1];
+                admin.jetStream().publish(own, update(1, 10, (byte) 0, 0));
+                admin.jetStream().publish(ClusterGatewayMain.routedShape("gw-e", "SHARD_FILLS", 4)[1], update(2, 10, (byte) 0, 0));
+                admin.jetStream().publish("/fills.gw-a", update(3, 10, (byte) 0, 0));   // the single stream's shape
+                admin.jetStream().publish(own, update(1, 0, (byte) 2, 10));
+                assertTrue(await(() -> got.size() >= 2, Duration.ofSeconds(10)), "the shard's subject was not read: " + got);
+                Thread.sleep(300);
+                assertEquals(List.of(110, 100), got, "its own order's events from its shard only");
+            }
+        }
+    }
+
     private static byte[] concat(final byte[] a, final byte[] b) {
         final byte[] out = new byte[a.length + 1 + b.length];
         System.arraycopy(a, 0, out, 0, a.length);

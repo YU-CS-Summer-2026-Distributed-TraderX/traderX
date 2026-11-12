@@ -89,6 +89,8 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   @Value("${traderx.fills.stream:TRADERX_FILLS}") String fillsStream = "TRADERX_FILLS";
   @Value("${traderx.fills.stream-max-bytes:2147483648}") long fillsMaxBytes = 2L << 30;
   @Value("${traderx.fills.stream-max-age-minutes:10}") long fillsMaxAgeMinutes = 10;
+  // FR-DRS-53: the fills spread over this many streams, the gateways hashed onto them; 1 is the single stream.
+  @Value("${traderx.fills.streams:1}") int fillsStreams = 1;
   private volatile FillsRouter fills;
 
   private volatile OrderView view = new OrderView(50_000);
@@ -183,9 +185,15 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     if (fillsRoute) {
       String tag = JetStreamFeed.fillsPlacementTag(System.getenv("FILLS_STREAM_PLACEMENT"),
           System.getenv("PROJECTION_FEED_STREAM_PLACEMENT"), partitionCount);
-      fills = new FillsRouter(connection(), fillsStream, fillsMaxBytes, Duration.ofMinutes(fillsMaxAgeMinutes), tag);
-      log.info("fills router: orders with a gateway are republished to {}<gateway> on {}, placed on {}",
-          FillsRouter.SUBJECT_PREFIX, fillsStream, tag == null ? "the server's choice" : tag);
+      fills = new FillsRouter(connection(), fillsStream, fillsMaxBytes, Duration.ofMinutes(fillsMaxAgeMinutes), tag,
+          fillsStreams, System.getenv("PROJECTION_FEED_STREAM_PLACEMENT"));
+      if (fillsStreams > 1) {
+        log.info("fills router: orders with a gateway are republished to {}<k>.<gateway> on {}_0..{}, placed p mod n",
+            FillsRouter.SHARD_PREFIX, fillsStream, fillsStreams - 1);
+      } else {
+        log.info("fills router: orders with a gateway are republished to {}<gateway> on {}, placed on {}",
+            FillsRouter.SUBJECT_PREFIX, fillsStream, tag == null ? "the server's choice" : tag);
+      }
     }
     List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
     for (int p : owned()) {

@@ -93,3 +93,5 @@
   stream's creation time; a stream recreated after it is refused and a replay changes nothing (codeX §16, AttestationIT).
 - [x] FR-DRS-52 `TRADERX_FILLS` on a least-loaded NATS server (`FILLS_STREAM_PLACEMENT`, default tag P mod n), rendered
   and validated by `prepare.py` (run 5, 2026-11-11).
+- [x] FR-DRS-53 the routed fills over `FILLS_STREAMS` streams (4 per NATS server), gateways hashed onto them, placed
+  k mod n; rendered on both sides and validated by `prepare.py` (run 5 rerun, 2026-11-11).
