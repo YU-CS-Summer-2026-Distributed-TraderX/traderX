@@ -23,6 +23,7 @@ import java.util.regex.Pattern;
  * All times are node wall micros (currentTimeMillis anchor + nanoTime). Args: memberPid cncDir outDir startMs endMs
  */
 public final class HxProbe {
+    static final long CAP_BYTES = Long.getLong("hx.capBytes", 150L << 20);
     static final Pattern AGENT = Pattern.compile("(?i).*(archive|consensus|cluster|driver|sender|receiver|conductor|aeron).*");
 
     public static void main(final String[] a) throws Exception {
@@ -63,7 +64,7 @@ public final class HxProbe {
                         if (type == 1) lmtByReg.put(cr.getCounterRegistrationId(id), id);
                         if (type == 12) posByReg.put(cr.getCounterRegistrationId(id), id);
                         if (type == 4) subPos.add(id);
-                        final boolean want = type == 0 || (type >= 100 && type < 300) || type == 12 || (type >= 1 && type <= 5) || type == 9;   // latency-tail: every position
+                        final boolean want = (type >= 100 && type < 300) || label.contains("alias=log") || label.contains("alias=snapshot") || label.contains("exceeded");   // latency-tail: the log, snapshot, archive and cluster counters only
                         if (want && known.add(id)) { reg.printf("SLOT %d %d %d %s atMicros=%d%n", slots.size(), id, type, label, now); slots.add(id); }
                     });
                     reg.flush();
@@ -86,7 +87,9 @@ public final class HxProbe {
                     writeVarLong(bin, zig(v - prev[i])); prev[i] = v;
                 }
                 if (tick % 10 == 0) os.println(osLine(wall, pid, threads));
-                if (tick % 1000 == 0) { bin.flush(); os.flush(); }
+                if (tick % 1000 == 0) { bin.flush(); os.flush();
+                    // latency-tail: /dev/shm is 1Gi and shared with Aeron's buffers (2026-11-12: a full volume failed the leader's driver)
+                    if (new File(out, "counters.bin").length() + new File(out, "os.log").length() > CAP_BYTES) { reg.printf("CAPPED ticks=%d%n", tick); break; } }
                 tick++;
                 final long next = n0 + tick * 1_000_000L;
                 long d;

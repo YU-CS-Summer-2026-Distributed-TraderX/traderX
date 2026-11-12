@@ -55,6 +55,13 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   - the probe SHALL write to `/dev/shm` and SHALL NOT read `memory.stat` or node `vmstat`: writing its series to the
     container's `/tmp` (the node's boot disk) gave 55-240 ms cluster stalls and +110 us of idle commit, where the
     same arm without it had none (runs 1, 3 against 2, 4);
+  - the probe SHALL stop itself once its two files pass `hx.capBytes` (150 MiB): `/dev/shm` is a 1Gi volume shared
+    with Aeron's buffers, and an uncapped probe filled it and failed the leader's driver (an election, run 4);
+  - a script that acts on "the leader" SHALL refuse unless exactly one member's `/health` says LEADER: the failed
+    ex-leader kept saying so, and two profiles were taken on it;
+  - `prof.py` + `JfrDump.java`: an async-profiler JFR (itimer, 1 ms) of the leader, the clustered-service thread's
+    samples split into normal, inside a service-lag episode (commit minus service position over a bar) and inside a
+    snapshot's service-flat run, by family and by leaf frame;
   - `analyze.py`: per member, each stage's lag as bytes behind over the byte rate (leader: publication to sender,
     to its own recording, to commit, commit to the service; follower: received to recorded), split by whether the
     tick falls inside one of that member's own GC cycles, with flat runs of 5 ms or more; `ep.py`: episodes over a
