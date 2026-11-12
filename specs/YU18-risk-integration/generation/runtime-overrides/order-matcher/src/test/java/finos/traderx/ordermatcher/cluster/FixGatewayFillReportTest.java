@@ -656,7 +656,24 @@ class FixGatewayFillReportTest {
         submitter.answer = new OrderSubmitter.ExecResult(false, 42, OutputEvent.KIND_ORDER_REJECTED,
             (byte) finos.traderx.ordermatcher.risk.RiskReason.DUPLICATE.ordinal());
         final Client c = new Client("CLIENT1");
-        start(submitter, (account, all) -> List.of(new OrderStatusSource.OrderView(42, "Buy", 5, 0, "FILLED", "IBM", 5)), c);
+        // FR-XOC-07: the state comes from the by-key lookup. The account's whole list is never asked for: GKE run 7's
+        // gateways each asked for it once per order restated after a leader change and ran out of heap.
+        final java.util.concurrent.atomic.AtomicInteger listed = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger keyed = new java.util.concurrent.atomic.AtomicInteger();
+        start(submitter, new OrderStatusSource() {
+            @Override
+            public List<OrderView> orders(final int account, final boolean all) {
+                listed.incrementAndGet();
+                return List.of(new OrderView(42, "Buy", 5, 0, "FILLED", "IBM", 5));
+            }
+
+            @Override
+            public List<OrderView> ordersByKey(final int account, final long clientKey) {
+                keyed.incrementAndGet();
+                return clientKey == ClusterGatewayMain.clientOrderKey("CLIENT1\u0001r1")
+                    ? List.of(new OrderView(42, "Buy", 5, 0, "FILLED", "IBM", 5)) : List.of();
+            }
+        }, c);
         sendOrder(c, "r1", Side.BUY, 5, 50.0);
         final ExecutionReport r = c.await(m -> "r1".equals(cl(m)));
         assertNotNull(r, "the resend was not answered");
@@ -665,6 +682,13 @@ class FixGatewayFillReportTest {
         assertEquals(OrdStatus.FILLED, r.getChar(OrdStatus.FIELD), "its state from the read model");
         assertEquals(5.0, r.getDouble(CumQty.FIELD));
         assertTrue(r.getString(Text.FIELD).startsWith("DUPLICATE"));
+        // a leader change restates many at once: every one is a one-row read
+        for (int i = 2; i <= 40; i++) {
+            sendOrder(c, "r" + i, Side.BUY, 5, 50.0);
+        }
+        assertNotNull(c.await(m -> "r40".equals(cl(m))), "the 40th resend was not answered");
+        assertEquals(0, listed.get(), "a restatement asked for the account's whole order list");
+        assertEquals(40, keyed.get(), "one by-key read per restated order");
     }
 
     @Test
