@@ -39,7 +39,19 @@ final class ClusterClientAuth {
     /** Client side: the env secret as connect credentials, and the gateway's name after it when {@code GATEWAY_ID}
      *  is set; none when unset (an open dev rig). */
     static CredentialsSupplier credentialsFromEnv() {
-        return credentials(System.getenv(ENV), System.getenv(GATEWAY_ID));
+        return credentials(System.getenv(ENV), gatewayName());
+    }
+
+    private static volatile String claimedName;
+
+    /** The name this process connects with: {@code GATEWAY_ID}, or the claimed form of it (FR-DRS-55, FillsShardClaim). */
+    static String gatewayName() {
+        final String n = claimedName;
+        return n != null ? n : System.getenv(GATEWAY_ID);
+    }
+
+    static void gatewayName(final String name) {
+        claimedName = name;
     }
 
     static CredentialsSupplier credentials(final String secret) {

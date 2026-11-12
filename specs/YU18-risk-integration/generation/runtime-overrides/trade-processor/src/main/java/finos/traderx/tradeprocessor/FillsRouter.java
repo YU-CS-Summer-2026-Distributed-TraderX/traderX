@@ -71,8 +71,23 @@ final class FillsRouter {
 
   static String subject(String gateway) { return SUBJECT_PREFIX + gateway; }
 
-  /** FR-DRS-53: the gateway's stream of {@code shards}. The gateway computes the same (ClusterGatewayMain.fillsShard). */
-  static int shard(String gateway, int shards) { return Math.floorMod(gateway.hashCode(), shards); }
+  /**
+   * FR-DRS-53: the gateway's stream of {@code shards}: the one its name claims ({@code <pod>_s<k>}, FR-DRS-55), else
+   * floorMod(String.hashCode, S). The gateway computes the same (ClusterGatewayMain.fillsShard, FillsShardClaim.claimed).
+   */
+  static int shard(String gateway, int shards) {
+    int at = gateway.lastIndexOf("_s");
+    if (at > 0 && at + 2 < gateway.length()) {
+      int k = 0; boolean digits = true;
+      for (int i = at + 2; i < gateway.length() && digits; i++) {
+        char c = gateway.charAt(i);
+        digits = c >= '0' && c <= '9' && k <= 100_000;
+        if (digits) k = k * 10 + (c - '0');
+      }
+      if (digits && k < shards) return k;
+    }
+    return Math.floorMod(gateway.hashCode(), shards);
+  }
 
   static String subject(String gateway, int shards) {
     return shards <= 1 ? subject(gateway) : SHARD_PREFIX + shard(gateway, shards) + "." + gateway;

@@ -379,6 +379,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private void run() throws Exception {
         final String descriptorPath = env("RUN_DESCRIPTOR_PATH", "");
         if (!descriptorPath.isBlank()) {runDescriptor=RunDescriptor.read(java.nio.file.Path.of(descriptorPath));}
+        // FR-DRS-55: before the cluster connect, which carries the name
+        FillsShardClaim.atStart(k -> env(k, "FILLS_SHARD_CLAIM".equals(k) ? "0" : "FILLS_STREAMS".equals(k) ? "1" : ""),
+            env("NATS_ADDRESS", "nats://" + env("NATS_BROKER_HOST", "nats") + ":4222"));
         ingressEndpoints = env("GATEWAY_INGRESS_ENDPOINTS", "0=localhost:21802");
         endpointEntries = ingressEndpoints.split(",");
         aeronDir = env("GATEWAY_AERON_DIR", "/dev/shm/aeron-gateway");
@@ -2992,7 +2995,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      *  exists this throws, and {@link #retryFillFeed} retries with backoff as for the capture stream. */
     static io.nats.client.Connection subscribeRouted(final io.nats.client.Connection nats, final String url,
                                                      final java.util.function.Consumer<byte[]> sink) throws Exception {
-        return subscribeRouted(nats, url, env(ClusterClientAuth.GATEWAY_ID, ""), env("FILLS_STREAM", "TRADERX_FILLS"),
+        final String name = ClusterClientAuth.gatewayName();
+        return subscribeRouted(nats, url, name == null ? "" : name, env("FILLS_STREAM", "TRADERX_FILLS"),
             Integer.parseInt(env("FILLS_STREAMS", "1")), sink);
     }
 
@@ -3002,10 +3006,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         return subscribeRouted(nats, url, id, stream, 1, sink);
     }
 
-    /** FR-DRS-53: the gateway's fills stream of {@code streams}, floorMod(String.hashCode, S); the read model's
-     *  FillsRouter.shard computes the same, and both tests pin the same values. */
+    /** FR-DRS-53: the gateway's fills stream of {@code streams}: the one its name claims ({@code <pod>_s<k>},
+     *  FR-DRS-55), else floorMod(String.hashCode, S); the read model's FillsRouter.shard computes the same, and both
+     *  tests pin the same values. */
     static int fillsShard(final String id, final int streams) {
-        return Math.floorMod(id.hashCode(), streams);
+        final int claimed = FillsShardClaim.claimed(id, streams);
+        return claimed >= 0 ? claimed : Math.floorMod(id.hashCode(), streams);
     }
 
     /** FR-DRS-53: {stream, subject} this gateway reads: the single stream's {@code /fills.<id>}, or with S > 1 streams

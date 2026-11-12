@@ -66,11 +66,11 @@ SUPPORT_BUDGETS = {
     'edge-proxy': ('25m', '32Mi', '500m', '64Mi'),
     'web-front-end-angular': ('200m', '512Mi', '1', '2Gi'),
     'api-explorer': ('25m', '64Mi', '500m', '128Mi'),
-    'tempo': ('50m', '128Mi', '500m', '256Mi'),
+    'tempo': ('50m', '256Mi', '500m', '1Gi'),             # FR-PRG-47
     'prometheus': ('100m', '256Mi', '1', '512Mi'),
     'loki': ('50m', '128Mi', '500m', '256Mi'),
     'grafana': ('50m', '128Mi', '500m', '256Mi'),
-    'otel-collector': ('50m', '128Mi', '500m', '256Mi'),
+    'otel-collector': ('50m', '256Mi', '500m', '512Mi'),  # FR-PRG-47
     # FR-AE10: subscribed only while an algo parent runs, so at load it parses nothing; a core for a parent's fills,
     # and room for the event store's replay (it had 100m on the system node, and 192 MB of heap by the JVM default).
     'execution-algo-engine': ('250m', '512Mi', '1', '768Mi'),
@@ -108,6 +108,38 @@ def route_fills(c):
 
 MEMBER_SESSION_RING = '2048'   # ADR-104 (FR-XOD-24): EXACTLY_ONCE_SESSION_RING, at least the gateways' FIX_MAX_QUEUED_WRITES
 GATEWAY_MAX_QUEUED_WRITES = 2048   # FixGatewayAcceptor's FIX_MAX_QUEUED_WRITES default
+
+
+
+def bound_observability(docs):
+    """FR-PRG-47 (run 6): the members and gateways trace every order (OTEL_SAMPLE_MASK=0), and at 450K orders/s the
+    collector and Tempo, 256Mi each with no bound of their own, were OOM-killed 20 and 15 times in 100 minutes. Each now
+    refuses what it cannot hold instead of dying: the collector's memory_limiter ahead of its batcher, Tempo's
+    per-tenant ingestion rate, and GOMEMLIMIT under each pod's limit (SUPPORT_BUDGETS: 512Mi and 1Gi; at 256Mi the
+    bounds alone still died in the local load test). Traces past the bound are dropped and counted
+    (otelcol_processor_refused_spans, tempo_discarded_spans_total); which orders to trace at rate is the sample mask's
+    question, not answered here.
+    ponytail: fixed numbers for those two budgets; change a budget and its GOMEMLIMIT and limiter together."""
+    go_limit = {'otel-collector': '400MiB', 'tempo': '800MiB'}
+    for doc in docs:
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] in go_limit:
+            set_env(podspec(doc)['containers'][0], {'GOMEMLIMIT': go_limit[doc['metadata']['name']]})
+        if doc['kind'] != 'ConfigMap':
+            continue
+        if doc['metadata']['name'] == 'observability-otel-collector-config':
+            cfg = yaml.safe_load(doc['data']['config.yaml'])
+            cfg['processors']['memory_limiter'] = {'check_interval': '1s', 'limit_mib': 320, 'spike_limit_mib': 80}
+            for pipe in cfg['service']['pipelines'].values():
+                pipe['processors'] = ['memory_limiter'] + [x for x in pipe['processors'] if x != 'memory_limiter']
+            # the per-batch log line of every trace batch is the collector's own allocation at rate; metrics keep theirs
+            cfg['service']['pipelines']['traces']['exporters'] = [
+                x for x in cfg['service']['pipelines']['traces']['exporters'] if x != 'logging']
+            doc['data']['config.yaml'] = yaml.safe_dump(cfg, sort_keys=False)
+        if doc['metadata']['name'] == 'observability-tempo-config':
+            cfg = yaml.safe_load(doc['data']['config.yaml'])
+            cfg.setdefault('overrides', {}).setdefault('defaults', {})['ingestion'] = {
+                'rate_limit_bytes': 2_000_000, 'burst_size_bytes': 4_000_000}
+            doc['data']['config.yaml'] = yaml.safe_dump(cfg, sort_keys=False)
 
 
 def fix_compids(docs):
@@ -163,6 +195,9 @@ def validate_routed_fills(docs, require):
             'a gateway would read a stream its fills are not routed to (FR-DRS-53)')
     require(int(streams) == 1 or int(streams) % nats_servers(docs) == 0,
             'the fills streams must be a multiple of the NATS servers, each server holding its share (FR-DRS-53)')
+    require(int(streams) == 1 or (env.get('FILLS_SHARD_CLAIM', {}).get('value') or '0') == str(nats_servers(docs)),
+            'the gateways hash onto fills streams instead of claiming one per server evenly: FILLS_SHARD_CLAIM must be'
+            ' the NATS server count (FR-DRS-55; run 6: one server carried 3x another\'s fills)')
 
 
 def secret_env(container, name, secret, key):
@@ -472,7 +507,8 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
         if kind == 'StatefulSet' and name == 'order-matcher-cluster':
             set_env(pod['containers'][0], {'BRIDGE_PARTITIONS': str(partitions)})
         elif kind == 'Deployment' and name == 'cluster-gateway':
-            set_env(pod['containers'][0], {'FILLS_STREAMS': str(fills_streams)})   # FR-DRS-53: the router's count
+            # FR-DRS-53: the router's count. FR-DRS-55: each gateway claims a stream, evenly over the servers
+            set_env(pod['containers'][0], {'FILLS_STREAMS': str(fills_streams), 'FILLS_SHARD_CLAIM': str(servers)})
         elif kind == 'Deployment' and name == 'trade-processor':
             c = pod['containers'][0]
             set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
@@ -1236,6 +1272,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     if clients:
         add_fix_test_clients(docs, clients)
     size_session_streams(docs)   # after the last CompID is added
+    bound_observability(docs)
     declared = population.load(population_path)
     refuse_sequenced_binary(docs, declared)
     if binary_port:

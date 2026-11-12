@@ -311,6 +311,17 @@ class Rendering(unittest.TestCase):
             with self.assertRaises(AssertionError, msg=value): module.validate(docs)
         engine=next(d for d in self.docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
         self.assertIn({'name':'EXACTLY_ONCE_SESSION_RING','value':'2048'},module.podspec(engine)['containers'][0]['env'])
+        # FR-PRG-47 (run 6: the collector and Tempo OOM-killed 20 and 15 times): each bounds itself
+        import yaml as _y
+        cm=lambda n: _y.safe_load(next(d for d in self.docs if d['kind']=='ConfigMap' and d['metadata']['name']==n)['data']['config.yaml'])
+        otel=cm('observability-otel-collector-config')
+        self.assertEqual(otel['processors']['memory_limiter']['limit_mib'],320)
+        for n,lim,go in (('otel-collector','512Mi','400MiB'),('tempo','1Gi','800MiB')):
+            c=module.podspec(next(d for d in self.docs if d['kind']=='Deployment' and d['metadata']['name']==n))['containers'][0]
+            self.assertEqual(c['resources']['limits']['memory'],lim); self.assertIn({'name':'GOMEMLIMIT','value':go},c['env'])
+        for pipe in otel['service']['pipelines'].values(): self.assertEqual(pipe['processors'][0],'memory_limiter')
+        self.assertNotIn('logging',otel['service']['pipelines']['traces']['exporters'])
+        self.assertEqual(cm('observability-tempo-config')['overrides']['defaults']['ingestion'],{'rate_limit_bytes':2000000,'burst_size_bytes':4000000})
         # FR-XOD-26 (run 6 stage 2: 176 of 600 sessions refused STREAM_LIMIT): two session-days per FIX session
         self.assertEqual([module.session_streams_for(n) for n in (0,7,512,513,606,1024,1025)],[1024,1024,1024,2048,2048,2048,3072])
         self.assertIn({'name':'EXACTLY_ONCE_SESSION_STREAMS','value':str(module.session_streams_for(len(module.fix_compids(self.docs))))},
@@ -590,6 +601,10 @@ class NatsCluster(unittest.TestCase):
         docs=copy.deepcopy(self.snap); module.set_env(gw(docs),{'FILLS_STREAMS':'7'})
         module.set_env(module.podspec(module.read_model_workload(docs))['containers'][0],{'FILLS_STREAMS':'7'})
         with self.assertRaisesRegex(AssertionError,'multiple of the NATS servers'): module.validate(docs)
+        # FR-DRS-55: the gateways claim a stream; the render names the server count, and a hashed render is refused
+        self.assertEqual(genv['FILLS_SHARD_CLAIM'],str(module.NATS_SERVERS))
+        docs=copy.deepcopy(self.snap); module.set_env(gw(docs),{'FILLS_SHARD_CLAIM':'0'})
+        with self.assertRaisesRegex(AssertionError,'instead of claiming'): module.validate(docs)
 
     def test_drift_is_refused(self):
         def broken(docs,change):

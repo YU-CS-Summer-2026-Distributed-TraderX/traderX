@@ -32,6 +32,12 @@ class FillsRouterTest {
     assertThat(FillsRouter.shard("cluster-gateway-6f8d9c7b5-x2k4q", 20)).isEqualTo(17);   // a negative hashCode
     assertThat(FillsRouter.subject("gw-b", 20)).isEqualTo("/fillsk.5.gw-b");
     assertThat(FillsRouter.subject("gw-b", 1)).isEqualTo("/fills.gw-b");
+    // FR-DRS-55: a claimed name carries its stream; RoutedFillsShardTest pins the same
+    assertThat(FillsRouter.shard("gw-a_s7", 20)).isEqualTo(7);
+    assertThat(FillsRouter.subject("gw-a_s7", 20)).isEqualTo("/fillsk.7.gw-a_s7");
+    assertThat(FillsRouter.shard("gw-a_s20", 20)).isEqualTo(Math.floorMod("gw-a_s20".hashCode(), 20));   // outside the count: hashed
+    assertThat(FillsRouter.shard("gw-a_sx", 20)).isEqualTo(Math.floorMod("gw-a_sx".hashCode(), 20));
+    assertThat(FillsRouter.shard("gw-a_s", 20)).isEqualTo(Math.floorMod("gw-a_s".hashCode(), 20));
   }
 
   @Test

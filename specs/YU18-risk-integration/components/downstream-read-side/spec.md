@@ -761,6 +761,26 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - `TradeProcessorApplication.main` exits 1 ten seconds after a failed `SpringApplication.run` (after the refusal
     path's own exit 3 at five), so the kubelet restarts the pod and a transient NATS timeout is retried.
   - Test: `TradeProcessorApplicationTest` (a failed start exits 1; a clean start does not exit). Not exercised on a rig.
+- FR-DRS-55 (450K acceptance run 6, 2026-11-11): With `FILLS_SHARD_CLAIM` = the NATS server count, a gateway SHALL
+  claim its fills stream (FR-DRS-53) instead of hashing its pod name onto one.
+  - Run 6 read back 18 gateways hashed onto 13 of the 20 streams, three on one, and by server 2 / 3 / 4 / 3 / 6:
+    nats-4 carried 2,446 fills msgs/s at the full step against nats-0's 756. Every consumer stayed at its head, so
+    nothing was lost to it; the claim removes the skew before it is the next ceiling.
+  - A claim is a key `<k>` in the KV bucket `FILLS_SHARD_CLAIMS` (TTL 90 s, re-put every 30 s), created only if absent.
+    The gateway takes a free stream on the server holding the fewest claims (stream k is on server k mod n), scanning
+    from its name's hash, before it connects to the cluster.
+  - It then names itself `<pod>_s<k>` to the cluster (a pod name never holds `_`). `FillsRouter.shard` and
+    `ClusterGatewayMain.fillsShard` read the suffix and fall back to the hash for a plain name; both tests pin the same
+    values. The fills subject carries the whole name, `/fillsk.<k>.<pod>_s<k>`.
+  - A claim is advisory: two gateways on one stream is FR-DRS-53's ordinary shape. A full table (more gateways than
+    streams, or a roll's surge), a lapsed claim or an unreachable NATS at start leaves the gateway on its hashed
+    stream under its plain name. A restarted container may hold a second stream for one TTL.
+  - Unset or 0 keeps the hash, so kind and the proofs are unchanged. `prepare.py` renders the server count and
+    `validate()` refuses a sharded render without it.
+  - Tests: `RoutedFillsShardTest` (the pins; 18 gateways over 20 streams and 5 servers each get their own stream, the
+    servers within one of each other, a lost race retried, a full table falls back), `FixFillFeedIT
+    #gatewaysClaimDistinctFillsStreams` (a real KV bucket), `FillsRouterTest` (the same pins), `test_prepare`.
+    Not exercised on a rig: the evenness at 18 gateways is the unit test's, not a reading.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

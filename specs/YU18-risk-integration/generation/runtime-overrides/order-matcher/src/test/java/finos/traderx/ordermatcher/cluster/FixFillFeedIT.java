@@ -136,6 +136,32 @@ class FixFillFeedIT {
         }
     }
 
+    /** FR-DRS-55: claims against a real KV bucket. Six gateways over 4 streams on 2 servers: the first four each hold a
+     *  stream of their own, two per server, a key that exists is not taken twice, and the last two keep their plain
+     *  names (the hashed stream). A claimed name's subject is the claimed stream's. */
+    @Test
+    void gatewaysClaimDistinctFillsStreams() throws Exception {
+        final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+        try (Connection nats = Nats.connect(url)) {
+            try { nats.keyValueManagement().delete(FillsShardClaim.BUCKET); } catch (final Exception none) { }
+            final java.util.Set<Integer> streams = new java.util.TreeSet<>();
+            final int[] perServer = new int[2];
+            for (int g = 0; g < 4; g++) {
+                final String name = FillsShardClaim.claim(nats, "gw-" + g, 4, 2);
+                final int k = FillsShardClaim.claimed(name, 4);
+                assertTrue(k >= 0 && streams.add(k), name + " holds a stream of its own");
+                perServer[k % 2]++;
+                assertEquals("/fillsk." + k + "." + name, ClusterGatewayMain.routedShape(name, "SHARD_FILLS", 4)[1]);
+            }
+            assertEquals(2, perServer[0]);
+            assertEquals(2, perServer[1]);
+            assertEquals(false, FillsShardClaim.over(nats.keyValue(FillsShardClaim.BUCKET), "gw-x").take(0), "a held stream is not taken twice");
+            assertEquals("gw-4", FillsShardClaim.claim(nats, "gw-4", 4, 2));
+            assertEquals("gw-5", FillsShardClaim.claim(nats, "gw-5", 4, 2));
+            assertEquals(4, nats.keyValue(FillsShardClaim.BUCKET).keys().size());
+        }
+    }
+
     /** FR-DRS-53: over four fills streams the gateway reads its shard's stream on its own subject; gw-e shares gw-a's
      *  stream (both shard 0) and is filtered out, and the single stream's subject is not read. */
     @Test

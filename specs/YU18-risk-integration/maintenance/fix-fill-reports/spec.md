@@ -193,5 +193,12 @@ fails.
   - Not a decision on the apply path: the name is only a field of the bridged booking event. Members and gateways still
     roll together (the stage 2 gate `lost = 0` needs both).
   - Test: `ExactlyOnceStreamTest#aSequencedOrdersBookingDoesNotNameTheGateway` (fails on the unconditioned rule).
-    Not exercised on a rig.
+  - Kind (2026-11-12 12:01-12:10 am ET, `scripts/proofs/kind-ffr20-binary-fills.sh`, 2 gateways, one fills stream, no
+    cluster secret): 508 sequenced binary orders filled (members' trades +508) with the router's routed count and both
+    gateways' `outcome="lost"` at 0 before and after the age-out; the control, 852 unsequenced orders, routed 2 events
+    an order and counted 424 and 428 lost. `yu18-fix-fill-feed.sh` (routed FIX fills) still passes. Not run: the
+    sharded streams, a secret-set cluster, any rate.
+  - Left open by that run: a REST order through a gateway is also named and unsequenced, so its updates are routed and
+    each ages out as lost (2 per REST cross on kind). The engine cannot tell it from a FIX order sent outside the
+    session ring; with `FIX_EXACTLY_ONCE=engine` the rule could become "session-keyed orders only".
 

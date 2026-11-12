@@ -261,6 +261,26 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     refusal), and the acceptance SHALL keep those lines. It SHALL also keep every gateway's lease, reclaim, release,
     Logon/Logout and disconnect lines for each session that reconnected (run 3 kept neither, so CLIENT386's 47 s
     outage is unexplained).
+- **FR-PRG-47** (2026-11-11, acceptance run 6): The trace collector and Tempo SHALL bound their own memory and drop
+  what is past it, counted, instead of being OOM-killed.
+  - Run 6: the members and gateways trace every order (`OTEL_SAMPLE_MASK=0`). At 97K-435K FIX orders/s and then the
+    mixed hour, otel-collector was killed 20 times and Tempo 15 in 100 minutes (8 and 6 by the end of stage 1). Both had
+    256Mi and no bound: the collector's pipeline was `batch` alone, with a `logging` exporter on every trace batch, and
+    Tempo ran its default ingestion limit (15 MB/s).
+  - The render (`prepare.bound_observability`): the collector's `memory_limiter` (320 MiB, spike 80) first in every
+    pipeline, no `logging` exporter on traces, 512Mi, `GOMEMLIMIT=400MiB`; Tempo's ingestion at 2 MB/s (burst 4 MB),
+    1Gi, `GOMEMLIMIT=800MiB`.
+  - Not decided here: which orders to trace at rate. At 450K orders/s most spans are now refused
+    (`otelcol_processor_refused_spans`, `tempo_discarded_spans_total`), so a trace exists for a sampled minority only;
+    choosing them is the sample mask's question, and yaakov's.
+  - Local test, both containers under their limits with the pinned images (amd64 under emulation on the Mac, so the
+    absolute numbers are not GKE's), 12 senders of 4,000-span OTLP batches for 80 s
+    (`run6-5eb3b69c/observability-local/` in the acceptance notes): the new configs took 13.1M and 16.1M spans with
+    neither killed (peaks: collector 286 and 489 MiB of 512, Tempo 647 and 835 MiB of 1,024); run 6's configs at the
+    same 512Mi / 1Gi were both OOM-killed after 0.6-0.7M spans. The bounds alone at 256Mi still lost Tempo every time
+    and the collector once, which is why the budgets moved.
+  - Test: `test_prepare.Rendering.test_fix_sessions_persist_and_status_has_a_read_model` (the limiter first in every
+    pipeline, the limits and `GOMEMLIMIT`, Tempo's ingestion). Not exercised on a rig.
 
   `test_binary_load` (sequenced by default, streams stable across runs and pods, a full stream table, unsequenced, a
   duplicate, out of sequence), `test_fix_load.ExactlyOnce`.
