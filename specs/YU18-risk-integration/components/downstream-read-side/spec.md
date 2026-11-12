@@ -952,9 +952,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     the stream at that reduced rate.
     `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
     leader to have sent its window into the frozen socket, not its whole tail.
+    `LaneSpoolTest` (no NATS): records keep their index across segments, a trim deletes whole segments only, the
+    search by segment brackets the cut, a directory that refuses a write stops the spool with what it holds still
+    readable and lets it grow again later, and a spent budget leaves no empty segment behind.
+    `LaneSpoolBudgetIT#aCatchUpThatLandsPastAHoleBehindAFrozenSpoolCountsAGap`: the follower's spool froze at its
+    budget; the dead leader's window, read by NATS after it died, put the stream's last in the follower's hole; the
+    promoted follower counts one gap and publishes its ring's tail. Not run against the code before the review fix.
   - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
-    they restart too). No test drives a 429 on the spool's last message or the catch-up over a hole; both paths are
-    code-reviewed only.
+    they restart too). No test drives the 5 s reconnect when the stream never confirms the spool's last record (a
+    429 on it): that needs an ingest rejection on one chosen message, and stays code-reviewed only.
 - FR-DRS-58 (bridge-overflow lane, 2026-11-12): The trade store SHALL book every trade message it is handed that it has
   not handled, whatever its cursor says. A replay is a record at or below the last one the view handled (booked, or
   refused as a second copy), not one at or below the cursor: the cursor can be ahead of what was handled after an idle
@@ -972,7 +978,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     server never delivered to the consumer, which no client rule can book. Locally, on one NATS 2.14 server, the idle
     check held: `JetStreamFeedIdleIT` (bursts between silences, an idle check after every empty fetch) never saw a
     message handed over below an idle head in three runs, and a direct probe that read the stream's stored count and
-    then the consumer's pending 51,550 times under a publish flood never found pending behind. `passedByIdle` is
+    then the consumer's pending 51,550 times under a publish flood never found pending behind. A three-server
+    NATS 2.14 cluster with an R1 stream, one server frozen 15 s and thawed three times under bursts, the feed
+    connected through each server in turn, lost nothing either: 164,472, 168,057 and 170,842 trade messages stored
+    and applied, none passed by an idle advance, no delivery gap. The delivery gaps that trade-processor-1 and
+    history-feed logged on GKE at every thaw (partitions 2 and 3, "delivered and never reached this feed") did not
+    appear locally, so the local cluster does not reproduce that rig's conditions. `passedByIdle` is
     the instrument that tells the two apart at the next run at rate: above 0 with G3 exact means this was it; 0
     with sides missing means the delivery never happened.
   - The order view applies every message it is handed and has no such rule; its idle advance only moves the cursor it
@@ -983,6 +994,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - Not covered: a snapshot taken between a wrong idle advance and the late delivery commits a cursor past an
     unbooked message; a crash in that window resumes after it. The window is the delivery delay; the idle check itself
     is unchanged.
+- FR-DRS-60 (bridge-overflow lane, 2026-11-12; 59 is the recon-blotter lane's): The fills router SHALL publish a gateway's
+  share of a view batch as messages of at most 256 KiB, in order, no record split. A view batch after a stall is up to
+  1,000 capture messages, and one gateway's share of it passed NATS's 1 MiB payload: on GKE (2026-11-12, the freezes
+  of the bridge-overflow run) the client refused 1.06 to 2.7 MB messages, 13 times on one replica ("Message payload
+  size exceed server configuration"), counted in `failed`, and that gateway never saw those fills. The reader already
+  splits a message on newlines, so more, smaller messages change nothing for it.
+  `FillsRouterTest#aGatewaysRecordsAreSplitIntoMessagesUnderTheCap`,
+  `FillsRouterIT#aGatewaysShareLargerThanTheServersPayloadLimitIsRouted` (6,000 records, about 1.8 MB, read back whole
+  and in order). The IT was not run against the old router; the GKE log line is its control.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

@@ -58,4 +58,65 @@ class LaneSpoolBudgetIT {
             LaneSpool.budget = before;
         }
     }
+
+    /**
+     * A catch-up that lands past a hole counts it. The follower's spool froze at its budget, so it holds a prefix, a
+     * hole, and its ring's tail. The leader got further into the stream than the follower's spool reaches (its publish
+     * window, read by NATS after it died), so the stream's last falls in the follower's hole: what the hole held after
+     * it nobody can resend. Promoted, the follower must count a gap and publish its ring's tail. Before the review of
+     * FR-DRS-57 the bisection stepped over the hole and counted nothing.
+     */
+    @Test
+    void aCatchUpThatLandsPastAHoleBehindAFrozenSpoolCountsAGap() throws Exception {
+        final long before = LaneSpool.budget;
+        LaneSpool.budget = 256 * 1024;
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final int ring = 16_384, stored = 100, more = 200_000;
+            final TradeNatsPublisher old = new TradeNatsPublisher(js.url, "/trades", "e9", null, ReceiptLanes.LANE_RECORDS_DEFAULT, 1);
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", null, ring, 1);
+            trades.role(false);
+            old.start();
+            trades.start();
+            for (int seq = 1; seq <= stored; seq++) { side(old, seq); side(trades, seq); }
+            LaneSpoolIT.awaitStored(js.url, stored, 0);
+            js.pause();
+            for (int seq = stored + 1; seq <= stored + more; seq++) {
+                side(old, seq); side(trades, seq);
+                if (seq % 50 == 0) { Thread.sleep(1); }
+            }
+            final long sent = System.currentTimeMillis() + 20_000;
+            while (old.published() < stored + ReceiptLanes.PUBLISH_WINDOW && System.currentTimeMillis() < sent) { Thread.sleep(20); }
+            Thread.sleep(500);
+            final long window = old.published();           // what the leader got into the socket: its publish window
+            old.stop();                                     // the leader dies
+            js.unpause();                                   // NATS reads what the dead leader had sent, and stores it
+            Thread.sleep(5_000);                            // NATS drains the dead connection's bytes
+            trades.role(true);
+            final long deadline = System.currentTimeMillis() + 60_000;
+            while (trades.gaps() == 0 && System.currentTimeMillis() < deadline) { Thread.sleep(100); }
+            Thread.sleep(3_000);
+            final List<Long> seqs;
+            try (Connection nc = Nats.connect(js.url)) {
+                seqs = LaneSpoolIT.stored(nc, "/trades", "id").stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList();
+            }
+            final String runs = LaneSpoolIT.runs(seqs);
+            final String[] parts = runs.split(" ");
+            assertEquals(2, parts.length, "the leader's part, one hole, the follower's ring: " + runs + " " + trades.json());
+            // how much of its window had left the leader's client for the socket varies; it is past the follower's spool
+            final long last = Long.parseLong(parts[0].substring(parts[0].indexOf("..") + 2));
+            assertTrue(parts[0].startsWith("1..") && last <= window && last > LaneSpoolIT.spooled(trades.json()) + stored,
+                "the stream's last is in the dead leader's window, past the follower's spool: " + runs + " " + trades.json());
+            assertTrue(Long.parseLong(parts[1].substring(0, parts[1].indexOf(".."))) >= stored + more - ring && parts[1].endsWith(".." + (stored + more)), runs);
+            assertEquals(1, trades.gaps(), "the hole is a gap: " + trades.json());
+            assertTrue(LaneSpoolIT.spooled(trades.json()) > 1_000, "the follower spooled until its budget: " + trades.json());
+            trades.stop();
+        } finally {
+            LaneSpool.budget = before;
+        }
+    }
+
+    private static void side(final TradeNatsPublisher bridge, final int seq) {
+        bridge.offer(seq, 7, "IBM", (byte) (seq & 1), 1, 100_000_000L, seq, 0L);
+    }
 }

@@ -36,6 +36,8 @@ final class FillsRouter {
   /** FR-DRS-53: with S > 1 fills streams, stream {@code <stream>_<k>} captures {@code /fillsk.<k>.>}. A prefix of its
    *  own: {@code /fills.<k>.>} would overlap a single stream's {@code /fills.>}, which NATS refuses. */
   static final String SHARD_PREFIX = "/fillsk.";
+  /** FR-DRS-60: the most a routed message carries, as the bridge's own batch cap; NATS's payload limit is 1 MiB. */
+  static final int MESSAGE_BYTES = 256 * 1024;
   private final JetStream js;
   private final String stream;
   private final int shards;
@@ -98,6 +100,18 @@ final class FillsRouter {
     private final Map<String, List<byte[]>> perGateway = new java.util.LinkedHashMap<>();
     void add(String gateway, byte[] record) { perGateway.computeIfAbsent(gateway, k -> new ArrayList<>()).add(record); }
     boolean isEmpty() { return perGateway.isEmpty(); }
+    /** The records as messages of at most {@code maxBytes} each, in order; a record larger than that goes alone. */
+    static List<byte[]> split(List<byte[]> records, int maxBytes) {
+      List<byte[]> out = new ArrayList<>();
+      int from = 0, bytes = 0;
+      for (int i = 0; i < records.size(); i++) {
+        int add = records.get(i).length + (i > from ? 1 : 0);
+        if (i > from && bytes + add > maxBytes) { out.add(join(records.subList(from, i))); from = i; bytes = 0; add = records.get(i).length; }
+        bytes += add;
+      }
+      if (from < records.size()) { out.add(join(records.subList(from, records.size()))); }
+      return out;
+    }
     static byte[] join(List<byte[]> records) {
       int n = records.size() - 1;
       for (byte[] r : records) { n += r.length; }
@@ -110,22 +124,28 @@ final class FillsRouter {
     }
   }
 
-  /** On the partition's own thread: publish the batch, one message per gateway; acks are counted as they land. */
+  /**
+   * On the partition's own thread: publish the batch, per gateway in order; acks are counted as they land.
+   * FR-DRS-60: a gateway's records go out as messages of at most {@link #MESSAGE_BYTES}. A view batch after a stall is
+   * up to 1,000 capture messages, and one gateway's share of it passed NATS's 1 MiB payload (GKE 2026-11-12: 1.06 to
+   * 2.7 MB, refused by the client, 13 times on one replica), so that gateway never saw those fills.
+   */
   void route(Batch batch) {
     for (Map.Entry<String, List<byte[]>> e : batch.perGateway.entrySet()) {
-      byte[] body = Batch.join(e.getValue());
       routed.addAndGet(e.getValue().size());
-      messages.incrementAndGet();
       byGateway.computeIfAbsent(e.getKey(), k -> new AtomicLong()).addAndGet(e.getValue().size());
-      CompletableFuture<PublishAck> f;
-      try {
-        f = js.publishAsync(subject(e.getKey(), shards), body);
-      } catch (RuntimeException x) {
-        failed.incrementAndGet();
-        log.warn("fills router: publish to {} refused: {}", subject(e.getKey(), shards), x.toString());
-        continue;
+      for (byte[] body : Batch.split(e.getValue(), MESSAGE_BYTES)) {
+        messages.incrementAndGet();
+        CompletableFuture<PublishAck> f;
+        try {
+          f = js.publishAsync(subject(e.getKey(), shards), body);
+        } catch (RuntimeException x) {
+          failed.incrementAndGet();
+          log.warn("fills router: publish to {} refused: {}", subject(e.getKey(), shards), x.toString());
+          continue;
+        }
+        f.whenComplete((ack, x) -> { if (x == null && ack != null && !ack.hasError()) { acked.incrementAndGet(); } else { failed.incrementAndGet(); } });
       }
-      f.whenComplete((ack, x) -> { if (x == null && ack != null && !ack.hasError()) { acked.incrementAndGet(); } else { failed.incrementAndGet(); } });
     }
   }
 

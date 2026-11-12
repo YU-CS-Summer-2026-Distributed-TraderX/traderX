@@ -24,6 +24,21 @@ class FillsRouterTest {
     assertThat(FillsRouter.subject("gw-a")).isEqualTo("/fills.gw-a");
   }
 
+  /** FR-DRS-60: a gateway's records are cut into messages under the cap, every record once, in order, none split. */
+  @Test
+  void aGatewaysRecordsAreSplitIntoMessagesUnderTheCap() {
+    List<byte[]> records = new java.util.ArrayList<>();
+    for (int i = 0; i < 10; i++) { records.add(FillsRouter.bytes("r" + i + "x".repeat(30))); }   // 32 bytes each
+    List<byte[]> msgs = FillsRouter.Batch.split(records, 100);                                     // three fit (98), not four
+    assertThat(msgs).hasSize(4);
+    assertThat(msgs).allMatch(m -> m.length <= 100);
+    assertThat(String.join("\n", msgs.stream().map(m -> new String(m, StandardCharsets.UTF_8)).toList()))
+        .isEqualTo(new String(FillsRouter.Batch.join(records), StandardCharsets.UTF_8));
+    assertThat(FillsRouter.Batch.split(List.of(FillsRouter.bytes("y".repeat(500))), 100)).hasSize(1);   // larger than the cap: alone
+    assertThat(FillsRouter.Batch.split(records, 1 << 20)).hasSize(1);
+    assertThat(FillsRouter.Batch.split(List.of(), 100)).isEmpty();
+  }
+
   /** FR-DRS-53: the gateway's shard is floorMod(String.hashCode, S). ClusterGatewayMainTest pins the same values: the
    *  router and the gateway must agree, or a gateway reads a stream nothing is routed to. */
   @Test
