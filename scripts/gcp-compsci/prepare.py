@@ -322,7 +322,10 @@ def add_binary_port(docs, port):
 
 # ADR-096 (FR-PRG-15): the bench's 450K member settings, all in 00b31d33 and later: egress coalescing (9373b8ef; every
 # egress reader splits), packed snapshots with the ring-ordered idempotency walk (bccbc71a, the snapshot-stall fix).
-THROUGHPUT_MEMBER_ENV = {'CLUSTER_EGRESS_COALESCE': 'true', 'CLUSTER_SNAPSHOT_PACKED': 'true', 'CLUSTER_SNAPSHOT_RING': 'true'}
+# ADR-108 (FR-DRS-59): the recon's live window, 8,388,608 sides (310 MB of primitives a member): 19 s at run 7's 431K
+# sides/s. At the inherited 500,000 it was 1.2 s and the recon classified 60% of stage 2.
+THROUGHPUT_MEMBER_ENV = {'CLUSTER_EGRESS_COALESCE': 'true', 'CLUSTER_SNAPSHOT_PACKED': 'true', 'CLUSTER_SNAPSHOT_RING': 'true',
+                         'RECON_BLOTTER_CAPACITY': '8388608'}
 
 
 def throughput_members(docs):

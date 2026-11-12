@@ -210,6 +210,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // (possibly dead) endpoint every time — see connectCycling().
     private int connectRotation;
     private AeronCluster client;
+    /** ADR-108: the leader as the cluster client last reported it; -1 before the first connect. */
+    private volatile int knownLeader = -1;
     private volatile boolean connected;
     private volatile boolean running = true;
 
@@ -736,6 +738,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // makes the self-heal fire LESS often, never more — the safe direction for a trigger
             // whose hazard is firing when a reconnect cannot help.
             offeredUnackedStreak.set(0);
+            knownLeader = leaderMemberId;
             leaderChanges.incrementAndGet();   // FR-XOC-06: the FIX acceptor resubmits what this strands
             final int expedited = FAILOVER_REAP_MS < 0 ? -1
                 : inflight.expireBy(System.currentTimeMillis() + FAILOVER_REAP_MS);
@@ -807,6 +810,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     .egressListener(egressListener)
                     .credentialsSupplier(ClusterClientAuth.credentialsFromEnv()));
                 connectRotation = (connectRotation + 1) % endpointEntries.length;
+                knownLeader = client.leaderMemberId();   // ADR-108: where a blotter read should NOT go first
                 sessionLost = false;   // a fresh session: whatever killed the last one is behind us
                 // ticker -> securityId ids are PER-EPOCH engine state, and this cache had no
                 // invalidation at all. A fresh epoch renumbers the symbol table, so a gateway that
@@ -3744,13 +3748,28 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * it, which is byte-for-byte the answer those states already gave before this route existed:
      * the capability is YU15's, and the forward is inert until a member serves it.
      */
+    /** The {@code id=host:port} entries in their own order, with member {@code leader}'s moved to the end. */
+    static String[] leaderLast(final String[] entries, final int leader) {
+        final java.util.List<String> out = new java.util.ArrayList<>(entries.length);
+        String last = null;
+        for (final String e : entries) {
+            if (last == null && e.startsWith(leader + "=")) { last = e; } else { out.add(e); }
+        }
+        if (last != null) { out.add(last); }
+        return out.toArray(new String[0]);
+    }
+
     private void handleMemberProxy(final HttpExchange exchange) {
         final int healthPort = Integer.parseInt(env("GATEWAY_MEMBER_HEALTH_PORT", "8080"));
         final String query = exchange.getRequestURI().getRawQuery();
         final String suffix = exchange.getRequestURI().getRawPath() + (query == null ? "" : "?" + query);
         final String authorization = exchange.getRequestHeaders().getFirst("Authorization");
         final StringBuilder tried = new StringBuilder();
-        for (final String entry : endpointEntries) {
+        // ADR-108 (FR-DRS-59): the recon's live window is on every member, so its reads go to a follower first and
+        // the leader last. Everything else keeps id order.
+        final String[] order = exchange.getRequestURI().getPath().startsWith("/recon/trades/blotter")
+            ? leaderLast(endpointEntries, knownLeader) : endpointEntries;
+        for (final String entry : order) {
             final int eq = entry.indexOf('=');
             final String hostPort = eq < 0 ? entry : entry.substring(eq + 1);
             final int colon = hostPort.lastIndexOf(':');

@@ -38,11 +38,13 @@ class ReconciliationSweepPagingTest {
     private final Set<String> projected = new HashSet<>();
     private volatile long oldest = 1, newest = 0;   // the engine's live window
     private ReconciliationService recon;
+    private final java.util.concurrent.atomic.AtomicInteger requests = new java.util.concurrent.atomic.AtomicInteger();
 
     @BeforeEach
     void start() throws Exception {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/recon/trades/blotter", ex -> {
+            requests.incrementAndGet();
             String q = ex.getRequestURI().getQuery();
             long since = Long.parseLong(q.substring("sinceSeq=".length(), q.indexOf('&')));
             byte[] body = LongStream.rangeClosed(Math.max(since + 1, oldest), newest).limit(ENGINE_PAGE)
@@ -109,6 +111,37 @@ class ReconciliationSweepPagingTest {
         assertEquals(0, s.missingInProjection());
         assertEquals(1_000, s.unverified());
         assertEquals(3_000, s.cursor());
+    }
+
+    /** FR-DRS-59: behind the engine's head, a step asks four ranges at once and joins them; the old step asked one. */
+    @Test
+    void behindTheHeadAStepReadsFourRangesAtOnce() {
+        projected.add("*");
+        newest = 100_000;
+        recon.sweepBudgetMs(0);   // one step a sweep
+        recon.sweep();            // the first step: one page, and it came back whole
+        assertEquals(1_000, recon.status().matched());
+        int before = requests.get();
+        recon.sweep();            // behind: 1,000..1,999 (its first side re-read), then three ranges of 1,000
+        assertEquals(4, requests.get() - before);
+        assertEquals(4_999, recon.status().matched(), "four ranges in one step; one page a step read to 1,999");
+        assertEquals(4_999, recon.status().cursor());
+        assertEquals(0, recon.status().unverified());
+    }
+
+    /** A range that does not follow the one before it (the window rolled under the requests) is dropped, not joined. */
+    @Test
+    void aRangeTheWindowRolledPastIsNotJoinedAcrossTheHole() {
+        projected.add("*");
+        newest = 1_000;
+        recon.sweepBudgetMs(0);
+        recon.sweep();
+        oldest = 50_001; newest = 100_000;   // every range of the next step lands below the window
+        recon.sweep();
+        var s = recon.status();
+        assertEquals(49_000, s.unverified(), "1,001..50,000 dropped unread: counted once, and no range joined twice");
+        assertEquals(2_000, s.matched());
+        assertEquals(51_000, s.cursor());
     }
 
     @Test

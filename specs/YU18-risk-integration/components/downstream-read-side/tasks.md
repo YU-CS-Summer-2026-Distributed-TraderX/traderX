@@ -97,3 +97,6 @@
   k mod n; rendered on both sides and validated by `prepare.py` (run 5 rerun, 2026-11-11).
 - [x] FR-DRS-56 the recon reads the engine's blotter to its head each sweep, holds what waits on a snapshot, counts
   what the window dropped (`unverified`); all 160,874,280 sides of a 450K stage 1 classified on GKE (2026-11-12), 350K sides/s locally.
+- [x] FR-DRS-59 (ADR-108) the recon's live window as a ring of primitives (7 ns and no allocation a side, against
+  196 ns and 237 B), 8,388,608 sides in the throughput render, read from a follower, four ranges at once when behind
+  (run 7, 2026-11-12). Not yet on GKE.

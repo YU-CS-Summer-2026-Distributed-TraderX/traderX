@@ -876,6 +876,70 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     - `BlotterLimitTest`: the member bounds `limit` by its ceiling.
   - Not on GKE: 320K sides/s driven; stage 2's mixed load, where run 6's replica 0 ran out of heap; the warning fix.
 
+- FR-DRS-59 (ADR-108; acceptance run 7, 2026-11-12; 57 is the bridge-overflow lane's, 58 is left for the latency-tail
+  lane): A member SHALL record the recon's live window without allocating and without an eviction walk, and the recon
+  SHALL classify every side at the full mixed rate (run 7: ~431K sides/s).
+  - Why: run 7's stage 2 (`3526dcdf`, one hour at ~431K sides/s).
+    - The recon classified 933,861,844 of 1,550,788,228 sides (60%) and counted 616,926,384 unverified; 0 missing,
+      0 mismatched. The window (RECON_BLOTTER_CAPACITY, 500,000 sides) held 1.2 s, and one reader reached ~260K/s.
+    - The window cost the leader 27% of its clustered-service thread (60 s profile, the thread at ~56% of a core):
+      12.8% evicting from the `ConcurrentSkipListMap`, 10.0% inserting, 2.3% building the record. More than egress
+      (18%), matching (15%) or exactly-once (11%).
+  - The member (`LiveTradeRing`): a ring of primitives indexed by `tradeSeq & mask`, one writer. Recording a side is
+    seven array stores and an ordered write of the head. The HTTP thread that serves a page builds the records
+    (id, exact price) from a copy of the slots, and drops any slot the writer may have lapped during the copy. The
+    wire is unchanged.
+    - Not in the snapshot, not replicated, read by no decision (checked: only `/recon/trades/blotter` reads it). No
+      format changes and no fresh epoch; members roll one at a time.
+    - `RECON_BLOTTER_CAPACITY` is rounded up to a power of two. `prepare.py --throughput-members` sets 8,388,608:
+      310 MB a member, 19 s at 431K sides/s. Other renders keep their value (500,000 → 524,288).
+  - The gateway forwards `/recon/trades/blotter` to a follower first and the leader last (`leaderLast`, from the
+    leader its cluster client last reported). Every other forward keeps id order.
+  - The recon: behind the engine's head a step asks `recon.fetch.parallel` (4) ranges at once, each as long as the
+    pages the engine serves, and joins them in order. A range is kept only if the one before it came back whole and
+    it starts at the next `tradeSeq`; otherwise it is dropped and asked again. At the head a step asks one page.
+    - `recon.read.max-sides-per-second` is 2,000,000 (was 500,000). At 1,000,000 the pacing itself held the reader
+      at 560–710K sides/s against 680–940K unpaced, on the same host.
+  - Measured locally, on the engine's own classes (20M sides back to back, full window, three rounds):
+
+    | Recording a side | CPU | Allocated | At 431K sides/s |
+    |---|---|---|---|
+    | `3526dcdf`: record built, skip list of 500,000 | 196 ns | 237 B | 8.5% of a core, 102 MB/s |
+    | The ring, 8,388,608 slots | 7 ns | 0 B | 0.3% of a core, 0 MB/s |
+
+    That is the engine's classes on a Mac core, not the leader's thread: the GKE profile is the proof (plan in the
+    lane's notes).
+  - Measured locally, the recon (`ReconThroughputIT`, `RECON_IT_RATE=900000`, 9.15M sides, NATS in Docker):
+
+    | Recon | Engine window | Classified while driven | Behind when the drive stopped |
+    |---|---|---|---|
+    | `3526dcdf` | 500,000 | 178K sides/s | 7.2M lost to the window, counted unverified |
+    | `3526dcdf` | 8,388,608 | 621K sides/s (quiet host) | 4.0M sides |
+    | This | 8,388,608 | 943K sides/s (quiet host) | 0.2M sides |
+    | This | 8,388,608 | 735K, 867K, 889K sides/s (load average 7) | 2.4M, 1.2M, 0.7M sides |
+
+    - The bigger window alone hides a slow reader in a 10 s run (every side is classified a few seconds late), so the
+      test also asserts that under 2.5 s of sides are unclassified when the drive stops. At 900K the old recon
+      fails that on a quiet host; this one passed it there and in 2 of 3 runs at a load average of 7.
+    - So above 2× of 431K is reached locally but is not a gate on this host. The suite drives 160K, as before.
+  - Not changed, and open:
+    - A read still costs the member that answers 0.35 µs and 961 B a side (FR-DRS-56's measurement): about 15% of a
+      core and 414 MB/s of garbage at 431K sides/s, now on a follower. Writing the page straight from the ring is
+      the next step if it shows.
+    - One replica runs the recon. On GKE's stage 2 one reader reached ~260K sides/s; whether four ranges and the
+      window bring it past 431K there is the GKE proof's question.
+    - `unverified` is in memory, and a reader opened under load starts 60 s back (FR-DRS-56's open items).
+  - Tests:
+    - `LiveTradeRingTest`: pages strictly after `since`; the window is the newest capacity; a member restarted
+      mid-log starts at its first side; a reader lapped by the writer over 30M sides serves no torn or out-of-order
+      slot; recording 1,000,000 sides allocates nothing; the gateway's order for a blotter read.
+    - `ClusterReconTapTest` (YU15's, unchanged): the real service's tap through the ring.
+    - `ReconciliationSweepPagingTest#behindTheHeadAStepReadsFourRangesAtOnce` (4,999 sides in the step; one page a
+      step reads 1,999, so it fails on `3526dcdf`) and `#aRangeTheWindowRolledPastIsNotJoinedAcrossTheHole`.
+    - `ReconThroughputIT`: the keeps-up assertion above; the 900K arm is opt-in.
+    - `test_prepare`: the throughput members carry the window.
+  - Not yet on GKE.
+
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

@@ -172,7 +172,10 @@ final class ClusterRecon {
     void runDescriptor(RunDescriptor descriptor) {this.runDescriptor=descriptor;}
     private final int fullHistoryMax;
     private final int regulatoryMax;
-    private final TradeBlotter live;
+    private final LiveTradeRing live;   // ADR-108: primitives, written by the service thread at array-store cost
+    /** Ticker by security id, as the tap last saw it: the ring holds the id, the reader needs the name. Written by
+     *  the service thread before the side that uses it, and published to readers by the ring's head. */
+    private volatile String[] tickers = new String[1024];
 
     /** Result of the most recent reindex, or null if never run — same contract as the Spring
      *  tier's {@code fullHistoryIndex()}: {@code /recon/full-history/trades} 503s until then. */
@@ -185,7 +188,7 @@ final class ClusterRecon {
         this.epoch = epoch;
         this.fullHistoryMax = fullHistoryMax;
         this.regulatoryMax = regulatoryMax;
-        this.live = new TradeBlotter(liveCapacity);
+        this.live = new LiveTradeRing(liveCapacity);
     }
 
     // ----- live forward window ----------------------------------------------------------------
@@ -202,12 +205,19 @@ final class ClusterRecon {
      */
     void onLiveOutput(final OutputEvent out, final String ticker) {
         if (out.kind == OutputEvent.KIND_TRADE_BOOKED) {
-            live.record(tradeRecord(out, ticker));
+            String[] names = tickers;
+            if (out.securityId >= names.length) { tickers = names = java.util.Arrays.copyOf(names, Math.max(out.securityId + 1, names.length * 2)); }
+            names[out.securityId] = ticker;
+            live.record(out.tradeSeq, out.accountId, out.securityId, out.side, out.tradeQty, out.tradePx, out.updatedAtMillis);
         }
     }
 
+    /** The page's records, built here on the caller's (HTTP) thread from the ring's slots: the same wire as before. */
     List<TradeBlotter.TradeRecord> liveSince(final long sinceSeq, final int limit) {
-        return live.since(sinceSeq, limit);
+        final List<TradeBlotter.TradeRecord> page = new ArrayList<>(Math.min(limit, 16_384));
+        live.since(sinceSeq, limit, (tradeSeq, accountId, securityId, side, qty, px, millis) ->
+            page.add(tradeRecord(tradeSeq, accountId, tickers[securityId], side, qty, px, millis)));
+        return page;
     }
 
     int liveSize() {
@@ -853,18 +863,24 @@ final class ClusterRecon {
      * Spring tier's {@code trd-09b-<seq>} scheme here would make every projection row an orphan.
      */
     private TradeBlotter.TradeRecord tradeRecord(final OutputEvent out, final String ticker) {
-        final boolean buy = out.side == 0; // InputEvent.SIDE_BUY
-        return new TradeBlotter.TradeRecord(
-            runDescriptor == null ? out.tradeSeq + (buy ? "-B" : "-S")
-                : runDescriptor.tradeId(out.tradeSeq, out.side),
-            out.tradeSeq,
-            out.accountId,
-            ticker,
-            OrderSide.values()[out.side].name(),
-            out.tradeQty,
-            exactPrice(out.tradePx),
-            out.updatedAtMillis);
+        return tradeRecord(out.tradeSeq, out.accountId, ticker, out.side, out.tradeQty, out.tradePx, out.updatedAtMillis);
     }
+
+    private TradeBlotter.TradeRecord tradeRecord(final long tradeSeq, final int accountId, final String ticker, final byte side,
+                                                 final int qty, final long px, final long millis) {
+        final boolean buy = side == 0; // InputEvent.SIDE_BUY
+        return new TradeBlotter.TradeRecord(
+            runDescriptor == null ? tradeSeq + (buy ? "-B" : "-S")
+                : runDescriptor.tradeId(tradeSeq, side),
+            tradeSeq,
+            accountId,
+            ticker,
+            SIDES[side].name(),
+            qty,
+            exactPrice(px),
+            millis);
+    }
+    private static final OrderSide[] SIDES = OrderSide.values();
 
     /**
      * FR-DRS-26: the engine's tick at full precision. {@code Px.toDecimalOrZero} rounds to 3 dp for the

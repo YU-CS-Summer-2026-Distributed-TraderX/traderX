@@ -144,9 +144,14 @@ public class ReconciliationService {
     private int pageLimit = 10_000;
     private long sweepBudgetMs = 30_000L;
     private int bufferMaxSides = 0;
-    private int maxSidesPerSecond = 500_000;
+    private int maxSidesPerSecond = 2_000_000;
     private long nextFetchNanos = 0L;
     private long fetchNanos, streamNanos, verdictNanos;   // this sweep's time in the engine fetch, the stream read, the verdicts
+    private int fetchParallel = 4;
+    @Value("${recon.fetch.parallel:4}")
+    void fetchParallel(int ranges) { this.fetchParallel = Math.max(1, ranges); }
+    private boolean behind;         // the last step's page was whole: the engine holds more
+    private int lastRangeSize;      // sides in the last range a step kept
     private int enginePage = 0;   // the largest page the engine has served: a member before FR-DRS-56 serves its own size
     private boolean sizingLogged;
     @Value("${recon.page-limit:10000}")
@@ -155,7 +160,7 @@ public class ReconciliationService {
     void sweepBudgetMs(long ms) { this.sweepBudgetMs = Math.max(0, ms); }
     @Value("${recon.buffer.max-sides:0}")
     void bufferMaxSides(int sides) { this.bufferMaxSides = sides; }
-    @Value("${recon.read.max-sides-per-second:500000}")
+    @Value("${recon.read.max-sides-per-second:2000000}")
     void maxSidesPerSecond(int rate) { this.maxSidesPerSecond = rate; }
     /** Held sides cost about 600 B each (the entry, plus its stream side at 283 B, FR-DRS-51): an eighth of the heap. */
     private int bufferMax() {
@@ -200,8 +205,8 @@ public class ReconciliationService {
         try {bindScope();} catch(Exception ex) {log.warn("Reconciliation descriptor refused: {}",ex.toString());return;}
         if (!sizingLogged) {
             sizingLogged = true;
-            log.info("recon sizing: {} sides a page, at most {} sides/s read from the engine, {} sides held unclassified"
-                + " (about {} MB), {} ms a sweep", pageLimit, maxSidesPerSecond, bufferMax(), bufferMax() * 600L >> 20, sweepBudgetMs);
+            log.info("recon sizing: {} sides a page, {} pages at once when behind, at most {} sides/s read from the engine, {} sides held unclassified"
+                + " (about {} MB), {} ms a sweep", pageLimit, fetchParallel, maxSidesPerSecond, bufferMax(), bufferMax() * 600L >> 20, sweepBudgetMs);
         }
         long deadline = System.nanoTime() + sweepBudgetMs * 1_000_000L;
         long from = cursor, pages = 1, start = System.nanoTime();
@@ -221,7 +226,11 @@ public class ReconciliationService {
         boolean fullPage = false, bufferFull = fetched.size() >= bufferMax();
         // The stream is read while the engine answers, not after: up to where a full page would end. A side the read
         // did not reach is WAIT, as ever, and the next step's read goes on from there.
-        long readTo = bufferFull ? fetchedThrough : fetchedThrough + pageLimit;
+        // FR-DRS-59: behind the engine's head, several pages are asked at once (below); at the head, one.
+        int ranges = behind ? Math.max(1, fetchParallel) : 1;
+        // A range is as long as the pages this engine serves (a member before FR-DRS-56 serves its own size).
+        int span = Math.max(1, Math.min(pageLimit, enginePage));
+        long readTo = bufferFull ? fetchedThrough : fetchedThrough + (ranges == 1 ? pageLimit : (long) span * ranges);
         if (bufferFull) {
             if (!readStream(readTo)) return false;
         } else {
@@ -235,12 +244,26 @@ public class ReconciliationService {
             try {
                 pace();
                 t0 = System.nanoTime();
-                var fetching = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-                    try { List<BlotterEntry> p = fetchBlotterPage(sinceSeq); verifyScope(); validatePage(p); return p; }
-                    catch (Exception ex) { throw new java.util.concurrent.CompletionException(ex); }
-                });
+                // The engine numbers sides densely, so range i is the page after range i-1's: asked together, parsed
+                // on their own threads, joined in order. One request's parse (about 1.7 us a side) was the reader's limit.
+                List<java.util.concurrent.CompletableFuture<List<BlotterEntry>>> fetching = new ArrayList<>(ranges);
+                for (int i = 0; i < ranges; i++) {
+                    final long since = sinceSeq + (long) i * span;
+                    final boolean first = i == 0;
+                    final int limit = ranges == 1 ? pageLimit : span;
+                    fetching.add(java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                        try { List<BlotterEntry> p = fetchBlotterPage(since, limit); if (first) verifyScope(); validatePage(p); return p; }
+                        catch (Exception ex) { throw new java.util.concurrent.CompletionException(ex); }
+                    }));
+                }
                 boolean read = readStream(readTo);
-                page = fetching.join();   // always joined: nothing of this step outlives it
+                Throwable failed = null;   // every range joined: nothing of this step outlives it
+                List<List<BlotterEntry>> pages = new ArrayList<>(ranges);
+                for (var f : fetching) {
+                    try { pages.add(f.join()); } catch (java.util.concurrent.CompletionException ex) { failed = ex.getCause(); }
+                }
+                if (failed != null) throw failed instanceof Exception e ? e : new IOException(failed);
+                page = joinRanges(pages, span);
                 fetchNanos += System.nanoTime() - t0;
                 if (!read) return false;
             } catch (Exception ex) {
@@ -260,8 +283,9 @@ public class ReconciliationService {
                 return false;
             }
             // A page as large as the engine serves means it holds more; a shorter one is its head.
-            fullPage = page.size() > 1 && page.size() >= enginePage;
-            enginePage = Math.max(enginePage, page.size());
+            fullPage = page.size() > 1 && lastRangeSize >= enginePage;
+            enginePage = Math.max(enginePage, lastRangeSize);
+            behind = fullPage;
             // The next fetch is due one page's worth of the cap after THIS one started, not after it and its verdicts ended.
             if (maxSidesPerSecond > 0) { nextFetchNanos = Math.max(nextFetchNanos, t0) + page.size() * 1_000_000_000L / maxSidesPerSecond; }
             accept(page);
@@ -281,6 +305,26 @@ public class ReconciliationService {
         held = fetched.size();
         // More now: the engine had a full page; or the buffer was full and classifying made room.
         return fullPage || (bufferFull && cursor > before);
+    }
+
+    /**
+     * The ranges of one step as one page, in order. A range is kept only if the one before it came back whole
+     * ({@code span} sides) and it starts at the next tradeSeq: a short range is the engine's head, and a
+     * range that overlaps or skips (a member that serves smaller pages, or a window that rolled past the request) is
+     * dropped and asked again next step. So the joined page has no hole the engine did not have.
+     */
+    private List<BlotterEntry> joinRanges(List<List<BlotterEntry>> pages, int span) {
+        List<BlotterEntry> page = pages.get(0);
+        lastRangeSize = page.size();
+        for (int i = 1; i < pages.size(); i++) {
+            List<BlotterEntry> next = pages.get(i);
+            if (lastRangeSize != span || next.isEmpty()
+                    || next.get(0).tradeSeq() != page.get(page.size() - 1).tradeSeq() + 1) break;
+            if (page == pages.get(0)) { page = new ArrayList<>(page); }
+            page.addAll(next);
+            lastRangeSize = next.size();
+        }
+        return page;
     }
 
     /**
@@ -318,7 +362,9 @@ public class ReconciliationService {
     /** Bound what the recon asks of the engine: at most {@code recon.read.max-sides-per-second}, by the last page's size. */
     private void pace() throws InterruptedException {
         long wait = nextFetchNanos - System.nanoTime();
-        if (maxSidesPerSecond > 0 && wait > 0) { Thread.sleep(wait / 1_000_000L, (int) (wait % 1_000_000L)); }
+        // parkNanos, and nothing under a millisecond: Thread.sleep overslept by tens of milliseconds a page (FR-DRS-59:
+        // capped at 1M sides/s the reader ran at 621K, uncapped at 943K).
+        if (maxSidesPerSecond > 0 && wait > 1_000_000L) { java.util.concurrent.locks.LockSupport.parkNanos(wait); }
     }
 
     /**
@@ -611,8 +657,8 @@ public class ReconciliationService {
         return true;
     }
 
-    private List<BlotterEntry> fetchBlotterPage(long sinceSeq) throws IOException, InterruptedException {
-        URI uri = URI.create(baseUrl + "/recon/trades/blotter?sinceSeq=" + sinceSeq + "&limit=" + pageLimit);
+    private List<BlotterEntry> fetchBlotterPage(long sinceSeq, int limit) throws IOException, InterruptedException {
+        URI uri = URI.create(baseUrl + "/recon/trades/blotter?sinceSeq=" + sinceSeq + "&limit=" + limit);
         HttpRequest request = HttpRequest.newBuilder(uri)
             .timeout(HTTP_TIMEOUT)
             .header("Authorization", serviceAuthorization)

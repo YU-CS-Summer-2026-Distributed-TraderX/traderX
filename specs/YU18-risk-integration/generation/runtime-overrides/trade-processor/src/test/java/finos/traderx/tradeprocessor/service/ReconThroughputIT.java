@@ -15,13 +15,11 @@ import io.nats.client.Nats;
 import io.nats.client.api.DiscardPolicy;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
-import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -70,7 +68,10 @@ class ReconThroughputIT {
   private final long intervalMs = env("RECON_IT_INTERVAL_MS", 1_000);
   private final int serverPage = (int) env("RECON_IT_SERVER_PAGE", 1_000);
 
-  private final ConcurrentSkipListMap<Long, byte[]> engine = new ConcurrentSkipListMap<>();
+  /** The engine's head: the highest tradeSeq booked. Its window is the newest {@code window} sides; a side is a pure
+   *  function of its number, so the harness holds none of them and can drive a million a second. */
+  private final AtomicLong head = new AtomicLong();
+  private volatile int window;
   private final AtomicLong fetchNanos = new AtomicLong(), fetches = new AtomicLong(), served = new AtomicLong();
   /** The projection's committed cursors are ahead of every side while this is set; at 0 for every partition while not. */
   private final AtomicBoolean projected = new AtomicBoolean(true);
@@ -79,6 +80,8 @@ class ReconThroughputIT {
     int rate = (int) env("RECON_IT_RATE", 160_000), window = (int) env("RECON_IT_WINDOW", 500_000);
     Run r = run(rate, (int) env("RECON_IT_SECONDS", 10), window, WARM_RATE * WARM_SECONDS, 0, total -> { });
     assertThat(r.driven).as("the drive reached its rate").isGreaterThan(rate * 0.98);
+    // FR-DRS-59: keeping up, not catching up afterwards. A window of 8M sides hides a slow reader in a short run.
+    assertThat(r.total - r.atDriveEnd).as("sides not yet classified when the drive stopped, at %d/s", rate).isLessThan(rate * 5L / 2);
     assertThat(r.status.missingInProjection() + r.status.fieldMismatch()).as("no false verdict").isZero();
     assertThat(r.status.unverified()).as("sides the engine's window dropped before the recon read them").isZero();
     assertThat(r.status.matched()).as("every side driven at %d/s through a %d-side window is classified", rate, window)
@@ -111,30 +114,35 @@ class ReconThroughputIT {
         .isEqualTo(r.total);
   }
 
-  private record Run(long total, double driven, ReconciliationService.StatusSnapshot status, long maxHeld) { }
+  private static final long T0 = System.currentTimeMillis();
+  private static String fields(long seq) {
+    return "\"accountId\":" + ACCOUNTS[(int) (seq % ACCOUNTS.length)] + ",\"security\":\"AAPL\",\"side\":\"Buy\",\"quantity\":100,\"price\":241.30";
+  }
+
+  private record Run(long total, double driven, ReconciliationService.StatusSnapshot status, long maxHeld, long atDriveEnd) { }
 
   /** Drive {@code warm + rate x seconds} sides and sweep at the interval; {@code atHalf} runs when half are driven. */
   private Run run(int rate, int seconds, int window, long warm, int bufferMax, java.util.function.LongConsumer atHalf) throws Exception {
-    engine.clear();
+    head.set(0); this.window = window;
     HttpServer http = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
-    http.setExecutor(Executors.newFixedThreadPool(2));
+    http.setExecutor(Executors.newFixedThreadPool(6));   // the member's health-http pool
     http.createContext("/recon/trades/blotter", ex -> {
       long t0 = System.nanoTime();
       Map<String, String> q = new HashMap<>();
       for (String kv : ex.getRequestURI().getQuery().split("&")) { q.put(kv.substring(0, kv.indexOf('=')), kv.substring(kv.indexOf('=') + 1)); }
       // The member's rule: its page size unless the caller asks, and never more than 50 pages' worth.
       int limit = q.containsKey("limit") ? Math.min(Integer.parseInt(q.get("limit")), 50 * serverPage) : serverPage;
-      ByteArrayOutputStream body = new ByteArrayOutputStream(limit * 160);
-      body.write('[');
+      StringBuilder body = new StringBuilder(limit * 150).append('[');
+      long h = head.get(), from = Math.max(Long.parseLong(q.get("sinceSeq")) + 1, Math.max(1, h - this.window + 1));
       int n = 0;
-      for (byte[] e : engine.tailMap(Long.parseLong(q.get("sinceSeq")), false).values()) {
-        if (n == limit) break;
-        if (n++ > 0) body.write(',');
-        body.write(e, 0, e.length);
+      for (long seq = from; seq <= h && n < limit; seq++, n++) {
+        if (n > 0) body.append(',');
+        body.append("{\"id\":\"1-").append(seq).append("-B\",\"tradeSeq\":").append(seq).append(',').append(fields(seq))
+            .append(",\"execTimeMillis\":").append(T0 + seq / 1000).append('}');
       }
-      body.write(']');
-      ex.sendResponseHeaders(200, body.size());
-      body.writeTo(ex.getResponseBody());
+      byte[] bytes = body.append(']').toString().getBytes(StandardCharsets.UTF_8);
+      ex.sendResponseHeaders(200, bytes.length);
+      ex.getResponseBody().write(bytes);
       ex.close();
       served.addAndGet(n); fetches.incrementAndGet(); fetchNanos.addAndGet(System.nanoTime() - t0);
     });
@@ -164,7 +172,8 @@ class ReconThroughputIT {
       recon.subscribers(List.of(feed));
       recon.snapshotStore(store);
       recon.pageLimit((int) env("RECON_IT_PAGE_LIMIT", 10_000));
-      recon.maxSidesPerSecond((int) env("RECON_IT_MAX_RATE", 500_000));
+      recon.maxSidesPerSecond((int) env("RECON_IT_MAX_RATE", 2_000_000));
+      recon.fetchParallel((int) env("RECON_IT_PARALLEL", 4));
       recon.sweepBudgetMs(env("RECON_IT_BUDGET_MS", 30_000));
       recon.bufferMaxSides(bufferMax);
 
@@ -204,7 +213,7 @@ class ReconThroughputIT {
           rate, seconds, intervalMs, serverPage, window, total, total - warm, driven, matchedAtDriveEnd, s.matched(), s.missingInProjection(), s.fieldMismatch(), s.cursor(), s.unverified(),
           total - s.matched() - s.missingInProjection() - s.fieldMismatch(), maxHeld.get(), sweeps.get(), sweepNanos.get() / 1e9, perSweep,
           fetches.get(), served.get(), fetchNanos.get() / 1e9);
-      return new Run(total, driven, s, maxHeld.get());
+      return new Run(total, driven, s, maxHeld.get(), matchedAtDriveEnd);
     } finally {
       http.stop(0);
     }
@@ -217,19 +226,16 @@ class ReconThroughputIT {
     for (int p = 0; p < PARTITIONS; p++) { batch[p] = new StringBuilder(BATCH * 280); }
     long start = System.nanoTime(), rateStart = start;
     for (long seq = 1; seq <= total; seq++) {
-      int account = ACCOUNTS[(int) (seq % ACCOUNTS.length)];
-      int p = account % PARTITIONS;
+      int p = ACCOUNTS[(int) (seq % ACCOUNTS.length)] % PARTITIONS;
       String id = "1-" + seq + "-B";
-      String fields = "\"accountId\":" + account + ",\"security\":\"AAPL\",\"side\":\"Buy\",\"quantity\":100,\"price\":241.30";
+      String fields = fields(seq);
       if (held[p]++ > 0) { batch[p].append('\n'); }
       // The trade bridge's record, field for field (TradeNatsPublisher), about 260 B.
       batch[p].append("{\"topic\":\"/trades.").append(p).append("\",\"from\":\"cluster-bridge\",\"type\":\"TradeOrder\",\"date\":")
           .append(1794452000000L + seq / 350).append(",\"payload\":{\"id\":\"").append(id).append("\",\"state\":\"New\",")
           .append(fields).append(",\"bookingSource\":\"MATCH\",\"sourceOrderId\":\"1-").append(4294967297L + seq).append("\"}}");
       if (held[p] == BATCH) { nc.publish("/trades." + p, batch[p].toString().getBytes(StandardCharsets.UTF_8)); batch[p].setLength(0); held[p] = 0; }
-      engine.put(seq, ("{\"id\":\"" + id + "\",\"tradeSeq\":" + seq + "," + fields + ",\"execTimeMillis\":"
-          + System.currentTimeMillis() + "}").getBytes(StandardCharsets.UTF_8));
-      if (engine.size() > window) { engine.pollFirstEntry(); }
+      if ((seq & 63) == 0 || seq == total) { head.set(seq); }   // booked: in the window from here
       if (seq == warm) { rateStart = System.nanoTime(); }
       if (seq == total / 2) { atHalf.accept(total); }
       if ((seq & 1023) == 0) {   // pace in 1,024-side steps
