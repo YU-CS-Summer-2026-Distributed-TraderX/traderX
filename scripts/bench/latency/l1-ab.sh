@@ -29,8 +29,16 @@ arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 
   local label=$1 a=$3 rates=${4:-${RATES:-0 300 500}} env=(CLUSTER_IDLE_STRATEGY=lowpark)
   if [ "$2" = busyspin ]; then env+=("${SPIN[@]}"); else env+=("${NOSPIN[@]}"); fi
   if [ "$a" = DEDICATED ]; then env+=(CLUSTER_ARCHIVE_THREADING=DEDICATED); else env+=(CLUSTER_ARCHIVE_THREADING-); fi
+  local kv; for kv in ${ARM_ENV:-}; do env+=("$kv"); done   # FR-OPL-14: an arm's own member env, KEY=VAL or KEY-
   EXPECT_IDLE=$(idle "$2") EXPECT_ARCHIVE=$a EXPECT_DRIVER=${EXPECT_DRIVER:-} bash "$B" arm "$label" "${env[@]}"
   [ -z "${ARM_POST:-}" ] || bash "$B" $ARM_POST   # e.g. ARM_POST="pin 14": after the roll, before the probe
+  for kv in ${ARM_ENV:-}; do   # refuse unless every member runs the env the arm declares
+    local k=${kv%%[=-]*} want="" m got; case $kv in *=*) want=${kv#*=} ;; esac
+    for m in 0 1 2; do
+      got=$(kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" exec "order-matcher-cluster-$m" -c cluster-node -- sh -c "printenv $k || true")
+      [ "$got" = "$want" ] || { log "REFUSED arm $label: m$m has $k='$got', the arm declares '$want'"; exit 1; }
+    done
+  done
   # A member roll restarts the gateways' cluster sessions: wait for every gateway to be Ready before the probe, and
   # refuse the arm unless the probe is running and has written its first window (S' 2026-11-11 measured no client
   # latency: its probe died on ECONNREFUSED and the blocks ran without it).
@@ -127,6 +135,12 @@ for a in "${ARMS[@]}"; do
             jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp, .metadata.generation, .status)' \
               "$EVIDENCE/sts-embedded.json" | kc_ replace -f - >/dev/null
             kc_ rollout status sts/order-matcher-cluster --timeout=1800s >/dev/null; log "L1shC: StatefulSet restored to the embedded driver" ;;   # S again, last: shared, static, shared, static
+    # FR-OPL-14: the service-thread cost knobs (FR-OPL-12) on today's member, shared cores. Nk, Nk2, Nk3 are the
+    # control at the start, between and at the end; RT both knobs, Rk the ring alone, Tk the timing alone.
+    Nk|Nk2|Nk3) ARM_ENV="CLUSTER_OUTPUT_RING_WAIT- CLUSTER_ENGINE_TIMING-" arm "$a" lowpark SHARED ;;
+    RT)  ARM_ENV="CLUSTER_OUTPUT_RING_WAIT=none CLUSTER_ENGINE_TIMING=off" arm RT lowpark SHARED ;;
+    Rk)  ARM_ENV="CLUSTER_OUTPUT_RING_WAIT=none CLUSTER_ENGINE_TIMING-" arm Rk lowpark SHARED ;;
+    Tk)  ARM_ENV="CLUSTER_OUTPUT_RING_WAIT- CLUSTER_ENGINE_TIMING=off" arm Tk lowpark SHARED ;;
     N)   cs=$(cpuset_width)
          [ "$cs" -gt 15 ] || { log "REFUSED arm N: m0's cpuset is $cs CPUs, already exclusive; N needs the shared pool"; exit 1; }
          arm N lowpark SHARED ;;

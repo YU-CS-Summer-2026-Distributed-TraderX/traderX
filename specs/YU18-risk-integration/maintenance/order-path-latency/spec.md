@@ -92,6 +92,10 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   eviction victim's slot one order early (no further gain). The cost that remains is two dependent reads of random
   cache lines per new key, the new key's slot and the evicted key's, plus the backward-shift scan. The patch is in
   the session notes (`idempotency-dedup-and-touch.patch`); the table is unchanged.
+- **FR-OPL-14 (service-thread knob arms):** `l1-ab.sh` SHALL take an arm's own member env from `ARM_ENV`
+  (`KEY=VAL` or `KEY-`) and refuse the arm unless every member's container shows it. Arms on today's member and
+  shared cores: `Nk`, `Nk2`, `Nk3` (both FR-OPL-12 knobs unset: the control at the start, between and at the end),
+  `RT` (both on), `Rk` (the ring alone), `Tk` (the timing alone).
 - **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
   - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
     (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;
