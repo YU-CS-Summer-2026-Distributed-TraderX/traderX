@@ -68,6 +68,15 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
     `DUPLICATE`, so no restatement ran and the read model served 0 listings; 0 `OutOfMemoryError`. Kind's election
     took 10.5 s, and the stranded orders were ones sent to a leader already dead, so they were booked fresh. The
     restatement storm needs orders committed and not yet acknowledged at the kill: GKE rates.
+  - GKE, run 7b (2026-11-12, `9c39f4ef`, the acceptance render, the leader's JVM killed after 10 min at 439K
+    sides/s; run 7's stage 3 on `3526dcdf` is the before arm): 28,140 FIX orders stranded, 25,512 restated, each by one
+    by-key read (25,512), 0 listings, 0 refused; **0 `OutOfMemoryError` and 0 restarts on 18 of 18 gateways**, all ready
+    at every 30 s sample for 6 min; FIX 0 rejected, 0 reconnects, 0 duplicate answers or fills, its fill rate
+    unchanged through the kill. The lists the old code would have read were 8,079-9,908 rows / 6.5-8.0 MB an account.
+    Not shown: the bounded listing on a rig (no status request arrived: 0 listings), and the binary half of the load
+    after the kill (its driver stops itself on an unanswered order).
+  - Seen there, not part of this requirement: 49 of 142,715,038 FIX orders were never answered (FR-XOC-06's two
+    resubmissions exhausted or not triggered; not read further).
   - Not covered: an open order the read model has not projected yet is restated `39=3` (as before this change).
 
 ## Acceptance

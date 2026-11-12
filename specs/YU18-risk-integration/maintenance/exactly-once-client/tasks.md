@@ -12,7 +12,9 @@
 - [x] FR-XOC-07: restatements and status requests read by client key; listings bounded in number and rows
       (`ReadModelOrders`); unit tests with a negative control.
 - [x] FR-XOC-07 off-rig storm at the gateway's heap: the old reader runs out, the fix does not.
-- [ ] FR-XOC-07 on a rig: a leader kill at load with gateways surviving. Kind does not reach the path
-      (`kind-fix-restatement-failover.sh`: 0 DUPLICATE answers); it needs a GKE stage 3.
+- [x] FR-XOC-07 on GKE (run 7b): 25,512 restatements by key, 0 listings, 0 of 18 gateways out of heap or restarted.
+      Kind does not reach the path (`kind-fix-restatement-failover.sh`: 0 DUPLICATE answers).
+- [ ] 49 FIX orders unanswered after the run-7b leader kill (FR-XOC-06): read the gateways' ambiguous lines.
+- [ ] The bounded listing under a status-request storm on a rig.
 - [ ] GKE `xo` arm at ≤ 5K/s (CLOUD-QUEUE proposal).
 - [ ] Exactly-once at 400K/s: proposed as ADR-090 (`exactly-once-dedupe`, per-stream sequences), awaiting yaakov.
