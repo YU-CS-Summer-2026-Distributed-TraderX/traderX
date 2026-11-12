@@ -63,6 +63,12 @@
       34,464 of 100,100 missing), `#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`,
       `kind-bridge-failover-at-rate.sh KILL_AFTER=100` (kind: a 118,052-side unstored tail, 387,332 of 387,332 sides;
       the parent's image lost 57,658 of 465,088 behind a gap).
+- [x] A stream slow or down for longer than a lane's ring costs no record: the ring's older half is spooled to the
+      member's disk off the apply thread, in every role, and the catch-up runs over ring and spool (FR-DRS-57,
+      ADR-106; run 5 lost 116,662 NEW rows). `LaneSpoolIT` (500,000 of each record applied against a 131,072 ring
+      with NATS frozen, thawed / restarted / restarted with a promotion; control on `3526dcdf`: all three lose the
+      run before the ring's oldest slot), `LaneSpoolBudgetIT` (past the budget: the hole counted exactly),
+      `LaneSpoolCodecTest`.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.

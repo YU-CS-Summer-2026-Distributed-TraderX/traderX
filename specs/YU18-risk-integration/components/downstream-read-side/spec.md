@@ -875,6 +875,65 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       bound the recon stops reading and matched + unverified = driven.
     - `BlotterLimitTest`: the member bounds `limit` by its ceiling.
   - Not on GKE: 320K sides/s driven; stage 2's mixed load, where run 6's replica 0 ran out of heap; the warning fix.
+- FR-DRS-57 (bridge-overflow lane, 2026-11-12, ADR-106): A stream that stays slow or unreachable SHALL NOT cost a
+  record while the member's spool holds the backlog, and the apply thread SHALL NOT be blocked or refused by it. A
+  lane that holds more than half its ring - unpublished, or published and not yet confirmed stored (FR-DRS-49) - has
+  the ring's older half copied to the member's disk before the apply thread overwrites it. FR-DRS-37's catch-up,
+  FR-DRS-38's reconnect and FR-DRS-49's release then run over the ring and the spool together, so every record
+  reaches its subject exactly once, in apply order, however long the stream lags. This replaces FR-DRS-47's and
+  FR-DRS-49's "past the ring is a gap": past the ring is the spool.
+  - Why: FR-DRS-47's ring holds about 16 s (trade lane) and 8 s (order lane) at 500K orders/s. Acceptance run 5
+    (2026-11-11): one NATS server's volume read 84-87 % busy for minutes, the stream confirmed slowly, published -
+    acked reached 20.3M, the rings wrapped over unconfirmed records and the reconnects' catch-ups found the stream's
+    last behind what they still held: `queueDropped` 172, `gaps` 9, history NEW 116,662 short of the clients' sent.
+  - The spooler. One thread per bridge. For each lane with `head - low > slots / 2` it writes the records from the
+    oldest held (or the spool's end) up to `head - slots / 2` into segment files under `BRIDGE_SPOOL_DIR` (default
+    `<CLUSTER_BASE_DIR>/bridge-spool`, wiped at start), and deletes the segments the lane has released. A lane that
+    keeps up holds about 100K records against the 524,288 threshold and never spools. `offer` is unchanged.
+  - One index. A record keeps its ring index in the spool. The lane reads the spool below its end and the ring above.
+    A spooled record is the bridge's fields in binary (51 B a trade side, 141 B an order event plus its gateway's name), every field
+    of its `Rec`: `LaneSpoolCodecTest` sets each declared field by reflection and fails on one the codec leaves out.
+  - Every role. A follower's lanes hold what the stream has not confirmed (FR-DRS-49) and spool with the leader's, so
+    a member promoted mid-overflow catches up from its own ring and spool.
+  - The bound. `BRIDGE_SPOOL_BYTES` per member: 64 GiB or half the free space of the spool directory at start,
+    whichever is smaller; 0 turns the spool off, which is FR-DRS-47 as it was. When the budget is spent, a write
+    fails, or the apply thread overwrites the record the spooler was about to copy (the spooler more than half a ring
+    behind), the spool stops growing and keeps what it has, with an ALERT. The lane publishes everything the spool
+    kept, waits until the stream has confirmed it, then counts the records after it exactly (`queueDropped`, a gap,
+    an ALERT) and resumes from its ring. The spool is process-lifetime: not fsynced, and gone at a restart.
+  - The publish window. A lane SHALL NOT have more than 1,024 messages published without a receipt (65,536 records
+    at the default batch, about half a second of an order lane at 500K orders/s). What waits is held in the ring and
+    the spool. Without it a spooled backlog republished at the lane's own speed overran the stream's ingest queue:
+    in the promotion case below, 68,001 of 500,001 sides were 429'd (`rejected`) and the stream ended at 432,100.
+    It also bounds what a slow stream leaves in flight (run 5: 20.3M). A stream that sends no receipts (no
+    JetStream, or no stream on the subject) is not windowed.
+  - Behind a frozen spool. A catch-up whose first record after the stream's last sits just past the hole counts a
+    gap: the cut fell in the hole, and how many records after it the hole held cannot be told. A lane that has
+    published everything the spool kept and still has no confirmation of its last record after 5 s (a 429 on the
+    last message, or lost in flight) replaces its connection, and the catch-up republishes what follows the
+    stream's last. An empty spool that could not start (budget spent by another lane) tries again.
+  - `/health` `bridges.*` adds `spooled` (records ever written to this bridge's spools) and `spoolBytes` (bytes the
+    member's spools hold now).
+  - The catch-up no longer scans what it holds to count it: it bisects for the first record after the stream's last,
+    starts there, and takes everything before it as confirmed. A record's `sent` flag is the lane's `sentHigh` index.
+  - Test. `LaneSpoolIT`, three cases on one lane per bridge with production's smallest ring (131,072). Sides and
+    order events 1..100 are stored, NATS freezes, and 500,000 more of each (3.8 rings) are applied at about 100K/s:
+    (a) NATS thaws; (b) NATS is killed frozen and restarted, so nothing sent during the freeze is stored; (c) as (b),
+    and the leader dies and a follower that applied the same records is promoted. Each subject must read back
+    1..500,100 as one run, with `queueDropped`, `gaps` and `rejected` 0 and more than 368,928 records spooled per
+    bridge. Control, the same file against `ReceiptLanes` as at `3526dcdf`: all three fail, the stream holding
+    `1..42400 369029..500100`, `1..100 369029..500100` and `1..100 369030..500101` - the missing run ends at
+    500,100 - 131,072 + 1 in each, the ring's oldest slot, with `gaps` 1 and `rejected` 0.
+    `LaneSpoolBudgetIT`: a 256 KiB budget against a 16,384-record ring and 60,000 sides applied frozen. The stream
+    holds 1 to about 5,100 (what the budget held), the hole, then the ring's tail, and `queueDropped` is the hole
+    exactly (38,608 and 38,588 in two runs).
+    `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` and `#aPromotedLaneLappedPastItsRingIsACountedGap` now run
+    with the spool off: with it on they lose nothing.
+    `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
+    leader to have sent its window into the frozen socket, not its whole tail.
+  - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
+    they restart too). No test drives a 429 on the spool's last message or the catch-up over a hole; both paths are
+    code-reviewed only.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

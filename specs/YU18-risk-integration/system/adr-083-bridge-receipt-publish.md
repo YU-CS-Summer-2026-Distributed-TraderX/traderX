@@ -280,3 +280,11 @@ Decision 20 alone applies.
 - *Followers keep the whole ring.* That is 1.6 GiB of resident records per member at all times, to cover a case the
   stream can bound.
 - *Block the lane on the probe.* A JetStream API stall would then hold the lane, which is RI37's mechanism again.
+
+## Superseded in part, 2026-11-12: past the ring is the spool (FR-DRS-57, ADR-106)
+
+Decisions 10, 21 and 22 end at the ring: a lane further behind than its ring has lost what the apply thread overwrote.
+[ADR-106](adr-106-a-lagging-lane-spools-to-the-members-disk.md) copies a lagging ring's older half to the member's
+disk, so those decisions' gap now begins past the spool's byte budget. Everything else here stands and runs over the
+ring and the spool together. Decision 2 gains a bound: a lane still never waits on one reply, but it publishes no more
+than 1,024 messages ahead of its receipts (ADR-106 decision 9).

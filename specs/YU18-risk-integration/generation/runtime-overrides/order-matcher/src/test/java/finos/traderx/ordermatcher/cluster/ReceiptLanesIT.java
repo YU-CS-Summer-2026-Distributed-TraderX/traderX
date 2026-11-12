@@ -263,6 +263,8 @@ class ReceiptLanesIT {
      */
     @Test
     void aNatsOutageLongerThanTheRingIsALoudGap() throws Exception {
+        final long budget = LaneSpool.budget;
+        LaneSpool.budget = 0;   // FR-DRS-57: unspooled (BRIDGE_SPOOL_BYTES=0), which is also what is left past the budget
         try (RestartableNats js = new RestartableNats()) {
             js.addFeedStream();
             final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e1", null, 16, 1);
@@ -274,7 +276,8 @@ class ReceiptLanesIT {
             Thread.sleep(300);
             js.killAndStart();
             final long caught = System.nanoTime() + Duration.ofSeconds(20).toNanos();
-            while (trades.gaps() == 0 && System.nanoTime() < caught) { Thread.sleep(20); }
+            // 4 stored, 20 into the frozen socket, then the 16 the catch-up republishes: only then is 9 out of the ring's way
+            while ((trades.gaps() == 0 || trades.published() < 40) && System.nanoTime() < caught) { Thread.sleep(20); }
             trade(trades, 25); // after the catch-up, so the ring it read held 9..24
             awaitStored(js.url, 21, 0);
             Thread.sleep(500);
@@ -287,6 +290,8 @@ class ReceiptLanesIT {
             assertEquals(1, trades.gaps(), "the gap is counted");
             assertTrue(trades.json().contains("\"gaps\":1"), "and on /health: " + trades.json());
             trades.stop();
+        } finally {
+            LaneSpool.budget = budget;
         }
     }
 
@@ -356,6 +361,8 @@ class ReceiptLanesIT {
      */
     @Test
     void aPromotedLaneLappedPastItsRingIsACountedGap() throws Exception {
+        final long budget = LaneSpool.budget;
+        LaneSpool.budget = 0;   // FR-DRS-57: unspooled; with the spool this lap is LaneSpoolIT's promotion case
         try (RestartableNats js = new RestartableNats(); Connection nc = Nats.connect(js.url)) {
             js.addFeedStream();
             final TradeNatsPublisher old = new TradeNatsPublisher(js.url, "/trades", "e1", null, 1024, 1);
@@ -380,6 +387,8 @@ class ReceiptLanesIT {
                 "the kept sides, in order, after the gap");
             assertEquals(1, trades.gaps(), "the hole is counted: " + trades.json());
             trades.stop();
+        } finally {
+            LaneSpool.budget = budget;
         }
     }
 
@@ -411,10 +420,11 @@ class ReceiptLanesIT {
             js.pause();
             for (int seq = stored + 1; seq <= stored + more; seq++) { trade(oldTrades, seq); order(oldOrders, seq, 0); trade(trades, seq); order(orders, seq, 0); }
             final long sent = System.nanoTime() + Duration.ofSeconds(20).toNanos();
-            while ((oldTrades.published() < stored + more || oldOrders.published() < stored + more
+            while ((oldTrades.published() < stored + ReceiptLanes.PUBLISH_WINDOW || oldOrders.published() < stored + ReceiptLanes.PUBLISH_WINDOW
                 || !trades.json().contains("\"queuedByPartition\":[0]") || !orders.json().contains("\"queuedByPartition\":[0]"))
                 && System.nanoTime() < sent) { Thread.sleep(20); }
-            assertEquals(stored + more, oldTrades.published(), "the leader sent its tail into the frozen socket");
+            // FR-DRS-57: as far as its publish window; the rest waits in its ring, and dies with it
+            assertTrue(oldTrades.published() >= stored + ReceiptLanes.PUBLISH_WINDOW, "the leader sent its tail into the frozen socket: " + oldTrades.json());
             js.killAndStart();     // NATS never reads it
             oldTrades.stop();      // the leader dies
             oldOrders.stop();

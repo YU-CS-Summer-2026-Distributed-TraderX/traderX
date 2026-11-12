@@ -21,15 +21,15 @@ import java.nio.charset.StandardCharsets;
  * hold - those the dying leader applied but never got stored - before anything new. The same catch-up runs on every
  * new NATS connection while leading (FR-DRS-38), so a NATS restart does not lose what was in flight.
  *
- * <p>Delivery is best-effort past the lane's ring: a lane more than its ring behind, or an unavailable consumer, can
- * lose publication, counted. Stable descriptor-derived IDs make identical replay idempotent in trade-processor, but do
+ * <p>Delivery is best-effort past the lane's ring and its disk spool (FR-DRS-57): a lane further behind than both, or
+ * an unavailable consumer, can lose publication, counted. Stable descriptor-derived IDs make identical replay idempotent in trade-processor, but do
  * not provide durable NATS delivery. Frozen archive verification refuses missing projections.
  * The service thread never blocks on NATS and never has a record refused (FR-DRS-47).
  */
 final class TradeNatsPublisher {
 
     /** ponytail: one small holder per booked trade; pool if the bridge must sustain the 134k flood. */
-    private static final class Rec extends ReceiptLanes.Record {
+    static final class Rec extends ReceiptLanes.Record {
         long tradeSeq;
         long consensusSequence;
         int accountId;
@@ -39,6 +39,22 @@ final class TradeNatsPublisher {
         long tradePx;
         long orderRef;
     }
+
+    /** FR-DRS-57: a side as the spool holds it. Every field encode() and cut() read. */
+    static final LaneSpool.Codec<Rec> SPOOL = new LaneSpool.Codec<>() {
+        @Override public void write(final Rec r, final java.nio.ByteBuffer b) {
+            b.putLong(r.tradeSeq).putLong(r.consensusSequence).putInt(r.accountId).put(r.side).putInt(r.qty)
+                .putLong(r.tradePx).putLong(r.orderRef);
+            LaneSpool.putString(b, r.security);
+        }
+        @Override public Rec read(final java.nio.ByteBuffer b) {
+            final Rec r = new Rec();
+            r.tradeSeq = b.getLong(); r.consensusSequence = b.getLong(); r.accountId = b.getInt(); r.side = b.get();
+            r.qty = b.getInt(); r.tradePx = b.getLong(); r.orderRef = b.getLong();
+            r.security = LaneSpool.getString(b);
+            return r;
+        }
+    };
 
     private final String url;
     private final String subject;
@@ -85,7 +101,7 @@ final class TradeNatsPublisher {
         this.subject = subject;
         this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor!=null ? descriptor.epoch() : epoch == null || epoch.isBlank() ? "0" : epoch;
-        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf, this::cut, TradeNatsPublisher::sample);
+        this.lanes = new ReceiptLanes<>("trade", url, subjects, capacity, this::encode, r -> r.accountId, this::idOf, this::cut, TradeNatsPublisher::sample, SPOOL);
     }
 
     /** Apply thread: the member's role (FR-DRS-37). Every member offers every trade; a follower's are kept for
