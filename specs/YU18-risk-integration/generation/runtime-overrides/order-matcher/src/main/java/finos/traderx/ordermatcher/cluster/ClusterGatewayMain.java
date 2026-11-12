@@ -1952,6 +1952,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
                 return;
             }
+            final FixGatewayAcceptor reporter = fixAcceptor;
+            if (reporter != null) {
+                reporter.notFix(r.orderRef());   // FR-FFR-21: a REST order's routed updates are not a FIX session's
+            }
             respond(exchange, r.accepted() ? 200 : 422,
                 "{\"orderRef\":" + r.orderRef() + ",\"kind\":" + r.kind() + reasonField(r) + "}");
         } catch (final Exception e) {

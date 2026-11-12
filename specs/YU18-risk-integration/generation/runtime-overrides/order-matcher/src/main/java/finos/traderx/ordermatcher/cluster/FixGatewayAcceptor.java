@@ -1603,6 +1603,8 @@ public final class FixGatewayAcceptor {
                 t.pending.add(json);   // FR-FFR-18: after its New
             } else if (t != null) {
                 applyUpdate(ref, t, json);
+            } else if (notFix.containsKey(ref)) {
+                // FR-FFR-21: this gateway's REST order; nothing to report
             } else if (indexOf(json, FILL_STATUS, 0) >= 0 || indexOf(json, PARTIAL_STATUS, 0) >= 0
                     || indexOf(json, CANCELED_STATUS, 0) >= 0 || indexOf(json, REJECTED_STATUS, 0) >= 0) {
                 early.computeIfAbsent(ref, r -> new Early()).msgs.add(json);   // FR-FFR-15, FR-FFR-17
@@ -1628,6 +1630,30 @@ public final class FixGatewayAcceptor {
                     + " counts every one)", e.getKey(),
                     EARLY_MAX_AGE_NANOS / 1_000_000_000L, EARLY_CAPACITY);
             }
+        }
+    }
+
+    /**
+     * FR-FFR-21: an order this gateway submitted outside FIX (REST). Its updates are routed here like a FIX order's
+     * (the booking names the gateway, FR-FFR-14) but no FIX session reports them, so they are passed over instead of
+     * waiting in the early buffer and aging out counted lost (2 per REST cross on kind, 2026-11-12).
+     * ponytail: the newest {@link #NOT_FIX_CAPACITY} such orders; an older one still resting when it fills is counted
+     * lost again. A per-order origin on the booking event would remove the set.
+     */
+    static final int NOT_FIX_CAPACITY = 65_536;
+    private final java.util.LinkedHashMap<Long, Boolean> notFix = new java.util.LinkedHashMap<>() {
+        @Override protected boolean removeEldestEntry(final Map.Entry<Long, Boolean> eldest) {
+            return size() > NOT_FIX_CAPACITY;
+        }
+    };
+
+    public void notFix(final long ref) {
+        if (ref <= 0) {
+            return;
+        }
+        synchronized (feedLock) {
+            notFix.put(ref, Boolean.TRUE);
+            early.remove(ref);   // an update that beat the answer
         }
     }
 

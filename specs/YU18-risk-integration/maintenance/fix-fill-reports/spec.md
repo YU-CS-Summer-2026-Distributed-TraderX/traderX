@@ -198,7 +198,17 @@ fails.
     gateways' `outcome="lost"` at 0 before and after the age-out; the control, 852 unsequenced orders, routed 2 events
     an order and counted 424 and 428 lost. `yu18-fix-fill-feed.sh` (routed FIX fills) still passes. Not run: the
     sharded streams, a secret-set cluster, any rate.
-  - Left open by that run: a REST order through a gateway is also named and unsequenced, so its updates are routed and
-    each ages out as lost (2 per REST cross on kind). The engine cannot tell it from a FIX order sent outside the
-    session ring; with `FIX_EXACTLY_ONCE=engine` the rule could become "session-keyed orders only".
+  - Found by that run and closed by FR-FFR-21: a REST order through a gateway is also named and unsequenced, so its
+    updates were routed and each aged out as lost (2 per REST cross on kind).
+- FR-FFR-21 (2026-11-12): The gateway SHALL pass over the routed updates of an order it took over REST instead of
+  counting them lost.
+  - The engine cannot tell a REST order from a FIX order sent outside the session ring, so the rule is the gateway's:
+    the REST handler tells the FIX reporter the order's ref at its answer (`notFix`), which drops any update that beat
+    the answer and ignores the later ones.
+  - Bound: the newest 65,536 REST orders per gateway. An older one still resting when it fills is counted lost again;
+    REST is the console's and operators' path, not a load path.
+  - Still named and still routed: the bytes reach the gateway and are dropped there. An unsequenced binary order
+    (FR-FFR-20) is not covered.
+  - Test: `FixGatewayFillReportTest#aRestOrdersRoutedUpdatesAreNotCountedLost` (three updates of two REST orders, one
+    before its answer, are not counted; an undeclared order's fill is). Not exercised on a rig.
 

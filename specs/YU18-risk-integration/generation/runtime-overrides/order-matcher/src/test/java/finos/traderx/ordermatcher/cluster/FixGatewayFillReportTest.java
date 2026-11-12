@@ -424,6 +424,26 @@ class FixGatewayFillReportTest {
         assertEquals(extra, acceptor.fillsLost(), "the oldest fills past the bound are lost, and counted");
     }
 
+    /**
+     * FR-FFR-21: the updates of an order this gateway took over REST are passed over, whether they come after its
+     * answer or beat it, and are not counted lost when the buffer turns over; an order nobody declared still is.
+     */
+    @Test
+    void aRestOrdersRoutedUpdatesAreNotCountedLost() throws Exception {
+        start(new GatedSubmitter());
+        acceptor.ownFillsOnly = true;
+        acceptor.onOrderUpdate(feed(7, (byte) 0, 1, 0, FILLED, 50.0, 1));    // the REST order's fill beats its answer
+        acceptor.notFix(7);                                                  // its answer
+        acceptor.notFix(8);
+        acceptor.onOrderUpdate(feed(8, (byte) 0, 2, 1, PARTIAL, 50.0, 1));   // after the answer
+        acceptor.onOrderUpdate(feed(8, (byte) 0, 2, 0, FILLED, 50.0, 1));
+        acceptor.onOrderUpdate(feed(9, (byte) 0, 1, 0, FILLED, 50.0, 1));    // undeclared: waits, then is lost
+        for (int i = 0; i < FixGatewayAcceptor.EARLY_CAPACITY; i++) {
+            acceptor.onOrderUpdate(feed(1_000 + i, (byte) 0, 1, 0, FILLED, 50.0, 1));   // turn the buffer over
+        }
+        assertEquals(1, acceptor.fillsLost(), "only the undeclared order's fill; the REST orders' three updates are not");
+    }
+
     private byte[] feed(final int ref, final byte side, final int qty, final int remaining, final byte status,
                         final double lastPx, final int lastQty) {
         final OrderNatsPublisher.Rec r = new OrderNatsPublisher.Rec();
