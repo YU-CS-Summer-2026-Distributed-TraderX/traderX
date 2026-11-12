@@ -79,6 +79,7 @@ public class ReconciliationService {
             missingInProjection.reset();missingInProjection.add(saved[2]);
             fieldMismatch.reset();fieldMismatch.add(saved[3]);
             projectionScope=selected;
+            fetched.clear(); fetchedThrough=cursor; gaps.clear(); ledger=null;
         }
         descriptorHash=hash;
         verifyScope();
@@ -127,6 +128,40 @@ public class ReconciliationService {
     void projectionGraceMs(long ms) { this.projectionGraceMs = ms; }
     void clock(java.time.Clock clock) { this.clock = clock; }
     private volatile Instant lastSweepAt;
+
+    // FR-DRS-55: the sweep reads on until it has the engine's head, and holds what it has read but cannot classify yet.
+    // The engine's live window is bounded (RECON_BLOTTER_CAPACITY, 500,000 sides: 3.2 s of run 6's peak), and a side
+    // waits on its partition's snapshot (every 5 s), so a recon that fetched only what it could classify at once would
+    // watch the window roll past the rest. `fetched` is read and not classified; `cursor` stays the classified position.
+    private final java.util.ArrayDeque<BlotterEntry> fetched = new java.util.ArrayDeque<>();
+    private long fetchedThrough = 0L;
+    private volatile int held;   // fetched.size(), for the gauge and /recon/status
+    /** tradeSeqs the engine no longer held when the recon came for them: never classified, and said so. */
+    private final LongAdder unverified = new LongAdder();
+    /** Open (after, before) tradeSeq ranges the engine dropped unread; the stream's sides in them are not kept. */
+    private final List<long[]> gaps = new java.util.concurrent.CopyOnWriteArrayList<>();   // read by the stream readers
+    private static final int MAX_GAPS = 64;
+    private int pageLimit = 10_000;
+    private long sweepBudgetMs = 30_000L;
+    private int bufferMaxSides = 0;
+    private int maxSidesPerSecond = 500_000;
+    private long nextFetchNanos = 0L;
+    private long fetchNanos, streamNanos, verdictNanos;   // this sweep's time in the engine fetch, the stream read, the verdicts
+    private int enginePage = 0;   // the largest page the engine has served: a member before FR-DRS-55 serves its own size
+    private boolean sizingLogged;
+    @Value("${recon.page-limit:10000}")
+    void pageLimit(int sides) { this.pageLimit = Math.max(1, sides); }
+    @Value("${recon.sweep.budget-ms:30000}")
+    void sweepBudgetMs(long ms) { this.sweepBudgetMs = Math.max(0, ms); }
+    @Value("${recon.buffer.max-sides:0}")
+    void bufferMaxSides(int sides) { this.bufferMaxSides = sides; }
+    @Value("${recon.read.max-sides-per-second:500000}")
+    void maxSidesPerSecond(int rate) { this.maxSidesPerSecond = rate; }
+    /** Held sides cost about 600 B each (the entry, plus its stream side at 283 B, FR-DRS-51): an eighth of the heap. */
+    private int bufferMax() {
+        return bufferMaxSides > 0 ? bufferMaxSides
+            : (int) Math.max(pageLimit, Math.min(Integer.MAX_VALUE, Runtime.getRuntime().maxMemory() / 8 / 600));
+    }
     private final LongAdder matched = new LongAdder();
     private final LongAdder missingInProjection = new LongAdder();
     private final LongAdder fieldMismatch = new LongAdder();
@@ -148,55 +183,142 @@ public class ReconciliationService {
             .register(meterRegistry);
         Gauge.builder("traderx_recon_field_mismatch_total", fieldMismatch, LongAdder::sum).register(meterRegistry);
         Gauge.builder("traderx_recon_cursor", this, s -> s.cursor).register(meterRegistry);
+        Gauge.builder("traderx_recon_unverified_total", unverified, LongAdder::sum).register(meterRegistry);
+        Gauge.builder("traderx_recon_held", this, s -> s.held).register(meterRegistry);
         Gauge.builder("traderx_recon_orphan_total", this,
             s -> s.lastOrphanSweep == null ? 0 : s.lastOrphanSweep.orphanCount()).register(meterRegistry);
     }
 
-    @Scheduled(fixedDelayString = "${recon.poll.interval-ms:10000}")
+    /**
+     * FR-DRS-55: one sweep reads pages until it has the engine's head (a short page), or its time budget is spent. It
+     * read ONE page (RECON_PAGE_SIZE, 1,000) every interval whatever was traded, so at run 6's 158K sides/s it
+     * classified 58,022 of ~125M sides and the engine's window dropped the rest unread, with nothing counting them.
+     */
+    @Scheduled(fixedDelayString = "${recon.poll.interval-ms:1000}")
     public synchronized void sweep() {
         if (ownership != null && !ownership.owns(0)) return;
-        // Fetch from one BELOW the cursor, not from the cursor: the blotter is strictly-greater-than
-        // paginated, so this re-reads the single entry the cursor points at, and the engine still
-        // holding it is the proof that we are counting against the epoch we counted against last
-        // cycle. Costs one redundant entry per poll and no extra call. (Re-read, not re-classified —
-        // see the skip below, or `matched` would climb by one every ten seconds.)
         try {bindScope();} catch(Exception ex) {log.warn("Reconciliation descriptor refused: {}",ex.toString());return;}
-        long sinceSeq = cursor > 0 ? cursor - 1 : 0;
-        List<BlotterEntry> page;
-        try {
-            page = fetchBlotterPage(sinceSeq);
-            verifyScope();validatePage(page);
-        } catch (Exception ex) {
-            // UNREACHABLE IS NOT ROLLED. "I cannot see the engine" and "the engine renumbered" are
-            // different verdicts, and treating the first as the second lets one network blip erase a
-            // real miss count. Nothing is reset here. Nor is it silently taken as "unchanged": the
-            // cycle does not touch lastSweepAt, so a reader of /recon/status sees it stop advancing
-            // and knows the counters are a stale reading rather than a current one.
-            log.warn("Reconciliation sweep skipped this cycle (order-matcher unreachable): {}", ex.toString());
-            return;
+        if (!sizingLogged) {
+            sizingLogged = true;
+            log.info("recon sizing: {} sides a page, at most {} sides/s read from the engine, {} sides held unclassified"
+                + " (about {} MB), {} ms a sweep", pageLimit, maxSidesPerSecond, bufferMax(), bufferMax() * 600L >> 20, sweepBudgetMs);
         }
-        // The engine holds nothing at or above our cursor, so its trade counter has gone BACKWARDS.
-        // That is the epoch roll -- the same condition scripts/yu15/run-proofs.sh already trusts when
-        // it compares member 0's tradeCounter against the highest trade id in SQL.
-        if (runRegistry==null && cursor > 0 && page.isEmpty()) {
-            resetForNewEpoch();
-            return;
+        long deadline = System.nanoTime() + sweepBudgetMs * 1_000_000L;
+        long from = cursor, pages = 1, start = System.nanoTime();
+        fetchNanos = streamNanos = verdictNanos = 0;
+        long classified = matched.sum() + missingInProjection.sum() + fieldMismatch.sum();
+        while (step() && System.nanoTime() < deadline) { pages++; }
+        if (cursor > from) {
+            log.info("Reconciliation sweep classified {} sides in {} page(s) and {} ms ({} ms engine fetch with {} ms stream read beside it, {} ms verdicts);"
+                + " cursor now {}, {} held, {} unverified",
+                matched.sum() + missingInProjection.sum() + fieldMismatch.sum() - classified, pages, (System.nanoTime() - start) / 1_000_000,
+                fetchNanos / 1_000_000, streamNanos / 1_000_000, verdictNanos / 1_000_000, cursor, fetched.size(), unverified.sum());
         }
-        if (onLedger()) {
-            try { sweepLedger(page); }
-            catch (Exception ex) { log.warn("Reconciliation ledger read failed this cycle: {}", ex.toString()); ledger = null; return; }
-        } else for (BlotterEntry entry : page) {
-            if (entry.tradeSeq() <= cursor) {
-                continue; // the epoch-check entry; already classified on the cycle that advanced past it
+    }
+
+    /** One page fetched and everything decidable classified. True while the engine or the held sides have more now. */
+    private boolean step() {
+        boolean fullPage = false, bufferFull = fetched.size() >= bufferMax();
+        // The stream is read while the engine answers, not after: up to where a full page would end. A side the read
+        // did not reach is WAIT, as ever, and the next step's read goes on from there.
+        long readTo = bufferFull ? fetchedThrough : fetchedThrough + pageLimit;
+        if (bufferFull) {
+            if (!readStream(readTo)) return false;
+        } else {
+            // Fetch from one BELOW the last side read, not from it: the blotter is strictly-greater-than
+            // paginated, so this re-reads the single entry we stand on, and the engine still
+            // holding it is the proof that we are counting against the epoch we counted against last
+            // cycle. Costs one redundant entry per fetch and no extra call. (Re-read, not re-classified.)
+            long sinceSeq = fetchedThrough > 0 ? fetchedThrough - 1 : 0;
+            List<BlotterEntry> page;
+            long t0;
+            try {
+                pace();
+                t0 = System.nanoTime();
+                var fetching = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { List<BlotterEntry> p = fetchBlotterPage(sinceSeq); verifyScope(); validatePage(p); return p; }
+                    catch (Exception ex) { throw new java.util.concurrent.CompletionException(ex); }
+                });
+                boolean read = readStream(readTo);
+                page = fetching.join();   // always joined: nothing of this step outlives it
+                fetchNanos += System.nanoTime() - t0;
+                if (!read) return false;
+            } catch (Exception ex) {
+                // UNREACHABLE IS NOT ROLLED. "I cannot see the engine" and "the engine renumbered" are
+                // different verdicts, and treating the first as the second lets one network blip erase a
+                // real miss count. Nothing is reset here. Nor is it silently taken as "unchanged": the
+                // cycle does not touch lastSweepAt, so a reader of /recon/status sees it stop advancing
+                // and knows the counters are a stale reading rather than a current one.
+                log.warn("Reconciliation sweep skipped this cycle (order-matcher unreachable): {}", ex.toString());
+                return false;
             }
+            // The engine holds nothing at or above where we stand, so its trade counter has gone BACKWARDS.
+            // That is the epoch roll -- the same condition scripts/yu15/run-proofs.sh already trusts when
+            // it compares member 0's tradeCounter against the highest trade id in SQL.
+            if (runRegistry==null && fetchedThrough > 0 && page.isEmpty()) {
+                resetForNewEpoch();
+                return false;
+            }
+            // A page as large as the engine serves means it holds more; a shorter one is its head.
+            fullPage = page.size() > 1 && page.size() >= enginePage;
+            enginePage = Math.max(enginePage, page.size());
+            // The next fetch is due one page's worth of the cap after THIS one started, not after it and its verdicts ended.
+            if (maxSidesPerSecond > 0) { nextFetchNanos = Math.max(nextFetchNanos, t0) + page.size() * 1_000_000_000L / maxSidesPerSecond; }
+            accept(page);
+        }
+        long before = cursor, t1 = System.nanoTime();
+        if (onLedger()) {
+            classifyHeld();
+        } else for (BlotterEntry entry; (entry = fetched.peekFirst()) != null; fetched.pollFirst()) {
             if (!classify(entry)) break; // held: the cursor stays below the oldest side SQL may still insert
             cursor = entry.tradeSeq();
         }
+        verdictNanos += System.nanoTime() - t1;
+        // Past a gap: drop its record, and any of its sides the stream reader took before the gap was known.
+        if (gaps.removeIf(g -> g[1] <= cursor) && ledger != null) { ledger.prune(cursor); }
         if(runRegistry!=null) runRegistry.saveRecon(projectionScope,cursor,matched.sum(),missingInProjection.sum(),fieldMismatch.sum());
         lastSweepAt = Instant.now();
-        if (!page.isEmpty()) {
-            log.info("Reconciliation sweep processed {} blotter entries; cursor now {}", page.size(), cursor);
+        held = fetched.size();
+        // More now: the engine had a full page; or the buffer was full and classifying made room.
+        return fullPage || (bufferFull && cursor > before);
+    }
+
+    /**
+     * Hold the page's new sides. If the entry we stood on is gone and the engine's oldest is further on, the window
+     * rolled past sides nobody read: they are counted {@code unverified} and logged, never passed over in silence.
+     * (Counted in tradeSeqs. The engine numbers every booked side, so this is the sides, or an upper bound of them.)
+     */
+    private void accept(List<BlotterEntry> page) {
+        long lost = 0, from = fetchedThrough;
+        for (BlotterEntry e : page) {
+            if (e.tradeSeq() <= fetchedThrough) continue;   // the entry we stood on
+            // Anywhere in the page, not only at its start: the window evicts while the member walks it.
+            if (e.tradeSeq() > fetchedThrough + 1) {
+                lost += e.tradeSeq() - fetchedThrough - 1;
+                gaps.add(new long[] {fetchedThrough, e.tradeSeq()});
+            }
+            fetched.addLast(e);
+            fetchedThrough = e.tradeSeq();
         }
+        if (lost > 0) {
+            // Many holes means the recon is reading along the window's tail and losing to it. Stop tracking each hole:
+            // write off what is held (counted, like the holes) and read on from here.
+            if (gaps.size() > MAX_GAPS) {
+                lost += fetched.size();
+                fetched.clear(); gaps.clear(); cursor = fetchedThrough;
+                if (ledger != null) { ledger.prune(cursor); }
+            }
+            unverified.add(lost);
+            log.warn("recon UNVERIFIED the engine no longer held {} sides between tradeSeq {} and {} when the recon came for"
+                + " them: its live window (RECON_BLOTTER_CAPACITY) rolled past. They were not classified; {} in all. The"
+                + " full-history orphan sweep covers them.", lost, from, fetchedThrough, unverified.sum());
+        }
+    }
+
+    /** Bound what the recon asks of the engine: at most {@code recon.read.max-sides-per-second}, by the last page's size. */
+    private void pace() throws InterruptedException {
+        long wait = nextFetchNanos - System.nanoTime();
+        if (maxSidesPerSecond > 0 && wait > 0) { Thread.sleep(wait / 1_000_000L, (int) (wait % 1_000_000L)); }
     }
 
     /**
@@ -225,6 +347,7 @@ public class ReconciliationService {
                 + "comparison.",
             cursor, cursor, matched.sum(), missingInProjection.sum(), fieldMismatch.sum());
         cursor = 0L;
+        fetched.clear(); fetchedThrough = 0L; gaps.clear(); ledger = null;
         // LongAdder.reset() is only safe with no concurrent updates, and that holds here: sweep() is
         // the sole writer of all three (classify() is called from nowhere else) and Spring runs the
         // scheduled sweep on one thread, so this is on the writer thread with no sweep in flight.
@@ -233,30 +356,53 @@ public class ReconciliationService {
         fieldMismatch.reset();
     }
 
-    /** Classify the page against the stream; stop (and keep the cursor) at the first side not yet decidable. */
-    private void sweepLedger(List<BlotterEntry> page) throws Exception {
-        List<BlotterEntry> fresh = page.stream().filter(e -> e.tradeSeq() > cursor).toList();
-        if (fresh.isEmpty()) return;
+    /** Read the capture stream on, up to {@code target}. False (and the reader dropped) when the read failed. */
+    private boolean readStream(long target) {
+        if (!onLedger() || ledger == null) return true;   // no reader yet: the first held side opens one
+        long t0 = System.nanoTime(), classifiedThrough = cursor;
+        try {
+            ledger.readThrough(target, ts -> ts > classifiedThrough && !dropped(ts), ledgerSubjects());
+            return true;
+        } catch (Exception ex) {
+            log.warn("Reconciliation ledger read failed this cycle: {}", ex.toString());
+            ledger = null;
+            return false;
+        } finally {
+            streamNanos += System.nanoTime() - t0;
+        }
+    }
+
+    private String[] ledgerSubjects() {
+        int partitions = ledgerFeed.partitionCount();
+        String[] subjects = new String[partitions];
+        for (int p = 0; p < partitions; p++) { subjects[p] = finos.traderx.tradeprocessor.JetStreamFeed.subject("/trades", p, partitions); }
+        return subjects;
+    }
+
+    /** Classify the held sides against the stream; stop (and keep the cursor) at the first side not yet decidable. */
+    private void classifyHeld() {
+        if (fetched.isEmpty()) return;
         if (ledger == null) {
             int n = ledgerFeed.partitionCount();
             String[] streams = new String[n];
             for (int p = 0; p < n; p++) { streams[p] = ledgerFeed.streamName(p); }
-            ledger = new LedgerReader(ledgerFeed.natsConnection(), streams, n,
-                fresh.get(0).execTimeMillis() - LEDGER_START_SLACK.toMillis());
+            try {
+                ledger = new LedgerReader(ledgerFeed.natsConnection(), streams, n,
+                    fetched.peekFirst().execTimeMillis() - LEDGER_START_SLACK.toMillis());
+            } catch (Exception ex) { log.warn("Reconciliation ledger read failed this cycle: {}", ex.toString()); return; }
+            if (!readStream(fetchedThrough)) return;
         }
-        int partitions = ledgerFeed.partitionCount();
-        String[] subjects = new String[partitions];
-        for (int p = 0; p < partitions; p++) { subjects[p] = finos.traderx.tradeprocessor.JetStreamFeed.subject("/trades", p, partitions); }
-        ledger.readThrough(fresh.get(fresh.size() - 1).tradeSeq(), cursor, subjects);
+        String[] subjects = ledgerSubjects();
+        int partitions = subjects.length;
         Map<Integer, Long> committed = snapshotStore.cursors(scopeForLedger());
-        for (BlotterEntry e : fresh) {
-            LedgerSide side = ledger.pending.get(e.id());
+        // Per partition, once a pass: its committed snapshot cursor, and the head of ITS subject. The bridges publish
+        // one lane per partition, so the stream is in tradeSeq order within a partition subject but interleaved across them.
+        long[] partitionCursor = new long[partitions], head = new long[partitions];
+        for (int p = 0; p < partitions; p++) { partitionCursor[p] = committed.getOrDefault(p, 0L); head[p] = ledger.headOf(subjects[p]); }
+        String scope = runRegistry == null ? null : projectionScope;
+        for (BlotterEntry e; (e = fetched.peekFirst()) != null; fetched.pollFirst()) {
             int partition = Math.floorMod(e.accountId(), partitions);
-            long partitionCursor = committed.getOrDefault(partition, 0L);
-            // The head of THIS side's partition: the bridges publish one lane per partition, so the
-            // stream is in tradeSeq order within a partition subject but interleaved across them.
-            Verdict v = classifyOnLedger(e, side, ledger.headOf(subjects[partition]), partitionCursor,
-                runRegistry == null ? null : projectionScope);
+            Verdict v = classifyOnLedger(e, ledger.pending.get(e.id()), head[partition], partitionCursor[partition], scope);
             if (v == Verdict.WAIT) break;
             switch (v) {
                 case MATCHED -> matched.increment();
@@ -266,8 +412,13 @@ public class ReconciliationService {
                 default -> { }
             }
             cursor = e.tradeSeq();
+            ledger.pending.remove(e.id());
         }
-        ledger.prune(cursor);
+    }
+
+    private boolean dropped(long tradeSeq) {
+        for (long[] g : gaps) { if (tradeSeq > g[0] && tradeSeq < g[1]) return true; }
+        return false;
     }
 
     private String scopeForLedger() {
@@ -305,7 +456,7 @@ public class ReconciliationService {
 
     /** Highest tradeSeq read so far per partition subject: the stream is ordered within a subject only. */
     static final class PartitionHeads {
-        private final Map<String, Long> head = new java.util.HashMap<>();
+        private final Map<String, Long> head = new java.util.concurrent.ConcurrentHashMap<>();   // FR-DRS-55: one reader a stream
         void observe(String subject, long tradeSeq) { head.merge(subject, tradeSeq, Math::max); }
         long headOf(String subject) { return head.getOrDefault(subject, 0L); }
         /**
@@ -330,7 +481,7 @@ public class ReconciliationService {
      * first unclassified side's exec time after a restart or a read failure.
      */
     static final class LedgerReader {
-        final Map<String, LedgerSide> pending = new java.util.HashMap<>();
+        final Map<String, LedgerSide> pending = new java.util.concurrent.ConcurrentHashMap<>();
         final PartitionHeads heads = new PartitionHeads();
         long headOf(String subject) { return heads.headOf(subject); }
         private final List<io.nats.client.JetStreamSubscription> subs = new java.util.ArrayList<>();
@@ -364,30 +515,59 @@ public class ReconciliationService {
          * its own partition's head passes it, and the next sweep reads on from here.
          */
         void readThrough(long targetTradeSeq, long classifiedThrough, String[] subjects) throws Exception {
-            boolean[] done = new boolean[subs.size()];
-            for (boolean any = true; any; ) {
-                any = false;
-                for (int i = 0; i < subs.size(); i++) {
-                    if (done[i]) continue;
-                    var sub = subs.get(i);
-                    List<io.nats.client.Message> msgs = sub.fetch(1000, java.time.Duration.ofMillis(subs.size() > 1 ? 50 : 500));
-                    if (msgs.isEmpty()) { done[i] = true; continue; }
-                    any = true;
-                    for (var m : msgs) {
-                      for (byte[] record : finos.traderx.messaging.nats.NatsJSONSubscriber.records(m.getData())) {   // FR-DRS-41
-                        var p = json.readTree(record).path("payload");
-                        String id = p.path("id").asText();
-                        long ts = tradeSeqOf(id);
-                        heads.observe(m.getSubject(), ts);
-                        if (ts <= classifiedThrough) continue;
-                        pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
-                            p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it
-                            m.metaData().streamSequence()));
-                      }
-                    }
-                    done[i] = heads.passed(carried(filtersBySub.get(i), subjects), targetTradeSeq);
+            readThrough(targetTradeSeq, ts -> ts > classifiedThrough, subjects);
+        }
+
+        /**
+         * FR-DRS-55: keeps only the sides {@code wanted}, and asks each stream without waiting. A waiting fetch sat out
+         * its whole timeout on every stream with nothing new (a partition that never trades: 50 ms a page).
+         */
+        void readThrough(long targetTradeSeq, java.util.function.LongPredicate wanted, String[] subjects) throws Exception {
+            // One stream's read is its own partition's sides, so the streams are read side by side: one thread parsed
+            // about 370K sides/s of this JSON, under the 2x target once the fetch and the verdicts share it.
+            // ponytail: the common pool, sized to the pod's cores; an own pool if these pulls ever starve another user.
+            try {
+                java.util.stream.IntStream.range(0, subs.size()).parallel().forEach(i -> {
+                    try { readOne(i, targetTradeSeq, wanted, subjects); }
+                    catch (Exception ex) { throw new java.util.concurrent.CompletionException(ex); }
+                });
+            } catch (java.util.concurrent.CompletionException ex) {
+                throw ex.getCause() instanceof Exception cause ? cause : ex;
+            }
+        }
+
+        private void readOne(int i, long targetTradeSeq, java.util.function.LongPredicate wanted, String[] subjects) throws Exception {
+            var sub = subs.get(i);
+            String[] carried = carried(filtersBySub.get(i), subjects);
+            while (!heads.passed(carried, targetTradeSeq)) {
+                List<io.nats.client.Message> msgs = fetchNoWait(sub);
+                if (msgs.isEmpty()) return;
+                for (var m : msgs) {
+                  for (byte[] record : finos.traderx.messaging.nats.NatsJSONSubscriber.records(m.getData())) {   // FR-DRS-41
+                    var p = json.readTree(record).path("payload");
+                    String id = p.path("id").asText();
+                    long ts = tradeSeqOf(id);
+                    heads.observe(m.getSubject(), ts);
+                    if (!wanted.test(ts)) continue;
+                    pending.put(id, new LedgerSide(id, p.path("accountId").asInt(), p.path("security").asText(), p.path("side").asText(),
+                        p.path("quantity").asInt(), p.path("price").decimalValue(), p.path("projectionScope").asText(RunRegistry.UNKNOWN),   // absent = legacy, as TradeOrder defaults it
+                        m.metaData().streamSequence()));
+                  }
                 }
             }
+        }
+
+        /**
+         * What the stream holds now, up to FETCH messages, without waiting for more. The bridges put up to 64 sides in
+         * a message (FR-DRS-41), so one fetch past the page is at most 16K sides a stream.
+         */
+        static final int FETCH = 250;
+        private static List<io.nats.client.Message> fetchNoWait(io.nats.client.JetStreamSubscription sub) throws InterruptedException {
+            sub.pullNoWait(FETCH);
+            List<io.nats.client.Message> out = new java.util.ArrayList<>(FETCH);
+            // The server ends a no-wait pull with a status, which nextMessage returns as null; the timeout is for a dead link.
+            for (io.nats.client.Message m; out.size() < FETCH && (m = sub.nextMessage(java.time.Duration.ofMillis(500))) != null; ) { out.add(m); }
+            return out;
         }
 
         /** The partition subjects a subscription's filter carries: {@code /trades.*} all of them, otherwise its own. */
@@ -432,7 +612,7 @@ public class ReconciliationService {
     }
 
     private List<BlotterEntry> fetchBlotterPage(long sinceSeq) throws IOException, InterruptedException {
-        URI uri = URI.create(baseUrl + "/recon/trades/blotter?sinceSeq=" + sinceSeq);
+        URI uri = URI.create(baseUrl + "/recon/trades/blotter?sinceSeq=" + sinceSeq + "&limit=" + pageLimit);
         HttpRequest request = HttpRequest.newBuilder(uri)
             .timeout(HTTP_TIMEOUT)
             .header("Authorization", serviceAuthorization)
@@ -446,7 +626,8 @@ public class ReconciliationService {
     }
 
     public StatusSnapshot status() {
-        return new StatusSnapshot(cursor, matched.sum(), missingInProjection.sum(), fieldMismatch.sum(), lastSweepAt);
+        return new StatusSnapshot(cursor, matched.sum(), missingInProjection.sum(), fieldMismatch.sum(), lastSweepAt,
+            unverified.sum(), held);
     }
 
     /**
@@ -533,7 +714,7 @@ public class ReconciliationService {
                                 int quantity, BigDecimal price, long execTimeMillis) { }
 
     public record StatusSnapshot(long cursor, long matched, long missingInProjection, long fieldMismatch,
-                                  Instant lastSweepAt) { }
+                                  Instant lastSweepAt, long unverified, long held) { }
 
     /** {@code orphanIds} is capped at {@link #MAX_REPORTED_ORPHANS} even when {@code orphanCount} is larger. */
     public record OrphanSweepResult(Instant sweptAt, int localTradeCount, int fullHistoryTradeCount,
