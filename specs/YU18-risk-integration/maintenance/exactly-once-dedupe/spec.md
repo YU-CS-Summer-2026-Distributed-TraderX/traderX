@@ -170,7 +170,9 @@ session-day (FR-XOD-19..25, snapshot format 15, compact rings in format 16, NFR-
     in the snapshot's header, so a change is a fresh epoch.
   - Covers one mass reset per idle hour; a second inside the hour needs three per session.
   - Test: `test_prepare.Rendering.test_fix_sessions_persist_and_status_has_a_read_model` (the sizes, the rendered
-    value, a 600-session gateway on a 1,024 table refused). Not exercised on a rig.
+    value, a 600-session gateway on a 1,024 table refused).
+  - GKE run 6b (3c5b3728, us-east4-a, 2026-11-12 1:37-2:19 am ET; stage 1, then 5 minutes of binary 345K/s + FIX 150K/s): the members ran with 2,048; the mixed step's 600 fresh logons, 8 minutes after
+    stage 1's 600 sessions stopped, had 0 of 44,696,469 orders rejected (run 6: 176 sessions refused, 146.5M orders).
 
 ## Non-functional
 
