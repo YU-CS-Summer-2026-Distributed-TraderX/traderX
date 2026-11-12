@@ -66,6 +66,24 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
     to its own recording, to commit, commit to the service; follower: received to recorded), split by whether the
     tick falls inside one of that member's own GC cycles, with flat runs of 5 ms or more; `ep.py`: episodes over a
     bar, with the agents' thread states at each.
+- **FR-OPL-11 (apply-cost microbench):** `ServiceApplyCostBenchTest` (opt-in, `APPLY_COST_BENCH=1`) SHALL drive the
+  clustered service's `onSessionMessage` on one thread with no cluster: keyed NEW orders that cross between two
+  accounts, alternating direction so no limit is reached, with the idempotency table at its retention frontier. It
+  SHALL print ns per order per window, by wall time and by the thread's own CPU time, and fail if the orders did
+  not cross. `APPLY_COST_VARIANT` switches FR-OPL-12's knobs on for a run. A change is judged old against new in
+  interleaved runs on one machine, by the best window's CPU time.
+- **FR-OPL-12 (service-thread cost knobs, default unchanged):**
+  - `CLUSTER_OUTPUT_RING_WAIT=none` SHALL give the service's output ring a wait strategy whose signal is a no-op.
+    The ring is published and drained by the one service thread, so nothing waits on it; the default (the
+    Disruptor's blocking strategy) takes a lock and signals a condition on every publish.
+  - `CLUSTER_ENGINE_TIMING=off` SHALL construct the engine with no `HotPathMetrics`; the engine SHALL then take no
+    clock read and record no histogram for them. Nothing in the cluster tier reads those metrics.
+  - Neither knob SHALL change an output: `ServiceThreadCostKnobsTest` runs one input mix (crossing orders, repeated
+    keys, cancels) through a default service and one with both knobs on, and compares every output's decision
+    fields in order. Unset, both keep today's behaviour.
+  - Measured 2026-11-12 (Mac, FR-OPL-11, CPU ns per order, best window, two interleaved runs each): unchanged
+    647 / 675; ring 531 / 567; timing 572 / 575; both 450 / 465. At 300K/s on GKE the two were 9.0% and about 10%
+    of the leader's service thread (`latency-tail-20261112/s2/prof3-B`). Not yet measured on a rig.
 - **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
   - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
     (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;
