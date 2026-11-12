@@ -900,6 +900,19 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     it starts at the next `tradeSeq`; otherwise it is dropped and asked again. At the head a step asks one page.
     - `recon.read.max-sides-per-second` is 2,000,000 (was 500,000). At 1,000,000 the pacing itself held the reader
       at 560–710K sides/s against 680–940K unpaced, on the same host.
+  - Measured on GKE (2026-11-12, 3:29–3:50 pm ET, `2b7d2552`, the acceptance render, stage 2: binary + FIX mixed
+    for 1,200 s at ~435K sides/s; evidence `recon-blotter-20261112/gke/`):
+    - Stage 2 PASS on every layer, and the recon classified 517,879,786 sides, the members' own count: 0 missing,
+      0 mismatched, 0 unverified. Run 7's hour: 60%.
+    - The leader's clustered-service thread (60 s profile, as run 7's): the recon family is 2.35% of it (run 7:
+      27.2%), 1.37% in the tap itself and 0.95% in the ring's write. The thread took 3,148 samples against run 7's
+      3,493, at 435K sides/s against 424K.
+    - The recon read 693K sides/s while it read (466 sweeps, 13,252 steps, busy 747 s of the stage): 1.6× the mixed
+      rate, not 2×. It stood 1.3–2.4M sides behind the members, all held for their snapshot.
+    - Not measured there: which member answered the reads (no gateway line records it), and a latency distribution.
+    - Deviation: admission passed 12 of 13 payloads. `price-publisher`'s `node_modules` lock differed from the
+      reference build (`encodeurl`); this change does not touch it. So this is a proof of the recon and the profile,
+      not an admission of the whole candidate.
   - Measured locally, on the engine's own classes (20M sides back to back, full window, three rounds):
 
     | Recording a side | CPU | Allocated | At 431K sides/s |
@@ -907,8 +920,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     | `3526dcdf`: record built, skip list of 500,000 | 196 ns | 237 B | 8.5% of a core, 102 MB/s |
     | The ring, 8,388,608 slots | 7 ns | 0 B | 0.3% of a core, 0 MB/s |
 
-    That is the engine's classes on a Mac core, not the leader's thread: the GKE profile is the proof (plan in the
-    lane's notes).
+    That is the engine's classes on a Mac core, not the leader's thread: the GKE profile above is the proof.
   - Measured locally, the recon (`ReconThroughputIT`, `RECON_IT_RATE=900000`, 9.15M sides, NATS in Docker):
 
     | Recon | Engine window | Classified while driven | Behind when the drive stopped |
@@ -926,8 +938,10 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     - A read still costs the member that answers 0.35 µs and 961 B a side (FR-DRS-56's measurement): about 15% of a
       core and 414 MB/s of garbage at 431K sides/s, now on a follower. Writing the page straight from the ring is
       the next step if it shows.
-    - One replica runs the recon. On GKE's stage 2 one reader reached ~260K sides/s; whether four ranges and the
-      window bring it past 431K there is the GKE proof's question.
+    - One replica runs the recon, at 1.6× the mixed rate on GKE. Twice the rate there needs the cheaper wire or a
+      recon per partition owner.
+    - The tap's own 1.37% of the service thread (the ticker cache's store on every side) can be trimmed to a
+      compare.
     - `unverified` is in memory, and a reader opened under load starts 60 s back (FR-DRS-56's open items).
   - Tests:
     - `LiveTradeRingTest`: pages strictly after `since`; the window is the newest capacity; a member restarted
@@ -938,7 +952,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       step reads 1,999, so it fails on `3526dcdf`) and `#aRangeTheWindowRolledPastIsNotJoinedAcrossTheHole`.
     - `ReconThroughputIT`: the keeps-up assertion above; the 900K arm is opt-in.
     - `test_prepare`: the throughput members carry the window.
-  - Not yet on GKE.
+  - Not on GKE: an hour of stage 2, a leader change with the recon reading a follower, 2× the mixed rate.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

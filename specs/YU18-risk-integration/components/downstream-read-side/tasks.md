@@ -99,4 +99,5 @@
   what the window dropped (`unverified`); all 160,874,280 sides of a 450K stage 1 classified on GKE (2026-11-12), 350K sides/s locally.
 - [x] FR-DRS-59 (ADR-108) the recon's live window as a ring of primitives (7 ns and no allocation a side, against
   196 ns and 237 B), 8,388,608 sides in the throughput render, read from a follower, four ranges at once when behind
-  (run 7, 2026-11-12). Not yet on GKE.
+  (run 7, 2026-11-12). GKE 2026-11-12: every side of a 20-minute stage 2 classified, the recon family 2.35% of the
+  leader's service thread (27.2%).
