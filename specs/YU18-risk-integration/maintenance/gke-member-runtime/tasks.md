@@ -54,6 +54,11 @@
 - [x] FR-GMR-14: `CLUSTER_MEDIA_DRIVER=external`, default `embedded`; `Dockerfile.aeronmd` (C driver, 1.51.0) and
       `aeronmd-sidecar.py`; SC-GMR-08. 2026-11-11, branch `claude/l6a-c-driver`. Local proof on the Mac's arm64
       `aeronmd`: one member elected and acked a proof-client order. The linux/amd64 image builds locally (not pushed).
+- [x] FR-GMR-15: `/health` role from the consensus module's node-role counter, `DOWN` once it is freed;
+      `HealthRoleTest`. 2026-11-12, branch `claude/latency-tail`. Unit proof only: not exercised on a member whose
+      consensus module has really closed.
+- [ ] FR-GMR-15 follow-up (yaakov's call): exit for a pod restart when the consensus module's counters are gone,
+      as the termination hook does, instead of a Running pod that answers `DOWN`.
 - [ ] FR-GMR-14 measured on GKE (latency L6a): an `l1-ab.sh` arm with the sidecar applied (`kubectl get sts -o json |
       aeronmd-sidecar.py --image ... | kubectl replace -f -`, one member at a time), against the same session's Java
       driver arm at the same driver idle, at 0, ~300K and the 500K setting. Needs the image pushed to the bench

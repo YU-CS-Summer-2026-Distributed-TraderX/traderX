@@ -34,6 +34,7 @@ class ServiceApplyCostBenchTest {
         final int perWindow = Integer.parseInt(System.getenv().getOrDefault("APPLY_COST_ORDERS", "2000000"));
         final int windows = Integer.parseInt(System.getenv().getOrDefault("APPLY_COST_WINDOWS", "9"));
         final String variant = System.getenv().getOrDefault("APPLY_COST_VARIANT", "");   // "", "ring", "timing", "ring,timing"
+        final boolean keyless = variant.contains("nokey");
         final long[] nsPerOrder = new long[windows];
         final long[] cpuNsPerOrder = new long[windows];   // the thread's own CPU time: a busy machine preempts wall time
         final var mx = java.lang.management.ManagementFactory.getThreadMXBean();
@@ -88,7 +89,7 @@ class ServiceApplyCostBenchTest {
                     event.qty = 10;
                     event.limitPx = 150 * PX;
                     key = key * 6364136223846793005L + 1442695040888963407L;
-                    event.setClientOrderKey(key == 0 ? 1 : key);
+                    event.setClientOrderKey(keyless ? 0 : key == 0 ? 1 : key);   // "nokey": the bound on the idempotency table's cost
                     codec.encodeInput(buf, 0, event, 0, 0, 0);
                     service.onSessionMessage(null, ++timestamp, buf, 0, AeronReplicationCodec.INPUT_BYTES, null);
                 }

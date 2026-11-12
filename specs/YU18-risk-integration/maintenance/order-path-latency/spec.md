@@ -84,6 +84,14 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   - Measured 2026-11-12 (Mac, FR-OPL-11, CPU ns per order, best window, two interleaved runs each): unchanged
     647 / 675; ring 531 / 567; timing 572 / 575; both 450 / 465. At 300K/s on GKE the two were 9.0% and about 10%
     of the leader's service thread (`latency-tail-20261112/s2/prof3-B`). Not yet measured on a rig.
+- **FR-OPL-13 (idempotency table: measured, nothing changed):** a key-less run of FR-OPL-11 costs 290-294 ns per
+  order against 475-542 ns keyed, so the risk state's idempotency table is about 40% of the bench's per-order cost
+  (12% of the leader's service thread at 300K/s on GKE, where the blotter, bridges and egress also run). Two changes
+  were tried on 2026-11-12 and withdrawn: holding each entry's {orderRef, decision} once, in the retention ring,
+  instead of also in two table arrays (433-449 ns against 450-475 ns: inside the noise), and reading the next
+  eviction victim's slot one order early (no further gain). The cost that remains is two dependent reads of random
+  cache lines per new key, the new key's slot and the evicted key's, plus the backward-shift scan. The patch is in
+  the session notes (`idempotency-dedup-and-touch.patch`); the table is unchanged.
 - **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
   - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
     (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;
