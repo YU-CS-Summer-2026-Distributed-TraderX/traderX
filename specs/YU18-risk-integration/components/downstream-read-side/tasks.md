@@ -95,5 +95,5 @@
   and validated by `prepare.py` (run 5, 2026-11-11).
 - [x] FR-DRS-53 the routed fills over `FILLS_STREAMS` streams (4 per NATS server), gateways hashed onto them, placed
   k mod n; rendered on both sides and validated by `prepare.py` (run 5 rerun, 2026-11-11).
-- [x] FR-DRS-55 the recon reads the engine's blotter to its head each sweep, holds what waits on a snapshot, counts
+- [x] FR-DRS-56 the recon reads the engine's blotter to its head each sweep, holds what waits on a snapshot, counts
   what the window dropped (`unverified`); 350K sides/s classified locally (run 6, 2026-11-11). Not yet on GKE.

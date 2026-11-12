@@ -966,7 +966,7 @@ public final class ClusterNodeMain {
             result.put("frozenSequence",service.frozenRunSequence());return result;
         }));
 
-        // FR-DRS-55: the recon asks for more than a page with `limit`, up to RECON_PAGE_MAX (50,000 sides, about 8 MB of
+        // FR-DRS-56: the recon asks for more than a page with `limit`, up to RECON_PAGE_MAX (50,000 sides, about 8 MB of
         // JSON built on this HTTP thread). Without `limit` the answer is RECON_PAGE_SIZE, as before.
         final int pageMax = Math.max(pageSize, Integer.parseInt(env("RECON_PAGE_MAX", "50000")));
         server.createContext("/recon/trades/blotter", exchange ->
@@ -1023,7 +1023,7 @@ public final class ClusterNodeMain {
                 longParam(exchange, "fromSeq", 0), longParam(exchange, "toSeq", 0))));
     }
 
-    /** FR-DRS-55: the caller's `limit`, at least one side and at most the member's own ceiling. */
+    /** FR-DRS-56: the caller's `limit`, at least one side and at most the member's own ceiling. */
     static int blotterLimit(final long asked, final int pageMax) {
         return (int) Math.max(1, Math.min(asked, pageMax));
     }

@@ -129,7 +129,7 @@ public class ReconciliationService {
     void clock(java.time.Clock clock) { this.clock = clock; }
     private volatile Instant lastSweepAt;
 
-    // FR-DRS-55: the sweep reads on until it has the engine's head, and holds what it has read but cannot classify yet.
+    // FR-DRS-56: the sweep reads on until it has the engine's head, and holds what it has read but cannot classify yet.
     // The engine's live window is bounded (RECON_BLOTTER_CAPACITY, 500,000 sides: 3.2 s of run 6's peak), and a side
     // waits on its partition's snapshot (every 5 s), so a recon that fetched only what it could classify at once would
     // watch the window roll past the rest. `fetched` is read and not classified; `cursor` stays the classified position.
@@ -147,7 +147,7 @@ public class ReconciliationService {
     private int maxSidesPerSecond = 500_000;
     private long nextFetchNanos = 0L;
     private long fetchNanos, streamNanos, verdictNanos;   // this sweep's time in the engine fetch, the stream read, the verdicts
-    private int enginePage = 0;   // the largest page the engine has served: a member before FR-DRS-55 serves its own size
+    private int enginePage = 0;   // the largest page the engine has served: a member before FR-DRS-56 serves its own size
     private boolean sizingLogged;
     @Value("${recon.page-limit:10000}")
     void pageLimit(int sides) { this.pageLimit = Math.max(1, sides); }
@@ -190,7 +190,7 @@ public class ReconciliationService {
     }
 
     /**
-     * FR-DRS-55: one sweep reads pages until it has the engine's head (a short page), or its time budget is spent. It
+     * FR-DRS-56: one sweep reads pages until it has the engine's head (a short page), or its time budget is spent. It
      * read ONE page (RECON_PAGE_SIZE, 1,000) every interval whatever was traded, so at run 6's 158K sides/s it
      * classified 58,022 of ~125M sides and the engine's window dropped the rest unread, with nothing counting them.
      */
@@ -456,7 +456,7 @@ public class ReconciliationService {
 
     /** Highest tradeSeq read so far per partition subject: the stream is ordered within a subject only. */
     static final class PartitionHeads {
-        private final Map<String, Long> head = new java.util.concurrent.ConcurrentHashMap<>();   // FR-DRS-55: one reader a stream
+        private final Map<String, Long> head = new java.util.concurrent.ConcurrentHashMap<>();   // FR-DRS-56: one reader a stream
         void observe(String subject, long tradeSeq) { head.merge(subject, tradeSeq, Math::max); }
         long headOf(String subject) { return head.getOrDefault(subject, 0L); }
         /**
@@ -519,7 +519,7 @@ public class ReconciliationService {
         }
 
         /**
-         * FR-DRS-55: keeps only the sides {@code wanted}, and asks each stream without waiting. A waiting fetch sat out
+         * FR-DRS-56: keeps only the sides {@code wanted}, and asks each stream without waiting. A waiting fetch sat out
          * its whole timeout on every stream with nothing new (a partition that never trades: 50 ms a page).
          */
         void readThrough(long targetTradeSeq, java.util.function.LongPredicate wanted, String[] subjects) throws Exception {

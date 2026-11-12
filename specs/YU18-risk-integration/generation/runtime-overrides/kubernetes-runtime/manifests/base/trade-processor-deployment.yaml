@@ -71,7 +71,7 @@ spec:
             # existed; the cluster gateway now forwards /recon/* to a member's committed-log blotter
             # (as YU17's cluster tier already says), and with TRADE_PROJECTION_MODE=snapshot the sweep
             # classifies against the capture stream, not the SQL trades window (§7.6).
-            # FR-DRS-55: 1 s, not 10. A sweep now reads the members' live window (RECON_BLOTTER_CAPACITY,
+            # FR-DRS-56: 1 s, not 10. A sweep now reads the members' live window (RECON_BLOTTER_CAPACITY,
             # 500,000 sides) to its head; between sweeps the window must not roll past the last side read,
             # and 10 s of run 6's peak (158K sides/s) is three windows.
             - name: RECON_POLL_INTERVAL_MS

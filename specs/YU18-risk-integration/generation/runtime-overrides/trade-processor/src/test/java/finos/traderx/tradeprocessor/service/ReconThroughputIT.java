@@ -33,7 +33,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * FR-DRS-55 (450K acceptance run 6, 2026-11-11): the ledger recon classifies EVERY side at twice run 6's peak side rate.
+ * FR-DRS-56 (450K acceptance run 6, 2026-11-11): the ledger recon classifies EVERY side at twice run 6's peak side rate.
  * It classified one blotter page (1,000 sides) per sweep whatever was traded, and the engine's live window (500,000
  * sides) rolled past the rest, so 58,022 of ~125M sides were ever looked at and the 0 missing / 0 mismatched it
  * reported described those alone.

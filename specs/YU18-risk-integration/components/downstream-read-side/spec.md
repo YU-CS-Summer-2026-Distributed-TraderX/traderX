@@ -686,7 +686,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       heap at 12:05 pm ET with 93.1M published.
     - Replicas 1–3 own more traded partitions and lived.
   - Now: `pending` holds a page (RECON_PAGE_SIZE, 1,000) plus at most one fetch (1,000) per stream past it, about 9K
-    sides, under 3 MB. (FR-DRS-55 changes both numbers: the sides read and not yet classified, plus one 250-message
+    sides, under 3 MB. (FR-DRS-56 changes both numbers: the sides read and not yet classified, plus one 250-message
     fetch per stream.) Stopping early decides nothing: a side not read yet stays WAIT until its own partition's head
     passes it, and the next sweep reads on from there.
   - The order view's open set follows the members' book plus the read lag, so neither it nor the recon needs a heap
@@ -696,7 +696,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       empty, 20,000 sides. A 100-side page holds at most 2,100, where the unfixed reader held 20,000.
     - `LedgerSettlementReconTest#missingIsJudgedAgainstTheSidesOwnPartitionHead` now asserts the rule; it had asserted
       that an unseen partition holds the read open.
-  - Not changed here: at 1,000 sides per 10 s sweep the recon classifies 100 sides/s. FR-DRS-55 changes it.
+  - Not changed here: at 1,000 sides per 10 s sweep the recon classifies 100 sides/s. FR-DRS-56 changes it.
 
 - FR-DRS-52 (450K acceptance run 5, 2026-11-11): `TRADERX_FILLS` (FR-DRS-48) SHALL be placed on a NATS server that
   holds the fewest capture partitions. `FILLS_STREAM_PLACEMENT` names its tag. Unset, it is tag `P mod n` of
@@ -753,7 +753,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - Not yet on GKE. The gateways still connect through the `nats` Service, so a push crosses a route from the stream's
     server (FR-GFS-24 pins only the session store's publishes).
 
-- FR-DRS-55 (450K acceptance run 6, 2026-11-11; 54 is the acceptance-run-6 lane's start-failure exit): The recon SHALL classify every side the engine books, at twice run
+- FR-DRS-56 (450K acceptance run 6, 2026-11-11; 54 and 55 are the acceptance-run-6 lane's): The recon SHALL classify every side the engine books, at twice run
   6's peak side rate (158,190 sides/s over 30 s, so 320K sides/s). A side it could not read SHALL be counted
   `unverified`, never passed over.
   - Why: a sweep classified ONE blotter page (RECON_PAGE_SIZE, 1,000) every 10 s whatever was traded.

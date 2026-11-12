@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
 
-/** FR-DRS-55: the blotter serves the caller's {@code limit}, bounded by the member's RECON_PAGE_MAX. */
+/** FR-DRS-56: the blotter serves the caller's {@code limit}, bounded by the member's RECON_PAGE_MAX. */
 class BlotterLimitTest {
     @Test
     void theCallersLimitIsBoundedByTheMembersCeiling() {

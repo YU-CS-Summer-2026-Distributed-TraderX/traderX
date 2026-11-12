@@ -26,7 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * FR-DRS-55: a sweep reads the engine's blotter to its head, holds what it cannot classify yet while the engine's
+ * FR-DRS-56: a sweep reads the engine's blotter to its head, holds what it cannot classify yet while the engine's
  * bounded window rolls on, and counts what the window dropped unread. The old sweep read one page an interval and let
  * the window pass over the rest with no count (run 6: 58,022 of ~125M sides classified, "0 missing").
  */
