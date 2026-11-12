@@ -1,6 +1,7 @@
 # ADR-106: A lane that falls behind its stream spools to the member's disk
 
-Status: proposed (bridge-overflow lane, 2026-11-12); needs yaakov's acceptance. Component:
+Status: accepted (yaakov, 2026-11-12), with one follow-up before production use: the spool moves off the archive
+volume onto its own (below). Component:
 [downstream read side](../components/downstream-read-side/spec.md) (FR-DRS-57). Builds on
 [ADR-083](adr-083-bridge-receipt-publish.md) decisions 19–23 (FR-DRS-47, FR-DRS-49).
 
@@ -142,6 +143,9 @@ stream and a lost record.
 - A member writes to `BRIDGE_SPOOL_DIR` (default `<CLUSTER_BASE_DIR>/bridge-spool`) only while a lane lags. In a NATS
   outage all three members write, each to its own volume.
 - The spool shares the archive volume by default. The budget is what keeps a long outage from filling it.
+  **Follow-up (yaakov, at acceptance): before production use the spool gets its own volume**, so a long outage's
+  writes do not compete with the archive's on the consensus disk and a full spool can never be a full archive. Until
+  then `BRIDGE_SPOOL_DIR` is unset in every render and the default applies. Not built yet.
 - `/health` `bridges.*` adds `spooled` (records ever written) and `spoolBytes` (bytes held now, the member's total).
 - No log, snapshot, ack or stream format changes. The spool's file format is private to one process.
 - The publish window is new behaviour at rate for healthy lanes too: a lane whose receipts lag more than 65,536
