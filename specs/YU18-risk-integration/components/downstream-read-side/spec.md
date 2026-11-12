@@ -938,6 +938,18 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     store held 187,824 of 258,924 sides and 244,584 of 517,848 order events, the promoted leader republished
     exactly 131,072 of each and counted a gap on each bridge. On kind the order lane is the one past its ring; the
     trade lane's republish (130,732) was just inside it.
+    On GKE (2026-11-12, production's 450K render on its own cluster, 8 partitions, 5 NATS servers, image
+    `acc-c18ee8a5-j21`): at the full mixed load with no fault (129.1M sides in 300 s) no member spooled and the
+    largest lane backlog was 448 records, so the publish window does not hold a healthy lane. With one NATS server
+    frozen 120 s under a FIX-only load (about 128K sides/s): the leader's order lanes held up to 2,421,514 records
+    each, the leader spooled 5.1M records and each follower about 7M (up to 1.0 GB a member), every spool was empty
+    about 25 s after the thaw, `queueDropped`, `gaps` and `rejected` were 0, and the store held all 207,483,702
+    sides once. With the leader killed 86 s into the same freeze, the promoted leader republished 663,666 sides and
+    1,601,022 order events with no gap. Control, the members rolled with `BRIDGE_SPOOL_BYTES=0` and the same freeze:
+    3 gaps on the frozen server's order lanes. Not shown: the fault at 450K. The binary load stopped early in
+    every fault stage (stage lengths of an odd number of its phases left its accounts at the position limit), so
+    the spooler's headroom at the full rate is unmeasured; saturating the server's volume with `dd` did not slow
+    the stream at that reduced rate.
     `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
     leader to have sent its window into the frozen socket, not its whole tail.
   - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
