@@ -929,6 +929,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     exactly (38,608 and 38,588 in two runs).
     `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` and `#aPromotedLaneLappedPastItsRingIsACountedGap` now run
     with the spool off: with it on they lose nothing.
+    On kind (2026-11-12, `kind-bridge-failover-at-rate.sh` with `RING=131072 KILL_AFTER=150 FREEZE_SECS=190 SECS=480
+    RATE=400`, members rendered with `BRIDGE_LANE_RECORDS=131072`, one partition): NATS frozen 190 s, the leader
+    killed 150 s in with 175,012 sides applied since the freeze. G3h held all 346,768 sides and the store all
+    693,536 order events; `queueDropped` 0, no new gap, `rejected` 0. The promoted leader republished 130,732 sides
+    and 341,464 order events (2.6 rings) and the three members spooled 1,143,219 records between them; every spool
+    was empty afterwards. Control, the members' image with `ReceiptLanes` as at `3526dcdf` and the same ring: the
+    store held 187,824 of 258,924 sides and 244,584 of 517,848 order events, the promoted leader republished
+    exactly 131,072 of each and counted a gap on each bridge. On kind the order lane is the one past its ring; the
+    trade lane's republish (130,732) was just inside it.
     `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
     leader to have sent its window into the frozen socket, not its whole tail.
   - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
