@@ -169,6 +169,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // fine; created once, not per request.
     private final HttpClient readModelClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(2)).build();
+    // FR-XOC-07: a whole-account listing is bounded in number at once and in rows; a by-key read is one row.
+    private final ReadModelOrders readModelOrders = new ReadModelOrders(readModelClient,
+        Integer.parseInt(env("ORDER_READMODEL_LIST_CONCURRENCY", "2")),
+        Integer.parseInt(env("ORDER_READMODEL_LIST_MAX_ROWS", "100000")), 2_000L);
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent event = new InputEvent();
@@ -3557,6 +3561,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 + "\ntraderx_fix_fill_feed_connect_failures_total " + fillFeedConnectFailures.get()
                 + "\ntraderx_fix_fill_feed_subscribed " + (fillFeedSubscribed ? 1 : 0)
                 + "\ntraderx_fix_resend_gapfilled_total " + fix.resendGapFills() + "\n" + fix.storeMetrics())
+            + "traderx_gateway_readmodel_reads_total{kind=\"list\"} " + readModelOrders.listings() + "\n"
+            + "traderx_gateway_readmodel_reads_total{kind=\"key\"} " + readModelOrders.keyReads() + "\n"
+            + "traderx_gateway_readmodel_refused_total{reason=\"busy\"} " + readModelOrders.refusedBusy() + "\n"
+            + "traderx_gateway_readmodel_refused_total{reason=\"too_large\"} " + readModelOrders.refusedTooLarge() + "\n"
             + "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
             + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
             + "traderx_order_events_total{event=\"canceled\"} " + canceledOrders + "\n"
@@ -3876,7 +3884,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         if (base.isEmpty()) {
             return null;
         }
-        return queryReadModel(base + "/accounts/" + accountId + "/orders" + (includeTerminal ? "?status=all" : ""),
+        return readModelOrders.list(base + "/accounts/" + accountId + "/orders" + (includeTerminal ? "?status=all" : ""),
             accountId);
     }
 
@@ -3884,51 +3892,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     @Override
     public List<OrderStatusSource.OrderView> ordersByKey(final int accountId, final long clientKey) {
         final String base = env("ORDER_READMODEL_URL", "");
-        return base.isEmpty() ? null : queryReadModel(base + "/accounts/" + accountId + "/orders?clientOrderKey="
+        return base.isEmpty() ? null : readModelOrders.byKey(base + "/accounts/" + accountId + "/orders?clientOrderKey="
             + Long.toUnsignedString(clientKey), accountId);
-    }
-
-    private List<OrderStatusSource.OrderView> queryReadModel(final String url, final int accountId) {
-        try {
-            final HttpResponse<String> resp = readModelClient.send(
-                HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(2)).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) {
-                return null;
-            }
-            final JsonNode arr = JSON.readTree(resp.body());
-            final List<OrderStatusSource.OrderView> out = new ArrayList<>(arr.size());
-            for (final JsonNode n : arr) {
-                out.add(new OrderStatusSource.OrderView(
-                    refOf(n.path("id").asText("")),
-                    n.path("side").asText(""),
-                    n.path("quantity").asInt(),
-                    n.path("remainingQuantity").asInt(),
-                    n.path("status").asText(""),
-                    n.path("security").asText(""),
-                    n.path("filledQuantity").asInt(-1)));
-            }
-            return out;
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        } catch (final Exception e) {
-            System.err.println("read-model status query failed for account " + accountId + ": " + e);
-            return null;
-        }
-    }
-
-    /** orderRef out of the read model's epoch-qualified id {@code <epoch>-<orderRef>}; -1 if malformed. */
-    private static long refOf(final String id) {
-        final int dash = id.lastIndexOf('-');
-        if (dash < 0) {
-            return -1;
-        }
-        try {
-            return Long.parseLong(id.substring(dash + 1));
-        } catch (final NumberFormatException e) {
-            return -1;
-        }
     }
 
     /** One in-flight order-lifecycle command awaiting its committed ack (pipelined ingress).

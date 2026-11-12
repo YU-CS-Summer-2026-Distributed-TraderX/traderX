@@ -1247,10 +1247,16 @@ public final class FixGatewayAcceptor {
 
             // ADR-093: a ClOrdID this gateway holds no ref for (another replica booked it, or its ref was lost past
             // ADR-090's answer ring) is found by the key the gateway submits it under; the read model scopes it.
-            final List<OrderStatusSource.OrderView> byKey = orderRef >= 0 || statusSource == null
+            // FR-XOC-07: by its key first even when this gateway holds the ref, so the common request is one row; the
+            // whole-account listing is only for an order the key does not find (a status by OrderID under another
+            // ClOrdID), and the source bounds it.
+            List<OrderStatusSource.OrderView> byKey = statusSource == null
                 || accountOf(sessionId, req) < 0 ? null
                 : statusSource.ordersByKey(accountOf(sessionId, req),
                     ClusterGatewayMain.clientOrderKey(qualify(sessionId, clOrdId)));
+            if (byKey != null && !byKey.isEmpty() && orderRef >= 0 && byKey.get(0).orderRef() != orderRef) {
+                byKey = null;   // the key names another order than the one the request resolves to: find that one
+            }
             final List<OrderStatusSource.OrderView> orders = byKey != null && !byKey.isEmpty() ? byKey
                 : statusSource == null || accountOf(sessionId, req) < 0 ? null   // S3: own accounts only
                     : statusSource.orders(accountOf(sessionId, req), true);
@@ -1522,13 +1528,17 @@ public final class FixGatewayAcceptor {
          * FR-XOC-03: a NewOrderSingle whose ClOrdID this session already executed (a PossResend after a disconnect or an
          * unanswered order) whose original has left terminal retention. The engine names that original
          * (REJECTED/DUPLICATE + its ref): the order exists, so it is restated, ExecType=I, never rejected. Its state
-         * comes from the read model when one is configured; without one only "terminal" is known (DONE_FOR_DAY).
+         * comes from the read model's by-key lookup when one is configured; without one only "terminal" is known
+         * (DONE_FOR_DAY).
          */
         private void sendRestatement(final SessionID sessionId, final String clOrdId, final int accountId,
                                      final String ticker, final char side, final int qty, final long orderRef) {
             OrderStatusSource.OrderView found = null;
-            final List<OrderStatusSource.OrderView> orders =
-                statusSource == null ? null : statusSource.orders(accountId, true);
+            // FR-XOC-07: the one order booked under this ClOrdID's key, never the account's whole list. A leader change
+            // restates every stranded order at once (GKE run 7: 1,100-1,450 a gateway, each a whole-account listing,
+            // and every gateway out of heap within 13 s).
+            final List<OrderStatusSource.OrderView> orders = statusSource == null ? null
+                : statusSource.ordersByKey(accountId, ClusterGatewayMain.clientOrderKey(qualify(sessionId, clOrdId)));
             if (orders != null) {
                 for (final OrderStatusSource.OrderView v : orders) {
                     if (v.orderRef() == orderRef) {
