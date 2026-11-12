@@ -83,7 +83,11 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
     fields in order. Unset, both keep today's behaviour.
   - Measured 2026-11-12 (Mac, FR-OPL-11, CPU ns per order, best window, two interleaved runs each): unchanged
     647 / 675; ring 531 / 567; timing 572 / 575; both 450 / 465. At 300K/s on GKE the two were 9.0% and about 10%
-    of the leader's service thread (`latency-tail-20261112/s2/prof3-B`). Not yet measured on a rig.
+    of the leader's service thread (`latency-tail-20261112/s2/prof3-B`).
+  - Measured on GKE 2026-11-12 (slot A, `tail-17ab61cf-j21`, arms N, RT, N′ of FR-OPL-14): leader apply per order
+    1.89-1.91 / 1.67-1.68 / 1.88-1.89 us; achieved at the 500K setting 441-456K / 481-494K / 446-471K; 300K commit
+    to service lag p99 1,707 / 1,458 / 1,460 us (the controls differ by 15%, so no verdict on the 300K tail; its
+    median fell 219 to 150 us against both). Each knob alone was not run.
 - **FR-OPL-13 (idempotency table: measured, nothing changed):** a key-less run of FR-OPL-11 costs 290-294 ns per
   order against 475-542 ns keyed, so the risk state's idempotency table is about 40% of the bench's per-order cost
   (12% of the leader's service thread at 300K/s on GKE, where the blotter, bridges and egress also run). Two changes
