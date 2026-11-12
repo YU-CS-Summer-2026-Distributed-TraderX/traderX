@@ -44,6 +44,21 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   a cpuset wider than CPU or with fewer than five whole cores. The session-3 arms (`Nsh L1sh L1shbr L1shwm L1st L1pin
   Nsh2`) SHALL each state every node knob they touch (busy_read/busy_poll, wmem_max/wmem_default), so none inherits
   the previous arm's.
+- **FR-OPL-10 (latency-tail attribution harness, 2026-11-12):** `l1-ab.sh` SHALL run `ARM_HOOK start LABEL` on the
+  rolled members before the probe and `ARM_HOOK stop LABEL` before the next roll, refusing the arm if the start
+  fails, and SHALL take `RATES` (default `0 300 500`) as the blocks an arm runs. `l0-baseline.sh` SHALL read thread
+  CPU and leader state from the member's own JVM (the `java` process whose command line names `ClusterNodeMain`),
+  not the first `java` in the container: a second JVM beside the member made every thread-CPU reading the probe's.
+  `scripts/bench/latency/tail/` holds the hook and its readers:
+  - `tail-hook.sh`: `HxProbe` on every member (every position counter each 1 ms; agent thread state, wait channel
+    and run/wait time each 10 ms), then each member's GC, safepoint and snapshot log lines and every gateway's;
+  - the probe SHALL write to `/dev/shm` and SHALL NOT read `memory.stat` or node `vmstat`: writing its series to the
+    container's `/tmp` (the node's boot disk) gave 55-240 ms cluster stalls and +110 us of idle commit, where the
+    same arm without it had none (runs 1, 3 against 2, 4);
+  - `analyze.py`: per member, each stage's lag as bytes behind over the byte rate (leader: publication to sender,
+    to its own recording, to commit, commit to the service; follower: received to recorded), split by whether the
+    tick falls inside one of that member's own GC cycles, with flat runs of 5 ms or more; `ep.py`: episodes over a
+    bar, with the agents' thread states at each.
 - **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
   - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
     (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;

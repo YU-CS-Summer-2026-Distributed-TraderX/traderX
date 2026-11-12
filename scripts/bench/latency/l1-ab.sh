@@ -26,7 +26,7 @@ NOSPIN=(CLUSTER_IDLE_STRATEGY_SENDER- CLUSTER_IDLE_STRATEGY_RECEIVER- CLUSTER_ID
 CYCLE='-Daeron.driver.conductor.cycle.threshold=1ms -Daeron.driver.sender.cycle.threshold=1ms -Daeron.driver.receiver.cycle.threshold=1ms -Daeron.cluster.cycle.threshold=1ms -Daeron.cluster.service.cycle.threshold=1ms -Daeron.archive.conductor.cycle.threshold=1ms -Daeron.archive.recorder.cycle.threshold=1ms -Daeron.archive.replayer.cycle.threshold=1ms'
 
 arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 300 500"]
-  local label=$1 a=$3 rates=${4:-0 300 500} env=(CLUSTER_IDLE_STRATEGY=lowpark)
+  local label=$1 a=$3 rates=${4:-${RATES:-0 300 500}} env=(CLUSTER_IDLE_STRATEGY=lowpark)
   if [ "$2" = busyspin ]; then env+=("${SPIN[@]}"); else env+=("${NOSPIN[@]}"); fi
   if [ "$a" = DEDICATED ]; then env+=(CLUSTER_ARCHIVE_THREADING=DEDICATED); else env+=(CLUSTER_ARCHIVE_THREADING-); fi
   EXPECT_IDLE=$(idle "$2") EXPECT_ARCHIVE=$a EXPECT_DRIVER=${EXPECT_DRIVER:-} bash "$B" arm "$label" "${env[@]}"
@@ -35,6 +35,8 @@ arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 
   # refuse the arm unless the probe is running and has written its first window (S' 2026-11-11 measured no client
   # latency: its probe died on ECONNREFUSED and the blocks ran without it).
   kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" wait --for=condition=Ready pod -l app=cluster-gateway --timeout=600s >/dev/null
+  # ARM_HOOK (FR-OPL-10): a per-arm collector, started on the rolled members and stopped before the next roll
+  [ -z "${ARM_HOOK:-}" ] || bash "$ARM_HOOK" start "$label" || { log "REFUSED arm $label: the hook did not start"; exit 1; }
   bash "$B" probe "LP$label" "$PX" 1800
   # a window is printed one window after it closes, after a 20 s warm-up: up to ~200 s, so poll for 300 s
   local active="" i
@@ -49,6 +51,7 @@ arm(){   # arm LABEL SPIN(busyspin|lowpark) ARCHIVE(SHARED|DEDICATED) [RATES="0 
   case " $rates " in *" 300 "*) bash "$B" block "$label-300" "$PER300" "L3$label" "$PX" 3 ;; esac
   case " $rates " in *" 500 "*) bash "$B" block "$label-500" "$PER500" "L5$label" "$PX" 3 ;; esac
   kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" logs job/l0-probe > "$EVIDENCE/probe-$label.log" 2>&1 || true
+  [ -z "${ARM_HOOK:-}" ] || bash "$ARM_HOOK" stop "$label" || log "arm $label: the hook's stop failed"
   kubectl --context "$CTX" -n "${NS:-pa-proof-400k}" delete job l0-probe --wait=true >/dev/null   # before the next roll
   log "arm $label done"
 }
