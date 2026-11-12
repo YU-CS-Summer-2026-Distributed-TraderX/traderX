@@ -146,6 +146,15 @@ final class FillsShardClaim {
         }, "fills-shard-claim");
         keep.setDaemon(true);
         keep.start();
+        // A stopping gateway gives its stream back, so its replacement does not count a dead claim for a TTL (kind,
+        // 2026-11-12: a replacement inside the TTL tied the servers on the dead key and left them 4 / 2).
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                kv.delete(String.valueOf(k));
+            } catch (final Exception e) {
+                // it expires
+            }
+        }, "fills-shard-release"));
         System.out.println("fills stream claim: " + id + " holds stream " + k + " of " + streams);
         return named(id, k);
     }
@@ -161,12 +170,44 @@ final class FillsShardClaim {
         if (servers <= 0 || streams <= 1 || id.isBlank() || !"routed".equals(env.apply("FIX_FILL_FEED"))) {
             return;
         }
-        try {
+        ClusterClientAuth.gatewayName(retrying(() -> {
             final Connection nats = io.nats.client.Nats.connect(new io.nats.client.Options.Builder().server(natsUrl)
                 .maxReconnects(-1).connectionTimeout(Duration.ofSeconds(5)).build());
-            ClusterClientAuth.gatewayName(claim(nats, id, streams, servers));   // the connection stays: it renews
-        } catch (final Exception e) {
-            System.err.println("fills stream claim failed; " + id + " keeps its hashed stream: " + e);
+            return claim(nats, id, streams, servers);   // the connection stays: it renews
+        }, id, WAIT, Thread::sleep));
+    }
+
+    /** How long a starting gateway waits for NATS before it gives up the claim. */
+    static final Duration WAIT = Duration.ofMinutes(3);
+
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    /**
+     * The claim, retried every 2 s for {@code wait}: on a fresh bring-up the gateways start with NATS, and the one
+     * attempt this had failed on all six gateways of the kind rig (NATS up 2-3 s after them), every one falling back
+     * to its hash. A gateway serves nothing without NATS in the production render (its FIX session store is there), so
+     * waiting costs no service. After {@code wait}: the plain name, the hashed stream.
+     */
+    static String retrying(final java.util.concurrent.Callable<String> attempt, final String id, final Duration wait,
+                           final Sleeper sleeper) {
+        final long tries = Math.max(1, wait.toMillis() / 2000);
+        Exception last = null;
+        for (long i = 0; i < tries; i++) {
+            try {
+                return attempt.call();
+            } catch (final Exception e) {
+                last = e;
+                try {
+                    sleeper.sleep(2000);
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
         }
+        System.err.println("fills stream claim failed; " + id + " keeps its hashed stream: " + last);
+        return id;
     }
 }

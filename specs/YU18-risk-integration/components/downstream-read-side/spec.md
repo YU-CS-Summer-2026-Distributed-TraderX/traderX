@@ -773,8 +773,14 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     `ClusterGatewayMain.fillsShard` read the suffix and fall back to the hash for a plain name; both tests pin the same
     values. The fills subject carries the whole name, `/fillsk.<k>.<pod>_s<k>`.
   - A claim is advisory: two gateways on one stream is FR-DRS-53's ordinary shape. A full table (more gateways than
-    streams, or a roll's surge), a lapsed claim or an unreachable NATS at start leaves the gateway on its hashed
-    stream under its plain name. A restarted container may hold a second stream for one TTL.
+    streams, or a roll's surge), a lapsed claim or a NATS unreachable for 3 minutes at start leaves the gateway on its
+    hashed stream under its plain name.
+  - The gateway retries the claim every 2 s for those 3 minutes, and deletes its key when it stops. Kind, 2026-11-12
+    (6 gateways, 8 streams, the cluster secret set): with one attempt, a fresh bring-up claimed nothing, since NATS came
+    up 2-3 s after the gateways and all six hashed (two onto one stream); restarted with NATS up, the six claimed six
+    streams, 3 even and 3 odd, one consumer on each. A replacement started inside a killed gateway's TTL tied on the
+    dead key and left 4 / 2 until it expired, which is what the delete on stop is for; a gateway killed without a stop
+    still skews its replacement for up to 90 s.
   - Unset or 0 keeps the hash, so kind and the proofs are unchanged. `prepare.py` renders the server count and
     `validate()` refuses a sharded render without it.
   - Tests: `RoutedFillsShardTest` (the pins; 18 gateways over 20 streams and 5 servers each get their own stream, the

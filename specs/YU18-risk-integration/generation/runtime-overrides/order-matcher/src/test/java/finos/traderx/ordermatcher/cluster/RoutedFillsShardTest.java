@@ -47,6 +47,24 @@ class RoutedFillsShardTest {
         held.add(java.util.stream.IntStream.range(0, 20).filter(k -> !held.contains(k)).findFirst().getAsInt());
         assertEquals(-1, FillsShardClaim.choose(claims, "cluster-gateway-late", 20, 5), "a full table: the hashed stream");
         assertEquals("gw_s3", FillsShardClaim.named("gw", 3));
+    }
+
+    /** FR-DRS-55: a gateway that starts before NATS keeps trying (kind: all six failed their one attempt and hashed),
+     *  and gives up to its plain name only after the wait. */
+    @Test
+    void theClaimIsRetriedUntilNatsIsUp() {
+        final int[] calls = {0};
+        final long[] slept = {0};
+        assertEquals("gw_s5", FillsShardClaim.retrying(() -> {
+            if (++calls[0] < 4) throw new java.io.IOException("Unable to connect to NATS servers");
+            return "gw_s5";
+        }, "gw", java.time.Duration.ofMinutes(3), ms -> slept[0] += ms));
+        assertEquals(4, calls[0]);
+        assertEquals(6000, slept[0]);
+        calls[0] = 0;
+        assertEquals("gw", FillsShardClaim.retrying(() -> { calls[0]++; throw new java.io.IOException("down"); }, "gw",
+            java.time.Duration.ofSeconds(10), ms -> { }));
+        assertEquals(5, calls[0], "10 s of 2 s tries, then the hashed stream");
         assertEquals(3, FillsShardClaim.claimed("gw_s3", 20));
     }
 }
