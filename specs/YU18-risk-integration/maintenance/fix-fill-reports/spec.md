@@ -196,8 +196,11 @@ fails.
   - Kind (2026-11-12 12:01-12:10 am ET, `scripts/proofs/kind-ffr20-binary-fills.sh`, 2 gateways, one fills stream, no
     cluster secret): 508 sequenced binary orders filled (members' trades +508) with the router's routed count and both
     gateways' `outcome="lost"` at 0 before and after the age-out; the control, 852 unsequenced orders, routed 2 events
-    an order and counted 424 and 428 lost. `yu18-fix-fill-feed.sh` (routed FIX fills) still passes. Not run: the
-    sharded streams, a secret-set cluster, any rate.
+    an order and counted 424 and 428 lost. `yu18-fix-fill-feed.sh` (routed FIX fills) still passes. A second kind
+    run (6 gateways, 8 claimed streams, the cluster secret set) passed the same on shards.
+  - GKE run 6b (3c5b3728, us-east4-a, 2026-11-12 1:37-2:19 am ET; stage 1, then 5 minutes of binary 345K/s + FIX 150K/s): 90,599,616 binary orders accepted through the 18 gateways with
+    `outcome="lost"` 0, evicted 0 and tracked evictions 0 on every gateway, where run 6 counted 871M; FIX filled
+    38,603,504 = the clients' count, G3 and G3h ok.
   - Found by that run and closed by FR-FFR-21: a REST order through a gateway is also named and unsequenced, so its
     updates were routed and each aged out as lost (2 per REST cross on kind).
 - FR-FFR-21 (2026-11-12): The gateway SHALL pass over the routed updates of an order it took over REST instead of

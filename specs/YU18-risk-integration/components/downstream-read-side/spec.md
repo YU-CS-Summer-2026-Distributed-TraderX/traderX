@@ -788,7 +788,10 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     #gatewaysClaimDistinctFillsStreams` (a real KV bucket), `FillsRouterTest` (the same pins), `test_prepare`.
     `FixFillFeedIT#eighteenGatewaysClaimingTogetherEachHoldTheirOwnStream` starts 18 claimers at once, each on its own
     connection, against a real NATS: three runs each read 18 distinct streams and 4 / 3 / 4 / 3 / 4 (or 4 / 3 / 3 / 4 / 4)
-    by server. Not exercised on a rig: one NATS server stood in for five, and no fills flowed.
+    by server.
+  - GKE run 6b (3c5b3728, us-east4-a, 2026-11-12 1:37-2:19 am ET; stage 1, then 5 minutes of binary 345K/s + FIX 150K/s): on a fresh bring-up all 18 gateways claimed, 18 keys, 18 distinct streams,
+    4 / 3 / 3 / 4 / 4 consumers by server. Fills messages by server over stage 1: 1.14M / 0.85M / 0.85M / 1.10M / 1.06M,
+    the busiest 1.33x the quietest (run 6's hash: 3.2x). Not read on GKE: a gateway replaced under load.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

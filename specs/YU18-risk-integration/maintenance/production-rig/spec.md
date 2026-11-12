@@ -280,7 +280,10 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     same 512Mi / 1Gi were both OOM-killed after 0.6-0.7M spans. The bounds alone at 256Mi still lost Tempo every time
     and the collector once, which is why the budgets moved.
   - Test: `test_prepare.Rendering.test_fix_sessions_persist_and_status_has_a_read_model` (the limiter first in every
-    pipeline, the limits and `GOMEMLIMIT`, Tempo's ingestion). Not exercised on a rig.
+    pipeline, the limits and `GOMEMLIMIT`, Tempo's ingestion).
+  - GKE run 6b (3c5b3728, us-east4-a, 2026-11-12 1:37-2:19 am ET; stage 1, then 5 minutes of binary 345K/s + FIX 150K/s): 0 restarts of either through both stages (run 6: 8 and 6 kills by the end of
+    stage 1). Tempo read 844Mi of its 1Gi at the end of stage 1 and 523Mi after the mixed step: little headroom, and
+    an hour of mixed load has not been run on it.
 
   `test_binary_load` (sequenced by default, streams stable across runs and pods, a full stream table, unsequenced, a
   duplicate, out of sequence), `test_fix_load.ExactlyOnce`.
