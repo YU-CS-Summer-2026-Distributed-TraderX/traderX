@@ -40,7 +40,8 @@ class ExactlyOnceStreamTest {
         @Override public long id() { return 7; }
         @Override public int responseStreamId() { return 0; }
         @Override public String responseChannel() { return "test"; }
-        @Override public byte[] encodedPrincipal() { return new byte[0]; }
+        byte[] principal = new byte[0];
+        @Override public byte[] encodedPrincipal() { return principal; }
         @Override public void close() { }
         @Override public boolean isClosing() { return false; }
         @Override public long offer(final DirectBuffer b, final int o, final int l) {
@@ -101,6 +102,23 @@ class ExactlyOnceStreamTest {
         for (long k = 1; k <= MatchingEngineClusteredService.IDEMPOTENCY_CAPACITY + 1; k++) {
             apply(s, order(99, InputEvent.SIDE_BUY, 1, 0x7000_0000_0000L + k));
         }
+    }
+
+    /**
+     * FR-FFR-20: the booking event names the submitting gateway for an order whose fills that gateway reports (FIX,
+     * unsequenced), and not for a sequenced-stream order (the binary wire), whose updates no gateway reads.
+     */
+    @Test
+    void aSequencedOrdersBookingDoesNotNameTheGateway() {
+        final MatchingEngineClusteredService s = venue();
+        session.principal = "cluster-gateway-7c9".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        final List<byte[]> named = new ArrayList<>();
+        s.outputSink(o -> { if (o.kind == OutputEvent.KIND_ORDER_ACCEPTED) named.add(o.gateway); });
+        apply(s, order(1, InputEvent.SIDE_BUY, 1, 0xF1AL));
+        applySeq(s, 1, InputEvent.SIDE_BUY, 1);
+        assertEquals(2, named.size(), "both orders booked");
+        assertArrayEquals(session.principal, named.get(0), "the unsequenced (FIX) order's booking names its gateway");
+        assertEquals(null, named.get(1), "the sequenced (binary) order's booking names none");
     }
 
     /** Negative control: today's key window at the same depth books the resend a second time. */

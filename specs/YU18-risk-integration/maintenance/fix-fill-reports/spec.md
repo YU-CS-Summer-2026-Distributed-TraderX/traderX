@@ -178,4 +178,20 @@ fails.
   - `FixGatewayFillReportTest#aRestingOrdersFillLateBehindTenSecondsOfAckedOrdersIsReported` (a resting order, then
     167,000 orders tracked, ten seconds of one 300K gateway, then its fill: fails with `FIX_TRACKED_ORDERS=65536`, the
     09fafeda bound, which evicts it) and `#aWorkingOrderEvictedPastTheTrackedBoundIsCounted`.
+- FR-FFR-20 (2026-11-11, the 450K acceptance run 6): The booking event SHALL name the submitting gateway (FR-FFR-14)
+  only for an order whose fills a gateway reports: not for a sequenced-stream order (ADR-090, the binary wire), whose
+  client is answered by the ack alone.
+  - Run 6 stage 2 (binary 345K/s + FIX 150K/s, one hour): a gateway's FIX and binary orders share its cluster session,
+    so every binary order's updates were routed to its gateway (FR-DRS-48), waited in the FIX reporter's early buffer
+    as an untracked order's (FR-FFR-15) and aged out: `outcome="lost"` 871,153,705, rising at the binary rate from the
+    first second, while the FIX fills actually sent (455,435,633) equalled the clients' count. Stage 1 (FIX only) lost 0.
+  - The same updates also filled the early buffer (65,536 orders) in well under a second per gateway, so a FIX fill that
+    really beat its ack could be pushed out behind them; and they were the larger part of the routed streams' bytes.
+  - The rule is in the engine's output, not the gateway: `event.streamSeq == 0` on the NEW. An unsequenced binary order
+    (`--unsequenced`, pre-ADR-090 clients) is still named, routed and counted lost: the engine cannot tell it from a
+    FIX order sent outside the session ring.
+  - Not a decision on the apply path: the name is only a field of the bridged booking event. Members and gateways still
+    roll together (the stage 2 gate `lost = 0` needs both).
+  - Test: `ExactlyOnceStreamTest#aSequencedOrdersBookingDoesNotNameTheGateway` (fails on the unconditioned rule).
+    Not exercised on a rig.
 

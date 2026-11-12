@@ -752,6 +752,15 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     - `test_prepare.NatsCluster#test_the_gateways_and_the_router_agree_on_the_fills_streams`.
   - Not yet on GKE. The gateways still connect through the `nats` Service, so a push crosses a route from the stream's
     server (FR-GFS-24 pins only the session store's publishes).
+- FR-DRS-54 (450K acceptance run 6, 2026-11-11): trade-processor SHALL exit when its start fails, whatever failed.
+  - Run 6 stage 2: after replica 0 ran out of heap, its restart hit "Timeout or no response waiting for NATS JetStream
+    server" while creating `orderFeedHandler`. The context failed and closed, but beans already built held non-daemon
+    NATS threads, so the JVM stayed up: the pod sat `0/1 Running` for 50 min, never restarted, and partitions 0-1 went
+    unprojected until their stream had discarded what the snapshot cursor still needed (then `RETENTION_GAP`, correctly).
+  - The feed's own start-up refusals already exit 3 through `exitAfterRefusal`; every other start failure had no exit.
+  - `TradeProcessorApplication.main` exits 1 ten seconds after a failed `SpringApplication.run` (after the refusal
+    path's own exit 3 at five), so the kubelet restarts the pod and a transient NATS timeout is retried.
+  - Test: `TradeProcessorApplicationTest` (a failed start exits 1; a clean start does not exit). Not exercised on a rig.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

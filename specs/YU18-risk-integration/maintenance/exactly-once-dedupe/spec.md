@@ -157,6 +157,20 @@ session-day (FR-XOD-19..25, snapshot format 15, compact rings in format 16, NFR-
 - FR-XOD-25: A ring answer (DUPLICATE with a ref) that names an order this gateway holds under another ClOrdID is a
   key-and-check collision. The gateway SHALL resubmit the order once under a salted key and answer the client from that
   submission. A collision SHALL NOT refuse a real order.
+- FR-XOD-26 (2026-11-11, the 450K acceptance run 6): The production render SHALL size the members' session-day table
+  (`EXACTLY_ONCE_SESSION_STREAMS`, ADR-104 §4) to at least twice the FIX sessions the gateways accept
+  (`FIX_SESSION_COMPIDS`), in whole tables of 1,024, and `validate()` SHALL refuse less.
+  - A session-day is one stream and stays until idle `EXACTLY_ONCE_STREAM_IDLE_MS` (1 h). A reset that gives every
+    session a new day inside that hour (the daily `FIX_SESSION_RESET_TIME`, or a mass re-logon with fresh stores) needs
+    two per session at once.
+  - Run 6: the engine default 1,024 was never rendered. Stage 1 keyed 600 session-days; stage 2's 600 fresh logons
+    3 min later found 424 slots: 176 sessions had every order refused `STREAM_LIMIT` for the hour (146,524,787 orders).
+    Any render with more than 512 sessions had the same refusal waiting at its daily reset.
+  - Cost: memory and snapshot grow with the sessions in use (~60 KB each, ADR-104 §4), not with the table. The size is
+    in the snapshot's header, so a change is a fresh epoch.
+  - Covers one mass reset per idle hour; a second inside the hour needs three per session.
+  - Test: `test_prepare.Rendering.test_fix_sessions_persist_and_status_has_a_read_model` (the sizes, the rendered
+    value, a 600-session gateway on a 1,024 table refused). Not exercised on a rig.
 
 ## Non-functional
 

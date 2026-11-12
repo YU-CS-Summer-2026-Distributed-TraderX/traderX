@@ -311,6 +311,15 @@ class Rendering(unittest.TestCase):
             with self.assertRaises(AssertionError, msg=value): module.validate(docs)
         engine=next(d for d in self.docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
         self.assertIn({'name':'EXACTLY_ONCE_SESSION_RING','value':'2048'},module.podspec(engine)['containers'][0]['env'])
+        # FR-XOD-26 (run 6 stage 2: 176 of 600 sessions refused STREAM_LIMIT): two session-days per FIX session
+        self.assertEqual([module.session_streams_for(n) for n in (0,7,512,513,606,1024,1025)],[1024,1024,1024,2048,2048,2048,3072])
+        self.assertIn({'name':'EXACTLY_ONCE_SESSION_STREAMS','value':str(module.session_streams_for(len(module.fix_compids(self.docs))))},
+                      module.podspec(engine)['containers'][0]['env'])
+        docs=copy.deepcopy(self.docs)
+        gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
+        ids=next(e for e in module.podspec(gw)['containers'][0]['env'] if e['name']=='FIX_SESSION_COMPIDS')
+        ids['value']=','.join(f'CLIENT{i}' for i in range(600))   # the render's 1,024 table, 600 sessions
+        with self.assertRaises(AssertionError, msg='session streams'): module.validate(docs)
         docs=copy.deepcopy(self.docs)
         gw=next(d for d in docs if d['metadata']['name']=='cluster-gateway' and module.podspec(d))
         module.podspec(gw)['containers'][0]['env'].append({'name':'FIX_MAX_QUEUED_WRITES','value':'4096'})

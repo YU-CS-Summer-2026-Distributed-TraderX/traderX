@@ -110,6 +110,31 @@ MEMBER_SESSION_RING = '2048'   # ADR-104 (FR-XOD-24): EXACTLY_ONCE_SESSION_RING,
 GATEWAY_MAX_QUEUED_WRITES = 2048   # FixGatewayAcceptor's FIX_MAX_QUEUED_WRITES default
 
 
+def fix_compids(docs):
+    """The CompIDs the gateways accept (FIX_SESSION_COMPIDS): the FIX sessions the members may be asked to key."""
+    for doc in docs:
+        if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'cluster-gateway':
+            env = {e['name']: e.get('value') or '' for e in podspec(doc)['containers'][0].get('env', [])}
+            return [c for c in env.get('FIX_SESSION_COMPIDS', '').split(',') if c]
+    return []
+
+
+def session_streams_for(sessions):
+    """FR-XOD-26 (ADR-104 section 4): a session-day is one stream and stays in the members' table until it has been
+    idle EXACTLY_ONCE_STREAM_IDLE_MS (1 h), so a reset that gives every session a new day inside that hour needs two per
+    session at once. Run 6: 600 sessions re-logged on with fresh stores 3 min after 600 had traded, on the default
+    1,024: 176 sessions were refused STREAM_LIMIT for the hour. Twice the sessions, in whole tables of 1,024.
+    ponytail: covers one mass reset per idle hour; a second inside the hour needs 3x (raise here, or shorten the idle)."""
+    return max(1024, -(-2 * sessions // 1024) * 1024)
+
+
+def size_session_streams(docs):
+    for doc in docs:
+        if doc['kind'] == 'StatefulSet' and doc['metadata']['name'] == 'order-matcher-cluster':
+            set_env(podspec(doc)['containers'][0],
+                    {'EXACTLY_ONCE_SESSION_STREAMS': str(session_streams_for(len(fix_compids(docs))))})
+
+
 def exactly_once(c):
     """ADR-104 (yaakov 2026-11-10: "Turn on exactly-once", then the engine-side design): every FIX NewOrderSingle carries
     its session-day, MsgSeqNum and PossDup/PossResend to the engine, whose per-session ClOrdID ring answers a resend
@@ -945,6 +970,13 @@ def validate(docs, declared=None):
                 require(int(ring or 2048) >= int(env.get('FIX_MAX_QUEUED_WRITES') or GATEWAY_MAX_QUEUED_WRITES),
                         'members\' EXACTLY_ONCE_SESSION_RING is below the gateways\' FIX_MAX_QUEUED_WRITES: a resend of what'
                         ' one session can have outstanding would be refused AGED_OUT (FR-XOD-24, ADR-104)')
+                streams = next((e.get('value') for d in docs if d['kind'] == 'StatefulSet'
+                                and d['metadata']['name'] == 'order-matcher-cluster'
+                                for e in podspec(d)['containers'][0].get('env', [])
+                                if e['name'] == 'EXACTLY_ONCE_SESSION_STREAMS'), None)
+                require(int(streams or 1024) >= 2 * len(fix_compids(docs)),
+                        'members\' EXACTLY_ONCE_SESSION_STREAMS is under twice the gateways\' FIX sessions: a reset that'
+                        ' re-keys every session inside the idle hour refuses the overflow STREAM_LIMIT (FR-XOD-26, ADR-104)')
                 require((env.get('ORDER_READMODEL_URL') or '').startswith('http://trade-processor:'),
                         'FIX order status has no read model (FR-FIX04)')
                 require(re.fullmatch(r'\d\d:\d\d:\d\d', env.get('FIX_SESSION_RESET_TIME') or '') and env.get('FIX_SESSION_TIME_ZONE'),
@@ -1203,6 +1235,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
     clients = load_clients(7 if fix_test_clients is True else int(fix_test_clients or 0)) if fix_test_clients else {}
     if clients:
         add_fix_test_clients(docs, clients)
+    size_session_streams(docs)   # after the last CompID is added
     declared = population.load(population_path)
     refuse_sequenced_binary(docs, declared)
     if binary_port:

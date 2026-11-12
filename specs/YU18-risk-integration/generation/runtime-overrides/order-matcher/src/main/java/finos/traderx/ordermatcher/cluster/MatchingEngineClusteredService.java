@@ -2886,7 +2886,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 // FR-FFR-14: a NEW order's booking event names the gateway that submitted it (the session's
                 // principal, ClusterClientAuth), so the read model can route the order's later fills to that gateway
                 // alone. The session and its principal are cluster state: the same on every member and on replay.
-                if (event.type == InputEvent.TYPE_ORDER_NEW && session != null
+                // FR-FFR-20: not a sequenced-stream order (ADR-090, the binary wire). Its client is answered by the
+                // ack alone and no gateway reports its fills, so naming the gateway only routed updates nobody
+                // reads: run 6 stage 2, 871M of them counted lost by the FIX reporter and churning its early buffer.
+                if (event.type == InputEvent.TYPE_ORDER_NEW && session != null && event.streamSeq == 0L
                     && OutputEvent.isOrderLifecycleKind(out.kind)) {
                     out.gateway = session.encodedPrincipal();
                 }
