@@ -39,9 +39,12 @@ MODE="$(genv FIX_FILL_FEED)"
 [[ "${MODE}" == jetstream || "${MODE}" == routed ]] || fail "FR-FFR-09: gateway FIX_FILL_FEED='${MODE}', want jetstream or routed"
 if [[ "${MODE}" == routed ]]; then   # FR-FFR-14: every gateway names itself from its pod and reads only /fills.<pod>
   for p in "${GWS[@]}"; do
-    "${K[@]}" logs "${p}" 2>/dev/null | grep -q "FIX fill feed: routed, JetStream ordered consumer on /fills.${p#pod/} of" \
-      || fail "FR-FFR-14: ${p#pod/} did not subscribe /fills.${p#pod/} (routed): $("${K[@]}" logs "${p}" 2>/dev/null | grep -m1 'FIX fill feed' || echo 'no fill feed line')"
-    "${K[@]}" logs "${p}" 2>/dev/null | grep -q 'FIX fill feed: JetStream ordered consumers' && fail "FR-FFR-14: ${p#pod/} also reads the capture stream"
+    # The log in a variable, not piped: under pipefail grep -q's early exit kills kubectl logs with SIGPIPE (141),
+    # which read a present line as absent on 4 of 5 tries (kind traderx-ffr20, 2026-11-12).
+    glog="$("${K[@]}" logs "${p}" 2>/dev/null)"
+    grep -q "FIX fill feed: routed, JetStream ordered consumer on /fills.${p#pod/} of" <<<"${glog}" \
+      || fail "FR-FFR-14: ${p#pod/} did not subscribe /fills.${p#pod/} (routed): $(grep -m1 'FIX fill feed' <<<"${glog}" || echo 'no fill feed line')"
+    grep -q 'FIX fill feed: JetStream ordered consumers' <<<"${glog}" && fail "FR-FFR-14: ${p#pod/} also reads the capture stream"
   done
   ok "FR-FFR-14: ${#GWS[@]} gateway(s) read only their own routed subject"
 fi
