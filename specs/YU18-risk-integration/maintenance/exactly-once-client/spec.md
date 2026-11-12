@@ -51,11 +51,23 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
     `traderx_gateway_readmodel_refused_total{reason="busy"|"too_large"}`.
   - Why: GKE acceptance run 7 (2026-11-12, `3526dcdf`), stage 3. After the leader's JVM was killed at 450K orders/s
     each gateway resubmitted 1,100-1,450 stranded FIX orders (FR-XOC-06), the new leader answered the booked ones
-    `DUPLICATE`, and each restatement read `?status=all` for an account holding millions of orders, as one String
-    and one JSON tree. All 18 gateways ran out of heap 9-13 s after the leader change and again 10-15 s after their
+    `DUPLICATE`, and each restatement read `?status=all`, the account's share of the read model's order ring, as one
+    String and one JSON tree, on its session's own thread (13 of them at once in one gateway's profile). All 18 gateways ran out of heap 9-13 s after the leader change and again 10-15 s after their
     clients reconnected and sent 1.4M status requests; the members' rate went from ~400K sides/s to ~0. The cluster,
     bridges, read model and history were exact. A second kill reproduced it (17 of 18), with the listing at 16-17 %
     of the gateways' allocation across the kill and absent before it.
+  - Off-rig, at the gateway's JVM settings (ZGC, 768 MB), 33 session threads x 40 reads against a read-model stand-in
+    whose `?status=all` answer is 7,150 rows / 4.5 MB (kind measured 7,129-7,150 rows / 5.5 MB an account at the
+    default 50,000-row ring; GKE's size was not measured): the `3526dcdf` reader threw `OutOfMemoryError` in 3 of 3
+    runs (27, 25, 15 of them, the first after 2.2-2.4 s) and in 0 of 1 at 13 threads; the by-key read 0 in 2 runs
+    (1,320 reads in 0.3 s); the bounded listing 0 at 7,150, 50,000 and 150,000 rows (230 of 1,320 refused busy at
+    50,000; all refused at 150,000, over the row bound or busy). The old reader there is a copy of the removed
+    method, not the old class. Harness and results: the acceptance notes, `run7-3526dcdf/gateway-oom-local/`.
+  - Kind did NOT reproduce it (`scripts/proofs/kind-fix-restatement-failover.sh`, 2026-11-12, `3526dcdf`, one
+    gateway at production's JVM settings, 28 FIX sessions x 40/s): 4,071 orders stranded by the kill, none answered
+    `DUPLICATE`, so no restatement ran and the read model served 0 listings; 0 `OutOfMemoryError`. Kind's election
+    took 10.5 s, and the stranded orders were ones sent to a leader already dead, so they were booked fresh. The
+    restatement storm needs orders committed and not yet acknowledged at the kill: GKE rates.
   - Not covered: an open order the read model has not projected yet is restated `39=3` (as before this change).
 
 ## Acceptance

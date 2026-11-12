@@ -11,6 +11,8 @@
       acceptor's ResendRequest is answered, skipped-order and silence resends; arm `xof`; local triad proof.
 - [x] FR-XOC-07: restatements and status requests read by client key; listings bounded in number and rows
       (`ReadModelOrders`); unit tests with a negative control.
-- [ ] FR-XOC-07 on a rig: a leader kill at load with gateways surviving (kind, then GKE stage 3).
+- [x] FR-XOC-07 off-rig storm at the gateway's heap: the old reader runs out, the fix does not.
+- [ ] FR-XOC-07 on a rig: a leader kill at load with gateways surviving. Kind does not reach the path
+      (`kind-fix-restatement-failover.sh`: 0 DUPLICATE answers); it needs a GKE stage 3.
 - [ ] GKE `xo` arm at ≤ 5K/s (CLOUD-QUEUE proposal).
 - [ ] Exactly-once at 400K/s: proposed as ADR-090 (`exactly-once-dedupe`, per-stream sequences), awaiting yaakov.
