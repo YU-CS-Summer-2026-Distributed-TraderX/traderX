@@ -68,11 +68,12 @@ const rest = async (acct, bearer, side, qty, px, ticker = TICKER) => {
 };
 // FR-FFR-14: in routed mode the gateway's ordered consumer is on TRADERX_FILLS, filter /fills.<its pod>; otherwise on
 // the capture, filter /orders or /orders.* (FR-FFR-13). Deleting it is the same test either way.
-const ROUTED = E.FILL_MODE === 'routed', FILL_STREAM = ROUTED ? 'TRADERX_FILLS' : 'TRADERX_FEED';
+// Sharded fills (FR-DRS-53/55): the FIX gateway's stream TRADERX_FILLS_<k> (FILL_STREAM, from its log), filter /fillsk.<k>.<name>.
+const ROUTED = E.FILL_MODE === 'routed', FILL_STREAM = ROUTED ? (E.FILL_STREAM || 'TRADERX_FILLS') : 'TRADERX_FEED';
 const js = (...a) => execFileSync('python3', [E.JS, a[0], E.NATS, FILL_STREAM, ...a.slice(1)]).toString().trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 // The gateways' fill feed is JetStream ORDERED consumers (ephemeral). trade-processor's durable /orders
 // consumer is the read model's, not the gateways': deleting it stops the order projection, so it is spared.
-const ordersConsumers = () => js('consumers').filter((c) => !c.durable && c.filters.some((f) => ROUTED ? f.startsWith('/fills.') : (f === '/orders' || f === '/orders.*' || f === '/orders.>')));
+const ordersConsumers = () => js('consumers').filter((c) => !c.durable && c.filters.some((f) => ROUTED ? /^\/fillsk?\./.test(f) : (f === '/orders' || f === '/orders.*' || f === '/orders.>')));
 
 const s = new Session(SENDER);
 await s.logon(E.FIX_PASSWORD);

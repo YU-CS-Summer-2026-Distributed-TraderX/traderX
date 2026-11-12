@@ -42,9 +42,13 @@ if [[ "${MODE}" == routed ]]; then   # FR-FFR-14: every gateway names itself fro
     # The log in a variable, not piped: under pipefail grep -q's early exit kills kubectl logs with SIGPIPE (141),
     # which read a present line as absent on 4 of 5 tries (kind traderx-ffr20, 2026-11-12).
     glog="$("${K[@]}" logs "${p}" 2>/dev/null)"
-    grep -q "FIX fill feed: routed, JetStream ordered consumer on /fills.${p#pod/} of" <<<"${glog}" \
-      || fail "FR-FFR-14: ${p#pod/} did not subscribe /fills.${p#pod/} (routed): $(grep -m1 'FIX fill feed' <<<"${glog}" || echo 'no fill feed line')"
+    # FR-DRS-53/55 (sharded fills): /fillsk.<k>.<name> of TRADERX_FILLS_<k>, the name <pod> or, claimed, <pod>_s<k>
+    sub="$(grep -oE "FIX fill feed: routed, JetStream ordered consumer on (/fills\.${p#pod/}|/fillsk\.[0-9]+\.${p#pod/}(_s[0-9]+)?) of [A-Z_0-9]+" <<<"${glog}" | head -1)"
+    [[ -n "${sub}" ]] \
+      || fail "FR-FFR-14: ${p#pod/} did not subscribe its routed subject: $(grep -m1 'FIX fill feed' <<<"${glog}" || echo 'no fill feed line')"
     grep -q 'FIX fill feed: JetStream ordered consumers' <<<"${glog}" && fail "FR-FFR-14: ${p#pod/} also reads the capture stream"
+    [[ "${p}" == "${GWS[0]}" ]] && FILL_STREAM="${sub##* of }"
+    echo "  ${p#pod/}: ${sub#FIX fill feed: routed, JetStream ordered consumer on }"
   done
   ok "FR-FFR-14: ${#GWS[@]} gateway(s) read only their own routed subject"
 fi
@@ -87,7 +91,7 @@ step "1-4. the FIX session"
 FIX_HOST=127.0.0.1 FIX_PORT="${FIXP}" FIX_PASSWORD="${PW}" TICKER="${T}" TICKER2="${T2}" PX="${PX}" GW="${GW}" \
   ACCT_F="${ACCT_F}" ACCT_R="${ACCT_R}" ACCT_X="${ACCT_X}" ACCT_Y="${ACCT_Y}" \
   BEARER_R="$(mint false "[${ACCT_R}]")" BEARER_X="$(mint false "[${ACCT_X}]")" BEARER_Y="$(mint false "[${ACCT_Y}]")" \
-  NATS="127.0.0.1:${NATSP}" JS="${here}/lib-jetstream.py" FILL_MODE="${MODE}" FILL_GW="${GWS[0]#pod/}" node "${here}/yu18-fix-fill-feed.mjs"; rc=$?
+  NATS="127.0.0.1:${NATSP}" JS="${here}/lib-jetstream.py" FILL_MODE="${MODE}" FILL_GW="${GWS[0]#pod/}" FILL_STREAM="${FILL_STREAM:-}" node "${here}/yu18-fix-fill-feed.mjs"; rc=$?
 (( rc == 0 )) || fail "the FIX session failed (above)"
 
 step "5. effect end"
@@ -106,7 +110,8 @@ if [[ "${MODE}" == routed ]]; then   # FR-DRS-48: the read model routed the cros
   [[ "${fills}" != null && -n "${fills}" ]] || fail "FR-DRS-48: trade-processor reports no fills router: ${fills}"
   routed="$(jget 'd.get("routed",0)' <<<"${fills}")"; acked="$(jget 'd.get("acked",0)' <<<"${fills}")"; failed="$(jget 'd.get("failed",0)' <<<"${fills}")"
   (( routed >= 2 && failed == 0 )) || fail "FR-DRS-48: fills routed=${routed} acked=${acked} failed=${failed}: ${fills}"
-  grep -q "\"${GWS[0]#pod/}\"" <<<"${fills}" || fail "FR-DRS-48: nothing routed to ${GWS[0]#pod/}: ${fills}"
+  # FR-DRS-55: a claimed gateway connects, and is routed to, as <pod>_s<k>
+  grep -qE "\"${GWS[0]#pod/}(_s[0-9]+)?\"" <<<"${fills}" || fail "FR-DRS-48: nothing routed to ${GWS[0]#pod/}: ${fills}"
   ok "FR-DRS-48: fills routed=${routed} acked=${acked} failed=0 to $(jget 'list(d.get("gateways",{}).keys())' <<<"${fills}")"
 fi
 
