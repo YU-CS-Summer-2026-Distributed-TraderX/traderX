@@ -41,10 +41,10 @@ final class FillsRouter {
   private final AtomicLong failed = new AtomicLong();
   private final Map<String, AtomicLong> byGateway = new ConcurrentHashMap<>();
 
-  /** Creates (or brings to its limits) the fills stream and binds to it. */
-  FillsRouter(Connection nc, String stream, long maxBytes, Duration maxAge) throws Exception {
+  /** Creates (or brings to its limits) the fills stream on the server tagged {@code tag} (FR-DRS-52) and binds to it. */
+  FillsRouter(Connection nc, String stream, long maxBytes, Duration maxAge, String tag) throws Exception {
     this.stream = stream;
-    JetStreamFeed.ensureStream(nc, stream, maxBytes, maxAge, SUBJECT_PREFIX + ">");
+    JetStreamFeed.ensureStreamOn(nc, stream, maxBytes, maxAge, tag, SUBJECT_PREFIX + ">");
     this.js = nc.jetStream();
   }
 

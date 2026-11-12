@@ -91,3 +91,5 @@
   (`stream_created_ns=0`); the migration lists those rows (codeX re-review, 2026-10-30).
 - [x] FR-DRS-36 attestation names the reconciled stream: the refusal prints each row's conditional statement with that
   stream's creation time; a stream recreated after it is refused and a replay changes nothing (codeX §16, AttestationIT).
+- [x] FR-DRS-52 `TRADERX_FILLS` on a least-loaded NATS server (`FILLS_STREAM_PLACEMENT`, default tag P mod n), rendered
+  and validated by `prepare.py` (run 5, 2026-11-11).

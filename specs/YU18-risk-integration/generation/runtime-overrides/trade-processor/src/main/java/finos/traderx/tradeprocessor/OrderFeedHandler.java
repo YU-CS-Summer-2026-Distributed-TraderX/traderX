@@ -181,8 +181,11 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   private void startSnapshottedView() throws Exception {
     viewScope = runRegistry == null ? finos.traderx.tradeprocessor.service.RunRegistry.UNKNOWN : runRegistry.activeScope();
     if (fillsRoute) {
-      fills = new FillsRouter(connection(), fillsStream, fillsMaxBytes, Duration.ofMinutes(fillsMaxAgeMinutes));
-      log.info("fills router: orders with a gateway are republished to {}<gateway> on {}", FillsRouter.SUBJECT_PREFIX, fillsStream);
+      String tag = JetStreamFeed.fillsPlacementTag(System.getenv("FILLS_STREAM_PLACEMENT"),
+          System.getenv("PROJECTION_FEED_STREAM_PLACEMENT"), partitionCount);
+      fills = new FillsRouter(connection(), fillsStream, fillsMaxBytes, Duration.ofMinutes(fillsMaxAgeMinutes), tag);
+      log.info("fills router: orders with a gateway are republished to {}<gateway> on {}, placed on {}",
+          FillsRouter.SUBJECT_PREFIX, fillsStream, tag == null ? "the server's choice" : tag);
     }
     List<String> unbound = new ArrayList<>();   // FR-DRS-36: every partition's attestation in one refusal
     for (int p : owned()) {

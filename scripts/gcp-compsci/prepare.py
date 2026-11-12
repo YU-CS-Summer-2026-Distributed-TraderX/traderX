@@ -333,7 +333,7 @@ READ_MODEL_DB_SNAPSHOT = 'eod-price-db-pre-fast'   # taken of eod-price-db-data 
 ARCHIVE_BYTES_PER_ORDER = 125
 MEMBER_ARCHIVE_HOURS = 3
 # FR-DRS-48: TRADERX_FILLS carries each order's updates once more, on its gateway's subject (1.5 × 588 B, the order part of
-# STREAM_BYTES_PER_ORDER; ~890 B/order measured 2026-11-10), on the first server (FR-DRS-44's first tag). The window is
+# STREAM_BYTES_PER_ORDER; ~890 B/order measured 2026-11-10), on a server holding the fewest partitions (FR-DRS-52). The window is
 # what the gateway's ordered consumer may fall behind by and still find its next message: a gateway's drain (30 s) and
 # restart, not a resume (the consumer starts from "new" under the pod's name; ADR-084 amendment). 2 GiB, the code's
 # default, is the kind figure: ~5 s at 450K.
@@ -369,6 +369,13 @@ def store_per_server_gb(retention, partitions, servers, fills=0):
 def placement(servers):
     """FR-DRS-44: the servers' tags, which are their pod names; partition p goes to tag p mod N."""
     return ','.join(f'nats-{i}' for i in range(servers))
+
+
+def fills_placement(partitions, servers):
+    """FR-DRS-52: TRADERX_FILLS's server, tag P mod N: p mod N gives the first P mod N servers one partition more, so this
+    one holds the fewest. On partition 0's server (nats-0, with FEED_P0 and FEED_P5 under five servers) run 5's fills
+    stopped at 450K with that disk 84-87% busy."""
+    return f'nats-{partitions % servers}'
 
 
 def set_env(c, values):
@@ -432,6 +439,7 @@ def snapshot_read_model(docs, partitions=READ_MODEL_PARTITIONS):
             c = pod['containers'][0]
             set_env(c, {'PROJECTION_FEED_MODE': 'jetstream', 'PROJECTION_FEED_PARTITIONS': str(partitions),
                         'PROJECTION_FEED_STREAM_LAYOUT': 'partition', 'PROJECTION_FEED_STREAM_PLACEMENT': placement(servers),
+                        'FILLS_STREAM_PLACEMENT': fills_placement(partitions, servers),
                         'TRADE_PROJECTION_MODE': 'snapshot', 'ORDER_FEED_PERSIST': 'false', 'ORDER_VIEW_SNAPSHOT_MS': '5000',
                         'PROJECTION_FEED_STREAM_MAX_BYTES': str(retention), 'PROJECTION_FEED_STREAM_MAX_AGE_HOURS': '2',
                         'FILLS_STREAM_MAX_BYTES': str(fills), 'FILLS_STREAM_MAX_AGE_MINUTES': str(FILLS_WINDOW_MINUTES)})
@@ -757,6 +765,11 @@ def validate_read_model(docs, require):
     held = int(tp.get('PROJECTION_FEED_STREAM_MAX_BYTES') or 0) * (-(-partitions // servers)) // partitions
     require(held < store and int(claim['spec']['resources']['requests']['storage'][:-2]) * 2**30 > store,
             "a server's share of the stream limit must sit under its max_file_store, and max_file_store under its claim (FR-PRG-20, FR-PRG-41)")
+    on = {f'nats-{i}': len(range(i, partitions, servers)) for i in range(servers)}
+    fills = tp.get('FILLS_STREAM_PLACEMENT')
+    require(fills in on and on[fills] == min(on.values()),
+            f'NATS: TRADERX_FILLS must be placed on a server holding the fewest partitions, not {fills} with '
+            f'{on.get(fills)} of {on} (FR-DRS-52)')
     db = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'eod-price-db')
     claims = [v['persistentVolumeClaim']['claimName'] for v in podspec(db)['volumes'] if 'persistentVolumeClaim' in v]
     restored = next((d for d in docs if d['kind'] == 'PersistentVolumeClaim' and d['metadata']['name'] in claims), None)

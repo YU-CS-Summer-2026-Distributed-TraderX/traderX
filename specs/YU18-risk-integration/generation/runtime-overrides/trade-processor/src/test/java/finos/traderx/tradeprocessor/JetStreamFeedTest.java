@@ -43,6 +43,27 @@ class JetStreamFeedTest {
     org.assertj.core.api.Assertions.assertThat(JetStreamFeed.placed(elsewhere, "nats-0")).as("on its server").isTrue();
   }
 
+  /**
+   * FR-DRS-52: unset, TRADERX_FILLS goes to a server holding the fewest partitions, for every partition and server count;
+   * FILLS_STREAM_PLACEMENT overrides it. Falsifiable: partition 0's tag (the old placement) puts run 5's fills on nats-0
+   * with FEED_P0 and FEED_P5 where nats-3 holds one.
+   */
+  @Test void theFillsStreamIsPlacedOnALeastLoadedServer() {
+    assertEquals("nats-3", JetStreamFeed.fillsPlacementTag(null, "nats-0,nats-1,nats-2,nats-3,nats-4", 8));
+    assertEquals("nats-4", JetStreamFeed.fillsPlacementTag(" nats-4 ", "nats-0,nats-1,nats-2,nats-3,nats-4", 8));
+    assertEquals(null, JetStreamFeed.fillsPlacementTag(null, null, 8));
+    for (int n = 1; n <= 8; n++) {
+      String tags = java.util.stream.IntStream.range(0, n).mapToObj(i -> "nats-" + i).collect(java.util.stream.Collectors.joining(","));
+      for (int partitions = 1; partitions <= 16; partitions++) {
+        java.util.Map<String, Integer> held = new java.util.HashMap<>();
+        for (int i = 0; i < n; i++) { held.put("nats-" + i, 0); }
+        for (int p = 0; p < partitions; p++) { held.merge(JetStreamFeed.placementTag(tags, p), 1, Integer::sum); }
+        String fills = JetStreamFeed.fillsPlacementTag("", tags, partitions);
+        assertEquals(java.util.Collections.min(held.values()), held.get(fills), n + " servers, " + partitions + " partitions: " + fills + " of " + held);
+      }
+    }
+  }
+
   /** FR-DRS-50: a feed that fails before it handed anything over resumes at its own start, and says so. */
   @Test void aResumeBeforeAnythingWasHandedOverNamesTheStartNotZero() {
     assertEquals("1333923", JetStreamFeed.resumeAt(JetStreamFeed.fromSequence("/trades.0", 5, 100), 1333922));
