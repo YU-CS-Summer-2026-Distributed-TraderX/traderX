@@ -154,7 +154,7 @@ class FixFillFeedIT {
             assertEquals(ClusterGatewayMain.fillsShard("gw-a", 4), ClusterGatewayMain.fillsShard("gw-e", 4));
             final List<Integer> got = new CopyOnWriteArrayList<>();
             try (Connection mine = ClusterGatewayMain.subscribeRouted(Nats.connect(url), url, "gw-a", "SHARD_FILLS", 4,
-                     b -> got.add(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b)))) {
+                     b -> got.add(Math.toIntExact(FixGatewayAcceptor.feedRef(b) * 100 + remainingOf(b))))) {
                 final String own = ClusterGatewayMain.routedShape("gw-a", "SHARD_FILLS", 4)[1];
                 admin.jetStream().publish(own, update(1, 10, (byte) 0, 0));
                 admin.jetStream().publish(ClusterGatewayMain.routedShape("gw-e", "SHARD_FILLS", 4)[1], update(2, 10, (byte) 0, 0));
