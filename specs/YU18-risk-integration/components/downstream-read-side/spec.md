@@ -799,23 +799,42 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       arm, the reader-less ones included.
     - Not measured: the gateway that forwards the read (`/recon` goes through the `order-matcher` Service to the
       first member that answers, member 0), and the member's GC under order load. Both are for the GKE proof.
+  - Measured on GKE (2026-11-12, 12:32–12:53 am ET, `1e2a6425`, the acceptance render, stage 1: FIX ramped to 450K
+    orders/s for 1,200 s; evidence `recon-throughput-20261111/gke/`):
+    - Stage 1 PASS on every layer. The recon classified 160,874,280 sides, the members' own count: 0 missing, 0
+      mismatched, 0 unverified. Run 6 classified 58,022 on the same load.
+    - At the full step (150–158K sides/s) it stood 0.3–0.8M sides behind the members, all of them held for their
+      snapshot. A sweep read 290–380K sides in 0.6–1.0 s, 25–32 pages: 380–440K sides/s while it reads. That is
+      above 320K, and the rig was not driven at 320K.
+    - The order path beside run 6's stage 1: orders/s per step 97K / 193K / 296K / 448K (run 6: 97K / 194K / 296K /
+      448K); member 0, which serves the reads, 1.71 cores at the full step (1.58); the gateways 2.86 cores on average
+      (2.86), the busiest 3.98 (3.68); trade-processor-0 1.17 cores (1.34) and 17.6 GB (18.1). No latency
+      distribution was taken.
+    - It found one fault, fixed after the run and not rerun there: the NATS client logged a WARN for every no-wait
+      pull that ended short (404 or 408), about 21 lines a second. The feed's connection no longer logs those two
+      statuses (`NatsJSONSubscriber.quietNoWaitPulls`); the read path is the one the rig ran.
   - Measured locally (`ReconThroughputIT`, 512 MB test JVM, NATS in Docker, engine window 500,000): 3,650,000 sides,
-    3.5M of them at 350K/s, all MATCHED and none unverified, in 12 of 12 runs with a page of 10,000 or more (a
-    5,000-side page dropped 196,399 once). The old loop classified 8,997. One replica's ceiling here is about 370K sides/s at the cap and 480K/s without it; at 450K/s
-    driven it classified 4.0M of 4.65M and counted the other 646,337.
+    3.5M of them at 350K/s, all MATCHED and none unverified, in 12 of 12 runs on a quiet host with a page of 10,000
+    or more (a 5,000-side page dropped 196,399 once). The old loop classified 8,997. One replica's ceiling here is
+    330–370K sides/s at a 10,000-side page, and 480K/s uncapped at 20,000; at 450K/s driven it classified 4.0M of
+    4.65M and counted the other 646,337.
+    - With another lane's kind cluster holding the Mac at a load average of 11, the 350K run dropped and counted
+      0.4M–2.6M sides in 3 of 3 runs. So the suite drives run 6's peak (160K sides/s), which passes under that load,
+      and 350K is the opt-in arm `RECON_IT_RATE=350000`.
   - Not changed, and open:
-    - One replica runs the recon. If one replica cannot reach 320K sides/s on GKE's cores, the next step is a recon
-      per partition owner (FR-DRS-45), which needs a partition filter on the member's blotter.
+    - One replica runs the recon, and its margin over 320K sides/s is thin (above). The next step is a recon per
+      partition owner (FR-DRS-45), which needs a partition filter on the member's blotter.
     - A reader opened under load starts 60 s back (`LEDGER_START_SLACK`), so a trade-processor-0 restart at the peak
       reads about 9.5M sides before it classifies, and counts what the window drops meanwhile.
   - Tests:
     - `ReconciliationSweepPagingTest`: one sweep reads ten pages to the head; a dropped range is counted; a side held
       for its projection is classified after the window rolled past it; a spent budget stops the sweep and the next
       goes on. With the loop put back to one page, two of the four fail and no other test of the module does (172).
-    - `ReconThroughputIT`: the 350K run above; sides waiting on their snapshot outlive the window (63K held against a
-      40K window, all MATCHED); past the buffer bound the recon stops reading and matched + unverified = driven.
+    - `ReconThroughputIT`: 1.75M sides, 1.6M of them at 160K/s, all MATCHED (the old loop: one page a sweep); sides
+      waiting on their snapshot outlive the window (63K held against a 40K window, all MATCHED); past the buffer
+      bound the recon stops reading and matched + unverified = driven.
     - `BlotterLimitTest`: the member bounds `limit` by its ceiling.
-  - Not yet on GKE.
+  - Not on GKE: 320K sides/s driven; stage 2's mixed load, where run 6's replica 0 ran out of heap; the warning fix.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
