@@ -70,6 +70,10 @@
       run before the ring's oldest slot), `LaneSpoolBudgetIT` (past the budget: the hole counted exactly),
       `LaneSpoolCodecTest`. kind: a promotion 150 s into a 190 s freeze, 346,768 of 346,768 sides (control lost 71,100).
       GKE 2026-11-12: a server frozen 120 s past the ring, nothing lost, spool off loses; not yet at 450K under the fault.
+- [x] The trade store books a message handed over below an idle-advanced cursor instead of ignoring it as a replay,
+      and counts it (`passedByIdle`) (FR-DRS-58; GKE 2026-11-12: partition 6 ended 8 sides short, nothing logged).
+      `TradeViewTest#aMessageDeliveredAfterAnIdleAdvancePassedItIsBookedAndCounted`, `JetStreamFeedIdleIT`.
+      Whether that was the GKE mechanism is open: not reproduced locally.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.

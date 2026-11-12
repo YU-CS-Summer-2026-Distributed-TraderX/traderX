@@ -57,9 +57,15 @@ public final class TradeView {
   private final Set<LocalDate> dirtyDays = new HashSet<>();
   private long streamSeq;
   private int streamIdx = Integer.MAX_VALUE;   // FR-DRS-41: the last record applied of message streamSeq (MAX: all of it)
+  // FR-DRS-58: the last record this view was handed and dealt with (booked, or refused as a second copy). The cursor
+  // above can be ahead of it after an idle advance; a replay is judged against this, never against the cursor.
+  private long handledSeq;
+  private int handledIdx = Integer.MAX_VALUE;
+  private long idleHead;   // the highest head an idle advance set the cursor to
   private long consensusSeq;
   private long appliedSinceCut;
   private long appliedTotal;
+  private long passedByIdle;
   private Accounting acct = Accounting.EMPTY;
 
   static String key(String scope, Integer account, String security) {
@@ -73,6 +79,8 @@ public final class TradeView {
     }
     streamSeq = cursorStreamSeq;
     streamIdx = Integer.MAX_VALUE;
+    handledSeq = cursorStreamSeq;
+    handledIdx = Integer.MAX_VALUE;
     consensusSeq = cursorConsensusSeq;
   }
 
@@ -98,11 +106,19 @@ public final class TradeView {
 
   /**
    * FR-DRS-41: record {@code idx} of the message at stream position {@code seq} (a message holds one or more sides).
-   * A record at or before the last applied, by (seq, idx), is a replay and is ignored. The caller holds this view's
+   * A record at or before the last one handled, by (seq, idx), is a replay and is ignored. The caller holds this view's
    * monitor across one message's records, so a cut never falls between them: the cursor it carries is a whole message.
+   *
+   * <p>FR-DRS-58: a record after the last one handled but at or below the cursor was passed by an idle advance
+   * ({@link #idle}: the head was read while this message was still undelivered). Nothing booked it, so it is booked
+   * here and counted, and the cursor comes back to it: before this it was ignored as a replay, with no log line and no
+   * counter, and the partition ended short.
    */
   public synchronized boolean apply(TradeOrder order, long seq, int idx, BiFunction<TradeOrder, Position, Trade> booker) {
-    if (seq < streamSeq || (seq == streamSeq && idx <= streamIdx)) { return false; }
+    if (seq < handledSeq || (seq == handledSeq && idx <= handledIdx)) { return false; }
+    if (seq <= idleHead) { passedByIdle++; }
+    handledSeq = seq;
+    handledIdx = idx;
     long tradeSeq = TradeFeedHandler.TradeSeqGaps.seqOf(order.getId());
     String epoch = tradeSeq > 0 ? TradeFeedHandler.TradeSeqGaps.epochOf(order.getId()) : acct.epoch();
     if (tradeSeq > 0 && epoch.equals(acct.epoch()) && tradeSeq <= acct.maxSeq()) {
@@ -152,7 +168,7 @@ public final class TradeView {
    * move there. Without this an idle partition's cursor ages out of retention while nothing was lost.
    */
   public synchronized void idle(long streamLastSeq) {
-    if (streamLastSeq > streamSeq) { streamSeq = streamLastSeq; streamIdx = Integer.MAX_VALUE; }
+    if (streamLastSeq > streamSeq) { streamSeq = streamLastSeq; streamIdx = Integer.MAX_VALUE; idleHead = streamLastSeq; }
   }
 
   /** Copy out everything changed since the last cut, with the cursor it is exact at, and reset. */
@@ -188,6 +204,7 @@ public final class TradeView {
     return c;
   }
 
+  public synchronized long passedByIdle() { return passedByIdle; }
   public synchronized long streamSeq() { return streamSeq; }
   public synchronized long applied() { return appliedTotal; }
   public synchronized Accounting accounting() { return acct; }

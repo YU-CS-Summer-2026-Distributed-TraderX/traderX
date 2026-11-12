@@ -385,7 +385,7 @@ public final class JetStreamFeed {
     return t;
   }
 
-  static final Duration IDLE_EVERY = Duration.ofSeconds(5);
+  static volatile Duration IDLE_EVERY = Duration.ofSeconds(5);   // not final: JetStreamFeedIdleIT shortens it
 
   /**
    * FR-DRS-31: the same loop split in two threads, so the next pull is in flight while the previous batch is applied.

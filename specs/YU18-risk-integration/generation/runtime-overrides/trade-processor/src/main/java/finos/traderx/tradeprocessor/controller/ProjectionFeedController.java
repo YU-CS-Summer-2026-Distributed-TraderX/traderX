@@ -150,7 +150,8 @@ public final class ProjectionFeedController {
           m.put("refused", t.refused());
           Map<String, Object> parts = new LinkedHashMap<>();
           t.views().forEach((p, v) -> parts.put(String.valueOf(p), Map.of("streamSeq", v.streamSeq(), "applied", v.applied(),
-              "positions", v.positionCount(), "dirty", v.dirtyCount(), "duplicates", v.accounting().duplicates())));
+              "positions", v.positionCount(), "dirty", v.dirtyCount(), "duplicates", v.accounting().duplicates(),
+              "passedByIdle", v.passedByIdle())));
           m.put("partitions", parts);
         }
         out.put("trades", m);

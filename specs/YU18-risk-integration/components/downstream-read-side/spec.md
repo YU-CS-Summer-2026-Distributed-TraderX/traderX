@@ -955,6 +955,34 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
     they restart too). No test drives a 429 on the spool's last message or the catch-up over a hole; both paths are
     code-reviewed only.
+- FR-DRS-58 (bridge-overflow lane, 2026-11-12): The trade store SHALL book every trade message it is handed that it has
+  not handled, whatever its cursor says. A replay is a record at or below the last one the view handled (booked, or
+  refused as a second copy), not one at or below the cursor: the cursor can be ahead of what was handled after an idle
+  advance (`TradeView.idle`, the stream's head taken when the consumer reports nothing pending). A record handed over
+  above the last handled and at or below an idle head is booked, counted (`passedByIdle`, on
+  `/v2/projection-feed` per partition) and logged as an ALERT, and the cursor comes back to it.
+  - Why: on GKE (2026-11-12, bridge-overflow stage 3: one NATS server frozen 120 s, the leader killed 86 s in) the
+    read model ended 8 sides short on partition 6, which was not the frozen server's. The stream held the 8, in order
+    and once each, in three consecutive trade messages (stream sequences 3366994, 3366996, 3366998, published in the
+    burst that followed a 36 s stall), and the history store held them. trade-processor-3 logged nothing: no
+    refusal, no duplicate, no delivery gap, cursor at the stream's last. After the next stage the same partition
+    was 32 short. G3 refused both times, which is how it was seen.
+  - The only path that drops a delivered trade message without a log line or a counter was the replay rule against
+    an idle-advanced cursor. That it is what happened on GKE is NOT established: the alternative is a message the
+    server never delivered to the consumer, which no client rule can book. Locally, on one NATS 2.14 server, the idle
+    check held: `JetStreamFeedIdleIT` (bursts between silences, an idle check after every empty fetch) never saw a
+    message handed over below an idle head in three runs, and a direct probe that read the stream's stored count and
+    then the consumer's pending 51,550 times under a publish flood never found pending behind. `passedByIdle` is
+    the instrument that tells the two apart at the next run at rate: above 0 with G3 exact means this was it; 0
+    with sides missing means the delivery never happened.
+  - The order view applies every message it is handed and has no such rule; its idle advance only moves the cursor it
+    commits.
+  - Test. `TradeViewTest#aMessageDeliveredAfterAnIdleAdvancePassedItIsBookedAndCounted` (before this rule: "103 was
+    never booked", the assertion that fails), `#idleMovesTheCursorForwardOnly` (its last assertion was the old rule
+    and now expects the booking), `JetStreamFeedIdleIT`.
+  - Not covered: a snapshot taken between a wrong idle advance and the late delivery commits a cursor past an
+    unbooked message; a crash in that window resumes after it. The window is the delivery delay; the idle check itself
+    is unchanged.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
