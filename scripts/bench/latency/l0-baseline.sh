@@ -65,7 +65,9 @@ policy(){ op /risk/control/policy "{\"policyVersion\":$(date +%s),\"killSwitch\"
 # and one failed read is retried after 3 s, so a refusal is the load's state, not an API hiccup (2026-11-10, arm S).
 load_once(){ local p bad=0; [ "$(kc get pods -l job-name=binary-load --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 8 ] || return 1
   for p in $(kc get pods -l job-name=binary-load --no-headers -o custom-columns=:metadata.name); do
-    case $(kc logs "$p" --tail=1 2>/dev/null) in *' rejected=0 '*) ;; *) bad=1 ;; esac; done; [ $bad = 0 ]; }
+    # sent=0 with rejected=0 passed this check on 2026-11-11 (session 3): a sequenced load against pre-ADR-090
+    # members waited on its stream probes and never sent, and four blocks measured an idle leader.
+    case $(kc logs "$p" --tail=1 2>/dev/null) in *' sent=0 '*) bad=1 ;; *' rejected=0 '*) ;; *) bad=1 ;; esac; done; [ $bad = 0 ]; }
 load_ok(){ load_once || { sleep 3; load_once; }; }
 
 pp_pair(){   # pp_pair LABEL PING_POD PING_CONTAINER PONG_POD PONG_CONTAINER IDLE
@@ -174,7 +176,7 @@ spec:
         image: node:20-alpine
         command: [node, /load/binary-load.mjs, --resolve, "http://order-matcher:18110", --ticker, "$T", --px, "$PX",
                   --sessions, "64", --rate, "$PER", --secs, "3600", --ramp, "0.5", --step-secs, "60",
-                  --phase-secs, "300", --pause-ms, "4000", --max-in-flight, "800", --out, /tmp/results.json]
+                  --phase-secs, "300", --pause-ms, "4000", --max-in-flight, "800", --out, /tmp/results.json${LOAD_FLAGS:+, $LOAD_FLAGS}]
         resources: {requests: {cpu: "1500m", memory: 1Gi}, limits: {memory: 2Gi}}
         volumeMounts: [{name: load, mountPath: /load}]
       volumes: [{name: load, configMap: {name: binary-load}}]
@@ -206,6 +208,8 @@ alloc)
       | jq -r '.items[] | [.metadata.namespace + "/" + .metadata.name, .status.qosClass, ([.spec.containers[].resources.requests.cpu // "0"] | join("+"))] | @tsv'
   done | tee "$EVIDENCE/alloc.txt" ;;
 seed)
+  # after a member restart the gateways (the order-matcher service) reconnect first: curl exit 7 otherwise (2026-11-11)
+  kc wait --for=condition=Ready pod -l app=cluster-gateway --timeout=600s >/dev/null
   T=${2:?}; PX=${3:?}; A="9900010 9900011 9900012 9900013 9900014 9900015 9900016 9900017 9900018 9900019"
   vals=$(for a in $A; do printf '(%s,"l1"),' "$a"; done); sql="insert ignore into accounts(id,displayname) values ${vals%,}"
   n=$(kc exec deploy/eod-price-db -c mariadb -- sh -c 'mariadb -N -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" traderx -e "$1; select count(*) from accounts where id between 9900010 and 9900019"' sh "$sql")
@@ -236,6 +240,9 @@ arm)
     case $up in *"idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE"*) ;;
       *) log "REFUSED arm $LABEL: m$m started with '${up#*baseDir=}', not idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE"; exit 1 ;; esac
   done
+  if [ -n "${EXPECT_DRIVER:-}" ]; then for m in 0 1 2; do   # FR-GMR-14: the start line names the media driver mode
+    case $(kc logs "order-matcher-cluster-$m" -c cluster-node | first_line 'Cluster node up') in *"mediaDriver=$EXPECT_DRIVER"*) ;;
+      *) log "REFUSED arm $LABEL: m$m does not report mediaDriver=$EXPECT_DRIVER"; exit 1 ;; esac; done; fi
   until L=$(leader 2>/dev/null); do sleep 5; done
   log "arm $LABEL: members rolled, leader m$L; idle=[$EXPECT_IDLE] archiveThreading=$EXPECT_ARCHIVE; $(kc get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[?(@.name=="cluster-node")].resources.limits.cpu}') CPU" ;;
 static|shared)
@@ -247,6 +254,12 @@ static|shared)
   POLICY=static; [ "$MODE" = shared ] && POLICY=none; CFG="$EVIDENCE/node-engine-$MODE.yaml"
   awk -v p="$POLICY" '/^  cpuManagerPolicy:/ {next} {print} /^kubeletConfig:$/ {print "  cpuManagerPolicy: " p}' "$RIG/node-engine.yaml" > "$CFG"
   [ "$(grep -c "^  cpuManagerPolicy: $POLICY\$" "$CFG")" = 1 ] || { log "REFUSED $MODE: could not derive the $POLICY config"; exit 1; }
+  # NODE_SYSCTLS=k=v,k=v (latency session 3: net.core.busy_read, net.core.wmem_*): added under linuxConfig.sysctl,
+  # replacing the same key; unset, the node gets exactly node-engine.yaml's sysctls.
+  for kv in $(echo "${NODE_SYSCTLS:-}" | tr ',' ' '); do k=${kv%%=*}; v=${kv#*=}
+    awk -v k="$k" -v v="$v" 'index($0, "    " k ":") == 1 {next} {print} /^  sysctl:$/ {print "    " k ": '"'"'" v "'"'"'"}' "$CFG" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+    [ "$(grep -c "^    $k: '$v'\$" "$CFG")" = 1 ] || { log "REFUSED $MODE: could not set $k=$v"; exit 1; }
+  done
   g(){ gcloud container "$@" --zone "$ZONE" --project "$PROJECT" --quiet; }   # resize takes the cluster positionally
   kc scale sts/order-matcher-cluster --replicas=0 >/dev/null
   until [ -z "$(kc get pods -l app=order-matcher-cluster -o name)" ]; do sleep 5; done
@@ -257,6 +270,10 @@ static|shared)
   g clusters resize "$CLUSTER" --node-pool "$POOL" --num-nodes "$n" >/dev/null
   [ "$(g node-pools describe "$POOL" --cluster "$CLUSTER" --format='value(config.kubeletConfig.cpuManagerPolicy)')" = "$POLICY" ] \
     || { log "REFUSED $MODE: $POOL does not report cpuManagerPolicy $POLICY"; exit 1; }
+  for kv in $(echo "${NODE_SYSCTLS:-}" | tr ',' ' '); do k=${kv%%=*}; v=${kv#*=}
+    [ "$(g node-pools describe "$POOL" --cluster "$CLUSTER" --format="value(config.linuxNodeConfig.sysctls.\"$k\")")" = "$v" ] \
+      || { log "REFUSED $MODE: $POOL does not report $k=$v"; exit 1; }
+  done
   kc set resources sts/order-matcher-cluster -c cluster-node --requests="cpu=$CPU" --limits="cpu=$CPU" >/dev/null
   kc scale sts/order-matcher-cluster --replicas=3 >/dev/null
   kc rollout status sts/order-matcher-cluster --timeout=1800s >/dev/null
@@ -267,6 +284,36 @@ static|shared)
     else [ "$w" -gt "$CPU" ] || { log "REFUSED shared: m$m cpuset $cs is $w CPUs, still exclusive"; exit 1; }; fi
   done
   until L=$(leader 2>/dev/null); do sleep 5; done
-  log "$MODE: $POOL on cpuManagerPolicy $POLICY ($n nodes), members at $CPU CPU (cpuset $w wide), leader m$L" ;;
+  log "$MODE: $POOL on cpuManagerPolicy $POLICY ($n nodes)${NODE_SYSCTLS:+, sysctls $NODE_SYSCTLS}, members at $CPU CPU (cpuset $w wide), leader m$L" ;;
+pin)
+  # Latency session 3: each hot agent (sender, receiver, consensus module, clustered service) on its own physical core
+  # of the member's exclusive cpuset, and every other JVM thread kept off those cores and their SMT siblings. Needs the
+  # static CPU manager (refuses on a cpuset wider than the member's request). Lasts until the member restarts.
+  CPU=${2:?}
+  for m in 0 1 2; do
+    out=$(kc exec "order-matcher-cluster-$m" -c cluster-node -- sh -c '
+      set -e; CPU='"$CPU"'
+      for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
+      mine=$(cat /sys/fs/cgroup/cpuset.cpus.effective)
+      expand(){ for part in $(echo "$1" | tr "," " "); do case $part in
+        *-*) i=${part%-*}; while [ "$i" -le "${part#*-}" ]; do echo "$i"; i=$((i + 1)); done ;; *) echo "$part" ;; esac; done; }
+      cpus=$(expand "$mine"); [ "$(echo "$cpus" | wc -l)" = "$CPU" ] || { echo "REFUSED cpuset $mine is not $CPU exclusive"; exit 1; }
+      # whole physical cores inside the cpuset, as "first,sibling" groups
+      groups=$(for c in $cpus; do s=$(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list); all=1
+        for x in $(expand "$s"); do echo "$cpus" | grep -qx "$x" || all=0; done; [ $all = 1 ] && echo "$s"; done | sort -u)
+      [ "$(echo "$groups" | wc -l)" -ge 5 ] || { echo "REFUSED only $(echo "$groups" | wc -l) whole cores in $mine"; exit 1; }
+      i=0; hot=""
+      for name in sender receiver consensus-modul clustered-servi; do
+        i=$((i + 1)); g=$(echo "$groups" | sed -n "${i}p"); c=${g%%[,-]*}
+        for t in /proc/$J/task/*; do [ "$(cat "$t/comm" 2>/dev/null)" = "$name" ] && taskset -p -c "$c" "${t##*/}" >/dev/null && echo "$name -> $c (core $g)"; done
+        hot="$hot $(expand "$g" | tr "\\n" " ")"
+      done
+      rest=$(for c in $cpus; do echo " $hot " | grep -q " $c " || echo "$c"; done | paste -sd, -)
+      n=0; for t in /proc/$J/task/*; do case " sender receiver consensus-modul clustered-servi " in *" $(cat "$t/comm" 2>/dev/null) "*) ;;
+        *) taskset -p -c "$rest" "${t##*/}" >/dev/null 2>&1 && n=$((n + 1)) ;; esac; done
+      echo "others ($n threads) -> $rest"') || { log "REFUSED pin m$m: $out"; exit 1; }
+    case $out in *REFUSED*) log "REFUSED pin m$m: $out"; exit 1 ;; esac
+    log "pin m$m: $(echo "$out" | tr '\n' ';')"
+  done ;;
 *) echo "unknown: $1" >&2; exit 2 ;;
 esac
