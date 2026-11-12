@@ -966,8 +966,12 @@ public final class ClusterNodeMain {
             result.put("frozenSequence",service.frozenRunSequence());return result;
         }));
 
+        // FR-DRS-56: the recon asks for more than a page with `limit`, up to RECON_PAGE_MAX (50,000 sides, about 8 MB of
+        // JSON built on this HTTP thread). Without `limit` the answer is RECON_PAGE_SIZE, as before.
+        final int pageMax = Math.max(pageSize, Integer.parseInt(env("RECON_PAGE_MAX", "50000")));
         server.createContext("/recon/trades/blotter", exchange ->
-            guarded.apply(exchange, () -> recon.liveSince(longParam(exchange, "sinceSeq", 0), pageSize)));
+            guarded.apply(exchange, () -> recon.liveSince(longParam(exchange, "sinceSeq", 0),
+                blotterLimit(longParam(exchange, "limit", pageSize), pageMax))));
 
         // FR-ERH-F16: the restore gate's reference. A strict full-log replay into a fresh shadow (read-only; refuses a
         // purged or discontinuous archive), in the same terms as /health?digest=1.
@@ -1017,6 +1021,11 @@ public final class ClusterNodeMain {
         server.createContext("/regulatory/report", exchange ->
             guarded.apply(exchange, () -> recon.regulatoryReport(
                 longParam(exchange, "fromSeq", 0), longParam(exchange, "toSeq", 0))));
+    }
+
+    /** FR-DRS-56: the caller's `limit`, at least one side and at most the member's own ceiling. */
+    static int blotterLimit(final long asked, final int pageMax) {
+        return (int) Math.max(1, Math.min(asked, pageMax));
     }
 
     private static long longParam(final com.sun.net.httpserver.HttpExchange exchange,

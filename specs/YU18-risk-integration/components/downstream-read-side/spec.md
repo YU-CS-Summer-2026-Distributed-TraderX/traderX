@@ -686,7 +686,8 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       heap at 12:05 pm ET with 93.1M published.
     - Replicas 1–3 own more traded partitions and lived.
   - Now: `pending` holds a page (RECON_PAGE_SIZE, 1,000) plus at most one fetch (1,000) per stream past it, about 9K
-    sides, under 3 MB. Stopping early decides nothing: a side not read yet stays WAIT until its own partition's head
+    sides, under 3 MB. (FR-DRS-56 changes both numbers: the sides read and not yet classified, plus one 250-message
+    fetch per stream.) Stopping early decides nothing: a side not read yet stays WAIT until its own partition's head
     passes it, and the next sweep reads on from there.
   - The order view's open set follows the members' book plus the read lag, so neither it nor the recon needs a heap
     sized to the order rate.
@@ -695,8 +696,7 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       empty, 20,000 sides. A 100-side page holds at most 2,100, where the unfixed reader held 20,000.
     - `LedgerSettlementReconTest#missingIsJudgedAgainstTheSidesOwnPartitionHead` now asserts the rule; it had asserted
       that an unseen partition holds the read open.
-  - Not changed: at 1,000 sides per 10 s sweep the recon classifies 100 sides/s, so under load its cursor falls behind
-    and stays behind.
+  - Not changed here: at 1,000 sides per 10 s sweep the recon classifies 100 sides/s. FR-DRS-56 changes it.
 
 - FR-DRS-52 (450K acceptance run 5, 2026-11-11): `TRADERX_FILLS` (FR-DRS-48) SHALL be placed on a NATS server that
   holds the fewest capture partitions. `FILLS_STREAM_PLACEMENT` names its tag. Unset, it is tag `P mod n` of
@@ -789,6 +789,89 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     `FixFillFeedIT#eighteenGatewaysClaimingTogetherEachHoldTheirOwnStream` starts 18 claimers at once, each on its own
     connection, against a real NATS: three runs each read 18 distinct streams and 4 / 3 / 4 / 3 / 4 (or 4 / 3 / 3 / 4 / 4)
     by server. Not exercised on a rig: one NATS server stood in for five, and no fills flowed.
+
+- FR-DRS-56 (450K acceptance run 6, 2026-11-11; 54 and 55 are the acceptance-run-6 lane's): The recon SHALL classify every side the engine books, at twice run
+  6's peak side rate (158,190 sides/s over 30 s, so 320K sides/s). A side it could not read SHALL be counted
+  `unverified`, never passed over.
+  - Why: a sweep classified ONE blotter page (RECON_PAGE_SIZE, 1,000) every 10 s whatever was traded.
+    - The members keep only their newest 500,000 sides (RECON_BLOTTER_CAPACITY), 3.2 s of that peak. A fetch below
+      the window returns the window's oldest page, so the cursor jumped there each sweep and stayed within a few
+      million of the head.
+    - Run 6's stage 1 classified 58,022 of ~125M sides. Its 0 missing and 0 mismatched describe those alone, and
+      nothing counted the rest.
+    - The cause was confirmed on the old code before the fix: every sweep classified exactly one page (1,000, and
+      5,000 with a 5,000-side page) at 20K and at 350K sides/s, and a fetch took 2–5 ms.
+    - Each sweep also re-read every stream side between two pages into `pending`: 2.4M–4.7M sides (0.7–1.3 GB) on
+      trade-processor-0 for the length of the sweep in stage 1. In stage 2 (~396K sides/s) the cursor jumped 20–38M
+      sides a sweep, and trade-processor-0 ran out of its 16 GB heap 17 min in (`mixed/diag/tp0-previous.log`;
+      replicas 1–3 stayed at 2–4% live). The sides of a dropped range are no longer kept.
+  - The sweep:
+    - A sweep reads pages until the engine serves a short one (its head) or `recon.sweep.budget-ms` (30 s) is spent.
+      It asks for `recon.page-limit` (10,000) sides with `&limit=`; a member serves at most `RECON_PAGE_MAX` (50,000)
+      and, without `limit`, RECON_PAGE_SIZE as before. A member that ignores `limit` still works, a page at a time.
+    - The engine fetch and the capture-stream read run side by side, and each partition stream has its own reader
+      (the pod's common pool). The readers ask without waiting: a waiting fetch sat out 50 ms on every stream with
+      nothing new, which a partition that never trades always is.
+    - Sides read and not yet classifiable are held (`traderx_recon_held`), up to `recon.buffer.max-sides` (0 = an
+      eighth of the heap at about 600 B a side). The cursor stays the classified position. A side waits for its
+      partition's snapshot, up to 5 s, which is longer than the engine's window holds it.
+    - Past the bound the recon stops reading. Whatever the window then drops is counted in
+      `traderx_recon_unverified` (the scrape drops a gauge's `_total`) and `/recon/status` `unverified`, with a WARN naming the range. The count is in
+      tradeSeqs, which the engine gives to booked sides only. It is in memory: after a restart it starts at 0 while
+      the stored cursor does not.
+    - Every verdict rule is unchanged: the held side inside its grace, MISSING only once the side's own partition has
+      passed it, WAIT until the snapshot cursor covers it, and the reset on an epoch roll.
+  - The bounds, each with what binds it:
+    - `recon.poll.interval-ms` 1,000 (was 10,000; the production render sets it). The trading between two sweeps must
+      fit the engine's window: 1 s at 320K sides/s is 64% of it. At 3 s the same test drops 66,503 of 3.65M sides.
+    - `recon.page-limit` 10,000: 1.6 MB of JSON on the member, under the 2 MB at which its 12 GB G1 heap allocates
+      humongous. The member's cost per side is the same at 1,000, 20,000 and 50,000.
+    - `recon.read.max-sides-per-second` 500,000 (3.2× the peak): the most the recon asks of the engine, which only
+      binds while it catches up.
+    - `spring.task.scheduling.pool.size` 2: a sweep may hold its thread for its budget, and settlement keeps its own.
+  - What a read costs the member (its own `TradeBlotter` and JSON writer, local, 10 s arms, `record()` at 160K/s):
+    - 0.35 µs of one HTTP thread and 961 B allocated per side: 6% of a core and 154 MB/s at 160K sides/s, 51% and
+      798 MB/s at the 500K cap.
+    - `record()` on the apply thread: p99 583 ns with and without the reader; p99.9 between 1.4 and 4.9 µs in every
+      arm, the reader-less ones included.
+    - Not measured: the gateway that forwards the read (`/recon` goes through the `order-matcher` Service to the
+      first member that answers, member 0), and the member's GC under order load. Both are for the GKE proof.
+  - Measured on GKE (2026-11-12, 12:32–12:53 am ET, `1e2a6425`, the acceptance render, stage 1: FIX ramped to 450K
+    orders/s for 1,200 s; evidence `recon-throughput-20261111/gke/`):
+    - Stage 1 PASS on every layer. The recon classified 160,874,280 sides, the members' own count: 0 missing, 0
+      mismatched, 0 unverified. Run 6 classified 58,022 on the same load.
+    - At the full step (150–158K sides/s) it stood 0.3–0.8M sides behind the members, all of them held for their
+      snapshot. A sweep read 290–380K sides in 0.6–1.0 s, 25–32 pages: 380–440K sides/s while it reads. That is
+      above 320K, and the rig was not driven at 320K.
+    - The order path beside run 6's stage 1: orders/s per step 97K / 193K / 296K / 448K (run 6: 97K / 194K / 296K /
+      448K); member 0, which serves the reads, 1.71 cores at the full step (1.58); the gateways 2.86 cores on average
+      (2.86), the busiest 3.98 (3.68); trade-processor-0 1.17 cores (1.34) and 17.6 GB (18.1). No latency
+      distribution was taken.
+    - It found one fault, fixed after the run and not rerun there: the NATS client logged a WARN for every no-wait
+      pull that ended short (404 or 408), about 21 lines a second. The feed's connection no longer logs those two
+      statuses (`NatsJSONSubscriber.quietNoWaitPulls`); the read path is the one the rig ran.
+  - Measured locally (`ReconThroughputIT`, 512 MB test JVM, NATS in Docker, engine window 500,000): 3,650,000 sides,
+    3.5M of them at 350K/s, all MATCHED and none unverified, in 12 of 12 runs on a quiet host with a page of 10,000
+    or more (a 5,000-side page dropped 196,399 once). The old loop classified 8,997. One replica's ceiling here is
+    330–370K sides/s at a 10,000-side page, and 480K/s uncapped at 20,000; at 450K/s driven it classified 4.0M of
+    4.65M and counted the other 646,337.
+    - With another lane's kind cluster holding the Mac at a load average of 11, the 350K run dropped and counted
+      0.4M–2.6M sides in 3 of 3 runs. So the suite drives run 6's peak (160K sides/s), which passes under that load,
+      and 350K is the opt-in arm `RECON_IT_RATE=350000`.
+  - Not changed, and open:
+    - One replica runs the recon, and its margin over 320K sides/s is thin (above). The next step is a recon per
+      partition owner (FR-DRS-45), which needs a partition filter on the member's blotter.
+    - A reader opened under load starts 60 s back (`LEDGER_START_SLACK`), so a trade-processor-0 restart at the peak
+      reads about 9.5M sides before it classifies, and counts what the window drops meanwhile.
+  - Tests:
+    - `ReconciliationSweepPagingTest`: one sweep reads ten pages to the head; a dropped range is counted; a side held
+      for its projection is classified after the window rolled past it; a spent budget stops the sweep and the next
+      goes on. With the loop put back to one page, two of the four fail and no other test of the module does (172).
+    - `ReconThroughputIT`: 1.75M sides, 1.6M of them at 160K/s, all MATCHED (the old loop: one page a sweep); sides
+      waiting on their snapshot outlive the window (63K held against a 40K window, all MATCHED); past the buffer
+      bound the recon stops reading and matched + unverified = driven.
+    - `BlotterLimitTest`: the member bounds `limit` by its ceiling.
+  - Not on GKE: 320K sides/s driven; stage 2's mixed load, where run 6's replica 0 ran out of heap; the warning fix.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and

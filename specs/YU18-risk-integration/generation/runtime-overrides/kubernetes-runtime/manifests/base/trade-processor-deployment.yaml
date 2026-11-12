@@ -71,8 +71,11 @@ spec:
             # existed; the cluster gateway now forwards /recon/* to a member's committed-log blotter
             # (as YU17's cluster tier already says), and with TRADE_PROJECTION_MODE=snapshot the sweep
             # classifies against the capture stream, not the SQL trades window (§7.6).
+            # FR-DRS-56: 1 s, not 10. A sweep now reads the members' live window (RECON_BLOTTER_CAPACITY,
+            # 500,000 sides) to its head; between sweeps the window must not roll past the last side read,
+            # and 10 s of run 6's peak (158K sides/s) is three windows.
             - name: RECON_POLL_INTERVAL_MS
-              value: "10000"
+              value: "1000"
             # YU18 trade store retention (docs/engineering/downstream-at-400k.md §7.7), applied to the
             # TRADERX_FEED stream when PROJECTION_FEED_MODE=jetstream (an existing stream is updated):
             #   462 B/trade side + 588 B/order update (stored, measured) x 10K + 10K msgs/s (this tier's

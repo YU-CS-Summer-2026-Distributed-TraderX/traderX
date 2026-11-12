@@ -151,6 +151,19 @@ public abstract class NatsJSONSubscriber<T> implements Subscriber<T>, Initializi
     return out;
   }
 
+  /**
+   * FR-DRS-56: the recon's ledger reader asks each stream without waiting, and the client logs a WARN for every such
+   * pull that ends short ("404 No Messages" with nothing delivered, "408 Request Timeout" after some: about 21 lines a
+   * second on the 450K rig). Those statuses are the answer, not a fault. Every other warning is logged as before.
+   */
+  public static io.nats.client.ErrorListener quietNoWaitPulls() {
+    return new io.nats.client.impl.ErrorListenerLoggerImpl() {
+      @Override public void pullStatusWarning(Connection conn, io.nats.client.JetStreamSubscription sub, io.nats.client.support.Status status) {
+        if (status.getCode() != 404 && status.getCode() != 408) { super.pullStatusWarning(conn, sub, status); }
+      }
+    };
+  }
+
   @Override
   public void connect() throws PubSubException {
     try {
@@ -158,6 +171,7 @@ public abstract class NatsJSONSubscriber<T> implements Subscriber<T>, Initializi
           .server(serverAddress)
           .maxReconnects(-1)
           .connectionTimeout(Duration.ofSeconds(5))
+          .errorListener(quietNoWaitPulls())
           .build();
       connection = Nats.connect(options);
       dispatcher = connection.createDispatcher(msg -> {
