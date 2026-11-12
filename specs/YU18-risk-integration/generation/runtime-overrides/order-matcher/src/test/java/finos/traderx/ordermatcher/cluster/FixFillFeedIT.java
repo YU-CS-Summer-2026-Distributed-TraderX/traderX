@@ -136,6 +136,47 @@ class FixFillFeedIT {
         }
     }
 
+    /** FR-DRS-55 at run 6's shape and all at once, as a Deployment starts them: 18 gateways, each on its own
+     *  connection and thread, claim among 20 streams on 5 servers. Every one holds a stream of its own (the KV create
+     *  is the arbiter); the servers end within two of each other (a race can put two starters on one server before
+     *  either sees the other; the hash gave 2 / 3 / 4 / 3 / 6). The spread read is printed. */
+    @Test
+    void eighteenGatewaysClaimingTogetherEachHoldTheirOwnStream() throws Exception {
+        final String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);
+        try (Connection admin = Nats.connect(url)) {
+            try { admin.keyValueManagement().delete(FillsShardClaim.BUCKET); } catch (final Exception none) { }
+            FillsShardClaim.bucket(admin);
+        }
+        final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(18);
+        final java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        final List<java.util.concurrent.Future<String>> names = new java.util.ArrayList<>();
+        final List<Connection> open = new CopyOnWriteArrayList<>();
+        for (int g = 0; g < 18; g++) {
+            final String id = "cluster-gateway-76c6dcd95f-" + Integer.toString(g * 7919 + 46656, 36);
+            names.add(pool.submit(() -> {
+                final Connection c = Nats.connect(url);
+                open.add(c);
+                go.await();
+                return FillsShardClaim.claim(c, id, 20, 5);
+            }));
+        }
+        go.countDown();
+        final java.util.Set<Integer> streams = new java.util.TreeSet<>();
+        final int[] perServer = new int[5];
+        for (final java.util.concurrent.Future<String> f : names) {
+            final int k = FillsShardClaim.claimed(f.get(30, java.util.concurrent.TimeUnit.SECONDS), 20);
+            assertTrue(k >= 0 && streams.add(k), "each gateway holds a stream of its own; got " + k + " again or none");
+            perServer[k % 5]++;
+        }
+        pool.shutdownNow();
+        for (final Connection c : open) { c.close(); }
+        System.out.println("FR-DRS-55 claims, 18 concurrent gateways over 20 streams: per server " + java.util.Arrays.toString(perServer)
+            + ", streams " + streams);
+        assertEquals(18, streams.size());
+        final int spread = java.util.Arrays.stream(perServer).max().getAsInt() - java.util.Arrays.stream(perServer).min().getAsInt();
+        assertTrue(spread <= 2, "servers within two of each other, got " + java.util.Arrays.toString(perServer));
+    }
+
     /** FR-DRS-55: claims against a real KV bucket. Six gateways over 4 streams on 2 servers: the first four each hold a
      *  stream of their own, two per server, a key that exists is not taken twice, and the last two keep their plain
      *  names (the hashed stream). A claimed name's subject is the claimed stream's. */

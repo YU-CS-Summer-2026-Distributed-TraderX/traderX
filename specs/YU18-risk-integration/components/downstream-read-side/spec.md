@@ -780,7 +780,9 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   - Tests: `RoutedFillsShardTest` (the pins; 18 gateways over 20 streams and 5 servers each get their own stream, the
     servers within one of each other, a lost race retried, a full table falls back), `FixFillFeedIT
     #gatewaysClaimDistinctFillsStreams` (a real KV bucket), `FillsRouterTest` (the same pins), `test_prepare`.
-    Not exercised on a rig: the evenness at 18 gateways is the unit test's, not a reading.
+    `FixFillFeedIT#eighteenGatewaysClaimingTogetherEachHoldTheirOwnStream` starts 18 claimers at once, each on its own
+    connection, against a real NATS: three runs each read 18 distinct streams and 4 / 3 / 4 / 3 / 4 (or 4 / 3 / 3 / 4 / 4)
+    by server. Not exercised on a rig: one NATS server stood in for five, and no fills flowed.
 
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
