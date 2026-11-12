@@ -958,9 +958,12 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     `LaneSpoolBudgetIT#aCatchUpThatLandsPastAHoleBehindAFrozenSpoolCountsAGap`: the follower's spool froze at its
     budget; the dead leader's window, read by NATS after it died, put the stream's last in the follower's hole; the
     promoted follower counts one gap and publishes its ring's tail. Not run against the code before the review fix.
+    `LaneSpoolBudgetIT#aLaneWhoseSpoolTailIsRejectedReconnectsUntilTheStreamHoldsIt`: the stream refuses every message
+    past a limit, so the spool's tail is rejected and never confirmed; the lane replaces its connection after 5 s and
+    again while refused, counting nothing lost; when the limit is lifted the stream holds the spool's prefix once, in
+    order, and `queueDropped` is the hole exactly (38,588).
   - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
-    they restart too). No test drives the 5 s reconnect when the stream never confirms the spool's last record (a
-    429 on it): that needs an ingest rejection on one chosen message, and stays code-reviewed only.
+    they restart too).
 - FR-DRS-58 (bridge-overflow lane, 2026-11-12): The trade store SHALL book every trade message it is handed that it has
   not handled, whatever its cursor says. A replay is a record at or below the last one the view handled (booked, or
   refused as a second copy), not one at or below the cursor: the cursor can be ahead of what was handled after an idle

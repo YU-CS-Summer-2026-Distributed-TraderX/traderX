@@ -116,6 +116,71 @@ class LaneSpoolBudgetIT {
         }
     }
 
+    /**
+     * A lane that has published everything its frozen spool kept and is never told the last of it was stored does not
+     * wait forever. The stream here refuses every message past a limit (DiscardNew), so the tail of the spool is
+     * rejected and the stream's last stays short of the spool's end. After 5 s the lane replaces its connection, and
+     * each catch-up publishes again what follows the stream's last, in order. When the limit is lifted the next one
+     * is stored: the spool's whole prefix once, then the hole counted exactly. Before the review of FR-DRS-57 the lane
+     * waited at the hole for good and the partition stopped.
+     */
+    @Test
+    void aLaneWhoseSpoolTailIsRejectedReconnectsUntilTheStreamHoldsIt() throws Exception {
+        final long before = LaneSpool.budget;
+        LaneSpool.budget = 256 * 1024;
+        try (RestartableNats js = new RestartableNats()) {
+            js.addFeedStream();
+            final int ring = 16_384, stored = 100, more = 60_000;
+            final TradeNatsPublisher trades = new TradeNatsPublisher(js.url, "/trades", "e9", null, ring, 1);
+            trades.start();
+            for (int seq = 1; seq <= stored; seq++) { side(trades, seq); }
+            LaneSpoolIT.awaitStored(js.url, stored, 0);
+            try (Connection nc = Nats.connect(js.url)) {     // room for 20 more messages, then every publish is refused
+                final io.nats.client.api.StreamInfo si = nc.jetStreamManagement().getStreamInfo("TRADERX_FEED");
+                nc.jetStreamManagement().updateStream(io.nats.client.api.StreamConfiguration.builder(si.getConfiguration())
+                    .maxMessages(si.getStreamState().getMsgCount() + 20).discardPolicy(io.nats.client.api.DiscardPolicy.New).build());
+            }
+            js.pause();
+            for (int seq = stored + 1; seq <= stored + more; seq++) {
+                side(trades, seq);
+                if (seq % 20 == 0) { Thread.sleep(1); }
+            }
+            js.killAndStart();
+            // one reconnect for the restart; the ones after it are the lane refusing to wait at the hole
+            final long stuck = System.currentTimeMillis() + 40_000;
+            while (reconnects(trades.json()) < 3 && System.currentTimeMillis() < stuck) { Thread.sleep(200); }
+            assertTrue(reconnects(trades.json()) >= 3, "the lane replaced its connection while the stream refused its spool's tail: " + trades.json());
+            assertEquals(0, trades.dropped(), "and counted nothing lost meanwhile: the spool still holds it");
+            try (Connection nc = Nats.connect(js.url)) {
+                final io.nats.client.api.StreamInfo si = nc.jetStreamManagement().getStreamInfo("TRADERX_FEED");
+                nc.jetStreamManagement().updateStream(io.nats.client.api.StreamConfiguration.builder(si.getConfiguration()).maxMessages(-1).build());
+            }
+            final long deadline = System.currentTimeMillis() + 60_000;
+            while (trades.dropped() == 0 && System.currentTimeMillis() < deadline) { Thread.sleep(100); }
+            side(trades, stored + more + 1);
+            Thread.sleep(3_000);
+            final List<Long> seqs;
+            try (Connection nc = Nats.connect(js.url)) {
+                seqs = LaneSpoolIT.stored(nc, "/trades", "id").stream().map(i -> Long.parseLong(i.substring(0, i.indexOf('-')))).toList();
+            }
+            final String runs = LaneSpoolIT.runs(seqs);
+            final String[] parts = runs.split(" ");
+            assertEquals(2, parts.length, "the spool's prefix once and in order, one hole, the ring's tail: " + runs + " " + trades.json());
+            final long keptTo = Long.parseLong(parts[0].substring(parts[0].indexOf("..") + 2));
+            final long tailFrom = Long.parseLong(parts[1].substring(0, parts[1].indexOf("..")));
+            assertTrue(parts[0].startsWith("1..") && keptTo > stored + 1_000 && parts[1].endsWith(".." + (stored + more + 1)), runs);
+            assertEquals(tailFrom - keptTo - 1, trades.dropped(), "queueDropped is the hole, exactly: " + runs + " " + trades.json());
+            trades.stop();
+        } finally {
+            LaneSpool.budget = before;
+        }
+    }
+
+    private static long reconnects(final String json) {
+        final java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"reconnects\":(\\d+)").matcher(json);
+        return m.find() ? Long.parseLong(m.group(1)) : -1;
+    }
+
     private static void side(final TradeNatsPublisher bridge, final int seq) {
         bridge.offer(seq, 7, "IBM", (byte) (seq & 1), 1, 100_000_000L, seq, 0L);
     }
