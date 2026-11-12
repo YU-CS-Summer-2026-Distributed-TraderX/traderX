@@ -35,7 +35,7 @@ class TrailingStopRatchetReplayTest {
     private static final long T0 = 1_000_000_000_000L;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingress = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingress = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private final UnsafeBuffer typedIngress = new UnsafeBuffer(new byte[AeronReplicationCodec.ORDER_INSTRUCTION_BYTES]);
 
     static final class Capture implements ClientSession {
@@ -82,8 +82,7 @@ class TrailingStopRatchetReplayTest {
             codec.encodeOrderInstruction(typedIngress, 0, e, 0, 0, 0);
             m.s.onSessionMessage(session, timestamp, typedIngress, 0, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
         } else {
-            codec.encodeInput(ingress, 0, e, 0, 0, 0);
-            m.s.onSessionMessage(session, timestamp, ingress, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            m.s.onSessionMessage(session, timestamp, ingress, 0, codec.encodeInput(ingress, 0, e, 0, 0, 0), null);
         }
         m.egress.addAll(session.egress);
     }

@@ -112,13 +112,13 @@ class ClusterReconOtcRefusalTest {
         var price = new InputEvent();price.type=InputEvent.TYPE_PRICE_TICK;price.securityId=0;price.priceTicks=100_000_000L;
         var order = new InputEvent();order.type=InputEvent.TYPE_ORDER_NEW;order.accountId=ACCOUNT;
         order.securityId=0;order.side=InputEvent.SIDE_BUY;order.qty=1;order.limitPx=100_000_000L;order.setClientOrderKey(55);
-        var cancel = new InputEvent();cancel.type=InputEvent.TYPE_ORDER_CANCEL;cancel.accountId=ACCOUNT;cancel.orderRef=1;
+        var cancel = new InputEvent();cancel.type=InputEvent.TYPE_ORDER_CANCEL;cancel.accountId=ACCOUNT;cancel.orderRef=MatchingEngineClusteredService.FIRST_ORDER_REF;
         var inputs=List.of(account(ACCOUNT,true,1),security,price,order,booking(999123,false,0,56),cancel);
         try(ClosedArchive archive=new ClosedArchive(inputs,true)) {
             var recon=archive.recon(100);var rows=recon.regulatoryReport(0,7);
             assertEquals(List.of("ORDER_ACCEPTED","SWAP_REJECTED","ORDER_CANCELED"),rows.stream().map(ClusterRecon.AuditRow::kind).toList());
             assertEquals(List.of(5L,6L,7L),rows.stream().map(ClusterRecon.AuditRow::inputSeq).toList());
-            assertEquals("test-1",rows.get(0).orderId());assertEquals(1,rows.get(0).quantity());
+            assertEquals("test-"+MatchingEngineClusteredService.FIRST_ORDER_REF,rows.get(0).orderId());assertEquals(1,rows.get(0).quantity());
             assertEquals(new java.math.BigDecimal("100.000"),rows.get(0).price());
             var mapper=new ObjectMapper();assertEquals(11,mapper.valueToTree(rows.get(0)).size());
             assertFalse(mapper.valueToTree(rows.get(0)).has("requestId"));
@@ -131,7 +131,7 @@ class ClusterReconOtcRefusalTest {
             assertEquals(2,events.size(),"OTC refusal must not enter order projection protocol");
             assertEquals("OrderUpdate",events.get(0).path("type").asText());
             assertEquals("OrderUpdate",events.get(1).path("type").asText());
-            assertEquals("test-1",events.get(0).path("payload").path("id").asText());
+            assertEquals("test-"+MatchingEngineClusteredService.FIRST_ORDER_REF,events.get(0).path("payload").path("id").asText());
         }
     }
 
@@ -295,7 +295,7 @@ class ClusterReconOtcRefusalTest {
         var field=MatchingEngineClusteredService.class.getDeclaredField("ackBuffer");field.setAccessible(true);
         byte[] bytes=new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH];((UnsafeBuffer)field.get(service)).getBytes(0,bytes);return bytes;
     }
-    private byte[] wire(InputEvent input) {var b=new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);codec.encodeInput(b,0,input,input.seq,0,0);byte[] result=new byte[b.capacity()];b.getBytes(0,result);return result;}
+    private byte[] wire(InputEvent input) {var b=new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES+AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);int n=codec.encodeInput(b,0,input,input.seq,0,0);byte[] result=new byte[n];b.getBytes(0,result);return result;}
     private static InputEvent account(int id,boolean enabled,long version) {var e=new InputEvent();e.type=InputEvent.TYPE_ACCOUNT_CONTROL;e.accountId=id;e.setControlEnabled(enabled);e.setControlVersion(version);return e;}
     private static InputEvent booking(int id,boolean option,int convention,long key) {
         var e=new InputEvent();e.type=option?InputEvent.TYPE_SWAPTION_BOOK:InputEvent.TYPE_SWAP_BOOK;e.accountId=id;e.securityId=convention;e.side=InputEvent.SWAP_RECEIVE_FIXED;e.qty=1;e.limitPx=42000;e.seq=key==0?0:1000+key;e.setClientOrderKey(key);e.setSwapDates(20000,21000);if(option)e.setSwaptionTerms(convention,0,20000);return e;

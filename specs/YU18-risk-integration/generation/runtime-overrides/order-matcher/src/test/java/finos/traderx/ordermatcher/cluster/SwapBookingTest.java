@@ -42,7 +42,7 @@ class SwapBookingTest {
     private static final int BERMUDAN = 1;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private final UnsafeBuffer markerBuffer =
         new UnsafeBuffer(new byte[AeronReplicationCodec.RISK_EXTRACT_BYTES]);
     private long timestamp = 1_000_000_000_000L;
@@ -179,8 +179,8 @@ class SwapBookingTest {
         // YU18 (order types, FR-OT35) moved the writer to format 11: typed order state rides its
         // own records, and formats 9 and 10 still restore (as untyped orders), so MIN_READABLE
         // stays 9 below — the same "adds, never re-reads" rule format 10 followed.
-        assertEquals(16, header.getInt(4),
-            "format 16 (ADR-104 §5): compact session-ring records replace format 15's T_SESSION_RING");
+        assertEquals(17, header.getInt(4),
+            "format 17 (ADR-105): the session ring's refs are 8 bytes and the header carries the first order ref");
         // Literals on BOTH sides, never the constants they pin.
         //
         // MIN_READABLE DELIBERATELY DOES NOT RISE HERE, and that is a departure from every raise
@@ -200,8 +200,8 @@ class SwapBookingTest {
         // the WRITTEN record rather than on a constant, because the failure this catches is a
         // writer that grew the layout and a `writer.write(..., 52)` that did not. Unchanged by
         // format 10, which is the point -- the marker is its own record, not a wider header.
-        assertEquals(68, records.get(0).length,
-            "the header record is still 68 bytes: format 10 widened nothing");
+        assertEquals(76, records.get(0).length,   // ADR-105 (format 17) appended the first order ref
+            "the header record is 76 bytes: format 10 widened nothing, format 17 appended the first ref");
     }
 
     @Test
@@ -721,9 +721,8 @@ class SwapBookingTest {
     }
 
     private void apply(final MatchingEngineClusteredService service, final InputEvent event) {
-        codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0);
         service.onSessionMessage(null, ++timestamp, ingressBuffer, 0,
-            AeronReplicationCodec.INPUT_BYTES, null);
+            codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0), null);
     }
 
     private static void assertArrayEqualsLong(final long[] expected, final long[] actual) {

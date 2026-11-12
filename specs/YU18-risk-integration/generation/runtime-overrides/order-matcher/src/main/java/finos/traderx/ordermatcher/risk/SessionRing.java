@@ -34,13 +34,16 @@ public final class SessionRing implements SequencedAnswers {
      *  long evictedMaxMsgSeq, int n}. */
     public static final int HEAD_BYTES = 40;
     /** {@link #writeEntries}: {int s, int start, int count}, then the entries column by column: count longs (key),
-     *  count ints each (check, msgSeq, ref), count bytes (decision). 21 bytes per entry; column-major so each column
-     *  is one sequential copy (measured ~2.5x faster to write than entry-major). */
+     *  count ints each (check, msgSeq), count longs (ref), count bytes (decision). 25 bytes per entry; column-major so
+     *  each column is one sequential copy (measured ~2.5x faster to write than entry-major). Format 16 wrote the ref as
+     *  an int, 21 bytes per entry; ADR-105's format 17 widened it, and a format 16 record still restores. */
     public static final int ENTRIES_HEADER_BYTES = 12;
-    public static final int ENTRY_BYTES = 21;
+    public static final int ENTRY_BYTES = 25;
+    public static final int FORMAT_16_ENTRY_BYTES = 21;
     /** Entries per record: the most that pack into one 1,376-byte snapshot message with the record type and the
-     *  packer's length slot, 4 + 4 + 4 + 12 + 21 x 64 = 1,368 (FR-XOD-18 then sends no ring record unpacked). */
-    public static final int ENTRIES_PER_RECORD = 64;
+     *  packer's length slot, 4 + 4 + 4 + 12 + 25 x 53 = 1,349 (FR-XOD-18 then sends no ring record unpacked; format 16
+     *  packed 64 at 21 bytes). */
+    public static final int ENTRIES_PER_RECORD = 53;
 
     private final int n;
     private final int maxSessions;
@@ -56,7 +59,7 @@ public final class SessionRing implements SequencedAnswers {
     private final long[][] keys;
     private final int[][] checks;
     private final int[][] msgSeqs;
-    private final int[][] refs;
+    private final long[][] refs;
     private final byte[][] decisions;
     private final int[][] keySlots;          // per session: hash(key) slot -> position + 1 (0 = empty)
     private final int slotCount;
@@ -83,7 +86,7 @@ public final class SessionRing implements SequencedAnswers {
         this.keys = new long[maxSessions][];
         this.checks = new int[maxSessions][];
         this.msgSeqs = new int[maxSessions][];
-        this.refs = new int[maxSessions][];
+        this.refs = new long[maxSessions][];
         this.decisions = new byte[maxSessions][];
         this.keySlots = new int[maxSessions][];
         this.slotCount = Integer.highestOneBit(n * 2 - 1) << 1;
@@ -130,7 +133,7 @@ public final class SessionRing implements SequencedAnswers {
     }
 
     @Override
-    public void record(final int orderRef, final byte decision) {
+    public void record(final long orderRef, final byte decision) {
         if (current < 0) return;
         refs[currentSession][current] = orderRef;
         decisions[currentSession][current] = decision;
@@ -142,7 +145,7 @@ public final class SessionRing implements SequencedAnswers {
     }
 
     @Override
-    public int duplicateRef() {
+    public long duplicateRef() {
         return current < 0 ? 0 : refs[currentSession][current];
     }
 
@@ -158,7 +161,7 @@ public final class SessionRing implements SequencedAnswers {
             keys[s] = new long[n];
             checks[s] = new int[n];
             msgSeqs[s] = new int[n];
-            refs[s] = new int[n];
+            refs[s] = new long[n];
             decisions[s] = new byte[n];
             keySlots[s] = new int[slotCount];
         } else {
@@ -245,7 +248,8 @@ public final class SessionRing implements SequencedAnswers {
         b.putInt(at + 4, start);
         b.putInt(at + 8, count);
         final long[] k = keys[s];
-        final int[] ch = checks[s], ms = msgSeqs[s], rf = refs[s];
+        final int[] ch = checks[s], ms = msgSeqs[s];
+        final long[] rf = refs[s];
         final byte[] d = decisions[s];
         final int col = at + ENTRIES_HEADER_BYTES;
         // the record's entries are ring positions p0.. in order, wrapping once at most: one run, or two
@@ -255,8 +259,8 @@ public final class SessionRing implements SequencedAnswers {
             for (int j = 0; j < run; j++) b.putLong(col + 8 * (i + j), k[e + j]);
             for (int j = 0; j < run; j++) b.putInt(col + 8 * count + 4 * (i + j), ch[e + j]);
             for (int j = 0; j < run; j++) b.putInt(col + 12 * count + 4 * (i + j), ms[e + j]);
-            for (int j = 0; j < run; j++) b.putInt(col + 16 * count + 4 * (i + j), rf[e + j]);
-            b.putBytes(col + 20 * count + i, d, e, run);
+            for (int j = 0; j < run; j++) b.putLong(col + 16 * count + 8 * (i + j), rf[e + j]);
+            b.putBytes(col + 24 * count + i, d, e, run);
             i += run;
         }
         return ENTRIES_HEADER_BYTES + ENTRY_BYTES * count;
@@ -295,8 +299,10 @@ public final class SessionRing implements SequencedAnswers {
         if (restoreHeld == 0) restoring = -1;   // held is 0 only for a session that was never sent an entry
     }
 
-    /** Restore one {@link #writeEntries} record of the session whose head came last; contiguous, in order. */
-    public void restoreEntries(final DirectBuffer b, final int at, final int length) {
+    /** Restore one {@link #writeEntries} record of the session whose head came last; contiguous, in order. A format 16
+     *  record ({@code wideRefs} false) carries its refs as ints. */
+    public void restoreEntries(final DirectBuffer b, final int at, final int length, final boolean wideRefs) {
+        final int entryBytes = wideRefs ? ENTRY_BYTES : FORMAT_16_ENTRY_BYTES;
         final int s = b.getInt(at);
         final int start = b.getInt(at + 4);
         final int count = b.getInt(at + 8);
@@ -304,12 +310,13 @@ public final class SessionRing implements SequencedAnswers {
             throw new IllegalStateException("snapshot corrupt: session ring " + s + " entries without their head");
         }
         if (start != restoreNext || count < 1 || count > restoreHeld - start
-            || length != ENTRIES_HEADER_BYTES + ENTRY_BYTES * count) {
+            || length != ENTRIES_HEADER_BYTES + entryBytes * count) {
             throw new IllegalStateException("snapshot corrupt: session ring " + s + " entries " + start + "+" + count
                 + " (expected from " + restoreNext + " of " + restoreHeld + ", " + length + " bytes)");
         }
         final long[] k = keys[s];
-        final int[] ch = checks[s], ms = msgSeqs[s], rf = refs[s];
+        final int[] ch = checks[s], ms = msgSeqs[s];
+        final long[] rf = refs[s];
         final byte[] d = decisions[s];
         final int col = at + ENTRIES_HEADER_BYTES;
         // entries go back at their own ring positions, in insertion order, and are indexed as admit() indexed them
@@ -318,8 +325,8 @@ public final class SessionRing implements SequencedAnswers {
             k[e] = b.getLong(col + 8 * i);
             ch[e] = b.getInt(col + 8 * count + 4 * i);
             ms[e] = b.getInt(col + 12 * count + 4 * i);
-            rf[e] = b.getInt(col + 16 * count + 4 * i);
-            d[e] = b.getByte(col + 20 * count + i);
+            rf[e] = wideRefs ? b.getLong(col + 16 * count + 8 * i) : b.getInt(col + 16 * count + 4 * i);
+            d[e] = b.getByte(col + (entryBytes - 1) * count + i);
             index(s, e);
             inserted[s]++;
         }
@@ -373,7 +380,7 @@ public final class SessionRing implements SequencedAnswers {
             keys[s][e] = t[8 + 3 * i];
             checks[s][e] = (int) (t[9 + 3 * i] >>> 32);
             msgSeqs[s][e] = (int) t[9 + 3 * i];
-            refs[s][e] = (int) (t[10 + 3 * i] >> 8);
+            refs[s][e] = t[10 + 3 * i] >> 8;
             decisions[s][e] = (byte) t[10 + 3 * i];
             index(s, e);
             inserted[s]++;

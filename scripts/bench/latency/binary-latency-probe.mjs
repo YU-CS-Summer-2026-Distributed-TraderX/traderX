@@ -75,9 +75,9 @@ function session(index) {
   sock.on('data', (chunk) => {
     const t = now();
     buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
-    for (; buf.length >= 18; buf = buf.subarray(18)) {
-      if (buf.readUInt16LE(0) !== 16 || buf[2] !== 0x81) { sock.destroy(); return; }
-      const status = buf[3], lo = buf.readUInt32LE(10), hi = buf.readUInt32LE(14);
+    for (; buf.length >= 22; buf = buf.subarray(22)) {   // ADR-105: ack 0x82, 20 bytes, u64 ref at 6
+      if (buf.readUInt16LE(0) !== 20 || buf[2] !== 0x82) { sock.destroy(); return; }
+      const status = buf[3], lo = buf.readUInt32LE(14), hi = buf.readUInt32LE(18);
       if (hi !== NONCE || lo >>> 24 !== index) continue;
       const sent = open.get(lo & 0xffffff);
       if (!sent) continue;                                             // a second answer: the first one counted
@@ -96,7 +96,7 @@ function session(index) {
     const pair = (seq - 1) >> 1, side = (seq - 1) & 1;                   // 0 buy, 1 sell
     const account = cfg.accounts[(pair & 1) ^ side];
     const b = Buffer.alloc(34);
-    b.writeUInt16LE(32, 0); b[2] = 1; b[3] = side;
+    b.writeUInt16LE(32, 0); b[2] = 0x11; b[3] = side;
     b.writeUInt32LE(account, 6); b.writeUInt32LE(SECURITY, 10); b.writeInt32LE(1, 14);
     b.writeBigInt64LE(PX, 18); b.writeUInt32LE((index << 24 | seq) >>> 0, 26); b.writeUInt32LE(NONCE, 30);
     const at = now();

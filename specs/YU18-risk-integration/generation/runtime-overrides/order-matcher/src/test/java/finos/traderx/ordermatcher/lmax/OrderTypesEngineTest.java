@@ -95,7 +95,7 @@ class OrderTypesEngineTest {
         final long cursor = ring.getCursor();
         for (long s = drainedTo + 1; s <= cursor; s++) {
             final OutputEvent o = ring.get(s);
-            got.add(new Out(o.kind, o.orderRef, o.flags, o.status, o.riskReason, o.remainingQty,
+            got.add(new Out(o.kind, Math.toIntExact(o.orderRef), o.flags, o.status, o.riskReason, o.remainingQty,
                 o.lastExecPx, o.lastFillQty, o.tradePx, o.tradeQty, o.accountId));
         }
         drainedTo = cursor;
@@ -111,7 +111,7 @@ class OrderTypesEngineTest {
         e.qty = qty;
         e.limitPx = limitPx;
         apply(e);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     int typed(int acct, byte side, int qty, byte type, byte tif, long limit, long stop, int dq,
@@ -132,7 +132,7 @@ class OrderTypesEngineTest {
         e.trailValue = trailValue;
         e.setClientOrderKey(key);
         apply(e);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     int stop(int acct, byte side, int qty, long stopPx) {

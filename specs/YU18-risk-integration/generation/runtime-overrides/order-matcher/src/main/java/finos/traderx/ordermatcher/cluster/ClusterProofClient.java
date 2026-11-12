@@ -43,7 +43,7 @@ public final class ClusterProofClient {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
         final long[] lastAckMillis = { 0 };
         final long[] lastAckRef = { 0 };
-        final boolean[] seen = new boolean[1 << 20];
+        final org.agrona.collections.LongHashSet seen = new org.agrona.collections.LongHashSet();   // ADR-105: refs start at 2^32 + 1
 
         final AeronCluster.Context clientContext = new AeronCluster.Context()
             .aeronDirectoryName(aeronDir)
@@ -72,21 +72,23 @@ public final class ClusterProofClient {
                     final int w = MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
                     final int n = length > w && length % w == 0 ? length / w : 1;
                     for (int i = 0; i < n; i++) {
+                        if (length < (i + 1) * w || !MatchingEngineClusteredService.ackFormatOk(egress, offset + i * w)) {
+                            System.out.println("ACK-FORMAT-MISMATCH length=" + length);   // ADR-105: a mixed-version member
+                            return;
+                        }
                         onRecord(egress, offset + i * w);
                     }
                 }
 
                 private void onRecord(final org.agrona.DirectBuffer egress, final int offset) {
-                final int ref = egress.getInt(offset + 8);
+                final long ref = MatchingEngineClusteredService.ackRef(egress, offset);
                 final byte kind = egress.getByte(offset + 12);
                 if (kind != OutputEvent.KIND_ORDER_ACCEPTED) {
                     return;
                 }
                 final long now = System.currentTimeMillis();
-                if (ref < seen.length && seen[ref]) {
+                if (!seen.add(ref)) {
                     System.out.println("REUSE ref=" + ref);
-                } else if (ref < seen.length) {
-                    seen[ref] = true;
                 }
                 if (lastAckMillis[0] != 0 && now - lastAckMillis[0] > gapMs) {
                     System.out.println("GAP ms=" + (now - lastAckMillis[0])

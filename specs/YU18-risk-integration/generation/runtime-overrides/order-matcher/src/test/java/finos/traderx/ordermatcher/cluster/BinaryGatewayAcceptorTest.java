@@ -37,7 +37,8 @@ class BinaryGatewayAcceptorTest {
     private static final class FakeSubmitter implements OrderSubmitter {
         String call;
         long clientKey, limitPx;
-        int accountId, securityId, qty, orderRef;
+        int accountId, securityId, qty;
+        long orderRef;
         char side;
         ExecResult next; // returned to the acceptor (null = post-publish ambiguity)
 
@@ -61,14 +62,14 @@ class BinaryGatewayAcceptorTest {
         }
 
         @Override
-        public ExecResult submitCancel(int orderRef) {
+        public ExecResult submitCancel(long orderRef) {
             this.call = "CANCEL";
             this.orderRef = orderRef;
             return next;
         }
 
         @Override
-        public ExecResult submitReplace(int orderRef, long clientKey, int qty, long limitPxTicks) {
+        public ExecResult submitReplace(long orderRef, long clientKey, int qty, long limitPxTicks) {
             this.call = "REPLACE";
             this.orderRef = orderRef;
             this.clientKey = clientKey;
@@ -120,11 +121,11 @@ class BinaryGatewayAcceptorTest {
 
         final UnsafeBuffer in = buf();
         in.putByte(0, (byte) BinaryGatewayAcceptor.MSG_CANCEL);
-        in.putInt(4, 99, LE);                    // orderRef
-        in.putLong(8, 0x1122L, LE);              // clOrdId
+        in.putLong(4, 99, LE);                   // orderRef
+        in.putLong(12, 0x1122L, LE);             // clOrdId
 
         final UnsafeBuffer ack = buf();
-        final int ackLen = acc.dispatch(in, 0, 16, ack);
+        final int ackLen = acc.dispatch(in, 0, 20, ack);
 
         assertEquals("CANCEL", fake.call);
         assertEquals(99, fake.orderRef);
@@ -140,8 +141,8 @@ class BinaryGatewayAcceptorTest {
 
         final UnsafeBuffer in = buf();
         in.putByte(0, (byte) BinaryGatewayAcceptor.MSG_REPLACE);
-        in.putInt(4, 77, LE);                    // orderRef
-        in.putInt(8, 25, LE);                    // new qty
+        in.putLong(4, 77, LE);                   // orderRef
+        in.putInt(12, 25, LE);                   // new qty
         in.putLong(16, 101_500_000L, LE);        // new limitPx
         in.putLong(24, 0x5A5AL, LE);             // clOrdId
 
@@ -155,6 +156,60 @@ class BinaryGatewayAcceptorTest {
         assertEquals(0x5A5AL, fake.clientKey);
     }
 
+    /** ADR-105: a ref above 32 bits crosses the wire whole, in both directions. */
+    @Test
+    void wideRefsDecodeAndAckWhole() {
+        final long wide = (1L << 32) + 5;
+        final FakeSubmitter fake = new FakeSubmitter();
+        fake.next = new OrderSubmitter.ExecResult(true, wide, OutputEvent.KIND_ORDER_CANCELED, (byte) 0);
+        final BinaryGatewayAcceptor acc = new BinaryGatewayAcceptor(fake, 0);
+        final UnsafeBuffer in = buf();
+        in.putByte(0, (byte) BinaryGatewayAcceptor.MSG_CANCEL);
+        in.putLong(4, wide, LE);
+        in.putLong(12, 0x77L, LE);
+        final UnsafeBuffer ack = buf();
+        final int ackLen = acc.dispatch(in, 0, 20, ack);
+        assertEquals(wide, fake.orderRef, "the cancel names the whole ref");
+        assertAck(ack, ackLen, BinaryGatewayAcceptor.STATUS_ACCEPTED, OutputEvent.KIND_ORDER_CANCELED, (byte) 0, wide, 0x77L);
+
+        in.putByte(0, (byte) BinaryGatewayAcceptor.MSG_REPLACE);
+        in.putLong(4, wide + 1, LE);
+        in.putInt(12, 30, LE);
+        in.putLong(16, 99_000_000L, LE);
+        in.putLong(24, 0x78L, LE);
+        acc.dispatch(in, 0, 32, ack);
+        assertEquals(wide + 1, fake.orderRef);
+        assertEquals(30, fake.qty);
+        assertEquals(99_000_000L, fake.limitPx);
+        assertEquals(0x78L, fake.clientKey);
+    }
+
+    /** ADR-105: a client of the 32-bit wire is answered with a protocol error in ITS ack layout (0x81, 16 bytes, its
+     *  clOrdId echoed), so it fails on its first frame; nothing reaches the seam. Before ADR-105 type 1 was a NEW. */
+    @Test
+    void anOldClientsFramesAreRefusedInItsOwnAckLayout() {
+        final FakeSubmitter fake = new FakeSubmitter();
+        fake.next = new OrderSubmitter.ExecResult(true, 1, OutputEvent.KIND_ORDER_ACCEPTED, (byte) 0);
+        final BinaryGatewayAcceptor acc = new BinaryGatewayAcceptor(fake, 0);
+        final int[][] frames = { { BinaryGatewayAcceptor.LEGACY_MSG_NEW, 32, 24 },
+            { BinaryGatewayAcceptor.LEGACY_MSG_CANCEL, 16, 8 }, { BinaryGatewayAcceptor.LEGACY_MSG_REPLACE, 32, 24 } };
+        for (final int[] f : frames) {
+            final UnsafeBuffer in = buf();
+            in.putByte(0, (byte) f[0]);
+            in.putInt(4, 9, LE);
+            in.putLong(f[2], 0xC0FFEEL + f[0], LE);
+            final UnsafeBuffer ack = buf();
+            final int ackLen = acc.dispatch(in, 0, f[1], ack);
+            assertEquals(null, fake.call, "type " + f[0] + " reached the seam");
+            assertEquals(2 + BinaryGatewayAcceptor.LEGACY_ACK_PAYLOAD_LEN, ackLen);
+            assertEquals(BinaryGatewayAcceptor.LEGACY_ACK_PAYLOAD_LEN, ack.getShort(0, LE));
+            assertEquals((byte) BinaryGatewayAcceptor.LEGACY_ACK_TYPE, ack.getByte(2));
+            assertEquals(BinaryGatewayAcceptor.STATUS_PROTOCOL_ERROR, ack.getByte(3));
+            assertEquals(0, ack.getInt(6, LE), "no ref");
+            assertEquals(0xC0FFEEL + f[0], ack.getLong(10, LE), "the old client's clOrdId, at its old offset");
+        }
+    }
+
     @Test
     void nullResultIsAmbiguousNotReject() {
         final FakeSubmitter fake = new FakeSubmitter();
@@ -163,11 +218,11 @@ class BinaryGatewayAcceptorTest {
 
         final UnsafeBuffer in = buf();
         in.putByte(0, (byte) BinaryGatewayAcceptor.MSG_CANCEL);
-        in.putInt(4, 5, LE);
-        in.putLong(8, 0x9L, LE);
+        in.putLong(4, 5, LE);
+        in.putLong(12, 0x9L, LE);
 
         final UnsafeBuffer ack = buf();
-        final int ackLen = acc.dispatch(in, 0, 16, ack);
+        final int ackLen = acc.dispatch(in, 0, 20, ack);
         // Ambiguous must be distinct from a committed reject, and must still echo the clOrdId.
         assertAck(ack, ackLen, BinaryGatewayAcceptor.STATUS_AMBIGUOUS, (byte) 0, (byte) 0, 0, 0x9L);
     }
@@ -225,8 +280,8 @@ class BinaryGatewayAcceptorTest {
             assertEquals((byte) BinaryGatewayAcceptor.ACK_TYPE, a.get(2), "ack message type");
             assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, a.get(3), "status");
             assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, a.get(4), "kind");
-            assertEquals(4242, a.getInt(6), "orderRef");
-            assertEquals(0xABCDEF01L, a.getLong(10), "clOrdId echo");
+            assertEquals(4242, a.getLong(6), "orderRef");
+            assertEquals(0xABCDEF01L, a.getLong(14), "clOrdId echo");
         } finally {
             acc.stop();
         }
@@ -293,7 +348,7 @@ class BinaryGatewayAcceptorTest {
         in.readFully(ackBytes);
         final ByteBuffer a = ByteBuffer.wrap(ackBytes).order(ByteOrder.LITTLE_ENDIAN);
         if (a.get(3) == BinaryGatewayAcceptor.STATUS_ACCEPTED) {
-            assertEquals(a.getLong(10), a.getInt(6), "the ack carries its own request's outcome");
+            assertEquals(a.getLong(14), a.getLong(6), "the ack carries its own request's outcome");
         }
         return a;
     }
@@ -354,7 +409,7 @@ class BinaryGatewayAcceptorTest {
             for (int i = 0; i < 64; i++) {
                 final ByteBuffer a = readAck(in);
                 assertEquals(BinaryGatewayAcceptor.STATUS_ACCEPTED, a.get(3), "status");
-                acked.add(a.getLong(10));
+                acked.add(a.getLong(14));
             }
             assertEquals(answered, acked, "acks leave in completion order");
             final List<Long> expected = new ArrayList<>();
@@ -394,7 +449,7 @@ class BinaryGatewayAcceptorTest {
             final java.util.Map<Long, Byte> status = new java.util.HashMap<>();
             for (int i = 0; i < 3; i++) {
                 final ByteBuffer a = readAck(in);
-                assertEquals(null, status.put(a.getLong(10), a.get(3)), "acked once");
+                assertEquals(null, status.put(a.getLong(14), a.get(3)), "acked once");
             }
             assertEquals(java.util.Map.of(1L, BinaryGatewayAcceptor.STATUS_ACCEPTED, 2L,
                 BinaryGatewayAcceptor.STATUS_AMBIGUOUS, 3L, BinaryGatewayAcceptor.STATUS_ACCEPTED), status);
@@ -448,7 +503,7 @@ class BinaryGatewayAcceptorTest {
                 s2.getOutputStream().write(newFrame(99));
                 await(() -> fake.held.size() == 1, "the next connection's submit");
                 fake.answer(fake.held.pollFirst(), false);
-                assertEquals(99L, readAck(new DataInputStream(s2.getInputStream())).getLong(10));
+                assertEquals(99L, readAck(new DataInputStream(s2.getInputStream())).getLong(14));
             }
         } finally {
             acc.stop();
@@ -456,7 +511,7 @@ class BinaryGatewayAcceptorTest {
     }
 
     private static void assertAck(final UnsafeBuffer ack, final int ackLen, final byte status,
-                                  final byte kind, final byte riskReason, final int orderRef,
+                                  final byte kind, final byte riskReason, final long orderRef,
                                   final long clOrdId) {
         assertEquals(2 + BinaryGatewayAcceptor.ACK_PAYLOAD_LEN, ackLen);
         assertEquals(BinaryGatewayAcceptor.ACK_PAYLOAD_LEN, ack.getShort(0, LE), "length prefix");
@@ -464,7 +519,7 @@ class BinaryGatewayAcceptorTest {
         assertEquals(status, ack.getByte(3), "status");
         assertEquals(kind, ack.getByte(4), "kind");
         assertEquals(riskReason, ack.getByte(5), "riskReason");
-        assertEquals(orderRef, ack.getInt(6, LE), "orderRef");
-        assertEquals(clOrdId, ack.getLong(10, LE), "clOrdId echo");
+        assertEquals(orderRef, ack.getLong(6, LE), "orderRef");
+        assertEquals(clOrdId, ack.getLong(14, LE), "clOrdId echo");
     }
 }

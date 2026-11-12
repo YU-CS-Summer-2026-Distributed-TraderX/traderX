@@ -18,20 +18,21 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ADR-100 (codeX review §13): the order-reference generator fails closed at {@code Integer.MAX_VALUE}
+ * ADR-100 (codeX review §13): the order-reference generator fails closed at its ceiling ({@code Integer.MAX_VALUE}, 2^53 - 1 since ADR-105)
  * instead of wrapping through the int cast onto the reserved ref 0 and then recycling 1, 2, ...
  * Before the fix the second NEW below was issued ref -2147483648 and, two refs later, ref 0.
  */
 class OrderRefExhaustionTest {
     static final long PX = 1_000_000L;
+    /** ADR-105 widened the ceiling from Integer.MAX_VALUE to 2^53 - 1; the fail-closed behaviour at it is unchanged. */
+    static final long MAX = MatchingEngineClusteredService.MAX_ORDER_REF;
     final AeronReplicationCodec codec = new AeronReplicationCodec();
     final UnsafeBuffer in = new UnsafeBuffer(new byte[256]);
     final ExactlyOnceStreamTest.Capture session = new ExactlyOnceStreamTest.Capture();
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(session, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(session, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -73,32 +74,32 @@ class OrderRefExhaustionTest {
     @Test void lastRefIsIssuedThenEveryNewIsRefusedWithoutWrapping() throws Exception {
         final MatchingEngineClusteredService s = open();
         bootstrap(s);
-        setNextOrderRef(s, Integer.MAX_VALUE);        // one reference left in the epoch
+        setNextOrderRef(s, MAX);                      // one reference left in the epoch
         final long seqBefore = s.appliedSeq();
-        final List<Integer> issued = new ArrayList<>();
+        final List<Long> issued = new ArrayList<>();
         s.outputSink(o -> { if (o.kind == OutputEvent.KIND_ORDER_ACCEPTED) issued.add(o.orderRef); });
 
         apply(s, order(1L));
-        assertEquals(List.of(Integer.MAX_VALUE), issued, "the last reference is issued normally");
+        assertEquals(List.of(MAX), issued, "the last reference is issued normally");
         assertEquals(0L, s.orderRefHeadroom());
 
         session.acks.clear();
         for (long key = 2; key <= 4; key++) {
-            apply(s, order(key));                     // 2^31, 2^31 + 1 (the pre-fix 0 lands at key 3), 2^31 + 2
+            apply(s, order(key));                     // MAX + 1, + 2, + 3
         }
-        assertEquals(List.of(Integer.MAX_VALUE), issued, "nothing is issued past the ceiling");
+        assertEquals(List.of(MAX), issued, "nothing is issued past the ceiling");
         assertEquals(3, session.acks.size());
-        for (int[] ack : session.acks) {
+        for (long[] ack : session.acks) {
             assertEquals(OutputEvent.KIND_ORDER_REJECTED, ack[0]);
             assertEquals(0, ack[1], "a refusal names no reference: never 0 as an ISSUED ref, never negative");
             assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), ack[2]);
         }
-        assertEquals((long) Integer.MAX_VALUE + 1, s.nextOrderRef(), "the generator does not advance past the ceiling");
+        assertEquals(MAX + 1, s.nextOrderRef(), "the generator does not advance past the ceiling");
         assertEquals(seqBefore + 1, s.appliedSeq(), "refused NEWs apply nothing (same posture as a stream gap)");
 
         // Cancels of a live order still work: the epoch is closed to NEW orders only.
         InputEvent cancel = new InputEvent();
-        cancel.type = InputEvent.TYPE_ORDER_CANCEL; cancel.accountId = 1; cancel.orderRef = Integer.MAX_VALUE;
+        cancel.type = InputEvent.TYPE_ORDER_CANCEL; cancel.accountId = 1; cancel.orderRef = MAX;
         session.acks.clear();
         apply(s, cancel);
         assertEquals(OutputEvent.KIND_ORDER_CANCELED, session.acks.get(0)[0]);
@@ -109,14 +110,14 @@ class OrderRefExhaustionTest {
     @Test void retryOfACommittedKeyRecoversItsAnswerWithoutARef() throws Exception {
         final MatchingEngineClusteredService s = open();
         bootstrap(s);
-        setNextOrderRef(s, Integer.MAX_VALUE);
+        setNextOrderRef(s, MAX);
         apply(s, order(42L));                             // accepted with the last ref
-        assertEquals(Integer.MAX_VALUE, session.last()[1]);
+        assertEquals(MAX, session.last()[1]);
         session.acks.clear();
         apply(s, order(42L));                             // retry of the same client key
         assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, session.last()[0], "the original answer, not a fresh rejection");
-        assertEquals(Integer.MAX_VALUE, session.last()[1], "names the original order");
-        assertEquals((long) Integer.MAX_VALUE + 1, s.nextOrderRef(), "no ref consumed by the retry");
+        assertEquals(MAX, session.last()[1], "names the original order");
+        assertEquals(MAX + 1, s.nextOrderRef(), "no ref consumed by the retry");
 
         apply(s, order(43L));                             // a genuinely new key is still refused
         assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
@@ -124,7 +125,7 @@ class OrderRefExhaustionTest {
         assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
 
         // A key waiting in the PRE_OPEN queue is committed too: its retry is re-acked from the queue.
-        setNextOrderRef(s, Integer.MAX_VALUE - 1);
+        setNextOrderRef(s, MAX - 1);
         InputEvent halt = new InputEvent();
         halt.type = InputEvent.TYPE_SESSION_CONTROL; halt.side = MatchingEngineClusteredService.PHASE_PRE_OPEN;
         apply(s, halt);
@@ -141,21 +142,21 @@ class OrderRefExhaustionTest {
     @Test void sequencedResendRecoversItsAnswerAtExhaustion() throws Exception {
         final MatchingEngineClusteredService s = open();
         bootstrap(s);
-        setNextOrderRef(s, Integer.MAX_VALUE);
+        setNextOrderRef(s, MAX);
         applySeq(s, 1L);
         assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, session.last()[0]);
-        assertEquals(Integer.MAX_VALUE, session.last()[1]);
+        assertEquals(MAX, session.last()[1]);
         session.acks.clear();
         applySeq(s, 1L);                                  // go-back-N resend of the accepted sequence
         assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, session.last()[0], "the ring's answer, not a fresh rejection");
-        assertEquals(Integer.MAX_VALUE, session.last()[1]);
+        assertEquals(MAX, session.last()[1]);
         applySeq(s, 2L);                                  // genuinely new
         assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
         applySeq(s, 2L);                                  // its resend: the same refusal, recorded in the ring
         assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
         applySeq(s, 3L);                                  // the stream advanced past the refusal: still refused
         assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.last()[2]);
-        assertEquals((long) Integer.MAX_VALUE + 1, s.nextOrderRef());
+        assertEquals(MAX + 1, s.nextOrderRef());
     }
 
     static final long STREAM = 0x5EEDL;
@@ -170,7 +171,7 @@ class OrderRefExhaustionTest {
     @Test void exhaustionSurvivesASnapshotAndAWrappedHeaderIsRefused() throws Exception {
         final MatchingEngineClusteredService s = open();
         bootstrap(s);
-        setNextOrderRef(s, (long) Integer.MAX_VALUE + 1);
+        setNextOrderRef(s, MAX + 1);
         final List<byte[]> records = new ArrayList<>();
         s.writeSnapshot((b, o, l) -> { byte[] c = new byte[l]; b.getBytes(o, c); records.add(c); });
 
@@ -180,12 +181,13 @@ class OrderRefExhaustionTest {
         apply(restored, order(9L));
         assertEquals(RiskReason.ORDER_REF_EXHAUSTED.ordinal(), session.acks.get(0)[2], "still closed after restore");
 
-        // A header a wrapping build wrote (nextOrderRef = 2^32, i.e. a real order already got ref 0) is refused.
+        // A header past the ceiling + 1 is refused: no build issues a ref there.
         final byte[] header = Arrays.copyOf(records.get(0), records.get(0).length);
-        new UnsafeBuffer(header).putLong(8, 1L << 32);
+        new UnsafeBuffer(header).putLong(8, MAX + 2);
         final List<byte[]> wrapped = new ArrayList<>(records);
         wrapped.set(0, header);
-        assertTrue(SnapshotPackedRoundTripTest.refused(wrapped, "outside [1, 2147483648]"));
+        assertTrue(SnapshotPackedRoundTripTest.refused(wrapped, "outside [" + MatchingEngineClusteredService.FIRST_ORDER_REF
+            + ", " + (MAX + 1) + "]"));
     }
 
     @Test void ticketBookingsCarryAnExplicitCategoryAndNoOrderKey() {

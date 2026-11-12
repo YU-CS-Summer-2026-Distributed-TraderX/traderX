@@ -21,8 +21,7 @@ class UntypedReplaceOfTypedShapeTest {
             codec.encodeOrderInstruction(in, 0, e, 0, 0, 0);
             s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES, null);
         } else {
-            codec.encodeInput(in, 0, e, 0, 0, 0);
-            s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
         }
     }
 
@@ -53,7 +52,7 @@ class UntypedReplaceOfTypedShapeTest {
         peg.orderType = OrderTypes.PEGGED; peg.tif = OrderTypes.GTC; peg.pegRef = OrderTypes.PEG_PRIMARY;
         peg.pegOffset = -5;
         apply(s, peg);
-        final int pegRef = (int) s.nextOrderRef() - 1;
+        final long pegRef = s.nextOrderRef() - 1;
         InputEvent r = new InputEvent();
         r.type = InputEvent.TYPE_ORDER_REPLACE; r.orderRef = pegRef; r.qty = 8; r.limitPx = 100 * PX;
         apply(s, r);                                            // template 1: untyped

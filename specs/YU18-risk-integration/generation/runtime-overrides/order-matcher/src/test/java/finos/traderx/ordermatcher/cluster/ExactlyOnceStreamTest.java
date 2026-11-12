@@ -35,7 +35,8 @@ class ExactlyOnceStreamTest {
 
     /** Egress capture: {kind, orderRef, riskReason} of every ack the member offers. */
     static final class Capture implements ClientSession {
-        final List<int[]> acks = new ArrayList<>();
+        /** {kind, orderRef, riskReason} per ack record; ADR-105: 40-byte records, the ref read whole. */
+        final List<long[]> acks = new ArrayList<>();
         @Override public long id() { return 7; }
         @Override public int responseStreamId() { return 0; }
         @Override public String responseChannel() { return "test"; }
@@ -43,21 +44,22 @@ class ExactlyOnceStreamTest {
         @Override public void close() { }
         @Override public boolean isClosing() { return false; }
         @Override public long offer(final DirectBuffer b, final int o, final int l) {
-            for (int r = 0; r + 32 <= l; r += 32) {
-                acks.add(new int[] { b.getByte(o + r + 12), b.getInt(o + r + 8), b.getByte(o + r + 22) });
+            final int w = MatchingEngineClusteredService.EGRESS_ACK_LENGTH;
+            for (int r = 0; r + w <= l; r += w) {
+                if (!MatchingEngineClusteredService.ackFormatOk(b, o + r)) throw new AssertionError("ack format word");
+                acks.add(new long[] { b.getByte(o + r + 12), MatchingEngineClusteredService.ackRef(b, o + r), b.getByte(o + r + 22) });
             }
             return 1;
         }
         @Override public long offer(final DirectBufferVector[] vectors) { throw new UnsupportedOperationException(); }
         @Override public long tryClaim(final int length, final BufferClaim claim) { throw new UnsupportedOperationException(); }
-        int[] last() { return acks.get(acks.size() - 1); }
+        long[] last() { return acks.get(acks.size() - 1); }
     }
 
     final Capture session = new Capture();
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(session, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(session, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     /** A sequenced NEW: flag + 16-byte tail; its key is the binary wire's {@code streamId:u32 | seq:u32}. */
@@ -121,13 +123,13 @@ class ExactlyOnceStreamTest {
         final List<long[]> outs = new ArrayList<>();   // {kind, orderRef, publishNats}
         s.outputSink(o -> outs.add(new long[] { o.kind, o.orderRef, o.publishNats ? 1 : 0 }));
         applySeq(s, 1, InputEvent.SIDE_BUY, 1);
-        final int originalRef = (int) s.nextOrderRef() - 1;
+        final long originalRef = s.nextOrderRef() - 1;
         apply(s, order(2, InputEvent.SIDE_SELL, 1, 0L));
         flushKeyWindow(s);
         outs.clear();
         applySeq(s, 1, InputEvent.SIDE_BUY, 1);                 // the resend
         assertEquals(1, outs.size(), "one answer");
-        assertEquals(originalRef, (int) outs.get(0)[1], "the ORIGINAL ref");
+        assertEquals(originalRef, outs.get(0)[1], "the ORIGINAL ref");
         assertEquals(0L, outs.get(0)[2], "a restatement, not published");
         apply(s, order(2, InputEvent.SIDE_SELL, 1, 0L));
         assertEquals(1, s.engine().positionQuantity(1, 0), "booked exactly once");
@@ -138,7 +140,7 @@ class ExactlyOnceStreamTest {
     void contiguousSequencesBookAndTheirDuplicatesDoNot() {
         final MatchingEngineClusteredService s = venue();
         for (long seq = 1; seq <= 3; seq++) applySeq(s, 1, InputEvent.SIDE_BUY, seq);
-        final int lastRef = (int) s.nextOrderRef() - 1;
+        final long lastRef = s.nextOrderRef() - 1;
         assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, (byte) session.last()[0]);
         applySeq(s, 1, InputEvent.SIDE_BUY, 2);                 // duplicate of a RESTING order
         assertEquals(lastRef - 1, session.last()[1], "answered with seq 2's original ref");

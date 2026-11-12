@@ -23,9 +23,9 @@ public interface OrderStatusSource {
      *  never has to know the epoch. {@code filled} is the read model's {@code filledQuantity}
      *  (FIX CumQty), -1 when the read model does not send it: a CANCELED order's {@code remaining}
      *  is 0, so {@code quantity - remaining} would report every canceled order fully filled. */
-    record OrderView(int orderRef, String side, int quantity, int remaining, String status,
+    record OrderView(long orderRef, String side, int quantity, int remaining, String status,
                      String security, int filled) {
-        public OrderView(final int orderRef, final String side, final int quantity, final int remaining,
+        public OrderView(final long orderRef, final String side, final int quantity, final int remaining,
                          final String status, final String security) {
             this(orderRef, side, quantity, remaining, status, security, -1);
         }

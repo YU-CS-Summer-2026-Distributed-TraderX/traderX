@@ -13,7 +13,7 @@ import java.util.Arrays;
 final class GatewayAckHistory {
     private static final byte COMPLETED = 1, REAPED = 2, DRAINED = 3, UNCERTAIN = 4;
     private final long[] requestIds, appliedSequences;
-    private final int[] orderRefs;
+    private final long[] orderRefs;
     private final byte[] kinds, reasons, states;
     private volatile long continuation, duplicate, lateReaped, lateDrained, otherSession, unknown;
     private volatile long evictions, resets;
@@ -24,7 +24,7 @@ final class GatewayAckHistory {
         }
         requestIds = new long[capacity];
         appliedSequences = new long[capacity];
-        orderRefs = new int[capacity];
+        orderRefs = new long[capacity];
         kinds = new byte[capacity];
         reasons = new byte[capacity];
         states = new byte[capacity];
@@ -52,7 +52,7 @@ final class GatewayAckHistory {
         }
     }
 
-    void completed(final long id, final long seq, final int ref, final byte kind, final byte reason) {
+    void completed(final long id, final long seq, final long ref, final byte kind, final byte reason) {
         final int i = replace(id, COMPLETED);
         appliedSequences[i] = seq;
         orderRefs[i] = ref;
@@ -67,7 +67,7 @@ final class GatewayAckHistory {
     void unknownSession() { unknown++; }
 
     /** Missing pending: classify only using retained evidence from the current session. */
-    void unmatched(final long id, final long seq, final int ref, final byte kind, final byte reason) {
+    void unmatched(final long id, final long seq, final long ref, final byte kind, final byte reason) {
         final int i = slot(id);
         if (requestIds[i] != id) {
             unknown++;

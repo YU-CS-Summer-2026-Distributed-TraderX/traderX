@@ -47,15 +47,19 @@ import java.util.concurrent.atomic.LongAdder;
  * this a session carried one order at a time, and a gateway's rate was sessions ÷ cluster round trip.
  *
  * <p>Wire (all little-endian, incl. the 2-byte length prefix). Frame: {@code [u16 len][payload]};
- * {@code payload[0]} is the message type.
+ * {@code payload[0]} is the message type. ADR-105 (FR-ERH-F17): the order ref is 64-bit, so every message that
+ * carries one, and the NEW whose ack carries one, has a new type code.
  * <pre>
- *   NEW     (type 1, 32B): 1:side(0=BUY,1=SELL) 2:u8 flags 4:u32 account 8:u32 security 12:i32 qty
- *                          16:i64 limitPx(x1e6) 24:u64 clOrdId
- *   CANCEL  (type 2, 16B): 4:u32 orderRef 8:u64 clOrdId
- *   REPLACE (type 3, 32B): 4:u32 orderRef 8:i32 qty 16:i64 limitPx(x1e6) 24:u64 clOrdId
- *   ACK     (type 0x81,16B): 1:status(1=accepted,0=rejected,2=ambiguous,3=protocol-error)
- *                          2:u8 kind(OutputEvent) 3:u8 riskReason 4:u32 orderRef 8:u64 clOrdId(echo)
+ *   NEW     (type 0x11, 32B): 1:side(0=BUY,1=SELL) 2:u8 flags 4:u32 account 8:u32 security 12:i32 qty
+ *                             16:i64 limitPx(x1e6) 24:u64 clOrdId
+ *   CANCEL  (type 0x12, 20B): 4:u64 orderRef 12:u64 clOrdId
+ *   REPLACE (type 0x13, 32B): 4:u64 orderRef 12:i32 qty 16:i64 limitPx(x1e6) 24:u64 clOrdId
+ *   ACK     (type 0x82, 20B): 1:status(1=accepted,0=rejected,2=ambiguous,3=protocol-error)
+ *                             2:u8 kind(OutputEvent) 3:u8 riskReason 4:u64 orderRef 12:u64 clOrdId(echo)
  * </pre>
+ * The 32-bit codes (NEW 1, CANCEL 2, REPLACE 3, ACK 0x81 at 16B with a u32 ref) are refused: each is answered with a
+ * 0x81 ack in that old layout, status protocol-error, so a client that predates ADR-105 fails on its first frame
+ * instead of reading a truncated ref.
  * {@code clOrdId} is the client's own {@code uint64}: used directly as the engine idempotency key
  * (0 = none, not hashed) and echoed in the ack for correlation. YU18 (ADR-090, FR-XOD-11): NEW flags bit 0
  * = sequenced, and then {@code clOrdId} reads {@code streamId:u32 (high) | seq:u32 (low)}, seq from 1; the
@@ -67,12 +71,18 @@ public final class BinaryGatewayAcceptor {
     private static final Logger log = LoggerFactory.getLogger(BinaryGatewayAcceptor.class);
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
 
-    static final int MSG_NEW = 1;
-    static final int MSG_CANCEL = 2;
-    static final int MSG_REPLACE = 3;
+    static final int MSG_NEW = 0x11;
+    static final int MSG_CANCEL = 0x12;
+    static final int MSG_REPLACE = 0x13;
     static final int NEW_FLAG_SEQUENCED = 1;
-    static final int ACK_TYPE = 0x81;
-    static final int ACK_PAYLOAD_LEN = 16;
+    static final int ACK_TYPE = 0x82;
+    static final int ACK_PAYLOAD_LEN = 20;
+    /** Before ADR-105: refused, answered in their own ack layout ({@link #LEGACY_ACK_TYPE}). */
+    static final int LEGACY_MSG_NEW = 1;
+    static final int LEGACY_MSG_CANCEL = 2;
+    static final int LEGACY_MSG_REPLACE = 3;
+    static final int LEGACY_ACK_TYPE = 0x81;
+    static final int LEGACY_ACK_PAYLOAD_LEN = 16;
 
     static final byte STATUS_REJECTED = 0;
     static final byte STATUS_ACCEPTED = 1;
@@ -90,6 +100,8 @@ public final class BinaryGatewayAcceptor {
     private static final long DRAIN_TIMEOUT_MS = 60_000;
     /** A frame refused before any submit; identity-compared, never sent to the seam. */
     private static final OrderSubmitter.ExecResult PROTOCOL_ERROR = new OrderSubmitter.ExecResult(false, 0, (byte) 0);
+    /** A pre-ADR-105 frame: answered with a protocol error in the old 16-byte ack. */
+    private static final OrderSubmitter.ExecResult LEGACY_FRAME = new OrderSubmitter.ExecResult(false, 0, (byte) 0);
     private static final Runnable STOP = () -> { };
 
     private final OrderSubmitter submitter;
@@ -354,11 +366,11 @@ public final class BinaryGatewayAcceptor {
                     : submitter.submitOrderAsync(clOrdId, account, security, side, qty, limitPx, completions);
             }
             case MSG_CANCEL: {
-                if (len < 16) {
+                if (len < 20) {
                     return CompletableFuture.completedFuture(PROTOCOL_ERROR);
                 }
-                final int orderRef = in.getInt(offset + 4, LE);
-                clOrdIdOut[0] = in.getLong(offset + 8, LE);
+                final long orderRef = in.getLong(offset + 4, LE);
+                clOrdIdOut[0] = in.getLong(offset + 12, LE);
                 if (tRecvNanos != 0) {
                     metrics.recordDecode(System.nanoTime() - tRecvNanos);
                 }
@@ -368,8 +380,8 @@ public final class BinaryGatewayAcceptor {
                 if (len < 32) {
                     return CompletableFuture.completedFuture(PROTOCOL_ERROR);
                 }
-                final int orderRef = in.getInt(offset + 4, LE);
-                final int qty = in.getInt(offset + 8, LE);
+                final long orderRef = in.getLong(offset + 4, LE);
+                final int qty = in.getInt(offset + 12, LE);
                 final long limitPx = in.getLong(offset + 16, LE);
                 final long replaceClOrdId = in.getLong(offset + 24, LE);
                 clOrdIdOut[0] = replaceClOrdId;
@@ -377,6 +389,14 @@ public final class BinaryGatewayAcceptor {
                     metrics.recordDecode(System.nanoTime() - tRecvNanos);
                 }
                 return submitter.submitReplaceAsync(orderRef, replaceClOrdId, qty, limitPx, completions);
+            }
+            case LEGACY_MSG_NEW, LEGACY_MSG_CANCEL, LEGACY_MSG_REPLACE: {
+                // ADR-105: the client speaks the 32-bit wire. Echo the clOrdId at its old offset so it can correlate.
+                final int at = msgType == LEGACY_MSG_CANCEL ? 8 : 24;
+                if (len >= at + 8) {
+                    clOrdIdOut[0] = in.getLong(offset + at, LE);
+                }
+                return CompletableFuture.completedFuture(LEGACY_FRAME);
             }
             default:
                 return CompletableFuture.completedFuture(PROTOCOL_ERROR);
@@ -388,6 +408,16 @@ public final class BinaryGatewayAcceptor {
         if (r == PROTOCOL_ERROR) {
             return writeAck(ackOut, STATUS_PROTOCOL_ERROR, (byte) 0, (byte) 0, 0, clOrdId);
         }
+        if (r == LEGACY_FRAME) {
+            ackOut.putShort(0, (short) LEGACY_ACK_PAYLOAD_LEN, LE);
+            ackOut.putByte(2, (byte) LEGACY_ACK_TYPE);
+            ackOut.putByte(3, STATUS_PROTOCOL_ERROR);
+            ackOut.putByte(4, (byte) 0);
+            ackOut.putByte(5, (byte) 0);
+            ackOut.putInt(6, 0, LE);
+            ackOut.putLong(10, clOrdId, LE);
+            return 2 + LEGACY_ACK_PAYLOAD_LEN;
+        }
         if (r == null) {
             // Post-publish ambiguity: the command may yet commit, so the client must NOT read this as
             // a rejection (same rule the REST/FIX front ends follow when submit returns null).
@@ -398,15 +428,15 @@ public final class BinaryGatewayAcceptor {
     }
 
     private static int writeAck(final MutableDirectBuffer ackOut, final byte status, final byte kind,
-                                final byte riskReason, final int orderRef, final long clOrdId) {
+                                final byte riskReason, final long orderRef, final long clOrdId) {
         ackOut.putShort(0, (short) ACK_PAYLOAD_LEN, LE);
         final int p = 2;
         ackOut.putByte(p, (byte) ACK_TYPE);
         ackOut.putByte(p + 1, status);
         ackOut.putByte(p + 2, kind);
         ackOut.putByte(p + 3, riskReason);
-        ackOut.putInt(p + 4, orderRef, LE);
-        ackOut.putLong(p + 8, clOrdId, LE);
+        ackOut.putLong(p + 4, orderRef, LE);
+        ackOut.putLong(p + 12, clOrdId, LE);
         return 2 + ACK_PAYLOAD_LEN;
     }
 }

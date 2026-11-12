@@ -62,7 +62,7 @@ class SessionRingTest {
         plain(s, 2, InputEvent.SIDE_SELL, 0L);
     }
 
-    int[] last() { return session.last(); }
+    long[] last() { return session.last(); }
 
     /**
      * Acceptance run 3's case: one session's 1,464 orders, a 47 s outage while 262,145 other keys pass through the
@@ -97,11 +97,11 @@ class SessionRingTest {
         final List<long[]> outs = new ArrayList<>();   // {kind, orderRef, publishNats}
         s.outputSink(o -> outs.add(new long[] { o.kind, o.orderRef, o.publishNats ? 1 : 0 }));
         keyed(s, 1, InputEvent.SIDE_BUY, KEY, 2, 0);
-        final int originalRef = (int) s.nextOrderRef() - 1;
+        final long originalRef = s.nextOrderRef() - 1;
         outs.clear();
         keyed(s, 1, InputEvent.SIDE_BUY, KEY, 3, AeronReplicationCodec.INPUT_FLAG_POSS_RESEND);
         assertEquals(1, outs.size(), "one answer");
-        assertEquals(originalRef, (int) outs.get(0)[1], "the ORIGINAL ref");
+        assertEquals(originalRef, outs.get(0)[1], "the ORIGINAL ref");
         assertEquals(0L, outs.get(0)[2], "never bridged: no row in the read model or the history store");
         plain(s, 2, InputEvent.SIDE_SELL, 0L);
         assertEquals(1, s.engine().positionQuantity(1, 0), "booked once");
@@ -180,7 +180,7 @@ class SessionRingTest {
         assertEquals(1, b.risk().sessionRing().size());
         assertArrayEquals(SnapshotPackedRoundTripTest.flat(a), SnapshotPackedRoundTripTest.flat(b));
         final long t0 = harness.ts;
-        final List<List<int[]>> answers = new ArrayList<>();
+        final List<List<long[]>> answers = new ArrayList<>();
         for (final MatchingEngineClusteredService m : List.of(a, b)) {
             harness.ts = t0;                                        // the same log: the same cluster timestamps
             session.acks.clear();
@@ -337,7 +337,7 @@ class SessionRingTest {
         for (final byte[] rec : records) {
             final UnsafeBuffer b = new UnsafeBuffer(rec);
             if (b.getInt(0) == MatchingEngineClusteredService.T_SESSION_HEAD) r.restoreHead(b, 4, rec.length - 4);
-            else r.restoreEntries(b, 4, rec.length - 4);
+            else r.restoreEntries(b, 4, rec.length - 4, true);
         }
         r.requireRestoreComplete();
         return r;
@@ -406,7 +406,7 @@ class SessionRingTest {
         for (final MatchingEngineClusteredService m : List.of(empty, a)) {
             final List<byte[]> records = new ArrayList<>();
             m.writeSnapshot((b, o, l) -> records.add(SnapshotPackedRoundTripTest.copy(b, o, l)));
-            assertEquals(16, new UnsafeBuffer(records.get(0)).getInt(4));
+            assertEquals(17, new UnsafeBuffer(records.get(0)).getInt(4), "format 17 (ADR-105) keeps format 16's record types");
             assertEquals(0, count(records, MatchingEngineClusteredService.T_SESSION_RING), "format 16 writes no type 22");
             final MatchingEngineClusteredService b = SnapshotPackedRoundTripTest.restore(records);
             assertEquals(m.risk().sessionRing().size(), b.risk().sessionRing().size());
@@ -462,8 +462,12 @@ class SessionRingTest {
         final MatchingEngineClusteredService via16 = SnapshotPackedRoundTripTest.restore(records);
         assertSameRing(via16.risk().sessionRing(), via15.risk().sessionRing(), "format 15 vs 16");
         assertSameTuples(a.risk().sessionRing(), via15.risk().sessionRing(), "format 15 vs the original");
-        assertArrayEquals(SnapshotPackedRoundTripTest.flat(a), SnapshotPackedRoundTripTest.flat(via15),
-            "a format 15 restore re-snapshots as the original's format 16");
+        // ADR-105: the header's first order ref (68..75) is the one honest difference. A format 15 stream comes from an epoch
+        // that began at ref 1, so its restore says 1; this one was synthesized from a format 17 epoch.
+        final byte[] fa = SnapshotPackedRoundTripTest.flat(a), f15r = SnapshotPackedRoundTripTest.flat(via15);
+        java.util.Arrays.fill(fa, 68, 76, (byte) 0);
+        java.util.Arrays.fill(f15r, 68, 76, (byte) 0);
+        assertArrayEquals(fa, f15r, "a format 15 restore re-snapshots as the original's format 17");
     }
 
     /**
@@ -484,7 +488,7 @@ class SessionRingTest {
         final MatchingEngineClusteredService b = SnapshotPackedRoundTripTest.restore(messages);
         final MatchingEngineClusteredService c = SnapshotPackedRoundTripTest.restore(messages);
         final long t0 = harness.ts;
-        final List<List<int[]>> answers = new ArrayList<>();
+        final List<List<long[]>> answers = new ArrayList<>();
         for (final MatchingEngineClusteredService m : List.of(a, b, c)) {
             harness.ts = t0;
             session.acks.clear();
@@ -530,7 +534,8 @@ class SessionRingTest {
                     + " bytes does not fit a " + SnapshotPackedRoundTripTest.PAYLOAD + "-byte packed message");
             }
         }
-        assertEquals(2 + n / SessionRing.ENTRIES_PER_RECORD + 2, ring, "two heads, 32 + 2 entry records");
+        final int e = SessionRing.ENTRIES_PER_RECORD;
+        assertEquals(2 + (n + e - 1) / e + (65 + e - 1) / e, ring, "two heads and their entry records (53 a record since ADR-105)");
         // the packed stream: every message is a T_PACKED container of at most the payload
         final List<byte[]> messages = new ArrayList<>();
         final MatchingEngineClusteredService.SnapshotPacker packer = new MatchingEngineClusteredService.SnapshotPacker(
@@ -557,17 +562,18 @@ class SessionRingTest {
     void format16RingRecordsFailClosed() {
         final SessionRing full = shaped(256, "full");
         final List<byte[]> ok = write16(full);
-        assertEquals(1 + 4, ok.size());
+        final int e = SessionRing.ENTRIES_PER_RECORD;   // 53 since ADR-105 (format 16 packed 64)
+        assertEquals(1 + (256 + e - 1) / e, ok.size());
         final IllegalStateException n = assertThrows(IllegalStateException.class,
             () -> restore16(new SessionRing(512, 8, 1_000L), ok));
         assertTrue(n.getMessage().contains("EXACTLY_ONCE_SESSION_RING"), n.getMessage());
         assertRefused(List.of(ok.get(1)), "without their head");
-        assertRefused(List.of(ok.get(0), ok.get(2)), "entries 64+64");                    // gap: starts at 64
-        assertRefused(List.of(ok.get(0), ok.get(1), ok.get(1)), "entries 0+64");        // overlap
+        assertRefused(List.of(ok.get(0), ok.get(2)), "entries " + e + "+" + e);           // gap: starts at e
+        assertRefused(List.of(ok.get(0), ok.get(1), ok.get(1)), "entries 0+" + e);      // overlap
         final byte[] overrun = ok.get(1).clone();
-        new UnsafeBuffer(overrun).putInt(12, 65);                                        // count 65 in a 64-entry record
-        assertRefused(List.of(ok.get(0), overrun), "entries 0+65");
-        assertRefused(ok.subList(0, 4), "snapshot incomplete");                          // the last record missing
+        new UnsafeBuffer(overrun).putInt(12, e + 1);                                     // one more than the record holds
+        assertRefused(List.of(ok.get(0), overrun), "entries 0+" + (e + 1));
+        assertRefused(ok.subList(0, ok.size() - 1), "snapshot incomplete");              // the last record missing
         final SessionRing two = shaped(256, "mixed");
         final List<byte[]> both = write16(two);
         final List<byte[]> torn = new ArrayList<>(both);

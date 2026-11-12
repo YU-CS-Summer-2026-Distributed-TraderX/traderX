@@ -37,7 +37,7 @@ final class TradeNatsPublisher {
         byte side;
         int qty;
         long tradePx;
-        int orderRef;
+        long orderRef;
     }
 
     private final String url;
@@ -149,11 +149,11 @@ final class TradeNatsPublisher {
     }
 
     void offer(final long tradeSeq, final int accountId, final String security,
-               final byte side, final int qty, final long tradePx, final int orderRef) {
+               final byte side, final int qty, final long tradePx, final long orderRef) {
         offer(tradeSeq,accountId,security,side,qty,tradePx,orderRef,0L);
     }
     void offer(final long tradeSeq, final int accountId, final String security,
-               final byte side, final int qty, final long tradePx, final int orderRef,
+               final byte side, final int qty, final long tradePx, final long orderRef,
                final long consensusSequence) {
         if (security == null) {
             return; // unresolved ticker — nothing the downstream can key on

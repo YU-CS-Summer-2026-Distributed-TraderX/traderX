@@ -74,7 +74,7 @@ class GatewayConsensusSubmissionTest {
         seed=new InputEvent();seed.type=InputEvent.TYPE_PRICE_TICK;seed.securityId=1;seed.priceTicks=150_000_000L;offer(seed);
         var original=new OrderSubmitter.TypedOrder(OrderTypes.LIMIT,OrderTypes.GTC,100_000_000L,0,0,(byte)0,0,(byte)0,0);
         var accepted=submit(()->gateway.submitTypedOrder("typed-live-new",11,"IBM",'B',10,original));
-        assertTrue(accepted.accepted());assertEquals(1,accepted.orderRef());
+        assertTrue(accepted.accepted());assertEquals(MatchingEngineClusteredService.FIRST_ORDER_REF,accepted.orderRef());
         var replacement=new OrderSubmitter.TypedOrder(OrderTypes.LIMIT,OrderTypes.GTC,101_000_000L,0,0,(byte)0,0,(byte)0,0);
         var replaced=submit(()->gateway.submitTypedReplace(accepted.orderRef(),"typed-live-replace",25,replacement));
         assertTrue(replaced.accepted());assertEquals(accepted.orderRef(),replaced.orderRef());

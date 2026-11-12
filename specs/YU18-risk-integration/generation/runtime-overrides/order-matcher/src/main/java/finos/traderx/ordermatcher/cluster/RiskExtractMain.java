@@ -457,6 +457,9 @@ public final class RiskExtractMain {
 
     private void onEgressRecord(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
                           final int offset, final int length, final io.aeron.logbuffer.Header header) {
+        if (length != MatchingEngineClusteredService.EGRESS_ACK_LENGTH || !MatchingEngineClusteredService.ackFormatOk(buffer, offset)) {
+            return;   // ADR-105: not this build's ack format; the marker wait times out and says so
+        }
         if (buffer.getByte(offset + 12) == MatchingEngineClusteredService.KIND_RISK_EXTRACT_MARKED) {
             lastExtractAck = new long[] {
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };

@@ -17,8 +17,7 @@ class BandReanchorOnAcceptanceTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -41,7 +40,7 @@ class BandReanchorOnAcceptanceTest {
         return e;
     }
 
-    int lastRef(MatchingEngineClusteredService s) { return (int) s.nextOrderRef() - 1; }
+    long lastRef(MatchingEngineClusteredService s) { return s.nextOrderRef() - 1; }
 
     @Test void refusedOrderDoesNotMoveTheBandButAcceptedOneDoes() {
         final MatchingEngineClusteredService s = new MatchingEngineClusteredService();
@@ -50,7 +49,7 @@ class BandReanchorOnAcceptanceTest {
         apply(s, ctl(InputEvent.TYPE_SECURITY_CONTROL, 0, 0));
         apply(s, tick(100 * PX));
         apply(s, order(1, InputEvent.SIDE_BUY, 40 * PX));
-        final int victim = lastRef(s);
+        final long victim = lastRef(s);
         apply(s, tick(150 * PX));
         InputEvent kill = new InputEvent();
         kill.type = InputEvent.TYPE_POLICY_CONTROL; kill.setControlVersion(9L); kill.setControlEnabled(true);

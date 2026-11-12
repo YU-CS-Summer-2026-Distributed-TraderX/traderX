@@ -39,15 +39,31 @@
 - FR-ERH-F9: A PRE_OPEN retry of a key the engine already decided SHALL NOT be queued.
 - FR-ERH-F10: An out-of-range `securityId` on a price tick SHALL be ignored, and on a market trade SHALL be
   answered UNKNOWN_SECURITY.
-- FR-ERH-F13 (ADR-100): The order-reference generator SHALL issue references in `[1, 2^31-1]` only. An ORDER_NEW
-  arriving once the epoch has issued 2^31-1 SHALL be refused with `ORDER_REF_EXHAUSTED` before it consumes a
+- FR-ERH-F13 (ADR-100; the ceiling widened by FR-ERH-F17, ADR-105): The order-reference generator SHALL issue
+  references in `[first ref, MAX_ORDER_REF]` only (`[1, 2^31-1]` before ADR-105). An ORDER_NEW arriving once the
+  epoch has issued its last reference SHALL be refused with `ORDER_REF_EXHAUSTED` before it consumes a
   reference or an applied sequence, unless its key is already committed (decided in the idempotency table,
   waiting in the PRE_OPEN queue, or a sequenced resend the ring answers): a committed request SHALL recover
   its original answer with no reference consumed, and a refused sequenced request SHALL recover the same
   refusal on resend; cancels and replaces SHALL still apply. A snapshot header whose `nextOrderRef`
-  is outside `[1, 2^31]` or whose `highestIssuedRef` exceeds 2^31-1 SHALL be refused at load. The member SHALL
+  is outside `[first ref, MAX_ORDER_REF + 1]` or whose `highestIssuedRef` exceeds `MAX_ORDER_REF` SHALL be refused at
+  load. The member SHALL
   expose `traderx_cluster_order_ref_headroom`. A `/trades` ticket booking SHALL publish `bookingSource: TICKET`
   and no `sourceOrderId`; a matched fill SHALL publish `bookingSource: MATCH` and `<epoch>-<ref>`.
+
+- FR-ERH-F17 (ADR-105): An order reference SHALL be 64-bit wherever it is held or carried. A fresh epoch's first
+  reference SHALL be `2^32 + 1` and the last `MAX_ORDER_REF = 2^53 - 1` (exact in JavaScript); the first ref SHALL be
+  replicated (snapshot format 17 header), and an epoch restored from format 16 or older SHALL keep first ref 1. On the
+  log a CANCEL or REPLACE whose ref exceeds 32 bits SHALL carry `INPUT_FLAG_WIDE_REF` and an 8-byte `u64` tail, with
+  the low half in the `uint32` field; a narrower message SHALL be unchanged; the tail SHALL be exclusive of the
+  ADR-090 and ADR-104 tails and SHALL have one encoding (a tail naming a 32-bit or negative ref is refused). Snapshot
+  format 17 SHALL carry the session ring's ref as 8 bytes (25-byte entries, 53 a record) and SHALL still restore
+  format 16. The egress ack SHALL be 40 bytes with the ref's high half at 32..35 and the format word at 36..39, and
+  every egress reader SHALL refuse a record without the word. The binary wire SHALL use type codes 0x11/0x12/0x13 and
+  ack 0x82 with a `u64` ref, and SHALL answer the 32-bit codes with a protocol-error ack in their own 16-byte layout.
+  REST `/cancel` and `/replace` SHALL refuse with 400 an `orderRef` that is not a whole number in
+  `[1, MAX_ORDER_REF]`, never truncate it. `OrderRefWideningTest` (its ceiling case fails on 074b6fd5c: two of three
+  NEWs refused ORDER_REF_EXHAUSTED), `GatewaySubmissionEncodingTest`, `BinaryGatewayAcceptorTest`.
 
 ## Requirements: recovery and FIX state
 
@@ -92,7 +108,7 @@
   initializer SHALL verify the catalog's enabled states there on all three members, not on a gateway's control
   replica, which holds only what passed through that gateway. `MemberSecurityReadoutTest`.
 - SC-ERH-01: `GatewayAccessTest`, `BoundedBodyTest`, `ClusterIngressAuthTest`, `AccountTableOverflowTest`,
-  `OutOfRangeSecurityEventsTest`, `BookCapacityTest`, `OrderRefExhaustionTest`, `ClOrdIdLedgerTest`, `GatewayCatalogFeedTest` and
+  `OutOfRangeSecurityEventsTest`, `BookCapacityTest`, `OrderRefExhaustionTest`, `OrderRefWideningTest`, `ClOrdIdLedgerTest`, `GatewayCatalogFeedTest` and
   `MemberSecurityReadoutTest` pass in an empty-root render,
   inside the full order-matcher suite.
 - SC-ERH-02: The trade-service suite, including the four `GatewayBearer` and propagation tests, and the

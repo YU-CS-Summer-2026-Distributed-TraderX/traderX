@@ -19,8 +19,8 @@ public interface OrderSubmitter {
      * 296,000 orders on CREDIT_LIMIT. The market-trade path already answered with its reason; the
      * order path now does too.
      */
-    record ExecResult(boolean accepted, int orderRef, byte kind, byte riskReason) {
-        public ExecResult(boolean accepted, int orderRef, byte kind) {
+    record ExecResult(boolean accepted, long orderRef, byte kind, byte riskReason) {
+        public ExecResult(boolean accepted, long orderRef, byte kind) {
             this(accepted, orderRef, kind, (byte) 0);
         }
     }
@@ -51,7 +51,7 @@ public interface OrderSubmitter {
         return 0;
     }
 
-    default ExecResult submitCancel(int orderRef) {
+    default ExecResult submitCancel(long orderRef) {
         return null;
     }
 
@@ -61,18 +61,18 @@ public interface OrderSubmitter {
      * order's; 0 = no claim, unchecked (the binary frames carry none). Defaults to the unclaimed
      * form so a submitter that predates the claim keeps compiling.
      */
-    default ExecResult submitCancel(int orderRef, int accountId) {
+    default ExecResult submitCancel(long orderRef, int accountId) {
         return submitCancel(orderRef);
     }
 
     /** G3: {@link #submitReplace(int, String, int, long)} with the caller's ownership claim. */
-    default ExecResult submitReplace(int orderRef, String clOrdId, int quantity, long limitPxTicks,
+    default ExecResult submitReplace(long orderRef, String clOrdId, int quantity, long limitPxTicks,
                                      int accountId) {
         return submitReplace(orderRef, clOrdId, quantity, limitPxTicks);
     }
 
     /** G3: {@link #submitTypedReplace(int, String, int, TypedOrder)} with the caller's ownership claim. */
-    default ExecResult submitTypedReplace(int orderRef, String clOrdId, int qty, TypedOrder typed,
+    default ExecResult submitTypedReplace(long orderRef, String clOrdId, int qty, TypedOrder typed,
                                           int accountId) {
         return submitTypedReplace(orderRef, clOrdId, qty, typed);
     }
@@ -95,7 +95,7 @@ public interface OrderSubmitter {
      * <p>Default: unsupported at this tier, reported as ambiguity so no caller claims a rejection
      * it cannot substantiate.
      */
-    default ExecResult submitReplace(int orderRef, String clOrdId, int quantity, long limitPxTicks) {
+    default ExecResult submitReplace(long orderRef, String clOrdId, int quantity, long limitPxTicks) {
         return null;
     }
 
@@ -116,7 +116,7 @@ public interface OrderSubmitter {
 
     /** Binary fast-path atomic replace (lever 4): {@link #submitReplace} with a numeric idempotency
      *  key instead of a String clOrdId. Default unsupported, reported as ambiguity. */
-    default ExecResult submitReplace(int orderRef, long clientKey, int qty, long limitPxTicks) {
+    default ExecResult submitReplace(long orderRef, long clientKey, int qty, long limitPxTicks) {
         return null;
     }
 
@@ -163,12 +163,12 @@ public interface OrderSubmitter {
     }
 
     /** FR-BSP-01: {@link #submitCancel(int)} without waiting. */
-    default CompletableFuture<ExecResult> submitCancelAsync(int orderRef, Executor completions) {
+    default CompletableFuture<ExecResult> submitCancelAsync(long orderRef, Executor completions) {
         return CompletableFuture.completedFuture(submitCancel(orderRef));
     }
 
     /** FR-BSP-01: {@link #submitReplace(int, long, int, long)} without waiting. */
-    default CompletableFuture<ExecResult> submitReplaceAsync(int orderRef, long clientKey, int qty, long limitPxTicks,
+    default CompletableFuture<ExecResult> submitReplaceAsync(long orderRef, long clientKey, int qty, long limitPxTicks,
                                                             Executor completions) {
         return CompletableFuture.completedFuture(submitReplace(orderRef, clientKey, qty, limitPxTicks));
     }
@@ -201,7 +201,7 @@ public interface OrderSubmitter {
     }
 
     /** YU18: a typed REPLACE of an order of the same type (FR-OT29). */
-    default ExecResult submitTypedReplace(int orderRef, String clOrdId, int qty, TypedOrder typed) {
+    default ExecResult submitTypedReplace(long orderRef, String clOrdId, int qty, TypedOrder typed) {
         return null;
     }
 }

@@ -311,6 +311,7 @@ class OrderTypesBoundaryTest {
                 new org.agrona.concurrent.UnsafeBuffer(new byte[MatchingEngineClusteredService.EGRESS_ACK_LENGTH]);
             final long requestId = 900 + i;
             b.putLong(0, 50 + i);      // appliedSeq
+            MatchingEngineClusteredService.putAckRef(b, 0);   // ADR-105: the ack's format word
             b.putByte(12, kinds[i]);
             b.putLong(13, requestId);
             onEgress.invoke(gw, 0L, 0L, b, 0, MatchingEngineClusteredService.EGRESS_ACK_LENGTH, null);

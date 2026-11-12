@@ -52,21 +52,21 @@ class Gateway:
             while len(buf) >= 34:
                 n, typ, side, flags = struct.unpack_from('<HBBB', buf)
                 acct, sec, qty, px, cid = struct.unpack_from('<IIiqQ', buf, 6); buf = buf[34:]
-                if (n, typ, flags, sec, qty, px) != (32, 1, int(self.sequenced), 7, 1, 412_500000) or acct not in SETS[0] | SETS[1]:
+                if (n, typ, flags, sec, qty, px) != (32, 0x11, int(self.sequenced), 7, 1, 412_500000) or acct not in SETS[0] | SETS[1]:
                     self.errors.append((n, typ, side, flags, acct, sec, qty, px))
                 with self.lock:
                     kind = risk = ref = 0
                     if self.sequenced:
                         key, q = (acct, cid >> 32), cid & 0xffffffff
                         if key not in self.streams and len(self.streams) >= self.table:
-                            conn.sendall(struct.pack('<HBBBBIQ', 16, 0x81, 0, 0, 35, 0, cid)); continue   # STREAM_LIMIT
+                            conn.sendall(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 35, 0, cid)); continue   # STREAM_LIMIT
                         nxt = self.streams.setdefault(key, 1)
                         if q > nxt:   # a gap: refused, nothing changes; only the probe may make one
                             if q != 2 ** 31: self.errors.append(('gap', acct, cid >> 32, q, nxt))
-                            conn.sendall(struct.pack('<HBBBBIQ', 16, 0x81, 0, 0, 34, nxt, cid)); continue
+                            conn.sendall(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 34, nxt, cid)); continue
                         if q < nxt:
                             self.errors.append(('behind', acct, cid >> 32, q, nxt))
-                            conn.sendall(struct.pack('<HBBBBIQ', 16, 0x81, 0, 0, 17, 0, cid)); continue
+                            conn.sendall(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 17, 0, cid)); continue
                         self.streams[key] = nxt + 1
                     self.n += 1; i = self.n
                     status = 0 if self.reject_every and i % self.reject_every == 0 else 1
@@ -80,7 +80,7 @@ class Gateway:
                         else:
                             self.book.append((side, acct))
                 if i == self.drop: continue
-                ack = struct.pack('<HBBBBIQ', 16, 0x81, status, kind, risk, ref if risk else i, cid)
+                ack = struct.pack('<HBBBBQQ', 20, 0x82, status, kind, risk, ref if risk else (1 << 32) + i, cid)   # ADR-105: refs are wide
                 conn.sendall(ack * (2 if i == self.dup else 1))
         conn.close()
 

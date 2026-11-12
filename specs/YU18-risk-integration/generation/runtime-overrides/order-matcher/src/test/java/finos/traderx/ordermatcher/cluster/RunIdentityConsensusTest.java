@@ -88,7 +88,7 @@ class RunIdentityConsensusTest {
         int leader=awaitLeader(-1);connectClient();
         offerNewOrder(100*PX);
         awaitEgress(()->countKind(OutputEvent.KIND_ORDER_REJECTED)==1);
-        assertEquals(1,nodes[leader].service.nextOrderRef(),"unbound admission must not consume an order id");
+        assertEquals(MatchingEngineClusteredService.FIRST_ORDER_REF,nodes[leader].service.nextOrderRef(),"unbound admission must not consume an order id");
         runControl(1);await(()->allPhase(1));
         registerSymbol("RESERVED");registerSymbol("IBM");
         await(()->java.util.Arrays.stream(nodes).allMatch(n->n.service.symbolIdFor("IBM")==SECURITY));
@@ -282,9 +282,9 @@ class RunIdentityConsensusTest {
         assertEquals(sb.risk().policyVersion(), sa.risk().policyVersion());
     }
 
-    private static List<Integer> toList(final int[] values) {
-        final List<Integer> out = new ArrayList<>(values.length);
-        for (final int v : values) {
+    private static List<Long> toList(final long[] values) {
+        final List<Long> out = new ArrayList<>(values.length);
+        for (final long v : values) {
             out.add(v);
         }
         return out;

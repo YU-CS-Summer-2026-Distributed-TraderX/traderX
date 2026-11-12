@@ -66,7 +66,7 @@ class AeronClusterSpikeTest {
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent ingress = new InputEvent();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private final List<long[]> acks = new ArrayList<>(); // {orderRef, kind, tradeSeq}
 
     private final EgressListener egressListener = new EgressListener() {
@@ -75,7 +75,7 @@ class AeronClusterSpikeTest {
                               final DirectBuffer buffer, final int offset, final int length,
                               final Header header) {
             acks.add(new long[] {
-                buffer.getInt(offset + 8), buffer.getByte(offset + 12), buffer.getLong(offset + 13) });
+                MatchingEngineClusteredService.ackRef(buffer, offset), buffer.getByte(offset + 12), buffer.getLong(offset + 13) });
         }
     };
 
@@ -131,7 +131,7 @@ class AeronClusterSpikeTest {
         assertEquals(service.engine().tradeCounter(), trades.size() - 1,
             "every trade the engine booked must appear exactly once in the capture");
         assertEquals(4, orders.size() - 1, "two accepts and two fills");
-        assertTrue(orders.get(1).contains(",1,11,#1,B,10,"), orders.get(1));  // ref 1 accepted, buy
+        assertTrue(orders.get(1).contains("," + MatchingEngineClusteredService.FIRST_ORDER_REF + ",11,#1,B,10,"), orders.get(1));  // ref 1 accepted, buy
         assertTrue(orders.get(4).contains(",FILLED,100.000000,10,"), orders.get(4));
         assertTrue(trades.get(1).contains(",11,#1,B,10,100.000000,"), trades.get(1));
         assertTrue(trades.get(2).contains(",12,#1,S,10,100.000000,"), trades.get(2));
@@ -188,7 +188,7 @@ class AeronClusterSpikeTest {
         // Recovery 1: snapshot + log tail. Resume strictly after the boundary, re-assign 5..6
         // identically during replay, and issue strictly beyond them.
         restartNode();
-        assertEquals(5, service.lastLoadedNextOrderRef(), "snapshot must carry the generator");
+        assertEquals(MatchingEngineClusteredService.FIRST_ORDER_REF + 4, service.lastLoadedNextOrderRef(), "snapshot must carry the generator");
         connectClient();
         offerNewOrder(100 * PX, 0L);
         awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 1);
@@ -200,7 +200,7 @@ class AeronClusterSpikeTest {
         // every warm value came from the snapshot alone.
         takeSnapshot();
         restartNode();
-        assertEquals(8, service.lastLoadedNextOrderRef(), "zero-tail recovery restores the generator");
+        assertEquals(MatchingEngineClusteredService.FIRST_ORDER_REF + 7, service.lastLoadedNextOrderRef(), "zero-tail recovery restores the generator");
         connectClient();
         assertEquals(5 * 10 * 100 * PX, service.risk().reservedNotional(ACCOUNT),
             "reservations rebuilt from the snapshot alone");
@@ -399,7 +399,7 @@ class AeronClusterSpikeTest {
         return acks.stream()
             .filter(a -> a[1] == OutputEvent.KIND_ORDER_ACCEPTED || a[1] == OutputEvent.KIND_ORDER_FILLED
                 || a[1] == OutputEvent.KIND_ORDER_PARTIALLY_FILLED)
-            .map(a -> a[0])
+            .map(a -> a[0] - (MatchingEngineClusteredService.FIRST_ORDER_REF - 1))   // "ref n": the epoch's n-th (ADR-105)
             .toList();
     }
 

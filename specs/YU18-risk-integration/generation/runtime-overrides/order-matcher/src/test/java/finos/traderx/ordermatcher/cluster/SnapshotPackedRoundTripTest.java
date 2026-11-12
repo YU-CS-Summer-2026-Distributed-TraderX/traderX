@@ -223,9 +223,8 @@ class SnapshotPackedRoundTripTest {
 
     static void apply(final MatchingEngineClusteredService s, final ClientSession session, final InputEvent e) {
         final AeronReplicationCodec codec = new AeronReplicationCodec();
-        final UnsafeBuffer in = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
-        codec.encodeInput(in, 0, e, 0L, 0, 0);
-        s.onSessionMessage(session, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        final UnsafeBuffer in = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
+        s.onSessionMessage(session, ++ts, in, 0, codec.encodeInput(in, 0, e, 0L, 0, 0), null);
     }
 
     static boolean same(final List<byte[]> a, final List<byte[]> b) {

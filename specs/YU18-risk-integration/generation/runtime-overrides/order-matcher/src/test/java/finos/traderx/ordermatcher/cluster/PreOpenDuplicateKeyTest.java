@@ -20,8 +20,7 @@ class PreOpenDuplicateKeyTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -45,7 +44,7 @@ class PreOpenDuplicateKeyTest {
         o.type = InputEvent.TYPE_ORDER_NEW; o.accountId = 1; o.securityId = 0;
         o.side = InputEvent.SIDE_BUY; o.qty = 10; o.limitPx = 100 * PX; o.priceTicks = 77L;
         apply(s, o);                                        // accepted while OPEN
-        final int originalRef = (int) s.nextOrderRef() - 1;
+        final long originalRef = s.nextOrderRef() - 1;
 
         InputEvent halt = new InputEvent();
         halt.type = InputEvent.TYPE_SESSION_CONTROL; halt.side = MatchingEngineClusteredService.PHASE_PRE_OPEN;
@@ -54,7 +53,7 @@ class PreOpenDuplicateKeyTest {
         apply(s, o);                                        // the same key, retried during PRE_OPEN
         assertEquals(0, s.queueDepth(), "not queued a second time");
         assertEquals(1, acks.size());
-        assertEquals(originalRef, (int) acks.get(0)[1], "answered with the original order");
+        assertEquals(originalRef, acks.get(0)[1], "answered with the original order");
         assertEquals(RestingOrder.STATUS_NEW, (byte) acks.get(0)[2]);
         assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, (byte) acks.get(0)[0]);
     }

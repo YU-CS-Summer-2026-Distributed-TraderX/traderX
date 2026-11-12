@@ -118,7 +118,6 @@ class SharedEodExamplesTest {
     }
     private void apply(MatchingEngineClusteredService service, InputEvent event) {
         event.eventTimeMillis = ++timestamp;
-        codec.encodeInput(buffer, 0, event, 0, 0, 0);
-        service.onSessionMessage(null, timestamp, buffer, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        service.onSessionMessage(null, timestamp, buffer, 0, codec.encodeInput(buffer, 0, event, 0, 0, 0), null);
     }
 }

@@ -66,7 +66,7 @@ class TrailingStopRatchetEgressTest {
         for (long s = drainedTo + 1; s <= ring.getCursor(); s++) {
             final OutputEvent o = ring.get(s);
             if (OutputEvent.isOrderLifecycleKind(o.kind)) {
-                ups.add(new Up(o.orderRef, o.flags, o.status, o.typed.stopPx, o.typed.triggered));
+                ups.add(new Up(Math.toIntExact(o.orderRef), o.flags, o.status, o.typed.stopPx, o.typed.triggered));
             }
         }
         drainedTo = ring.getCursor();
@@ -81,7 +81,7 @@ class TrailingStopRatchetEgressTest {
         e.qty = qty;
         e.limitPx = limitPx;
         apply(e);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     int trailing(int acct, byte side, byte mode, long value) {
@@ -96,7 +96,7 @@ class TrailingStopRatchetEgressTest {
         e.trailMode = mode;
         e.trailValue = value;
         apply(e);
-        return e.orderRef;
+        return Math.toIntExact(e.orderRef);
     }
 
     /** One print at {@code px} between two accounts that hold no trailing orders. */

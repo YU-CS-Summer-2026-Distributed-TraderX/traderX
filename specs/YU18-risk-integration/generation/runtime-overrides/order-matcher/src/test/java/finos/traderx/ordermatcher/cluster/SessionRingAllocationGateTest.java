@@ -145,7 +145,7 @@ class SessionRingAllocationGateTest {
         long timestamp = 1_000_000_000_000L;
         int msgSeq = 1;
         long lastKey;
-        int bookedRef, ackRef;
+        long bookedRef, ackRef;
         byte ackReason;
         long hits, agedOut;
 
@@ -208,12 +208,11 @@ class SessionRingAllocationGateTest {
         }
 
         void send(final int flags) {
-            codec.encodeInput(buf, 0, event, 0, 0, flags);
-            service.onSessionMessage(this, ++timestamp, buf, 0, AeronReplicationCodec.INPUT_BYTES, null);
+            service.onSessionMessage(this, ++timestamp, buf, 0, codec.encodeInput(buf, 0, event, 0, 0, flags), null);
         }
 
         @Override public long offer(final org.agrona.DirectBuffer b, final int o, final int l) {
-            ackRef = b.getInt(o + 8);   // one 32-byte ack per apply, offered synchronously
+            ackRef = MatchingEngineClusteredService.ackRef(b, o);   // one 40-byte ack per apply, offered synchronously
             ackReason = b.getByte(o + 22);
             return 1;
         }

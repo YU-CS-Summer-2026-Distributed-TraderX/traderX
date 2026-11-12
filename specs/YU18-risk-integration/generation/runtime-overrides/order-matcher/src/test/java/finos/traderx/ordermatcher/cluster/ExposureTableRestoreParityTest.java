@@ -24,8 +24,7 @@ class ExposureTableRestoreParityTest {
     long ts = 1_000_000_000_000L;
 
     void apply(MatchingEngineClusteredService s, InputEvent e) {
-        codec.encodeInput(in, 0, e, 0, 0, 0);
-        s.onSessionMessage(null, ++ts, in, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        s.onSessionMessage(null, ++ts, in, 0, codec.encodeInput(in, 0, e, 0, 0, 0), null);
     }
 
     InputEvent ctl(byte type, int acct, int sec) {
@@ -42,7 +41,7 @@ class ExposureTableRestoreParityTest {
         return e;
     }
 
-    int lastRef(MatchingEngineClusteredService s) { return (int) s.nextOrderRef() - 1; }
+    long lastRef(MatchingEngineClusteredService s) { return s.nextOrderRef() - 1; }
 
     @Test void survivorAndRestoredMemberAgreeAfterThousandsOfPairs() {
         final MatchingEngineClusteredService a = new MatchingEngineClusteredService();

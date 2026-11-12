@@ -221,7 +221,8 @@ public final class FeedAdapterMain {
             for (int i = 0; i < n; i++) onRecord(sessionId, egress, offset + i * w, w);
         }
         private void onRecord(long sessionId, DirectBuffer egress, int offset, int length) {
-            if (active != this || lost || client == null || sessionId != client.clusterSessionId() || length < 21) return;
+            if (active != this || lost || client == null || sessionId != client.clusterSessionId()
+                || length != MatchingEngineClusteredService.EGRESS_ACK_LENGTH || !MatchingEngineClusteredService.ackFormatOk(egress, offset)) return;
             if (egress.getByte(offset + 12) == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
                 final int id = egress.getInt(offset + 8);
                 final String ticker = pending.remove(egress.getLong(offset + 13));

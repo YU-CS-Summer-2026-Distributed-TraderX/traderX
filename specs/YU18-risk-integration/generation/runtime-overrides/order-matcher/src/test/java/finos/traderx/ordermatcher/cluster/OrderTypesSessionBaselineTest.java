@@ -34,7 +34,7 @@ class OrderTypesSessionBaselineTest {
     private static final long LIMIT = 150 * PX;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private long timestamp = 1_000_000_000_000L;
 
     /**
@@ -47,7 +47,7 @@ class OrderTypesSessionBaselineTest {
         final MatchingEngineClusteredService service = seeded();
         final CapturingSession s = new CapturingSession();
         apply(service, s, newOrder(ACCOUNT, InputEvent.SIDE_BUY, LIMIT, 10, 101L));
-        final int buy = directAckRef(s);
+        final long buy = directAckRef(s);
         assertEquals(RestingOrder.STATUS_NEW, statusOf(service, buy));
 
         setPhase(service, MatchingEngineClusteredService.PHASE_CLOSED, 900L);
@@ -74,10 +74,10 @@ class OrderTypesSessionBaselineTest {
 
         final CapturingSession s1 = new CapturingSession();
         apply(service, s1, newOrder(ACCOUNT2, InputEvent.SIDE_SELL, LIMIT, 10, 111L));
-        final int sell = directAckRef(s1);
+        final long sell = directAckRef(s1);
         final CapturingSession s2 = new CapturingSession();
         apply(service, s2, newOrder(ACCOUNT, InputEvent.SIDE_BUY, 0L, 15, 112L));   // market: no limit
-        final int mkt = directAckRef(s2);
+        final long mkt = directAckRef(s2);
         assertEquals(2, service.queueDepth());
         assertEquals(0L, service.engine().tradeCounter(), "nothing trades while queued");
 
@@ -161,18 +161,17 @@ class OrderTypesSessionBaselineTest {
 
     private void apply(final MatchingEngineClusteredService service, final ClientSession session,
                        final InputEvent event) {
-        codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0);
         service.onSessionMessage(session, ++timestamp, ingressBuffer, 0,
-            AeronReplicationCodec.INPUT_BYTES, null);
+            codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0), null);
     }
 
-    /** The order ref named by the FIRST non-resting order-lifecycle ack (bytes 8..11). */
-    private static int directAckRef(final CapturingSession session) {
+    /** The order ref named by the FIRST non-resting order-lifecycle ack (bytes 8..11 and 32..35, ADR-105). */
+    private static long directAckRef(final CapturingSession session) {
         for (final byte[] record : session.egress) {
             final UnsafeBuffer ack = new UnsafeBuffer(record);
             if (ack.getByte(21) == 0
                 && finos.traderx.ordermatcher.lmax.OutputEvent.isOrderLifecycleKind(ack.getByte(12))) {
-                final int ref = ack.getInt(8);
+                final long ref = MatchingEngineClusteredService.ackRef(ack, 0);
                 assertTrue(ref != 0, "the ack names a ref");
                 return ref;
             }
@@ -180,7 +179,7 @@ class OrderTypesSessionBaselineTest {
         throw new AssertionError("no direct order-lifecycle ack in " + session.egress.size() + " records");
     }
 
-    private static byte statusOf(final MatchingEngineClusteredService service, final int orderRef) {
+    private static byte statusOf(final MatchingEngineClusteredService service, final long orderRef) {
         final long[] tuple = new long[MatchingEngine.SNAPSHOT_ORDER_TUPLE_LENGTH];
         assertTrue(service.engine().copySnapshotOrderTuple(orderRef, tuple),
             "order " + orderRef + " is not addressable in the engine");

@@ -26,7 +26,7 @@ class EgressDropCountTest {
     private static final long LIMIT = 150 * 1_000_000L;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
-    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES + AeronReplicationCodec.WIDE_REF_TAIL_BYTES]);
     private long timestamp = 1_000_000_000_000L;
 
     @ParameterizedTest(name = "coalesced: {0}")
@@ -115,7 +115,6 @@ class EgressDropCountTest {
     }
 
     private void apply(final MatchingEngineClusteredService service, final ClientSession session, final InputEvent event) {
-        codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0);
-        service.onSessionMessage(session, ++timestamp, ingressBuffer, 0, AeronReplicationCodec.INPUT_BYTES, null);
+        service.onSessionMessage(session, ++timestamp, ingressBuffer, 0, codec.encodeInput(ingressBuffer, 0, event, 0, 0, 0), null);
     }
 }

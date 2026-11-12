@@ -2,7 +2,9 @@
 
 Status: implemented on `traderX-risk-integration` 2026-10-30 (codeX review §13); not deployed. Amended 2026-10-31
 (codeX pass 3 §15): the ceiling is checked AFTER deduplication, so a committed request recovers its answer with no
-ref and only a genuinely new request is refused (§1a). Requirements:
+ref and only a genuinely new request is refused (§1a). Amended 2026-11-11 by
+[ADR-105](adr-105-64-bit-order-references.md): refs are 64-bit, from 2^32 + 1, and this decision's refusal now guards
+the ceiling 2^53 - 1 (decision 1's "not widen" is superseded; its fail-closed branch is kept). Requirements:
 [engine-review hardening pack](../maintenance/engine-review-hardening/spec.md), FR-ERH-F13. Base: ADR-046 (the
 generator is replicated state advanced by the committed message), ADR-072 (operator vs replayed-tape refs), the
 FR-DRS-33 recon note on ticket bookings.
