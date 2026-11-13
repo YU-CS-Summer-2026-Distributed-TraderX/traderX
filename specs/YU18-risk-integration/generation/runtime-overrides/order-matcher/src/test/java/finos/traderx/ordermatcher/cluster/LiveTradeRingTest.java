@@ -100,4 +100,40 @@ class LiveTradeRingTest {
         assertArrayEquals(new String[] {"1=m1:9002", "2=m2:9002", "0=m0:9002"}, ClusterGatewayMain.leaderLast(members, 0));
         assertArrayEquals(members, ClusterGatewayMain.leaderLast(members, -1), "no leader known: id order, as before");
     }
+
+    /**
+     * FR-DRS-61: after a leader change the killed member comes back as a follower with an empty window and fills it as
+     * it replays. Asked first, its page starts after the side the recon asked for, or is empty, or it answers 503 cold;
+     * the member that holds the side is the better answer.
+     */
+    @Test
+    void aBlotterReadPassesOverAMemberWhoseWindowStartsLate() throws Exception {
+        final LiveTradeRing healthy = new LiveTradeRing(1 << 10), restarted = new LiveTradeRing(1 << 10);
+        fill(healthy, 1, 5_000);
+        fill(restarted, 4_900, 5_000);   // replayed only the log after its snapshot
+        final com.fasterxml.jackson.databind.ObjectMapper json = new com.fasterxml.jackson.databind.ObjectMapper();
+        final String fromHealthy = json.writeValueAsString(wire(healthy, 4_500)),
+            fromRestarted = json.writeValueAsString(wire(restarted, 4_500)), empty = "[]";
+        assertEquals(4_501, ClusterGatewayMain.firstTradeSeq(fromHealthy), "the member's JSON, as the gateway reads it");
+        assertEquals(4_900, ClusterGatewayMain.firstTradeSeq(fromRestarted));
+        assertEquals(Long.MAX_VALUE, ClusterGatewayMain.firstTradeSeq(empty));
+        assertEquals(4_500, ClusterGatewayMain.sinceSeqOf("limit=10000&sinceSeq=4500"));
+        assertEquals(0, ClusterGatewayMain.sinceSeqOf(null));
+        assertTrue(ClusterGatewayMain.betterBlotter(200, fromHealthy, 200, fromRestarted), "the page that starts earlier");
+        assertTrue(!ClusterGatewayMain.betterBlotter(200, fromRestarted, 200, fromHealthy));
+        assertTrue(ClusterGatewayMain.betterBlotter(200, fromRestarted, 200, empty), "a page over an empty one");
+        assertTrue(ClusterGatewayMain.betterBlotter(200, empty, 503, "{\"error\":\"cold\"}"), "an answer over an error");
+    }
+
+    /** A page as the member serves it: records with their tradeSeq (ClusterRecon.liveSince, through Jackson). */
+    private static List<java.util.Map<String, Object>> wire(final LiveTradeRing ring, final long since) {
+        final List<java.util.Map<String, Object>> out = new ArrayList<>();
+        ring.since(since, 1_000, (seq, a, c, d, q, p, t) -> {
+            final java.util.Map<String, Object> r = new java.util.LinkedHashMap<>();
+            r.put("id", "e1-1-" + seq + "-B");
+            r.put("tradeSeq", seq);
+            out.add(r);
+        });
+        return out;
+    }
 }
