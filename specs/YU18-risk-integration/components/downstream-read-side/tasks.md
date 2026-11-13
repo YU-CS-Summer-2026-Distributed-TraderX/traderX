@@ -63,6 +63,21 @@
       34,464 of 100,100 missing), `#aPromotionDoesNotReadTheTimeSpentFollowingAsSilence`,
       `kind-bridge-failover-at-rate.sh KILL_AFTER=100` (kind: a 118,052-side unstored tail, 387,332 of 387,332 sides;
       the parent's image lost 57,658 of 465,088 behind a gap).
+- [x] A stream slow or down for longer than a lane's ring costs no record: the ring's older half is spooled to the
+      member's disk off the apply thread, in every role, and the catch-up runs over ring and spool (FR-DRS-57,
+      ADR-106; run 5 lost 116,662 NEW rows). `LaneSpoolIT` (500,000 of each record applied against a 131,072 ring
+      with NATS frozen, thawed / restarted / restarted with a promotion; control on `3526dcdf`: all three lose the
+      run before the ring's oldest slot), `LaneSpoolBudgetIT` (past the budget: the hole counted exactly),
+      `LaneSpoolCodecTest`. kind: a promotion 150 s into a 190 s freeze, 346,768 of 346,768 sides (control lost 71,100).
+      GKE 2026-11-12: a server frozen 120 s past the ring, nothing lost, spool off loses; not yet at 450K under the fault.
+- [x] The trade store books a message handed over below an idle-advanced cursor instead of ignoring it as a replay,
+      and counts it (`passedByIdle`) (FR-DRS-58; GKE 2026-11-12: partition 6 ended 8 sides short, nothing logged).
+      `TradeViewTest#aMessageDeliveredAfterAnIdleAdvancePassedItIsBookedAndCounted`, `JetStreamFeedIdleIT`.
+      Whether that was the GKE mechanism is open: not reproduced locally.
+- [x] A lane that led before its stream existed is held to the stream's receipts once it is there (FR-DRS-62; GKE
+      run 3, 2026-11-12: every lane, the whole epoch). `LaneStreamAfterStartIT`. Not yet run on GKE.
+- [x] A 429 stops the lane, which re-reads the stream's last and republishes what follows with half its window; a
+      hole behind a later stored message is counted (FR-DRS-63). `ReceiptLanesIT`. Not yet run on GKE.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.

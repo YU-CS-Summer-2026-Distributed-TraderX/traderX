@@ -55,6 +55,24 @@ class FillsRouterIT {
    * stream holds more than half of them. Falsifiable: with one stream (the single-stream shape, FILLS_STREAMS=1) that
    * stream holds all of them, every gateway's consumer filtering it on one server (run 5's ceiling).
    */
+  /** FR-DRS-60: one gateway's share of a view batch larger than NATS's 1 MiB payload (GKE 2026-11-12, after a stall:
+   *  1.06 to 2.7 MB, refused by the client) reaches its subject whole, in order. */
+  @Test
+  void aGatewaysShareLargerThanTheServersPayloadLimitIsRouted() throws Exception {
+    try (Connection nc = Nats.connect("nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222))) {
+      FillsRouter router = new FillsRouter(nc, "SPREAD_FILLS", 64L << 20, Duration.ofMinutes(5), null, 4, null);   // the streams of the test below
+      FillsRouter.Batch b = new FillsRouter.Batch();
+      List<String> want = new java.util.ArrayList<>();
+      for (int i = 0; i < 6000; i++) { String r = "{\"n\":" + i + ",\"pad\":\"" + "p".repeat(280) + "\"}"; want.add(r); b.add("gw-big_s1", FillsRouter.bytes(r)); }   // ~1.8 MB
+      router.route(b);
+      long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+      while ((long) router.stats().get("acked") < (long) router.stats().get("messages") && System.nanoTime() < deadline) { Thread.sleep(20); }
+      assertThat(router.stats()).containsEntry("failed", 0L).containsEntry("routed", 6000L);
+      assertThat((long) router.stats().get("messages")).isGreaterThan(1L);
+      assertThat(read(nc, "SPREAD_FILLS_1", "/fillsk.1.gw-big_s1").stream().flatMap(m -> java.util.Arrays.stream(m.split("\n"))).toList()).isEqualTo(want);
+    }
+  }
+
   @Test
   void theFillsAreSpreadOverStreamsEachGatewayInItsShard() throws Exception {
     String url = "nats://" + NATS.getHost() + ":" + NATS.getMappedPort(4222);

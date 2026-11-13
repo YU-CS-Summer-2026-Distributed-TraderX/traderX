@@ -184,6 +184,23 @@ Base requirements: YU10 FR-FIX04, FR-FIX11, FR-FIX12. Retires YU12 TD-AC01 where
       600 sessions on 18 store clients): the store alone 1,416,100 bodies/s; with the capture at 301 MB/s,
       1,256,192 and 1,260,914 bodies/s. Commits averaged 0.054–0.061 s (max 0.16 s), capture acks 0.3 ms, every
       server ~286K msgs/s at 3.1–4.2 cores, no session failed.
+- FR-GFS-25 (2026-11-12, RI39; yaakov: "Build it now"): A session's lease and its order rings SHALL be in the lease
+  and order buckets of its own session bucket: bucket i's are `FIX_SESSION_LEASE_<i>` and `FIX_ORDERS_<i>` (bucket 0
+  keeps `FIX_SESSION_LEASE` and `FIX_ORDERS`, so one bucket is the layout before). Each is placed with session bucket
+  i (FR-GFS-21) and written on its server's connection (FR-GFS-24). Each bucket's leases SHALL be renewed on a
+  thread of its own, and a round still waiting is not queued again. The order budget `FIX_ORDER_STORE_BYTES` is split
+  over the buckets.
+  - Why: the lease and order buckets were unplaced R1 streams on the main connection, and one loop renewed every
+    lease. On GKE (bridge-overflow stage 2, 2026-11-12) the meta leader had put both on nats-0. A 40 MB/s write limit
+    on that one server of five cost every gateway every session's lease in the same millisecond (00:37:48.76 UTC).
+    Only 4 of the 20 session buckets were there. FIX reconnects, unanswered orders and lost fills followed in every
+    stage that throttled it, and in none that didn't (RI39).
+  - The fence is unchanged: a session's lease, `K.seq` and bodies never span two buckets.
+  - Change it only across a FIX day reset, as FR-GFS-21: an existing `FIX_SESSION_LEASE` stays where it was created.
+  - **Tests:** `FixStorePinnedIT#aStalledServerCostsOnlyTheLeasesOfTheSessionsItHolds`, two servers. The main
+    connection's server is paused, and bucket 1's live session keeps its lease on the other while bucket 0's loses
+    its own. On the code before, bucket 1's lease lapsed too: it was on the paused server, and its renewal waited
+    behind bucket 0's.
 - FR-GFS-13: A fresh cluster epoch SHALL purge `FIX_SESSIONS` (every bucket, FR-GFS-21) with the rest of the venue's state
   (`docs/deployment/compsci-gke.md`), because stored reports name orders by `ord-<orderRef>` and a new epoch
   reuses refs.

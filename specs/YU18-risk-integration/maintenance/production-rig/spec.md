@@ -523,8 +523,12 @@ and its gate (FR-PRG-20, FR-PRG-21, 2026-10-29): [ADR-097](../../system/adr-097-
     memory bounded by the in-flight window: an answer for a seq no longer open is a duplicate, so no per-answer set is
     kept (production 2026-10-29 11:04 pm: that set outgrew node's heap after 18 minutes);
   - in each phase's closing pause (`--pause-ms`), stop sending, wait for its answers and send the difference between
-    its accepted buys and sells on the other side until they are equal; a session still unbalanced at the boundary
-    SHALL stop the pod (exit 1) before the roles swap. A pod that exits 0 leaves nothing of its own resting;
+    its accepted buys and sells on the other side until they are equal. A session still unbalanced at the boundary
+    SHALL sit out the next phase (no new flow; it drains its answers and balances) and is counted (`satOut`); one
+    still unbalanced at the boundary after that SHALL stop the pod (exit 1). Amended 2026-11-12 (bridge-overflow,
+    GKE stage 2): under a NATS write throttle one answer came later than the 2 s pause, the pod stopped at the
+    boundary, and its Job (`backoffLimit: 0`) stopped the other seven 75 s into a 200 s fault, so the fault window
+    was never at rate. A pod that exits 0 leaves nothing of its own resting;
   - exit 1 on any order unanswered, answered twice, ambiguous or unbalanced, and log one `RESULT` line.
   `binary-load.sh --apply` SHALL refuse unless the restore gate covers the running members. `rig.sh pools` SHALL
   create `loadgen-pool` (c4d-standard-8, tainted `traderx-loadgen`) at 0 nodes, and `rig.sh loadgen N` (0..16) SHALL

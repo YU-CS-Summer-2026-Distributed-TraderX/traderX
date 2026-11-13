@@ -367,7 +367,7 @@ class Rendering(unittest.TestCase):
     def test_member_log_outlives_its_pod(self):
         # FR-GMR-01 (ADR-087): a retained claim per member, or one scale-down destroys a majority of the logs.
         engine=next(d for d in self.docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
-        self.assertEqual([t['metadata']['name'] for t in engine['spec']['volumeClaimTemplates']],['data'])
+        self.assertEqual([t['metadata']['name'] for t in engine['spec']['volumeClaimTemplates']],['data','spool'])   # ADR-106: the spool's own
         self.assertEqual(engine['spec']['persistentVolumeClaimRetentionPolicy'],{'whenScaled':'Retain','whenDeleted':'Retain'})
         # the shape this replaced: /data as a generic ephemeral volume, deleted with the pod
         docs=copy.deepcopy(self.docs)
@@ -1161,6 +1161,28 @@ class AcceptanceShape(unittest.TestCase):
         for docs in (self.rows,self.snap): self.assertEqual(self.claim(docs)['storage'],'600Gi')
         docs=copy.deepcopy(self.rows); self.claim(docs)['storage']='32Gi'
         with self.assertRaisesRegex(AssertionError,'FR-PRG-42'): module.validate(docs)
+
+    def test_the_bridge_spool_has_its_own_claim_off_the_archive(self):
+        # ADR-106 follow-up (2026-11-12): BRIDGE_SPOOL_DIR on a claim of its own, the budget inside it
+        for docs in (self.rows,self.snap):
+            sts=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+            spool=next(t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name']=='spool')
+            data=next(t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name']=='data')
+            self.assertEqual(spool['spec']['resources']['requests']['storage'],'80Gi')
+            self.assertEqual(spool['spec']['storageClassName'],data['spec']['storageClassName'])
+            member=next(c for c in module.podspec(sts)['containers'] if 'ClusterNodeMain' in ' '.join(c.get('command',[])))
+            env={e['name']:e.get('value') for e in member['env']}
+            self.assertEqual((env['BRIDGE_SPOOL_DIR'],env['BRIDGE_SPOOL_BYTES']),('/spool',str(64<<30)))
+            self.assertIn({'name':'spool','mountPath':'/spool'},member['volumeMounts'])
+        for breakage in ('unset','on-data','over-budget'):
+            docs=copy.deepcopy(self.rows)
+            sts=next(d for d in docs if d['kind']=='StatefulSet' and d['metadata']['name']=='order-matcher-cluster')
+            member=next(c for c in module.podspec(sts)['containers'] if 'ClusterNodeMain' in ' '.join(c.get('command',[])))
+            env=next(e for e in member['env'] if e['name']=={'over-budget':'BRIDGE_SPOOL_BYTES'}.get(breakage,'BRIDGE_SPOOL_DIR'))
+            if breakage=='unset': member['env'].remove(env)
+            elif breakage=='on-data': env['value']='/data/bridge-spool'
+            else: env['value']=str(81<<30)
+            with self.assertRaisesRegex(AssertionError,'ADR-106'): module.validate(docs)
 
     def test_the_fills_stream_holds_a_gateway_restart_at_rate(self):
         tp=module.read_model_workload(self.snap)

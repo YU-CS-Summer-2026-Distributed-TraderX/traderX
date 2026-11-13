@@ -165,7 +165,7 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
     TradeView view = views.get(partition);
     Map<String, Map<String, Object>> runs = new java.util.HashMap<>();
     Map<String, finos.traderx.tradeprocessor.model.InstrumentMetadata> bonds = new java.util.HashMap<>();
-    long duplicatesBefore = view.accounting().duplicates();
+    long duplicatesBefore = view.accounting().duplicates(), passedBefore = view.passedByIdle();
     for (Message m : msgs) {
       List<byte[]> records = records(m.getData());          // FR-DRS-41: one message, one or more sides
       synchronized (view) {                                 // a cut never falls between one message's sides
@@ -192,6 +192,12 @@ public class TradeFeedHandler extends NatsJSONSubscriber<TradeOrder> implements 
       log.error("ALERT trade store partition {}: {} trade side(s) arrived again with a tradeSeq at or below the last one booked"
           + " ({}); refused, not booked twice (total duplicates={})", partition, duplicates, view.accounting().maxSeq(),
           view.accounting().duplicates());
+    }
+    long passed = view.passedByIdle() - passedBefore;
+    if (passed > 0) {   // FR-DRS-58
+      log.error("ALERT trade store partition {}: {} trade side(s) were delivered at or below the cursor an idle advance had"
+          + " set (the stream's head was read before they were delivered); booked, and the cursor moved back to them"
+          + " (total passedByIdle={})", partition, passed, view.passedByIdle());
     }
     if (partitionCount <= 1) { for (Message m : msgs) { for (byte[] record : records(m.getData())) { try { TradeOrder t = decode(record); if (t != null) { gaps.observe(t.getId()); } } catch (Exception ignore) { } } } }
   }

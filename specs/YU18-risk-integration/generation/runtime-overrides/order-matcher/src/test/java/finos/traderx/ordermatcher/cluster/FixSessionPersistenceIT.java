@@ -215,6 +215,81 @@ class FixSessionPersistenceIT {
     }
 
     /**
+     * FR-FFR-22: as above, but the session's log holds an ended order (b0, filled by its own answer). The feed thread
+     * takes the lease under the feed lock and reads the log; reading an ended order took the feed lock on the store's
+     * watch thread, so the two waited on each other until the 30 s scan timeout, the lease was let go, and the fill
+     * was dropped uncounted. GKE bridge-overflow stage 3: 38 such waits on one gateway, 15,092 fills aged out behind them.
+     */
+    @Test
+    void aFillForASessionLiveNowhereIsStoredAtOnceWhenItsLogHoldsAnEndedOrder() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT13");
+        final int b = startGateway(venue, "gw-b", "CLIENT13");
+        final Client c1 = new Client(a, "CLIENT13");
+        assertEquals("A", c1.logon().get("35"));
+        c1.order("b0", '1', 5);
+        assertEquals("2", c1.awaitType("8").get("39"), "b0 ends at its answer: filled");
+        c1.order("s1", '2', 10);
+        final int ref1 = Integer.parseInt(c1.awaitType("8").get("37").substring(4));
+        final int processed = Integer.parseInt(c1.lastIn.get("34"));   // 3: Logon, b0, s1
+        c1.rst();
+        Thread.sleep(3_000);   // A lets the lease go: the session is live nowhere
+
+        final long started = System.nanoTime();
+        feed(ref1, "FILLED", 10, 0, 101.5);
+        final long tookMs = (System.nanoTime() - started) / 1_000_000;
+        assertTrue(tookMs < 10_000, "the feed thread held the feed lock " + tookMs + " ms taking the lease");
+        Thread.sleep(1_000);
+
+        final Client c2 = new Client(b, "CLIENT13");
+        c2.out = 4;
+        final Map<String, String> logon = c2.logon();
+        assertEquals("A", logon.get("35"), logon.toString());
+        assertEquals(String.valueOf(processed + 2), logon.get("34"), "the stored fill took number 4");
+        c2.send("2", "7=" + (processed + 1) + "\u000116=0");
+        final Map<String, String> fill = c2.awaitType("8");
+        assertEquals("s1", fill.get("11"));
+        assertEquals("F", fill.get("150"));
+        assertEquals("10", fill.get("14"));
+        c2.close();
+    }
+
+    /**
+     * FR-FFR-22: the ended orders a log shows still leave the tracked set, now after the scan. s1 rests through A, is
+     * canceled through B, and the session comes back to A: A's adoption drops its stale s1, so the venue's CANCELED
+     * update (routed to the booking gateway, A) is not reported a second time. No test checked this before.
+     */
+    @Test
+    void anOrderEndedOnAnotherReplicaIsNotReportedAgainWhenTheSessionComesBack() throws Exception {
+        final Venue venue = new Venue();
+        final int a = startGateway(venue, "gw-a", "CLIENT14");
+        final int b = startGateway(venue, "gw-b", "CLIENT14");
+        final Client c1 = new Client(a, "CLIENT14");
+        assertEquals("A", c1.logon().get("35"));
+        c1.order("s1", '2', 10);
+        final int ref1 = Integer.parseInt(c1.awaitType("8").get("37").substring(4));
+        c1.rst();
+        Thread.sleep(3_000);
+
+        final Client c2 = new Client(b, "CLIENT14");
+        c2.out = 3;
+        assertEquals("A", c2.logon().get("35"));
+        c2.send("F", "41=s1\u000111=x1\u000154=2\u000155=IBM\u000160=" + now());
+        assertEquals("4", c2.awaitType("8").get("39"), "canceled through B");
+        c2.rst();
+        Thread.sleep(3_000);
+
+        final Client c3 = new Client(a, "CLIENT14");
+        c3.out = 5;
+        assertEquals("A", c3.logon().get("35"));
+        feed(ref1, "CANCELED", 10, 10, 0);
+        c3.socket.setSoTimeout(2_000);
+        assertThrows(java.net.SocketTimeoutException.class, () -> c3.awaitType("8"),
+            "A reported s1's end again: its adoption kept the order the log shows ended");
+        c3.close();
+    }
+
+    /**
      * The owner stops renewing (a SIGSTOP stand-in) past the lease TTL; the other replica takes the session
      * over. The old owner, resumed and handed an order on its stale connection, must not submit it to the
      * cluster or write the session: it re-confirms the lease, finds it gone, and drops the client.

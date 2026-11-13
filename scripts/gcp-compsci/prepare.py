@@ -421,6 +421,29 @@ def fills_retention_bytes(rate=READ_MODEL_RATE, minutes=FILLS_WINDOW_MINUTES):
     return rate * FILLS_BYTES_PER_ORDER * minutes * 60
 
 
+# ADR-106 follow-up (yaakov, 2026-11-12: "Build it now"): the bridge spool on a claim of its own, not the archive's
+# /data. On GKE (bridge-overflow stage 2) each member spooled 1.1 GB onto /data during a NATS write throttle and the
+# members' side rate fell from ~420K to ~275K/s; the control without a spool held 320K/s. Its own disk keeps a long
+# outage's writes off the consensus volume, and a full spool can never be a full archive. The budget leaves the claim a
+# fifth of headroom; the spool is wiped at start (ADR-106 decision 7), so the claim holds nothing across a restart.
+SPOOL_DIR, SPOOL_BYTES, SPOOL_GI = '/spool', 64 << 30, 80
+
+
+def bridge_spool_volume(sts):
+    pod = podspec(sts)
+    member = next(c for c in pod['containers'] if 'ClusterNodeMain' in ' '.join(c.get('command', [])))
+    data = next(t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name'] == 'data')
+    templates = [t for t in sts['spec']['volumeClaimTemplates'] if t['metadata']['name'] != 'spool']
+    sts['spec']['volumeClaimTemplates'] = templates + [{'metadata': {'name': 'spool'}, 'spec': {
+        'accessModes': ['ReadWriteOnce'], 'storageClassName': data['spec'].get('storageClassName'),
+        'resources': {'requests': {'storage': f'{SPOOL_GI}Gi'}}}}]
+    member['volumeMounts'] = [m for m in member.get('volumeMounts', []) if m['name'] != 'spool'] + \
+        [{'name': 'spool', 'mountPath': SPOOL_DIR}]
+    env = [e for e in member['env'] if e['name'] not in ('BRIDGE_SPOOL_DIR', 'BRIDGE_SPOOL_BYTES')]
+    member['env'] = env + [{'name': 'BRIDGE_SPOOL_DIR', 'value': SPOOL_DIR},
+                           {'name': 'BRIDGE_SPOOL_BYTES', 'value': str(SPOOL_BYTES)}]
+
+
 def member_archive_gi(rate=READ_MODEL_RATE, hours=MEMBER_ARCHIVE_HOURS):
     """FR-PRG-42: the archive claim, rounded up to 50Gi (600Gi at 450K for three hours)."""
     return -(-rate * ARCHIVE_BYTES_PER_ORDER * hours * 3600 // (50 * 2**30)) * 50
@@ -1060,6 +1083,17 @@ def validate(docs, declared=None):
                     'member /data is not a retained per-member claim (FR-GMR-01, ADR-087)')
             size = str(next((t for t in doc['spec'].get('volumeClaimTemplates', []) if t['metadata']['name'] == 'data'), {})
                        .get('spec', {}).get('resources', {}).get('requests', {}).get('storage', ''))
+            # ADR-106 follow-up: the spool on its own claim, its budget inside it, never under the archive's /data
+            member = next((c for c in pod.get('containers', []) if 'ClusterNodeMain' in ' '.join(c.get('command', []))), {})
+            menv = {e['name']: e.get('value') for e in member.get('env', [])}
+            mounts = {m['name']: m['mountPath'] for m in member.get('volumeMounts', [])}
+            spool = next((t for t in doc['spec'].get('volumeClaimTemplates', []) if t['metadata']['name'] == 'spool'), {})
+            spool_gi = str(spool.get('spec', {}).get('resources', {}).get('requests', {}).get('storage', '0Gi'))
+            require(mounts.get('spool') == menv.get('BRIDGE_SPOOL_DIR') and menv.get('BRIDGE_SPOOL_DIR')
+                    and not menv['BRIDGE_SPOOL_DIR'].startswith(mounts.get('data', '/data'))
+                    and spool_gi.endswith('Gi') and int(menv.get('BRIDGE_SPOOL_BYTES') or 0) > 0
+                    and int(menv['BRIDGE_SPOOL_BYTES']) <= int(spool_gi[:-2]) * 2**30,
+                    'the bridge spool is not on its own claim with its budget inside it (ADR-106 follow-up)')
             require(size.endswith('Gi') and int(size[:-2]) >= member_archive_gi(),
                     f'member archive claim {size or "unset"} holds less than {MEMBER_ARCHIVE_HOURS} h at '
                     f'{READ_MODEL_RATE} orders/s (FR-PRG-42)')
@@ -1261,6 +1295,7 @@ def prepare(output, tag, dns, published_path=None, public_path=None, population_
             # FR-PRG-42: the archive claim holds MEMBER_ARCHIVE_HOURS at rate; the pack's 32Gi is the kind/demo figure.
             claim = next(t for t in doc['spec']['volumeClaimTemplates'] if t['metadata']['name'] == 'data')
             claim['spec']['resources']['requests']['storage'] = f'{member_archive_gi()}Gi'
+            bridge_spool_volume(doc)
     # Structured objects first, exact bucket substitutions second. No substring
     # image/project replacement masquerading as deployment identity validation.
     raw = yaml.safe_dump_all(docs, sort_keys=False)

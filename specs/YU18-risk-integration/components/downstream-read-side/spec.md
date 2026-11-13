@@ -875,6 +875,160 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
       bound the recon stops reading and matched + unverified = driven.
     - `BlotterLimitTest`: the member bounds `limit` by its ceiling.
   - Not on GKE: 320K sides/s driven; stage 2's mixed load, where run 6's replica 0 ran out of heap; the warning fix.
+- FR-DRS-57 (bridge-overflow lane, 2026-11-12, ADR-106): A stream that stays slow or unreachable SHALL NOT cost a
+  record while the member's spool holds the backlog, and the apply thread SHALL NOT be blocked or refused by it. A
+  lane that holds more than half its ring - unpublished, or published and not yet confirmed stored (FR-DRS-49) - has
+  the ring's older half copied to the member's disk before the apply thread overwrites it. FR-DRS-37's catch-up,
+  FR-DRS-38's reconnect and FR-DRS-49's release then run over the ring and the spool together, so every record
+  reaches its subject exactly once, in apply order, however long the stream lags. This replaces FR-DRS-47's and
+  FR-DRS-49's "past the ring is a gap": past the ring is the spool.
+  - Why: FR-DRS-47's ring holds about 16 s (trade lane) and 8 s (order lane) at 500K orders/s. Acceptance run 5
+    (2026-11-11): one NATS server's volume read 84-87 % busy for minutes, the stream confirmed slowly, published -
+    acked reached 20.3M, the rings wrapped over unconfirmed records and the reconnects' catch-ups found the stream's
+    last behind what they still held: `queueDropped` 172, `gaps` 9, history NEW 116,662 short of the clients' sent.
+  - The spooler. One thread per bridge. For each lane with `head - low > slots / 2` it writes the records from the
+    oldest held (or the spool's end) up to `head - slots / 2` into segment files under `BRIDGE_SPOOL_DIR` (default
+    `<CLUSTER_BASE_DIR>/bridge-spool`, wiped at start; the GKE render sets `/spool`, a claim of its own off the
+    archive volume, ADR-106), and deletes the segments the lane has released. A lane that
+    keeps up holds about 100K records against the 524,288 threshold and never spools. `offer` is unchanged.
+  - One index. A record keeps its ring index in the spool. The lane reads the spool below its end and the ring above.
+    A spooled record is the bridge's fields in binary (51 B a trade side, 141 B an order event plus its gateway's name), every field
+    of its `Rec`: `LaneSpoolCodecTest` sets each declared field by reflection and fails on one the codec leaves out.
+  - Every role. A follower's lanes hold what the stream has not confirmed (FR-DRS-49) and spool with the leader's, so
+    a member promoted mid-overflow catches up from its own ring and spool.
+  - The bound. `BRIDGE_SPOOL_BYTES` per member: 64 GiB or half the free space of the spool directory at start,
+    whichever is smaller; 0 turns the spool off, which is FR-DRS-47 as it was. When the budget is spent, a write
+    fails, or the apply thread overwrites the record the spooler was about to copy (the spooler more than half a ring
+    behind), the spool stops growing and keeps what it has, with an ALERT. The lane publishes everything the spool
+    kept, waits until the stream has confirmed it, then counts the records after it exactly (`queueDropped`, a gap,
+    an ALERT) and resumes from its ring. The spool is process-lifetime: not fsynced, and gone at a restart.
+  - The publish window. A lane SHALL NOT have more than 1,024 messages published without a receipt (65,536 records
+    at the default batch, about half a second of an order lane at 500K orders/s). What waits is held in the ring and
+    the spool. Without it a spooled backlog republished at the lane's own speed overran the stream's ingest queue:
+    in the promotion case below, 68,001 of 500,001 sides were 429'd (`rejected`) and the stream ended at 432,100.
+    It also bounds what a slow stream leaves in flight (run 5: 20.3M). A stream that sends no receipts (no
+    JetStream, or no stream on the subject) is not windowed.
+  - Behind a frozen spool. A catch-up whose first record after the stream's last sits just past the hole counts a
+    gap: the cut fell in the hole, and how many records after it the hole held cannot be told. A lane that has
+    published everything the spool kept and still has no confirmation of its last record after 5 s (a 429 on the
+    last message, or lost in flight) replaces its connection, and the catch-up republishes what follows the
+    stream's last. An empty spool that could not start (budget spent by another lane) tries again.
+  - `/health` `bridges.*` adds `spooled` (records ever written to this bridge's spools) and `spoolBytes` (bytes the
+    member's spools hold now).
+  - The catch-up no longer scans what it holds to count it: it bisects for the first record after the stream's last,
+    starts there, and takes everything before it as confirmed. A record's `sent` flag is the lane's `sentHigh` index.
+  - Test. `LaneSpoolIT`, three cases on one lane per bridge with production's smallest ring (131,072). Sides and
+    order events 1..100 are stored, NATS freezes, and 500,000 more of each (3.8 rings) are applied at about 100K/s:
+    (a) NATS thaws; (b) NATS is killed frozen and restarted, so nothing sent during the freeze is stored; (c) as (b),
+    and the leader dies and a follower that applied the same records is promoted. Each subject must read back
+    1..500,100 as one run, with `queueDropped`, `gaps` and `rejected` 0 and more than 368,928 records spooled per
+    bridge. Control, the same file against `ReceiptLanes` as at `3526dcdf`: all three fail, the stream holding
+    `1..42400 369029..500100`, `1..100 369029..500100` and `1..100 369030..500101` - the missing run ends at
+    500,100 - 131,072 + 1 in each, the ring's oldest slot, with `gaps` 1 and `rejected` 0.
+    `LaneSpoolBudgetIT`: a 256 KiB budget against a 16,384-record ring and 60,000 sides applied frozen. The stream
+    holds 1 to about 5,100 (what the budget held), the hole, then the ring's tail, and `queueDropped` is the hole
+    exactly (38,608 and 38,588 in two runs).
+    `ReceiptLanesIT#aNatsOutageLongerThanTheRingIsALoudGap` and `#aPromotedLaneLappedPastItsRingIsACountedGap` now run
+    with the spool off: with it on they lose nothing.
+    On kind (2026-11-12, `kind-bridge-failover-at-rate.sh` with `RING=131072 KILL_AFTER=150 FREEZE_SECS=190 SECS=480
+    RATE=400`, members rendered with `BRIDGE_LANE_RECORDS=131072`, one partition): NATS frozen 190 s, the leader
+    killed 150 s in with 175,012 sides applied since the freeze. G3h held all 346,768 sides and the store all
+    693,536 order events; `queueDropped` 0, no new gap, `rejected` 0. The promoted leader republished 130,732 sides
+    and 341,464 order events (2.6 rings) and the three members spooled 1,143,219 records between them; every spool
+    was empty afterwards. Control, the members' image with `ReceiptLanes` as at `3526dcdf` and the same ring: the
+    store held 187,824 of 258,924 sides and 244,584 of 517,848 order events, the promoted leader republished
+    exactly 131,072 of each and counted a gap on each bridge. On kind the order lane is the one past its ring; the
+    trade lane's republish (130,732) was just inside it.
+    On GKE (2026-11-12, production's 450K render on its own cluster, 8 partitions, 5 NATS servers, image
+    `acc-c18ee8a5-j21`): at the full mixed load with no fault (129.1M sides in 300 s) no member spooled and the
+    largest lane backlog was 448 records, so the publish window does not hold a healthy lane. With one NATS server
+    frozen 120 s under a FIX-only load (about 128K sides/s): the leader's order lanes held up to 2,421,514 records
+    each, the leader spooled 5.1M records and each follower about 7M (up to 1.0 GB a member), every spool was empty
+    about 25 s after the thaw, `queueDropped`, `gaps` and `rejected` were 0, and the store held all 207,483,702
+    sides once. With the leader killed 86 s into the same freeze, the promoted leader republished 663,666 sides and
+    1,601,022 order events with no gap. Control, the members rolled with `BRIDGE_SPOOL_BYTES=0` and the same freeze:
+    3 gaps on the frozen server's order lanes. Not shown: the fault at 450K. The binary load stopped early in
+    every fault stage (stage lengths of an odd number of its phases left its accounts at the position limit), so
+    the spooler's headroom at the full rate is unmeasured; saturating the server's volume with `dd` did not slow
+    the stream at that reduced rate.
+    Rerun at the full mixed load (2026-11-12, 7:35–8:31 pm ET, same render, image `acc-c95d93e5-j21`, the fault a
+    cgroup `io.max` write limit of 40 MB/s on nats-0 for 200 s, which holds partitions 0 and 5): the throttle slows
+    the stream where `dd` did not. Spool on: the leader's lanes held up to 1,308,642 trade and 4,116,465 order
+    records (the ring is 1,048,576 a lane), each member spooled about 4.4M sides and 10.2M order events (1.1 GB at
+    most), every spool was empty about 100 s after the load stopped, `queueDropped`, `gaps` and `rejected` were 0
+    on every member, and the read model and the history store each held sides 1..215,388,782 once. With the leader
+    killed 60 s into the throttle: each member spooled up to 8.8M sides and 24.6M order events (1.4 GB), the
+    promoted leader republished 12,473,748 records, no member counted a drop or a gap, and both stores held sides
+    1..258,572,898 once. Control (`BRIDGE_SPOOL_BYTES=0`, same throttle): the leader counted 25,500,087 records
+    dropped and 542 gaps, and the read model booked 382,228,815 of 385,947,992 sides (3,719,177 short).
+    `passedByIdle` was 0 on all eight partitions in all three.
+    Not shown: 200 s of overflow with the spool on. In the first spool-on stage one binary pod stopped itself 36 s
+    into the throttle on one unanswered order and its Job stopped the other seven about 75 s in; in the second all
+    eight stopped at the kill. The control's load ran its full 400 s with none unanswered. Whether the spool's
+    writes on the members' archive volume delayed that answer is not established (one stage each). The throttle is
+    also not a clean feed fault: nats-0 holds `KV_FIX_SESSION_LEASE` and four fills streams, so every FIX session
+    lost its lease and the fills router counted 3,572 failed publishes in the first throttled stage.
+    Run 3 (2026-11-12, 9:56–11:00 pm ET, us-central1-b, a fresh epoch, the same throttle at the full mixed load):
+    REFUTED. No lane spooled and no lane fell behind (largest backlog 4,758 records). NATS refused 7,424,684
+    records at ingest (429) on the throttled server's two partitions, and the read model and the history store both
+    ended 2,206,391 sides short (314,069,725 of 316,276,116). The cause was not the spool: FR-DRS-62. The spool
+    with FR-DRS-62 and FR-DRS-63 is not yet run on GKE.
+    `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
+    leader to have sent its window into the frozen socket, not its whole tail.
+    `LaneSpoolTest` (no NATS): records keep their index across segments, a trim deletes whole segments only, the
+    search by segment brackets the cut, a directory that refuses a write stops the spool with what it holds still
+    readable and lets it grow again later, and a spent budget leaves no empty segment behind.
+    `LaneSpoolBudgetIT#aCatchUpThatLandsPastAHoleBehindAFrozenSpoolCountsAGap`: the follower's spool froze at its
+    budget; the dead leader's window, read by NATS after it died, put the stream's last in the follower's hole; the
+    promoted follower counts one gap and publishes its ring's tail. Not run against the code before the review fix.
+    `LaneSpoolBudgetIT#aLaneWhoseSpoolTailIsRejectedReconnectsUntilTheStreamHoldsIt`: the stream refuses every message
+    past a limit, so the spool's tail is rejected and never confirmed; the lane replaces its connection after 5 s and
+    again while refused, counting nothing lost; when the limit is lifted the stream holds the spool's prefix once, in
+    order, and `queueDropped` is the hole exactly (38,588).
+  - Not covered: a member restart during an overflow loses its own spool (the other members hold the tail unless
+    they restart too).
+- FR-DRS-58 (bridge-overflow lane, 2026-11-12): The trade store SHALL book every trade message it is handed that it has
+  not handled, whatever its cursor says. A replay is a record at or below the last one the view handled (booked, or
+  refused as a second copy), not one at or below the cursor: the cursor can be ahead of what was handled after an idle
+  advance (`TradeView.idle`, the stream's head taken when the consumer reports nothing pending). A record handed over
+  above the last handled and at or below an idle head is booked, counted (`passedByIdle`, on
+  `/v2/projection-feed` per partition) and logged as an ALERT, and the cursor comes back to it.
+  - Why: on GKE (2026-11-12, bridge-overflow stage 3: one NATS server frozen 120 s, the leader killed 86 s in) the
+    read model ended 8 sides short on partition 6, which was not the frozen server's. The stream held the 8, in order
+    and once each, in three consecutive trade messages (stream sequences 3366994, 3366996, 3366998, published in the
+    burst that followed a 36 s stall), and the history store held them. trade-processor-3 logged nothing: no
+    refusal, no duplicate, no delivery gap, cursor at the stream's last. After the next stage the same partition
+    was 32 short. G3 refused both times, which is how it was seen.
+  - The only path that drops a delivered trade message without a log line or a counter was the replay rule against
+    an idle-advanced cursor. That it is what happened on GKE is NOT established: the alternative is a message the
+    server never delivered to the consumer, which no client rule can book. Locally, on one NATS 2.14 server, the idle
+    check held: `JetStreamFeedIdleIT` (bursts between silences, an idle check after every empty fetch) never saw a
+    message handed over below an idle head in three runs, and a direct probe that read the stream's stored count and
+    then the consumer's pending 51,550 times under a publish flood never found pending behind. A three-server
+    NATS 2.14 cluster with an R1 stream, one server frozen 15 s and thawed three times under bursts, the feed
+    connected through each server in turn, lost nothing either: 164,472, 168,057 and 170,842 trade messages stored
+    and applied, none passed by an idle advance, no delivery gap. The delivery gaps that trade-processor-1 and
+    history-feed logged on GKE at every thaw (partitions 2 and 3, "delivered and never reached this feed") did not
+    appear locally, so the local cluster does not reproduce that rig's conditions. `passedByIdle` is
+    the instrument that tells the two apart at the next run at rate: above 0 with G3 exact means this was it; 0
+    with sides missing means the delivery never happened.
+  - The order view applies every message it is handed and has no such rule; its idle advance only moves the cursor it
+    commits.
+  - Test. `TradeViewTest#aMessageDeliveredAfterAnIdleAdvancePassedItIsBookedAndCounted` (before this rule: "103 was
+    never booked", the assertion that fails), `#idleMovesTheCursorForwardOnly` (its last assertion was the old rule
+    and now expects the booking), `JetStreamFeedIdleIT`.
+  - Not covered: a snapshot taken between a wrong idle advance and the late delivery commits a cursor past an
+    unbooked message; a crash in that window resumes after it. The window is the delivery delay; the idle check itself
+    is unchanged.
+- FR-DRS-60 (bridge-overflow lane, 2026-11-12; 59 is the recon-blotter lane's): The fills router SHALL publish a gateway's
+  share of a view batch as messages of at most 256 KiB, in order, no record split. A view batch after a stall is up to
+  1,000 capture messages, and one gateway's share of it passed NATS's 1 MiB payload: on GKE (2026-11-12, the freezes
+  of the bridge-overflow run) the client refused 1.06 to 2.7 MB messages, 13 times on one replica ("Message payload
+  size exceed server configuration"), counted in `failed`, and that gateway never saw those fills. The reader already
+  splits a message on newlines, so more, smaller messages change nothing for it.
+  `FillsRouterTest#aGatewaysRecordsAreSplitIntoMessagesUnderTheCap`,
+  `FillsRouterIT#aGatewaysShareLargerThanTheServersPayloadLimitIsRouted` (6,000 records, about 1.8 MB, read back whole
+  and in order). The IT was not run against the old router; the GKE log line is its control.
 
 - FR-DRS-59 (ADR-108; acceptance run 7, 2026-11-12; 57 is the bridge-overflow lane's, 58 is left for the latency-tail
   lane): A member SHALL record the recon's live window without allocating and without an eviction walk, and the recon
@@ -954,6 +1108,38 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     - `test_prepare`: the throughput members carry the window.
   - Not on GKE: an hour of stage 2, a leader change with the recon reading a follower, 2× the mixed rate.
 
+- FR-DRS-62 (bridge-overflow lane, 2026-11-12; 61 is another lane's): A lane SHALL be held to its stream's receipts
+  and confirmations whenever a stream captures its subject, whatever the order they started in.
+  - Why: on a fresh epoch the members lead before the read model has created the feed streams. Each lane's first
+    catch-up found "no stream captures the subject", and that verdict stood for the life of the connection: no
+    publish window (ADR-106 decision 9), no stall check (FR-DRS-38). Nothing reconnects a healthy lane, so it stood
+    for the epoch. GKE run 3 (above): all 16 lanes logged it at bring-up; under the throttle the leader had about
+    34,000 messages a lane unanswered against a window of 1,024, and NATS refused 7,424,684 records. Thursday's
+    spool stages held only because a hold and resume had restarted the members after the streams existed.
+  - A stream reply on a connection whose catch-up found no stream SHALL end that connection: the next one's
+    catch-up finds the stream and the window and the stall check apply from there.
+  - A lane whose confirmation probe found no stream (FR-DRS-49) SHALL ask again every 2 s, in every role, instead of
+    releasing by its keep alone from then on.
+  - `LaneStreamAfterStartIT`: the bridges start, then the stream is created, then NATS is frozen while 200,000
+    one-record messages a lane are applied, and thawed onto a 4,096-message ingest queue. Every record is stored
+    once, in order, and nothing is refused. On the code before: 182,172 of 200,100 trade sides refused and no
+    reconnect.
+- FR-DRS-63 (bridge-overflow lane, 2026-11-12; amends ADR-083 decision 4): When NATS refuses a message at stream
+  ingest (429), the lane SHALL stop, re-read the stream's last and republish what follows, instead of counting the
+  refusal and publishing on.
+  - Why: a refusal says the stream's ingest queue is full, and it counted as a receipt, which freed a window slot:
+    the lane answered "full" by sending more. The lane still holds the refused record (FR-DRS-49), and the catch-up
+    (FR-DRS-37) already republishes exactly what follows the stream's last, in order.
+  - On a refusal the lane SHALL publish nothing more, wait for the reply to every message it has sent (5 s at
+    most), then reconnect after a 1 s pause with half its publish window (at least 1 message; restored by doubling
+    after 30 s without a refusal).
+  - A refused message that a later message of its lane was stored after cannot be resent in order (ADR-083
+    decision 4 stands for it). It SHALL be counted exactly: `queueDropped`, a gap and an ALERT. `rejected` counts
+    every refusal, republished or not.
+  - The reply subject carries the message's first ring index after its record count, so a refusal names the
+    records.
+  - `ReceiptLanesIT#everyIngestDropIsCountedAndEachPartitionStaysInOrder` (a 64-message ingest queue): every side
+    is stored once, in order, or counted lost. Not run on GKE.
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

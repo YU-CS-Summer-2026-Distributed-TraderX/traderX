@@ -136,6 +136,27 @@ class TradeViewTest {
     assertEquals(2, v.cut().days().size());
   }
 
+  /**
+   * FR-DRS-58: a message handed to the view after an idle advance moved the cursor past it is not a replay: nothing
+   * booked it. It is booked, counted, and the cursor comes back to it. GKE 2026-11-12: partition 6's read model ended
+   * 8 sides short, three consecutive trade messages the stream and the history store held, with nothing logged.
+   */
+  @Test void aMessageDeliveredAfterAnIdleAdvancePassedItIsBookedAndCounted() {
+    TradeView v = new TradeView();
+    v.load(List.of(), 100, 40);
+    assertTrue(v.apply(fill("f1", 1, "A", TradeSide.Buy, 1, 41), 101, TradeViewTest::book));
+    v.idle(110);                                                       // the head, read while 103 and 105 were not yet delivered
+    assertTrue(v.apply(fill("f2", 1, "A", TradeSide.Buy, 1, 42), 103, TradeViewTest::book), "103 was never booked: not a replay");
+    assertTrue(v.apply(fill("f3", 1, "A", TradeSide.Buy, 1, 43), 105, TradeViewTest::book));
+    assertFalse(v.apply(fill("f3", 1, "A", TradeSide.Buy, 1, 43), 105, TradeViewTest::book), "a second delivery of 105 is a replay");
+    assertEquals(2, v.passedByIdle(), "both are counted");
+    TradeView.Cut cut = v.cut();
+    assertEquals(3, cut.positions().get(0).getQuantity());
+    assertEquals(105, cut.streamSeq(), "the cursor is the last message booked, not the head that passed it");
+    assertTrue(v.apply(fill("f4", 1, "A", TradeSide.Buy, 1, 44), 112, TradeViewTest::book));
+    assertEquals(2, v.passedByIdle());
+  }
+
   /** An idle partition's cursor follows the stream head, so retention never ages it out; a lower head is ignored. */
   @Test void idleMovesTheCursorForwardOnly() {
     TradeView v = new TradeView();
@@ -144,6 +165,10 @@ class TradeViewTest {
     assertEquals(250, v.streamSeq());
     v.idle(90);
     assertEquals(250, v.streamSeq());
-    assertFalse(v.apply(fill("old", 1, "A", TradeSide.Buy, 1, 8), 200, TradeViewTest::book));
+    // FR-DRS-58: a message handed over below that head was never booked (the view last handled 100): it is booked and
+    // counted, not ignored as it was before
+    assertTrue(v.apply(fill("late", 1, "A", TradeSide.Buy, 1, 8), 200, TradeViewTest::book));
+    assertEquals(1, v.passedByIdle());
+    assertFalse(v.apply(fill("old", 1, "A", TradeSide.Buy, 1, 8), 100, TradeViewTest::book), "at or below the last one handled is a replay");
   }
 }

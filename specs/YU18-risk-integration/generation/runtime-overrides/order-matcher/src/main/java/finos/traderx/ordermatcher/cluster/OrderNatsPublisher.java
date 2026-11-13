@@ -21,7 +21,7 @@ import java.nio.charset.StandardCharsets;
  * member would emit the same id if promoted.
  *
  * <p>The service (apply) thread NEVER blocks on NATS: {@link #offer} is non-blocking and never refused (FR-DRS-47);
- * a lane more than its ring behind counts and ALERTs what it lost (this path is not allowed to drop silently, brief
+ * a lane more than its ring and its disk spool (FR-DRS-57) behind counts and ALERTs what it lost (this path is not allowed to drop silently, brief
  * 05 item 3). Delivery is at-least-once and the read model upserts by id, so a replay is idempotent.
  */
 final class OrderNatsPublisher {
@@ -67,6 +67,35 @@ final class OrderNatsPublisher {
         byte riskReason;
     }
 
+    /** FR-DRS-57: an order event as the spool holds it: every field of Rec, in declaration order. A field added to Rec
+     *  and not here is lost by a spooled record; OrderNatsPublisherSpoolTest compares the two encodings. */
+    static final LaneSpool.Codec<Rec> SPOOL = new LaneSpool.Codec<>() {
+        @Override public void write(final Rec r, final java.nio.ByteBuffer b) {
+            b.putLong(r.orderRef).putLong(r.consensusSequence).putInt(r.outputOrdinal).putInt(r.accountId);
+            LaneSpool.putString(b, r.security);
+            b.put(r.side).putInt(r.quantity).putInt(r.remainingQty).putLong(r.limitPx).put(r.status).putLong(r.lastExecPx)
+                .putInt(r.lastFillQty).putLong(r.createdAtMillis).putLong(r.updatedAtMillis).putLong(r.traceKey)
+                .putLong(r.clientOrderKey);
+            LaneSpool.putString(b, r.gateway);
+            b.put(r.orderType).put(r.tif).putLong(r.stopPx).putInt(r.displayQty).put(r.pegRef).putInt(r.pegOffset)
+                .putLong(r.capPx).put(r.trailMode).putLong(r.trailValue).putInt(r.sessionDate).put(r.suspendReason)
+                .put((byte) (r.triggered ? 1 : 0)).put(r.riskReason);
+        }
+        @Override public Rec read(final java.nio.ByteBuffer b) {
+            final Rec r = new Rec();
+            r.orderRef = b.getLong(); r.consensusSequence = b.getLong(); r.outputOrdinal = b.getInt(); r.accountId = b.getInt();
+            r.security = LaneSpool.getString(b);
+            r.side = b.get(); r.quantity = b.getInt(); r.remainingQty = b.getInt(); r.limitPx = b.getLong(); r.status = b.get();
+            r.lastExecPx = b.getLong(); r.lastFillQty = b.getInt(); r.createdAtMillis = b.getLong();
+            r.updatedAtMillis = b.getLong(); r.traceKey = b.getLong(); r.clientOrderKey = b.getLong();
+            r.gateway = LaneSpool.getString(b);
+            r.orderType = b.get(); r.tif = b.get(); r.stopPx = b.getLong(); r.displayQty = b.getInt(); r.pegRef = b.get();
+            r.pegOffset = b.getInt(); r.capPx = b.getLong(); r.trailMode = b.get(); r.trailValue = b.getLong();
+            r.sessionDate = b.getInt(); r.suspendReason = b.get(); r.triggered = b.get() != 0; r.riskReason = b.get();
+            return r;
+        }
+    };
+
     private final String url;
     private final String subject;
     // YU18: per-account partition subjects (BridgePartitions); one entry = the bare subject.
@@ -91,7 +120,7 @@ final class OrderNatsPublisher {
         this.subject = subject;
         this.subjects = BridgePartitions.subjects(subject, partitions);
         this.epoch = descriptor==null ? epoch : descriptor.epoch();
-        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId, null, this::cut, OrderNatsPublisher::sample);
+        this.lanes = new ReceiptLanes<>("order", url, subjects, capacity, this::encode, r -> r.accountId, null, this::cut, OrderNatsPublisher::sample, SPOOL);
     }
 
     /** Apply thread: the member's role (FR-DRS-37); see TradeNatsPublisher#role. */

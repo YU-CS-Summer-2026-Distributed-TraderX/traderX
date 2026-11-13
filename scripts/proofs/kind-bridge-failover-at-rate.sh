@@ -16,6 +16,10 @@
 #   unstored tail (the members' sides between the freeze and the kill) must then exceed 65,536, what a follower kept
 #   before FR-DRS-49, and replaces the maxBacklog check. KILL_AFTER=100 FREEZE_SECS=140 SECS=420 RATE=400.
 #
+#   RING (FR-DRS-57, ADR-106) is the members' BRIDGE_LANE_RECORDS when the render sets it small (131072): the dead
+#   leader's unstored tail must then exceed the RING too, so the promoted member can only hold it in its disk spool,
+#   and some member must report spooled > 0. KILL_AFTER=150 FREEZE_SECS=190 SECS=480 RATE=400 RING=131072.
+#
 #   EXPECT_LOSS=1 is the control, for a member image before FR-DRS-47: the same run must LOSE trade sides, with
 #   queueDropped > 0 on a promoted member (with KILL_AFTER, for one before FR-DRS-49: a new gap). It fails if nothing
 #   was lost: the freeze did not discriminate.
@@ -48,7 +52,8 @@ leader(){ local i; for i in 0 1 2; do [[ $(health $i 2>/dev/null | jq -r .role) 
 restarts(){ kc get pod -l app=nats -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}'; }
 left_out(){ history_health | jq '[.lanes[].duplicates] | add'; }
 bridges(){ health "$1" | jq -c '.bridges | {td: .trades.queueDropped, od: .orders.queueDropped, tg: .trades.gaps, og: .orders.gaps,
-  tb: (.trades.maxBacklog // 0), ob: (.orders.maxBacklog // 0), tr: .trades.replayed, or: .orders.replayed}'; }
+  tb: (.trades.maxBacklog // 0), ob: (.orders.maxBacklog // 0), tr: .trades.replayed, or: .orders.replayed,
+  ts: (.trades.spooled // 0), os: (.orders.spooled // 0)}'; }
 # kill -9 1 inside the container is a no-op (PID 1 in its own namespace): kill the JVM's host pid on its node.
 kill_member(){ local pod=order-matcher-cluster-$1 node cid pid
   node=$(kc get pod "$pod" -o jsonpath='{.spec.nodeName}')
@@ -125,18 +130,22 @@ note "$(et)  leader member $L's lanes drained"
 
 step "3. the stream against the members"
 for i in 0 1 2; do bridges $i > "$EVIDENCE/bridges-after-$i.json"; health $i | jq -c "{member: $i, role, bridges}" >> "$EVIDENCE/bridges.txt"; done
-lost=0; gapped=0; held=0
+lost=0; gapped=0; held=0; spooled=0
 for i in 0 1 2; do
   a=$(cat "$EVIDENCE/bridges-after-$i.json"); b=$(cat "$EVIDENCE/bridges-before-$i.json")
   lost=$((lost + $(jq '.td + .od' <<<"$a")))
   [[ $i == "$l0" ]] || gapped=$((gapped + $(jq '.tg + .og' <<<"$a") - $(jq '.tg + .og' <<<"$b")))
   held=$(( $(jq .tb <<<"$a") > held ? $(jq .tb <<<"$a") : held ))
+  spooled=$((spooled + $(jq '.ts + .os' <<<"$a")))
 done
 g3=PASS; out=$( (g3_history "$t") 2>&1) || g3="FAIL: $out"
 echo "$out" > "$EVIDENCE/g3h.txt"
 o=$(q "SELECT count() FROM orders"); got=$((o - o0)); want=$((2 * sides)); d=$(left_out)
-summary="$sides sides, G3h $g3; dead leader's unstored tail $tail sides; order events $got of $want ($amb ambiguous); queueDropped $lost; new gaps $gapped; trade lane held $held unpublished at most; leaders ${leaders}; left out $((d - d0))"
+summary="$sides sides, G3h $g3; dead leader's unstored tail $tail sides; order events $got of $want ($amb ambiguous); queueDropped $lost; new gaps $gapped; trade lane held $held unpublished at most; spooled $spooled; leaders ${leaders}; left out $((d - d0))"
 echo "$summary" > "$EVIDENCE/summary.txt"
+if [[ -n ${RING:-} ]]; then   # both arms: the tail must not fit the ring, or neither arm says anything about the spool
+  [[ $tail -gt $RING ]] || fail "the dead leader's unstored tail ($tail sides) fit in the $RING-record ring: raise KILL_AFTER or RATE ($summary)"
+fi
 if [[ ${EXPECT_LOSS:-0} == 1 ]]; then
   # FR-DRS-47's control loses at the promoted lane's queue (queueDropped); FR-DRS-49's past the follower's keep (a gap).
   [[ $g3 != PASS && ( $lost -gt 0 || $gapped -gt 0 ) ]] || fail "the control lost nothing (G3h $g3, queueDropped $lost, new gaps $gapped): the freeze did not discriminate; raise FREEZE_SECS (or KILL_AFTER)"
@@ -148,6 +157,7 @@ fi
 if ((KILL_AFTER > 2)); then
   [[ $tail -gt $OLD_QUEUE ]] || fail "the dead leader's unstored tail ($tail sides) fit in the $OLD_QUEUE a follower kept before FR-DRS-49; raise KILL_AFTER or RATE ($summary)"
 else [[ $held -gt $OLD_QUEUE ]] || fail "the trade lane never held more than $OLD_QUEUE: the freeze was shorter than the old queue at this rate; raise FREEZE_SECS or RATE ($summary)"; fi
+if [[ -n ${RING:-} ]]; then [[ $spooled -gt 0 ]] || fail "no member spooled a record: the ring held the tail after all ($summary)"; fi
 [[ $((d - d0)) == 0 ]] || fail "history-feed left out $((d - d0)) repeated message(s): a record was stored twice ($summary)"
 if [[ $amb == 0 ]]; then [[ $got == "$want" ]] || fail "order events on the stream: $got, the load's sides need $want"; fi
 echo; echo "KIND-BRIDGE-FAILOVER-AT-RATE PASS ($summary) evidence $EVIDENCE"

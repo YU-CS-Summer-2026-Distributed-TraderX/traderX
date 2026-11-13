@@ -20,12 +20,14 @@ class Gateway:
     sequenced (FR-XOD-11): every NEW must be flagged. Each (account, streamId) keeps its next as the engine does (from 1,
     never reset): a gap is answered OUT_OF_SEQUENCE(next) and books nothing (FR-XOD-04), a seq behind next DUPLICATE
     with no ref. Only the driver's probe (2^31) may leave a gap. receipt / oos: answer the Nth real NEW DUPLICATE /
-    OUT_OF_SEQUENCE regardless. table: the stream table's size (FR-XOD-07), past which a new stream is STREAM_LIMIT."""
-    def __init__(self, test, reject_every=0, drop=0, dup=0, sequenced=True, receipt=0, oos=0, table=8192):
+    OUT_OF_SEQUENCE regardless. table: the stream table's size (FR-XOD-07), past which a new stream is STREAM_LIMIT.
+    late / late_ms: book the Nth NEW at once but answer it late_ms later (a slow NATS server or a leader change)."""
+    def __init__(self, test, reject_every=0, drop=0, dup=0, sequenced=True, receipt=0, oos=0, table=8192, late=0, late_ms=0):
         self.book = collections.deque()   # resting (side, account), all at one price, FIFO
         self.self_trades, self.buyers, self.sides = 0, set(), collections.defaultdict(set)
         self.orders, self.errors, self.n, self.lock = 0, [], 0, threading.Lock()
         self.reject_every, self.drop, self.dup = reject_every, drop, dup
+        self.late, self.late_ms = late, late_ms
         self.sequenced, self.receipt, self.oos, self.table, self.streams = sequenced, receipt, oos, table, {}   # (account, streamId) -> next
         self.srv = socket.create_server(('127.0.0.1', 0)); test.addCleanup(self.srv.close)
         class Resolve(BaseHTTPRequestHandler):
@@ -46,7 +48,9 @@ class Gateway:
             threading.Thread(target=self.serve, args=(conn,), daemon=True).start()
 
     def serve(self, conn):
-        buf = b''
+        buf, out = b'', threading.Lock()   # a late answer is sent from a timer thread
+        def send(b):
+            with out: conn.sendall(b)
         while data := conn.recv(65536):
             buf += data
             while len(buf) >= 34:
@@ -59,14 +63,14 @@ class Gateway:
                     if self.sequenced:
                         key, q = (acct, cid >> 32), cid & 0xffffffff
                         if key not in self.streams and len(self.streams) >= self.table:
-                            conn.sendall(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 35, 0, cid)); continue   # STREAM_LIMIT
+                            send(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 35, 0, cid)); continue   # STREAM_LIMIT
                         nxt = self.streams.setdefault(key, 1)
                         if q > nxt:   # a gap: refused, nothing changes; only the probe may make one
                             if q != 2 ** 31: self.errors.append(('gap', acct, cid >> 32, q, nxt))
-                            conn.sendall(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 34, nxt, cid)); continue
+                            send(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 34, nxt, cid)); continue
                         if q < nxt:
                             self.errors.append(('behind', acct, cid >> 32, q, nxt))
-                            conn.sendall(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 17, 0, cid)); continue
+                            send(struct.pack('<HBBBBQQ', 20, 0x82, 0, 0, 17, 0, cid)); continue
                         self.streams[key] = nxt + 1
                     self.n += 1; i = self.n
                     status = 0 if self.reject_every and i % self.reject_every == 0 else 1
@@ -81,7 +85,8 @@ class Gateway:
                             self.book.append((side, acct))
                 if i == self.drop: continue
                 ack = struct.pack('<HBBBBQQ', 20, 0x82, status, kind, risk, ref if risk else (1 << 32) + i, cid)   # ADR-105: refs are wide
-                conn.sendall(ack * (2 if i == self.dup else 1))
+                if i == self.late: threading.Timer(self.late_ms / 1000, send, (ack,)).start(); continue
+                send(ack * (2 if i == self.dup else 1))
         conn.close()
 
     def run(self, *extra, ticker='MSFT', pod=None):
@@ -120,6 +125,23 @@ class BinaryLoad(unittest.TestCase):
         g = Gateway(self, drop=50)
         p, r = g.run()
         self.assertEqual(p.returncode, 1); self.assertEqual(r['unanswered'], 1)
+
+    def test_an_answer_later_than_the_pause_sits_the_session_out_one_phase(self):
+        # GKE 2026-11-12: one answer later than the 2 s pause, under a NATS write throttle, stopped a pod at the phase
+        # boundary and its Job stopped the other seven. Now that session sends nothing new for one phase, balances when
+        # the answer lands, and the run passes with the book empty and no self-trade. (Old code: exit 1, STOPPED.)
+        g = Gateway(self, late=400, late_ms=900)   # phase 1 s, pause 300 ms: answered after the boundary
+        p, r = g.run()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn('STOPPED', p.stdout); self.assertEqual(g.errors, [])
+        self.assertGreaterEqual(r['satOut'], 1)
+        self.assertEqual((r['unanswered'], r['duplicates'], r['imbalance']), (0, 0, 0))
+        self.assertEqual(len(g.book), 0); self.assertEqual(g.self_trades, 0)
+
+    def test_an_answer_later_than_a_whole_phase_still_stops_the_pod(self):
+        g = Gateway(self, late=400, late_ms=2600)   # past two boundaries
+        p, r = g.run()
+        self.assertEqual(p.returncode, 1, p.stdout); self.assertIn('two phase boundaries running', p.stdout)
 
     def test_an_order_answered_twice_fails_the_run(self):
         g = Gateway(self, dup=50)
