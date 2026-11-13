@@ -43,13 +43,15 @@ import java.util.function.ToIntFunction;
  * exists. Only past the spool's byte budget, or a member disk slower than the lane's rate for half a ring, is a
  * record lost, and then counted as above once the lane has published what the spool kept.
  *
- * <p>Alarm, not retry: a 429'd message is not resent. Its partition's later messages may already be
- * stored, so a resend would land AFTER them - a reordering the projection would book (average cost
- * is order-dependent). Order-preserving recovery is a replay from the source (the Aeron archive), so
- * the lane makes the loss loud and exact: per-partition counters on /health and /metrics and a log
- * line naming the partition. With a {@code key} (the trade bridge: its trade id) each message's reply
- * subject is {@code <inbox>.<key>}, so a 429 names the exact message and the lane logs the rejected ids
- * in batches - the same ids the projection's recon reports MISSING.
+ * <p>A refusal is re-read, not resent blind (FR-DRS-63; was "alarm, not retry"). A 429'd message cannot simply be
+ * sent again: its partition's later messages may already be stored, so a resend would land AFTER them - a reordering
+ * the projection would book (average cost is order-dependent). But the lane still holds the record, and the stream's
+ * last message says what is safe: the lane stops, reconnects with half its publish window and catches up from the
+ * stream's last, which republishes a refused tail in order. A refused message that a later one was stored over is a
+ * hole nobody can fill in order: counted exactly ({@code queueDropped}, a gap, an ALERT; replay from the archive).
+ * {@code rejected} counts every refusal. With a {@code key} (the trade bridge: its trade id) each message's reply
+ * subject is {@code <inbox>.<count>.<index>.<key>}, so a 429 names the exact message and the lane logs the rejected
+ * ids in batches.
  *
  * <p>Failover catch-up (FR-DRS-37): only the leader publishes, so a record the dying leader applied but did not
  * get stored - in its queue, on the wire, or committed only once the new leader's term began - was sent by no
@@ -127,6 +129,11 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     /** FR-DRS-57: messages a lane may have published and not yet had a receipt for. At 64 records a message this is
      *  65,536 records, half a second of an order lane at 500K orders/s; NATS's ingest queue holds 10,000 messages. */
     static final int PUBLISH_WINDOW = 1024;
+    /** FR-DRS-63: after NATS refuses a message the lane waits this long, then reads the stream's last and republishes
+     *  what follows on a new connection, with half the window; the window is restored after this long without a refusal. */
+    static final long REFUSAL_PAUSE_MILLIS = 1_000, WINDOW_RESTORE_NANOS = 30_000_000_000L;
+    /** FR-DRS-62: how often a lane that found no stream on its subject asks again. */
+    static final long NO_STREAM_RETRY_NANOS = 2_000_000_000L;
     /** FR-DRS-49: the least interval between a lane's stream probes, and how long one may go unanswered. */
     static final int PROBE_MILLIS = 250;
     private static final java.time.Duration PROBE_TIMEOUT = java.time.Duration.ofSeconds(10);
@@ -148,6 +155,8 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     private final Thread[] threads;
     private final Connection[] connections;
     private final int[] replyPrefix;
+    /** FR-DRS-63: per lane, the messages NATS refused since the lane last re-read the stream: {first index, records}. */
+    private final java.util.concurrent.ConcurrentLinkedQueue<long[]>[] refusals;
     private final Catchup<R> catchup;
     private final IntFunction<R> sample; // FR-DRS-39: the k-th warm-up record; null = no warm-up
     private final int slots, keep;
@@ -202,6 +211,8 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         this.threads = new Thread[n];
         this.connections = new Connection[n];
         this.replyPrefix = new int[n];
+        this.refusals = new java.util.concurrent.ConcurrentLinkedQueue[n];
+        for (int i = 0; i < n; i++) { refusals[i] = new java.util.concurrent.ConcurrentLinkedQueue<>(); }
     }
 
     int lanes() { return subjects.length; }
@@ -360,6 +371,8 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 l.leading = true;
                 l.caughtUp = false;
             }
+            if (!l.leading) { refusals[lane].clear(); }   // a follower's refusals are the new leader's catch-up to judge
+            if (l.leading && l.caughtUp) { l.resync(); }
             if (l.leading && !l.caughtUp) { l.catchUp(); }
             if (l.leading && l.caughtUp) {
                 l.pump();
@@ -405,6 +418,12 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         ToIntFunction<R> cut;   // non-null until a record past the stream's last is published
         boolean leading, caughtUp;
         boolean expectReceipts; // the catch-up found a stream, so every publish draws a receipt
+        volatile boolean replied; // FR-DRS-62: this connection has had a stream reply (set by its dispatcher)
+        boolean noStream;       // FR-DRS-62: unconfirmable because no stream captured the subject when last asked
+        int window = PUBLISH_WINDOW;   // FR-DRS-63: halved by a refusal, restored after a quiet WINDOW_RESTORE_NANOS
+        long refusedAt;         // when the window was last halved
+        long drainingSince;     // FR-DRS-63: non-zero while a refused lane waits for its outstanding replies
+        long firstAt;           // the ring index of the first record in buf
         Connection nc;
         String inbox;
         AtomicLong receipts;    // this connection's receipts
@@ -508,6 +527,62 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             return true;
         }
 
+        /**
+         * FR-DRS-62: a stream reply on a connection whose catch-up found no stream means the stream was created since
+         * (a fresh epoch: the members lead before the read model creates the feed streams). The catch-up's verdict is
+         * taken again on a new connection, which turns the publish window and the stall check on. Before, it stood
+         * for the life of the connection (GKE 2026-11-12: 34,000 messages a lane unanswered, 7.4M records refused).
+         *
+         * <p>FR-DRS-63: NATS refused a message (429: its ingest queue is full). The lane still holds the record, so it
+         * stops, waits for the replies to what it already sent, and re-reads the stream's last on a new connection: the
+         * catch-up republishes what follows, in order, with half the window. A refused message that a later one was stored after cannot be resent in order;
+         * {@link #settle} counts those exactly.
+         */
+        void resync() {
+            if (!expectReceipts && replied) {
+                reconnect("a stream now captures the subject (it did not when this connection caught up)");
+                return;
+            }
+            final long now = System.nanoTime();
+            if (refusals[i].isEmpty() && drainingSince == 0) {
+                if (window < PUBLISH_WINDOW && now - refusedAt > WINDOW_RESTORE_NANOS) { window = Math.min(PUBLISH_WINDOW, window * 2); refusedAt = now; }
+                return;
+            }
+            // Every message already sent is answered first (stored or refused), so each hole is known and counted. A
+            // connection closed with replies outstanding would leave a refused message nobody heard of.
+            if (drainingSince == 0) { drainingSince = now; }
+            if (sentOnConn - receipts.get() > 0 && now - drainingSince < STALL_NANOS) { return; }
+            drainingSince = 0;
+            window = Math.max(1, window / 2);
+            refusedAt = now;
+            reconnect("NATS refused a message at stream ingest (429); the publish window is now " + window + " message(s)");
+            try { Thread.sleep(REFUSAL_PAUSE_MILLIS); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+
+        /**
+         * FR-DRS-63, after a catch-up: each refused message is either at or after {@code next} (the catch-up
+         * republishes it) or before it (the stream stored a later message over it: a hole, counted exactly).
+         * Without a position to compare, every refused message counts as lost, as before the rule.
+         */
+        void settle(final boolean comparable) {
+            long holes = 0, again = 0;
+            for (long[] f; (f = refusals[i].poll()) != null; ) {
+                final long gone = comparable ? Math.max(0, Math.min(f[0] + f[1], next) - f[0]) : f[1];
+                holes += gone;
+                again += f[1] - gone;
+            }
+            if (holes > 0) {
+                lost.addAndGet(i, holes);
+                gaps.incrementAndGet();
+            }
+            if (holes + again > 0) {
+                System.out.println((holes > 0 ? "ALERT " : "WARN ") + name + "-nats-bridge partition " + i + " (" + subject
+                    + ") NATS had refused " + (holes + again) + " record(s): " + again + " are republished from the ring"
+                    + (holes > 0 ? ", " + holes + " are behind a message the stream stored since and cannot be resent in"
+                        + " order - the stream is missing them (replay from the archive to repair)" : ""));
+            }
+        }
+
         /** What the keep alone would release below: the last {@code keep} read (following) or published (leading). */
         long floor() { return (leading && caughtUp ? next : seen) - keep; }
 
@@ -516,7 +591,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
          * confirmed. Never waits: a stalled stream only delays the answer, and the ring holds what it has not confirmed.
          */
         void probe() {
-            if (unconfirmable || nc == null) { return; }
+            if (nc == null || (unconfirmable && !noStream)) { return; }
             if (probe != null) {
                 if (!probe.isDone()) { return; }
                 Message m = null;
@@ -527,7 +602,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 catch (final RuntimeException malformed) { /* ask again */ }
             }
             final long now = System.nanoTime();
-            if (probe != null || (floor() <= confirmed && !awaitingSpool) || now - probedAt < PROBE_MILLIS * 1_000_000L) { return; }
+            if (probe != null) { return; }
+            // FR-DRS-62: "no stream" is asked again, slowly: the stream may be created after the lane started.
+            if (noStream ? now - probedAt < NO_STREAM_RETRY_NANOS
+                         : (floor() <= confirmed && !awaitingSpool) || now - probedAt < PROBE_MILLIS * 1_000_000L) { return; }
             probedAt = now;
             try {
                 if (stream == null) {
@@ -547,9 +625,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         void learn(final String json) {
             if (stream == null) {
                 final int at = json.indexOf("\"streams\":[\"");
-                if (at < 0) { unconfirmable = true; return; }   // no stream captures the subject
+                if (at < 0) { unconfirmable = true; noStream = true; return; }   // no stream captures the subject (yet)
                 final int from = at + 12;
                 stream = json.substring(from, json.indexOf('"', from));
+                if (noStream) { noStream = false; unconfirmable = false; }
                 return;
             }
             if (json.contains("\"error\"")) {
@@ -601,7 +680,10 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             inbox = nc.createInbox();
             replyPrefix[i] = inbox.length() + 1;   // set before the dispatcher thread exists
             final AtomicLong counted = receipts = new AtomicLong();
+            replied = false;
+            drainingSince = 0;
             final Dispatcher d = nc.createDispatcher(m -> {
+                replied = true;
                 counted.incrementAndGet();
                 lastReceipt = System.nanoTime();
                 onReceipt(i, m);
@@ -636,10 +718,11 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
          */
         void pump() {
             final int max = batchMax;
+            if (drainingSince != 0) { return; }   // FR-DRS-63: refused: nothing more until the stream is re-read
             while (next < seen && nc != null) {
                 // FR-DRS-57: no further ahead of the stream's receipts than the window. A long backlog sent at the
                 // lane's own speed overruns the stream's ingest queue and is 429'd; what waits is held here instead.
-                if (expectReceipts && sentOnConn - receipts.get() >= PUBLISH_WINDOW) { return; }
+                if (expectReceipts && sentOnConn - receipts.get() >= window) { return; }
                 final long from = next;
                 int resent = 0;
                 boolean hole = false;
@@ -676,14 +759,16 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
             System.arraycopy(rec, 0, buf, len, rec.length);
             len += rec.length;
             if (key != null) { final String k = key.apply(r); if (count == 0) { firstKey = k; } lastKey = k; }
+            if (count == 0) { firstAt = r.at; }
             count++;
             return true;
         }
 
-        /** The reply subject: the record count, then (keyed bridges) the first and last key, so a 429 names them. */
+        /** The reply subject: the record count, the first record's ring index (FR-DRS-63: a 429 names the records to
+         *  republish), then (keyed bridges) the first and last key, so a 429 names them in the log. */
         String reply() {
-            if (key == null) { return inbox + "." + count; }
-            return inbox + "." + count + "." + (count == 1 ? firstKey : firstKey + "~" + lastKey);
+            if (key == null) { return inbox + "." + count + "." + firstAt; }
+            return inbox + "." + count + "." + firstAt + "." + (count == 1 ? firstKey : firstKey + "~" + lastKey);
         }
 
         /** The one encode-and-publish path, for real records and warm-up samples alike: one record, one message. */
@@ -818,6 +903,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                     + " (" + subject + ") no catch-up (" + (last == null ? outcome : "last message carries no position")
                     + "); " + followed + " record(s) applied while following are not republished"
                     + (gap ? ", " + inFlight + " sent earlier may not be stored (replay from the archive to repair)" : ""));
+                settle(false);
                 return;
             }
             // The first record after the stream's last, by bisection: a spooled backlog is not scanned to be counted,
@@ -846,6 +932,7 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
                 + " lane no longer keeps (older than its " + keep + ", or overwritten while it was more than its " + slots
                 + "-record ring behind) were never stored - the stream is missing them (replay from the archive to"
                 + " repair)" : ""));
+            settle(true);
         }
     }
 
@@ -854,15 +941,21 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
     void onReceipt(final int lane, final Message m) {
         final String subj = m.getSubject();
         final String tail = subj != null && subj.length() > replyPrefix[lane] ? subj.substring(replyPrefix[lane]) : "";
-        final int dot = tail.indexOf('.');
+        final int dot0 = tail.indexOf('.'), dot1 = dot0 < 0 ? -1 : tail.indexOf('.', dot0 + 1);
+        final int dot = dot1;   // the keys follow the count and the index
         int n = 1;
-        try { n = Math.max(1, Integer.parseInt(dot < 0 ? tail : tail.substring(0, dot))); } catch (final NumberFormatException ignore) { }
+        long at = -1;
+        try {
+            n = Math.max(1, Integer.parseInt(dot0 < 0 ? tail : tail.substring(0, dot0)));
+            if (dot0 >= 0) { at = Long.parseLong(dot1 < 0 ? tail.substring(dot0 + 1) : tail.substring(dot0 + 1, dot1)); }
+        } catch (final NumberFormatException ignore) { }
         final boolean tooMany = (m.getStatus() != null && m.getStatus().getCode() == 429) || isError(m.getData());
         if (!tooMany) {
             acked.addAndGet(lane, n);
             return;
         }
         final long before = rejected.getAndAdd(lane, n), after = before + n;
+        if (at >= 0) { refusals[lane].add(new long[] {at, n}); }   // FR-DRS-63: the lane re-reads the stream and republishes
         if (key != null && dot >= 0) {
             synchronized (rejectedIds[lane]) {
                 rejectedIds[lane].append(rejectedIds[lane].length() == 0 ? "" : " ").append(tail, dot + 1, tail.length());
@@ -871,8 +964,8 @@ final class ReceiptLanes<R extends ReceiptLanes.Record> {
         }
         if (before == 0 || before / 10_000 != after / 10_000) {
             System.out.println("ALERT " + name + "-nats-bridge partition " + lane + " (" + subjects[lane]
-                + "): NATS dropped " + after + " record(s) at stream ingest (429 Too Many Requests); the projection"
-                + " is missing them - recon will name them MISSING; replay from the archive to repair");
+                + "): NATS refused " + after + " record(s) at stream ingest (429 Too Many Requests); the lane re-reads"
+                + " the stream's last and republishes what follows; what it cannot is counted in queueDropped");
         }
     }
 

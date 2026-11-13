@@ -74,6 +74,10 @@
       and counts it (`passedByIdle`) (FR-DRS-58; GKE 2026-11-12: partition 6 ended 8 sides short, nothing logged).
       `TradeViewTest#aMessageDeliveredAfterAnIdleAdvancePassedItIsBookedAndCounted`, `JetStreamFeedIdleIT`.
       Whether that was the GKE mechanism is open: not reproduced locally.
+- [x] A lane that led before its stream existed is held to the stream's receipts once it is there (FR-DRS-62; GKE
+      run 3, 2026-11-12: every lane, the whole epoch). `LaneStreamAfterStartIT`. Not yet run on GKE.
+- [x] A 429 stops the lane, which re-reads the stream's last and republishes what follows with half its window; a
+      hole behind a later stored message is counted (FR-DRS-63). `ReceiptLanesIT`. Not yet run on GKE.
 - [x] Each lane warms its encode-and-publish path on a scratch subject before its first record, so a cold start or a
       promotion under load does not overflow the queue (FR-DRS-39; 0 to 400K locally: startup backlog 56K -> under 4K).
       `ReceiptLanesIT#aLaneWarmsItsPublishPathOnAScratchSubjectBeforeItPublishes`.

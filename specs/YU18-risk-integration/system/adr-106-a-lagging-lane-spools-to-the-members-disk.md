@@ -108,6 +108,10 @@ define, over a longer window.
    batch). The first promotion run without it republished 500,001 spooled sides at the lane's speed and had 68,001
    rejected at the stream's ingest (429), which ADR-083 decision 4 does not resend. The window keeps the backlog in
    the ring and the spool, where it is safe, instead of in NATS's buffers, where run 5 had 20.3M.
+    **Corrected 2026-11-12 (GKE run 3):** the window only applied on a connection whose catch-up had found the
+    stream. On a fresh epoch the members lead before the streams exist, so it was off for the whole epoch and
+    NATS refused 7.4M records (FR-DRS-62). A refusal also freed a window slot; a refusal now halves the window and
+    sends the lane back to the stream's last (FR-DRS-63).
 10. **Behind a frozen spool the lane does not guess.** It waits for the stream to confirm the spool's last record
     before counting the hole; after 5 s without that confirmation it reconnects and catches up from the stream's
     last. A catch-up that lands just past the hole counts a gap.

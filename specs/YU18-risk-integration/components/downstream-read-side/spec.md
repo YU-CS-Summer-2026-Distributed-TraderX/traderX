@@ -968,6 +968,11 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     writes on the members' archive volume delayed that answer is not established (one stage each). The throttle is
     also not a clean feed fault: nats-0 holds `KV_FIX_SESSION_LEASE` and four fills streams, so every FIX session
     lost its lease and the fills router counted 3,572 failed publishes in the first throttled stage.
+    Run 3 (2026-11-12, 9:56–11:00 pm ET, us-central1-b, a fresh epoch, the same throttle at the full mixed load):
+    REFUTED. No lane spooled and no lane fell behind (largest backlog 4,758 records). NATS refused 7,424,684
+    records at ingest (429) on the throttled server's two partitions, and the read model and the history store both
+    ended 2,206,391 sides short (314,069,725 of 316,276,116). The cause was not the spool: FR-DRS-62. The spool
+    with FR-DRS-62 and FR-DRS-63 is not yet run on GKE.
     `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
     leader to have sent its window into the frozen socket, not its whole tail.
     `LaneSpoolTest` (no NATS): records keep their index across segments, a trim deletes whole segments only, the
@@ -1025,6 +1030,38 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
   `FillsRouterIT#aGatewaysShareLargerThanTheServersPayloadLimitIsRouted` (6,000 records, about 1.8 MB, read back whole
   and in order). The IT was not run against the old router; the GKE log line is its control.
 
+- FR-DRS-62 (bridge-overflow lane, 2026-11-12; 61 is another lane's): A lane SHALL be held to its stream's receipts
+  and confirmations whenever a stream captures its subject, whatever the order they started in.
+  - Why: on a fresh epoch the members lead before the read model has created the feed streams. Each lane's first
+    catch-up found "no stream captures the subject", and that verdict stood for the life of the connection: no
+    publish window (ADR-106 decision 9), no stall check (FR-DRS-38). Nothing reconnects a healthy lane, so it stood
+    for the epoch. GKE run 3 (above): all 16 lanes logged it at bring-up; under the throttle the leader had about
+    34,000 messages a lane unanswered against a window of 1,024, and NATS refused 7,424,684 records. Thursday's
+    spool stages held only because a hold and resume had restarted the members after the streams existed.
+  - A stream reply on a connection whose catch-up found no stream SHALL end that connection: the next one's
+    catch-up finds the stream and the window and the stall check apply from there.
+  - A lane whose confirmation probe found no stream (FR-DRS-49) SHALL ask again every 2 s, in every role, instead of
+    releasing by its keep alone from then on.
+  - `LaneStreamAfterStartIT`: the bridges start, then the stream is created, then NATS is frozen while 200,000
+    one-record messages a lane are applied, and thawed onto a 4,096-message ingest queue. Every record is stored
+    once, in order, and nothing is refused. On the code before: 182,172 of 200,100 trade sides refused and no
+    reconnect.
+- FR-DRS-63 (bridge-overflow lane, 2026-11-12; amends ADR-083 decision 4): When NATS refuses a message at stream
+  ingest (429), the lane SHALL stop, re-read the stream's last and republish what follows, instead of counting the
+  refusal and publishing on.
+  - Why: a refusal says the stream's ingest queue is full, and it counted as a receipt, which freed a window slot:
+    the lane answered "full" by sending more. The lane still holds the refused record (FR-DRS-49), and the catch-up
+    (FR-DRS-37) already republishes exactly what follows the stream's last, in order.
+  - On a refusal the lane SHALL publish nothing more, wait for the reply to every message it has sent (5 s at
+    most), then reconnect after a 1 s pause with half its publish window (at least 1 message; restored by doubling
+    after 30 s without a refusal).
+  - A refused message that a later message of its lane was stored after cannot be resent in order (ADR-083
+    decision 4 stands for it). It SHALL be counted exactly: `queueDropped`, a gap and an ALERT. `rejected` counts
+    every refusal, republished or not.
+  - The reply subject carries the message's first ring index after its record count, so a refusal names the
+    records.
+  - `ReceiptLanesIT#everyIngestDropIsCountedAndEachPartitionStaysInOrder` (a 64-message ingest queue): every side
+    is stored once, in order, or counted lost. Not run on GKE.
 - NFR-DRS-01: The defaults (`core`, persist `true`, mode `rows`, fan-out `true`, one partition) SHALL keep
   the pre-component wire bytes and SQL behaviour, apart from the FR-DRS-02 watermark and missing-count rows and
   FR-DRS-40's position on an order event.

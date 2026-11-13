@@ -32,9 +32,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * YU18 (docs/engineering/downstream-at-400k.md §7.9): a NATS stream's ingest queue drops what overflows it,
- * and a core publish is never told. With the receipt lanes every such drop must come back as a 429 and be
- * COUNTED: stored + rejected == published, exactly. A tiny ingest queue forces the drops; if none happen the
- * test fails rather than passing vacuously. Each partition's stored messages stay in tradeSeq order.
+ * and a core publish is never told. With the receipt lanes every such drop comes back as a 429. FR-DRS-63: the lane
+ * then re-reads the stream's last and republishes what follows with a smaller window, so every side ends either
+ * stored once, in order, or counted lost: stored + queueDropped == applied, exactly. (Before: a refused message was
+ * counted and never resent, stored + rejected == published.) A tiny ingest queue forces the drops; if none happen
+ * the test fails rather than passing vacuously.
  */
 @Testcontainers(disabledWithoutDocker = true)
 class ReceiptLanesIT {
@@ -64,16 +66,15 @@ class ReceiptLanesIT {
             for (int i = 1; i <= SIDES; i++) {
                 bridge.offer(i, i, "IBM", (byte) (i & 1), 1, 100_000_000L, i, 0L);
             }
-            final long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
-            while (System.nanoTime() < deadline
-                && (bridge.published() + bridge.dropped() < SIDES || bridge.acked() + bridge.rejected() < bridge.published())) {
+            final long deadline = System.nanoTime() + Duration.ofSeconds(150).toNanos();
+            while (System.nanoTime() < deadline && bridge.acked() + bridge.dropped() < SIDES) {
                 Thread.sleep(50);
             }
+            Thread.sleep(1_500);   // a duplicate or a late refusal would land after the counts are reached
             final long stored = nc.jetStreamManagement().getStreamInfo("T").getStreamState().getMsgCount();
-            assertEquals(0, bridge.dropped(), "lane queues were sized to hold the whole burst");
-            assertEquals(SIDES, bridge.published(), "every side was published");
             assertTrue(bridge.rejected() > 0, "the 64-message ingest queue forced no drops: the test proves nothing");
             assertEquals(bridge.rejected(), bridge.rejected(0) + bridge.rejected(1));
+            assertTrue(bridge.dropped() < bridge.rejected(), "no refused record was republished: " + bridge.json());
             if (batchMax == 1) { assertEquals(bridge.published(), bridge.messages(), "one record per message"); }
             else { assertTrue(bridge.messages() < bridge.published() / 4, "drains were batched: " + bridge.json()); }
 
@@ -95,8 +96,8 @@ class ReceiptLanesIT {
                 if (seen + 1 == stored) { break; }
             }
             assertEquals(stored, seen + 1, "read back every stored message");
-            assertEquals(bridge.published(), records + bridge.rejected(), "a drop went uncounted (stored records + rejected != published)");
-            assertEquals(records, bridge.acked(), "every stored record was acked");
+            assertEquals(SIDES, records + bridge.dropped(), "a side is neither stored nor counted lost: " + bridge.json());
+            assertEquals(records, bridge.acked(), "every stored record was acked, none stored twice");
             bridge.stop();
         }
     }

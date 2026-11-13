@@ -30,6 +30,10 @@ the projection saw either loss.
    messages of the same partition may already be stored. A resend would land after them. The
    projection books a partition in stream order, and average cost depends on order, so a resend
    would book a different position from the engine's. The loss is made exact and visible instead.
+   **Amended 2026-11-12 (FR-DRS-63):** the lane no longer publishes on after a refusal. It stops, re-reads the
+   stream's last on a new connection and republishes what follows, in order, with half its window. That covers a
+   refused tail. This decision still holds for a refused message that a later one was stored after: it is never
+   resent, and it is counted (`queueDropped`, a gap).
 5. **Repair is a replay of the source, in order.** The member archive holds every fill in consensus
    order (`GET /recon/catchup-events`, FR-APR01..04). Repair re-derives from it. It never resends a
    bridge message.
