@@ -101,7 +101,12 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
     leader applied the orders and dropped their acks to one back-pressured gateway session; the log held the outcome
     and nothing asked for it. The members' final `egress.dropped` was not captured, and why that one session was
     back-pressured 4 s into the term is not known.
-  - Not shown on a rig. `FixSessionRingGatewayTest` drives the gateway against the engine's `SessionRing`.
+  - Not shown on a rig: the dropped egress it answers for did not recur. GKE run 7c (2026-11-12, `a3324b27`, the
+    acceptance render, the leader's JVM killed after 10 min at 452K sides/s): 0 of 142,551,749 FIX orders unanswered,
+    0 resubmits (`traderx_fix_unanswered_resubmits_total` 0 on 18 gateways), 0 ambiguous lines, `egress.dropped` 0 on
+    all three members; 21,977 stranded by the election and resubmitted by FR-XOC-06; 0 `OutOfMemoryError` and 0 gateway
+    restarts. That shows the change costs nothing when nothing is dropped, not that it answers a dropped ack.
+    `FixSessionRingGatewayTest` drives the gateway against the engine's `SessionRing`.
 
 ## Acceptance
 

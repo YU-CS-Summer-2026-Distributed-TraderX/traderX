@@ -24,7 +24,8 @@ the measured HMAC proof record.
     price-publisher's rebuild differed in `node_modules/encodeurl/package.json`, `node_modules/.package-lock.json`
     and the `package-lock.json` npm wrote inside the image. With the lockfile recipe, two uncached `linux/amd64`
     builds of the rendered context hold the same 1,980 files, and the image's `package-lock.json` is the context's
-    (encodeurl 2.0.0). `measure-admission.py` has not been rerun on it (it needs pushed images).
+    (encodeurl 2.0.0). Acceptance run 7c (2026-11-12, `a3324b27`, pushed as `acc-a3324b27-j21`) admitted 13 of 13;
+    price-publisher passed 1,981 of 1,981 entries.
   - The context's lockfile comes from state 008's patch and is in step with the rendered `package.json` (`npm ci`
     accepts it). It is refreshed by npm only in a render without `TRADERX_SKIP_LOCKFILE_REFRESH=1`; the candidate
     recipe sets it. `node:20-alpine` is a tag, so npm itself is not pinned by this change.

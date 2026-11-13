@@ -17,10 +17,12 @@
 - [x] 49 FIX orders unanswered after the run-7b leader kill: the leader dropped one gateway's egress under
       back-pressure and no election followed, so nothing resubmitted them. FR-XOC-08: asked again as PossDup on the
       session ring; unit tests against `SessionRing`.
-- [ ] FR-XOC-08 on a rig: a leader kill at rate with `traderx_fix_unanswered_resubmits_total` > 0 and 0 unanswered.
+- [x] FR-XOC-08 on GKE without a drop (run 7c): 0 of 142.55M unanswered, 0 resubmits, `egress.dropped` 0.
+- [ ] FR-XOC-08 under a real dropped egress (`traderx_fix_unanswered_resubmits_total` > 0, 0 unanswered): the drop did
+      not recur in run 7c; it needs a way to back-pressure one gateway session on purpose.
 - [ ] An ambiguous FIX cancel or replace is still not answered.
-- [ ] Why one gateway session was back-pressured 4 s into the new term (run 7b); capture `egress.dropped` at the end
-      of a failover stage.
+- [ ] Why one gateway session was back-pressured 4 s into the new term (run 7b). The failover stage now captures
+      `egress.dropped` (run 7c: 0 on all three members).
 - [ ] The bounded listing under a status-request storm on a rig.
 - [ ] GKE `xo` arm at ≤ 5K/s (CLOUD-QUEUE proposal).
 - [ ] Exactly-once at 400K/s: proposed as ADR-090 (`exactly-once-dedupe`, per-stream sequences), awaiting yaakov.
