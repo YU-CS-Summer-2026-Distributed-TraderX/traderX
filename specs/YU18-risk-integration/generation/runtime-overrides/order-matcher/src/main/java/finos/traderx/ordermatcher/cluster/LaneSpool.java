@@ -92,16 +92,21 @@ final class LaneSpool<R extends ReceiptLanes.Record> {
             }
             return Files.createDirectories(root.resolve(bridge + "-" + INSTANCES.incrementAndGet()));
         } catch (final IOException | RuntimeException e) {
-            System.out.println("WARN " + bridge + "-nats-bridge has no spool directory (" + e + "): a lane more than its"
+            System.out.println("ALERT " + bridge + "-nats-bridge has no spool directory (" + e + "): a lane more than its"
                 + " ring behind loses records, as before FR-DRS-57");
             return null;
         }
     }
 
-    private static void wipe(final Path p) throws IOException {
+    /** Empty {@code p}, keeping {@code p} itself: it may be a mount point (the render's own {@code /spool} claim, ADR-106),
+     *  which cannot be deleted. Deleting it made the first GKE run on that claim (2026-11-12, run 3) start every bridge
+     *  with no spool ("Device or resource busy"). */
+    static void wipe(final Path p) throws IOException {
         if (!Files.exists(p)) { return; }
         try (var walk = Files.walk(p)) {
-            for (final Path f : walk.sorted(java.util.Comparator.reverseOrder()).toList()) { Files.deleteIfExists(f); }
+            for (final Path f : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                if (!f.equals(p)) { Files.deleteIfExists(f); }
+            }
         }
     }
 

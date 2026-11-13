@@ -158,6 +158,11 @@ stream and a lost record.
     The control with the spool off held 320K/s under the same fault. It is one stage each, not shown to be the
     cause.
   - A new claim template does not apply to an existing StatefulSet: a rig takes it at bring-up.
+  - **Corrected 2026-11-12 (GKE run 3):** the first run on the claim started every bridge with no spool. The start-up
+    wipe deleted the spool's root, and `/spool` is a mount point ("Device or resource busy"). The wipe now empties
+    the root and keeps it (`LaneSpoolTest#aWipeEmptiesARootItCannotDelete`; the old wipe fails it). The message is
+    now an ALERT, and the rig's bring-up refuses a member that logs it. Run 3's stage 2 therefore ran with neither
+    the spool nor the publish window (FR-DRS-62): it says nothing about the spool.
 - `/health` `bridges.*` adds `spooled` (records ever written) and `spoolBytes` (bytes held now, the member's total).
 - No log, snapshot, ack or stream format changes. The spool's file format is private to one process.
 - The publish window is new behaviour at rate for healthy lanes too: a lane whose receipts lag more than 65,536
