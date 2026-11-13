@@ -1047,6 +1047,10 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     one-record messages a lane are applied, and thawed onto a 4,096-message ingest queue. Every record is stored
     once, in order, and nothing is refused. On the code before: 182,172 of 200,100 trade sides refused and no
     reconnect.
+    While NATS is frozen, a lane has at most its window published and unanswered: 1,024 messages a lane on the
+    fix, 200,000 (every message applied) on the code before. Those are queued in the NATS client, in the member's
+    heap. GKE run 3's members fell to a third of their rate 90 s into the throttle, with the gateways' clients'
+    windows unanswered. That this queue is what slowed them is not shown on GKE.
 - FR-DRS-63 (bridge-overflow lane, 2026-11-12; amends ADR-083 decision 4): When NATS refuses a message at stream
   ingest (429), the lane SHALL stop, re-read the stream's last and republish what follows, instead of counting the
   refusal and publishing on.

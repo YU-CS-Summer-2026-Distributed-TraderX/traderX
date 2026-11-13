@@ -420,6 +420,11 @@ final class OrderNatsPublisher {
     }
 
     /** Lost AT NATS: published, then dropped at stream ingest (429 receipts). */
+    /** Records the stream acknowledged storing (test seam, as {@link TradeNatsPublisher#acked}). */
+    long acked() {
+        return lanes.acked();
+    }
+
     long rejected() {
         return lanes.rejected();
     }
