@@ -7,8 +7,11 @@
 // - every order is a limit of 1 at one operator-given price inside the collar;
 // - book-neutral: at any moment buys and sells come from disjoint accounts (no self-trade cancels), so at one price the
 //   book holds exactly accepted buys minus accepted sells of ours. Before each phase boundary every session stops,
-//   waits for its answers and sends the difference on the other side until its counts are equal; at the boundary an
-//   unbalanced session stops the pod (exit 1). Every pod balanced = the book is back.
+//   waits for its answers and sends the difference on the other side until its counts are equal. A session still
+//   unbalanced at the boundary (an answer later than the pause: a slow NATS server, a leader change) sits out the next
+//   phase: it sends no new flow, only its answers and its balance, and is counted (satOut). A session still unbalanced
+//   at the boundary after that stops the pod (exit 1). Every pod balanced = the book is back. 2026-11-12: one answer
+//   later than the 2 s pause during a NATS write throttle stopped a pod, and its Job then stopped the other seven.
 // - position-bounded: phases are wall-clock aligned (--phase-secs, the same on every pod), and the account sets swap
 //   roles each phase, so no account accumulates a position (each phase's peak: buys per account in one phase).
 //
@@ -99,13 +102,13 @@ if (!(cfg.pauseMs >= 200 && cfg.phaseMs >= 2 * cfg.pauseMs + GUARD_MS)) { consol
 function session(index) {
   const s = {index, sent: 0, accepted: 0, rejected: 0, ambiguous: 0, protocolErrors: 0, duplicates: 0, unexpected: 0,
              sequencedDuplicates: 0, outOfSequence: 0, streamLimit: 0, probes: 0, streamsNew: 0, streamsResumed: 0,
-             acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, rejectReasons: {}, closed: false};
+             acceptedBuys: 0, acceptedSells: 0, balanceOrders: 0, satOut: 0, rejectReasons: {}, closed: false};
   const open = new Map();            // key -> side, until the first ack: seq, or (sequenced) account index * 2^32 + its seq
   const streams = ACCOUNTS.map((_, a) => (0x40000000 | cfg.pod << 11 | index << 3 | a) >>> 0);   // sequenced
   const streamOf = new Map(streams.map((id, a) => [id, a])), seqs = ACCOUNTS.map(() => 0);
   const probing = new Set();
   let ready = !cfg.sequenced;   // sequenced: once every stream's probe is answered
-  let seq = 0, buf = Buffer.alloc(0), credit = 0, up = false;
+  let seq = 0, buf = Buffer.alloc(0), credit = 0, up = false, benched = false;   // benched: sitting this phase out
   const picks = [0, 0];   // per side: sides alternate with seq, so seq % n would give one side only half the set's accounts
   const sock = net.connect(cfg.port, cfg.host);
   sock.setNoDelay(true);
@@ -173,7 +176,7 @@ function session(index) {
     }
   });
   const tick = setInterval(() => {
-    if (!sending || !up || !ready) return;
+    if (!sending || benched || !up || !ready) return;
     credit += cfg.rate * rampFactor() / 100;
     const frames = [];
     for (; credit >= 1 && open.size < cfg.maxInFlight; credit--) frames.push(frame(s.sent % 2));
@@ -183,12 +186,13 @@ function session(index) {
   // Book-neutral: send the difference on the other side; a rejected balance order is retried on the next round.
   const balance = () => {
     const d = s.acceptedBuys - s.acceptedSells;
-    if (d === 0 || open.size || !up || !ready || sending) return d;
+    if (d === 0 || open.size || !up || !ready || (sending && !benched)) return d;
     const frames = Array.from({length: Math.min(Math.abs(d), cfg.maxInFlight)}, () => frame(d > 0 ? 1 : 0));
     s.balanceOrders += frames.length; sock.write(Buffer.concat(frames));
     return d;
   };
-  return {s, open, stopSending: () => clearInterval(tick), balance, close: () => sock.end()};
+  return {s, open, stopSending: () => clearInterval(tick), balance, close: () => sock.end(),
+          benched: () => benched, bench: (v) => { benched = v; }};
 }
 
 const sessions = Array.from({length: cfg.sessions}, (_, i) => session(i));
@@ -198,7 +202,7 @@ const report = (final) => {
   const out = {nonce: NONCE, startedAt: started.toISOString(), at: new Date().toISOString(), final, ticker: cfg.ticker,
                securityId: SECURITY, px: cfg.px, ramp: rampFactor(), sequenced: cfg.sequenced, ...Object.fromEntries(['sent', 'accepted', 'rejected', 'ambiguous',
                'protocolErrors', 'duplicates', 'unexpected', 'unanswered', 'acceptedBuys', 'acceptedSells', 'balanceOrders',
-               'sequencedDuplicates', 'outOfSequence', 'streamLimit'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
+               'sequencedDuplicates', 'outOfSequence', 'streamLimit', 'satOut'].map((k) => [k, sum(k)])), imbalance: sum('imbalance'),
                probes: sum('probes'), streamsNew: sum('streamsNew'), streamsResumed: sum('streamsResumed'),
                streams: sum('streamsNew') + sum('streamsResumed'), streamCap: cfg.streamCap, pod: cfg.pod,
                closedSessions: rows.filter((x) => x.closed && !final).length, sessions: rows};
@@ -221,12 +225,14 @@ const finish = (why) => {
 const clock = setInterval(() => {   // send inside the phase; drain and balance in its pause; check at the boundary
   const now = Date.now(), k = Math.floor(now / cfg.phaseMs), off = now % cfg.phaseMs;
   if (k !== phase) {
-    const bad = sessions.filter((x) => x.open.size || x.s.acceptedBuys !== x.s.acceptedSells).length;
-    if (bad) return finish(`${bad} sessions not balanced at the phase boundary (pause too short for the answers)`);
-    if (now >= deadline) return finish(null);
+    const late = sessions.filter((x) => x.open.size || x.s.acceptedBuys !== x.s.acceptedSells);
+    const again = late.filter((x) => x.benched()).length;
+    if (again) return finish(`${again} sessions not balanced at two phase boundaries running (answers later than a phase)`);
+    sessions.forEach((x) => x.bench(false)); late.forEach((x) => { x.bench(true); x.s.satOut++; });
+    if (now >= deadline && !late.length) return finish(null);   // a late session gets one more phase to balance
     phase = k;
   }
   role = k % 2;
   sending = off >= GUARD_MS && off < cfg.phaseMs - cfg.pauseMs && now < deadline;
-  if (!sending) sessions.forEach((x) => x.balance());
+  sessions.forEach((x) => { if (!sending || x.benched()) x.balance(); });
 }, 50);
