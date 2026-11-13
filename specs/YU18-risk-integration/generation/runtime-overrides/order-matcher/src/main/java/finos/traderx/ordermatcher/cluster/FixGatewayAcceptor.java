@@ -515,6 +515,11 @@ public final class FixGatewayAcceptor {
      * <p>ADR-092 (FR-FGM-03): the log is read one message at a time and only the session's open orders are kept
      * (at most {@link #TRACKED_CAPACITY}, as {@link #tracked} itself), so adopting a long FIX day costs no more heap
      * than adopting a short one.
+     *
+     * <p>FR-FFR-22: the log is delivered on the store's watch thread while the caller waits, and the caller may hold
+     * {@link #feedLock} (a fill for a session live nowhere takes the lease under it). So the scan never takes the
+     * lock: it notes which of this session's tracked orders the log shows ended, and they leave {@link #tracked}
+     * after the scan, on the caller's thread.
      */
     private void adopt(final SessionID sid, final FixSessionStore.SentLog sent) {
         final Map<Long, Tracked> open = new LinkedHashMap<>(1024, 0.75f, false) {
@@ -523,6 +528,15 @@ public final class FixGatewayAcceptor {
                 return size() > TRACKED_CAPACITY;
             }
         };
+        final java.util.Set<Long> mine = new java.util.HashSet<>();
+        synchronized (feedLock) {
+            tracked.forEach((ref, t) -> {
+                if (t.session.equals(sid)) {
+                    mine.add(ref);
+                }
+            });
+        }
+        final List<Long> ended = new java.util.ArrayList<>();
         final int[] messages = new int[1];
         try {
             sent.forEach(raw -> {
@@ -545,11 +559,8 @@ public final class FixGatewayAcceptor {
                     open.remove(ref);   // re-insert: iteration follows each order's latest report
                     final char status = m.getChar(OrdStatus.FIELD);
                     if (status != OrdStatus.NEW && status != OrdStatus.PARTIALLY_FILLED) {
-                        synchronized (feedLock) {   // done: nothing is left to report for it here
-                            final Tracked t = tracked.get(ref);
-                            if (t != null && t.session.equals(sid)) {
-                                tracked.remove(ref);
-                            }
+                        if (mine.contains(ref)) {
+                            ended.add(ref);   // done: nothing is left to report for it here (FR-FFR-22: not under the lock)
                         }
                         return;
                     }
@@ -567,6 +578,12 @@ public final class FixGatewayAcceptor {
             throw new java.io.UncheckedIOException(e);
         }
         synchronized (feedLock) {
+            for (final Long ref : ended) {
+                final Tracked t = tracked.get(ref);
+                if (t != null && t.session.equals(sid)) {
+                    tracked.remove(ref);
+                }
+            }
             for (final Map.Entry<Long, Tracked> e : open.entrySet()) {
                 final Tracked a = e.getValue();
                 Tracked t = tracked.get(e.getKey());

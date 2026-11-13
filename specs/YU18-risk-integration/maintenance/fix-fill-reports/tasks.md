@@ -17,3 +17,8 @@
 - [x] FR-FFR-19 (2026-11-11, after acceptance run 4's 171,167 lost at the 0.67 step): working orders stay tracked
       through ~30 s of routed-feed lag at 300K (524,288, was 65,536); evictions counted. The test fails at 65,536.
 - [ ] Re-run the acceptance stage 1 with `traderx_fix_fill_reports_total{lost}` and FR-GFS-20's commit metrics read, and `traderx_fix_end_reports_total`.
+- [x] FR-FFR-22 (2026-11-12, after bridge-overflow GKE stage 3's 24,312 lost): the adoption scan no longer takes the
+      feed lock on the store's watch thread; ended orders leave the tracked set after the scan. The IT fails on the
+      d3a022de acceptor (30,066 ms, fill not stored).
+- [ ] FR-FFR-22 on a rig: the throttle-and-kill stage with 0 `log scan timed out` under the feed lock and
+      `outcome="lost"` 0.

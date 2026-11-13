@@ -214,4 +214,33 @@ fails.
     (FR-FFR-20) is not covered.
   - Test: `FixGatewayFillReportTest#aRestOrdersRoutedUpdatesAreNotCountedLost` (three updates of two REST orders, one
     before its answer, are not counted; an undeclared order's fill is). Not exercised on a rig.
+- FR-FFR-22 (2026-11-12, bridge-overflow GKE stage 3): Taking a session's lease SHALL NOT wait on the feed lock.
+  Reading the stored log on adoption (ADR-086 §3) SHALL NOT take the feed lock on the store's watch thread. The
+  orders the log shows ended SHALL leave the tracked set after the scan, on the caller's thread.
+  - Why. A fill or end for a session that is live nowhere takes its lease under the feed lock (§3, FR-FFR-17). That
+    happens on the feed thread, or on a report thread through FR-FFR-18's held updates. The caller then waits for the
+    log scan. The scan's callback runs on the store's watch thread and took the feed lock at the log's first ended
+    order. So the caller and the watch thread waited on each other until the scan's 30 s timeout. The lease was
+    then let go, and the update was dropped without being counted. The next update for that session did the same
+    again. Meanwhile no ack was tracked and no report was sent on that gateway. Logons on it timed out too, because
+    their scans also need the lock.
+  - What the run showed (stage 3: nats-0 write-throttled, the leader killed 60 s in): 24,312 fills and ends were
+    counted `outcome="lost"`. The scan timed out under the feed lock 600 times across 18 gateways (341 on the feed
+    thread, 259 on report threads). That kept going at 01:10–01:15 UTC, after the throttle was lifted and the load
+    had ended. So the cause was the lock, not the disk. On the gateway that lost 15,104, the timeouts came every
+    30 s from 01:02:41 UTC. Its fill reports had stopped by the 01:02:44 sample, and its lost count rose from 12 to 15,104 in the
+    first 30 s sample after its second timeout. Every gateway that lost more than 1,800 had such timeouts.
+  - What was not separated: stage 2 (throttle, no kill) froze in the same way (407 timeouts under the lock) and
+    counted only 6 lost. A freeze ages out whatever is waiting in the early buffer (FR-FFR-15). How much was waiting
+    was not recorded. After the kill, acks were late (orders stranded by the leader change were resubmitted), and
+    that is the likely difference. It is not measured.
+  - Not changed: the scan still runs on the caller's thread while it holds the feed lock. A slow store still holds
+    the lock for as long as the scan takes, up to 30 s. A fill for a session whose lease is held by another gateway
+    is still not reported here. With routed fills that other gateway never receives it (FR-FFR-14, ADR-084 "Open").
+  - Tests: `FixSessionPersistenceIT#aFillForASessionLiveNowhereIsStoredAtOnceWhenItsLogHoldsAnEndedOrder`
+    (`fillsReachTheSessionWhereverItIsOrIsNot` with an ended order in the log). It fails on the d3a022de acceptor:
+    the feed held the lock for 30,066 ms and the fill was never stored. With the fix it passes in 4.6 s.
+    `#anOrderEndedOnAnotherReplicaIsNotReportedAgainWhenTheSessionComesBack` pins the moved removal. It fails when the
+    removal is deleted (A sends s1's Canceled a second time) and passes on the d3a022de acceptor too. No earlier test
+    noticed that removal: it could be deleted with every test still passing. Not exercised on a rig.
 
