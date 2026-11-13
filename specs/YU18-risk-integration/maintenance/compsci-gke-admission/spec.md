@@ -17,6 +17,17 @@ the measured HMAC proof record.
 - Private images retain their exact original source and derivation labels; each
   packaged entry is compared with independent compilation or its declared source
   copy recipe. Root console source is explicitly bound. Empty payloads fail.
+  - A Node image compared with an independent rebuild SHALL install from its context's `package-lock.json`
+    (`npm ci`), so both builds hold the versions the lockfile names. price-publisher's recipe is YU18's
+    `runtime-overrides/price-publisher/Dockerfile.compose` (2026-11-12); state 008's copied `package.json` alone and
+    ran `npm install --omit=dev`, which resolves on build day. Acceptance run 7b (`9c39f4ef`) admitted 12 of 13:
+    price-publisher's rebuild differed in `node_modules/encodeurl/package.json`, `node_modules/.package-lock.json`
+    and the `package-lock.json` npm wrote inside the image. With the lockfile recipe, two uncached `linux/amd64`
+    builds of the rendered context hold the same 1,980 files, and the image's `package-lock.json` is the context's
+    (encodeurl 2.0.0). `measure-admission.py` has not been rerun on it (it needs pushed images).
+  - The context's lockfile comes from state 008's patch and is in step with the rendered `package.json` (`npm ci`
+    accepts it). It is refreshed by npm only in a render without `TRADERX_SKIP_LOCKFILE_REFRESH=1`; the candidate
+    recipe sets it. `node:20-alpine` is a tag, so npm itself is not pinned by this change.
 - Registry index/manifest, unique amd64 child, configuration, layers, expected
   image ID and actual executable architecture evidence must agree.
 - Upstream images are admitted by reviewed immutable OCI identity/platform/layer
