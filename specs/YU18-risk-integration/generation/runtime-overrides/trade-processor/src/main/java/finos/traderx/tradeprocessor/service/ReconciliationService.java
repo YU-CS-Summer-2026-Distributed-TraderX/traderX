@@ -79,7 +79,7 @@ public class ReconciliationService {
             missingInProjection.reset();missingInProjection.add(saved[2]);
             fieldMismatch.reset();fieldMismatch.add(saved[3]);
             projectionScope=selected;
-            fetched.clear(); fetchedThrough=cursor; gaps.clear(); ledger=null;
+            fetched.clear(); fetchedThrough=cursor; gaps.clear(); suspects.clear(); ledger=null;
         }
         descriptorHash=hash;
         verifyScope();
@@ -141,6 +141,18 @@ public class ReconciliationService {
     /** Open (after, before) tradeSeq ranges the engine dropped unread; the stream's sides in them are not kept. */
     private final List<long[]> gaps = new java.util.concurrent.CopyOnWriteArrayList<>();   // read by the stream readers
     private static final int MAX_GAPS = 64;
+    /**
+     * FR-DRS-61: sides absent from the stream when their partition's head passed them, by tradeSeq. The ledger rule
+     * read that as MISSING at once, which holds only while a partition's stream is in tradeSeq order. A bridge
+     * catch-up breaks that order: at GKE run 2 (2026-11-12, nats-0's writes throttled) the leader's lanes 0 and 5
+     * reconnected, and in the next stage a new leader republished them, both while the server was still storing what
+     * the earlier connection had sent. The recon reported 23,936 and 11,456 sides MISSING; both stores held every one.
+     * A suspect is MATCHED when it arrives, and MISSING only once it is still absent a projection grace later.
+     */
+    private final java.util.concurrent.ConcurrentSkipListMap<Long, Suspect> suspects = new java.util.concurrent.ConcurrentSkipListMap<>();
+    private record Suspect(BlotterEntry entry, long since) { }
+    /** Suspects that arrived: sides the stream stored after a later side of their partition. */
+    private final LongAdder lateArrivals = new LongAdder();
     private int pageLimit = 10_000;
     private long sweepBudgetMs = 30_000L;
     private int bufferMaxSides = 0;
@@ -190,6 +202,8 @@ public class ReconciliationService {
         Gauge.builder("traderx_recon_cursor", this, s -> s.cursor).register(meterRegistry);
         Gauge.builder("traderx_recon_unverified_total", unverified, LongAdder::sum).register(meterRegistry);
         Gauge.builder("traderx_recon_held", this, s -> s.held).register(meterRegistry);
+        Gauge.builder("traderx_recon_late_total", lateArrivals, LongAdder::sum).register(meterRegistry);
+        Gauge.builder("traderx_recon_suspects", suspects, Map::size).register(meterRegistry);
         Gauge.builder("traderx_recon_orphan_total", this,
             s -> s.lastOrphanSweep == null ? 0 : s.lastOrphanSweep.orphanCount()).register(meterRegistry);
     }
@@ -299,7 +313,7 @@ public class ReconciliationService {
         }
         verdictNanos += System.nanoTime() - t1;
         // Past a gap: drop its record, and any of its sides the stream reader took before the gap was known.
-        if (gaps.removeIf(g -> g[1] <= cursor) && ledger != null) { ledger.prune(cursor); }
+        if (gaps.removeIf(g -> g[1] <= cursor) && ledger != null) { ledger.prune(cursor, suspects::containsKey); }
         if(runRegistry!=null) runRegistry.saveRecon(projectionScope,cursor,matched.sum(),missingInProjection.sum(),fieldMismatch.sum());
         lastSweepAt = Instant.now();
         held = fetched.size();
@@ -350,7 +364,7 @@ public class ReconciliationService {
             if (gaps.size() > MAX_GAPS) {
                 lost += fetched.size();
                 fetched.clear(); gaps.clear(); cursor = fetchedThrough;
-                if (ledger != null) { ledger.prune(cursor); }
+                if (ledger != null) { ledger.prune(cursor, suspects::containsKey); }
             }
             unverified.add(lost);
             log.warn("recon UNVERIFIED the engine no longer held {} sides between tradeSeq {} and {} when the recon came for"
@@ -393,7 +407,7 @@ public class ReconciliationService {
                 + "comparison.",
             cursor, cursor, matched.sum(), missingInProjection.sum(), fieldMismatch.sum());
         cursor = 0L;
-        fetched.clear(); fetchedThrough = 0L; gaps.clear(); ledger = null;
+        fetched.clear(); fetchedThrough = 0L; gaps.clear(); suspects.clear(); ledger = null;
         // LongAdder.reset() is only safe with no concurrent updates, and that holds here: sweep() is
         // the sole writer of all three (classify() is called from nowhere else) and Spring runs the
         // scheduled sweep on one thread, so this is on the writer thread with no sweep in flight.
@@ -407,7 +421,7 @@ public class ReconciliationService {
         if (!onLedger() || ledger == null) return true;   // no reader yet: the first held side opens one
         long t0 = System.nanoTime(), classifiedThrough = cursor;
         try {
-            ledger.readThrough(target, ts -> ts > classifiedThrough && !dropped(ts), ledgerSubjects());
+            ledger.readThrough(target, ts -> ts > classifiedThrough && !dropped(ts) || suspects.containsKey(ts), ledgerSubjects());
             return true;
         } catch (Exception ex) {
             log.warn("Reconciliation ledger read failed this cycle: {}", ex.toString());
@@ -427,14 +441,16 @@ public class ReconciliationService {
 
     /** Classify the held sides against the stream; stop (and keep the cursor) at the first side not yet decidable. */
     private void classifyHeld() {
-        if (fetched.isEmpty()) return;
+        if (fetched.isEmpty() && suspects.isEmpty()) return;
         if (ledger == null) {
             int n = ledgerFeed.partitionCount();
             String[] streams = new String[n];
             for (int p = 0; p < n; p++) { streams[p] = ledgerFeed.streamName(p); }
             try {
+                // From the oldest side still undecided: a suspect is older than anything held.
+                BlotterEntry oldest = suspects.isEmpty() ? fetched.peekFirst() : suspects.firstEntry().getValue().entry();
                 ledger = new LedgerReader(ledgerFeed.natsConnection(), streams, n,
-                    fetched.peekFirst().execTimeMillis() - LEDGER_START_SLACK.toMillis());
+                    oldest.execTimeMillis() - LEDGER_START_SLACK.toMillis());
             } catch (Exception ex) { log.warn("Reconciliation ledger read failed this cycle: {}", ex.toString()); return; }
             if (!readStream(fetchedThrough)) return;
         }
@@ -453,14 +469,60 @@ public class ReconciliationService {
             switch (v) {
                 case MATCHED -> matched.increment();
                 case FIELD_MISMATCH -> { fieldMismatch.increment(); log.warn("recon FIELD_MISMATCH (ledger) id={}", e.id()); }
-                case MISSING -> { missingInProjection.increment();
-                    log.warn("recon MISSING_IN_PROJECTION (ledger) id={} account={} security={}", e.id(), e.accountId(), e.security()); }
+                case MISSING -> suspect(e);   // FR-DRS-61: not a verdict yet
                 default -> { }
             }
             cursor = e.tradeSeq();
             ledger.pending.remove(e.id());
         }
+        recheckSuspects(head, partitionCursor, scope);
     }
+
+    /** FR-DRS-61: hold a side its partition's stream passed without it. Bounded: past the bound the oldest is decided. */
+    private void suspect(BlotterEntry e) {
+        suspects.put(e.tradeSeq(), new Suspect(e, clock.millis()));
+        while (suspects.size() > Math.max(pageLimit, bufferMax() / 4)) {
+            missing(suspects.pollFirstEntry().getValue().entry(), "the recon holds no more suspects");
+        }
+    }
+
+    /** A suspect that arrived is classified like any side; one still absent a projection grace later is MISSING. */
+    private void recheckSuspects(long[] head, long[] partitionCursor, String scope) {
+        long late = 0, lo = Long.MAX_VALUE, hi = 0, now = clock.millis();
+        for (var it = suspects.values().iterator(); it.hasNext(); ) {
+            Suspect s = it.next();
+            BlotterEntry e = s.entry();
+            int partition = Math.floorMod(e.accountId(), head.length);
+            LedgerSide side = ledger.pending.get(e.id());
+            if (side == null) {
+                if (now - s.since() < projectionGraceMs) continue;
+                missing(e, "still absent " + (now - s.since()) + " ms after its partition's stream passed it");
+            } else {
+                Verdict v = classifyOnLedger(e, side, head[partition], partitionCursor[partition], scope);
+                if (v == Verdict.WAIT) continue;   // arrived; its partition's snapshot has not passed it yet
+                if (v == Verdict.MATCHED) { matched.increment(); }
+                else { fieldMismatch.increment(); log.warn("recon FIELD_MISMATCH (ledger) id={}", e.id()); }
+                late++; lo = Math.min(lo, e.tradeSeq()); hi = Math.max(hi, e.tradeSeq());
+                ledger.pending.remove(e.id());
+            }
+            it.remove();
+        }
+        if (late > 0) {
+            lateArrivals.add(late);
+            // The bridge's own rule is that a partition's stream is in apply order, because the projection books in
+            // that order (average cost is order-dependent). A late side is that rule broken, so it is said.
+            log.warn("recon LATE {} sides between tradeSeq {} and {} reached the stream after a later side of their"
+                + " partition (stored out of tradeSeq order, as after a bridge catch-up); classified now, {} in all", late, lo, hi, lateArrivals.sum());
+        }
+    }
+
+    private void missing(BlotterEntry e, String why) {
+        missingInProjection.increment();
+        log.warn("recon MISSING_IN_PROJECTION (ledger) id={} account={} security={}: {}", e.id(), e.accountId(), e.security(), why);
+    }
+
+    long lateArrivals() { return lateArrivals.sum(); }
+    int suspects() { return suspects.size(); }
 
     private boolean dropped(long tradeSeq) {
         for (long[] g : gaps) { if (tradeSeq > g[0] && tradeSeq < g[1]) return true; }
@@ -621,8 +683,11 @@ public class ReconciliationService {
             return filter.endsWith(".*") ? subjects : new String[] {filter};
         }
 
-        void prune(long classifiedThrough) {
-            pending.values().removeIf(s -> tradeSeqOf(s.id()) <= classifiedThrough);
+        void prune(long classifiedThrough) { prune(classifiedThrough, ts -> false); }
+
+        /** FR-DRS-61: and keep the sides {@code kept} (the suspects) whatever their tradeSeq. */
+        void prune(long classifiedThrough, java.util.function.LongPredicate kept) {
+            pending.values().removeIf(s -> { long ts = tradeSeqOf(s.id()); return ts <= classifiedThrough && !kept.test(ts); });
         }
     }
 

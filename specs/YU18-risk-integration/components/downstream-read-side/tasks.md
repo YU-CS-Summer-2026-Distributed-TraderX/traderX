@@ -116,3 +116,6 @@
   196 ns and 237 B), 8,388,608 sides in the throughput render, read from a follower, four ranges at once when behind
   (run 7, 2026-11-12). GKE 2026-11-12: every side of a 20-minute stage 2 classified, the recon family 2.35% of the
   leader's service thread (27.2%).
+- [x] FR-DRS-61 a side its partition's stream passed without it is a suspect until a projection grace, not MISSING at
+  once, and a blotter read passes over a member whose window starts after the side asked for (GKE run 2 of the
+  bridge-overflow lane, 2026-11-12: 35,392 MISSING while both stores were exact). Not yet on a rig.

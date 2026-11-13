@@ -3768,6 +3768,35 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         return out.toArray(new String[0]);
     }
 
+    /**
+     * FR-DRS-61: the tradeSeq a blotter page starts at, from its first record; {@code Long.MAX_VALUE} for an empty
+     * page or a body that is not one. The member serves its records in tradeSeq order, each with its {@code tradeSeq}.
+     */
+    static long firstTradeSeq(final String body) {
+        final int at = body == null ? -1 : body.indexOf("\"tradeSeq\":");
+        if (at < 0) { return Long.MAX_VALUE; }
+        int i = at + 11, end = i;
+        while (end < body.length() && Character.isDigit(body.charAt(end))) { end++; }
+        try { return Long.parseLong(body.substring(i, end)); } catch (final NumberFormatException e) { return Long.MAX_VALUE; }
+    }
+
+    /** FR-DRS-61: of two members' answers to one blotter read, whether {@code a} is the better: an answer over an error,
+     *  then the page that starts earlier (an empty page last). */
+    static boolean betterBlotter(final int statusA, final String bodyA, final int statusB, final String bodyB) {
+        if ((statusA == 200) != (statusB == 200)) { return statusA == 200; }
+        return statusA == 200 && firstTradeSeq(bodyA) < firstTradeSeq(bodyB);
+    }
+
+    /** The {@code sinceSeq} of a blotter query, 0 when absent. */
+    static long sinceSeqOf(final String query) {
+        if (query != null) {
+            for (final String kv : query.split("&")) {
+                if (kv.startsWith("sinceSeq=")) { try { return Long.parseLong(kv.substring(9)); } catch (final NumberFormatException e) { return 0; } }
+            }
+        }
+        return 0;
+    }
+
     private void handleMemberProxy(final HttpExchange exchange) {
         final int healthPort = Integer.parseInt(env("GATEWAY_MEMBER_HEALTH_PORT", "8080"));
         final String query = exchange.getRequestURI().getRawQuery();
@@ -3776,8 +3805,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final StringBuilder tried = new StringBuilder();
         // ADR-108 (FR-DRS-59): the recon's live window is on every member, so its reads go to a follower first and
         // the leader last. Everything else keeps id order.
-        final String[] order = exchange.getRequestURI().getPath().startsWith("/recon/trades/blotter")
-            ? leaderLast(endpointEntries, knownLeader) : endpointEntries;
+        final boolean blotter = exchange.getRequestURI().getPath().startsWith("/recon/trades/blotter");
+        final String[] order = blotter ? leaderLast(endpointEntries, knownLeader) : endpointEntries;
+        // FR-DRS-61: a member that restarted (a killed leader comes back as a follower) holds an empty window and
+        // fills it as it replays, so for a while its page starts after the side asked for, or is empty, or it answers
+        // 503 cold. Served as the answer, the recon counts sides the other members still hold as unverified, or waits
+        // at a false head while their windows roll. A blotter answer is served at once only if it starts at the side
+        // after sinceSeq; otherwise the next member is asked, and the best answer is served.
+        final long next = blotter ? sinceSeqOf(query) + 1 : 0;
+        HttpResponse<String> best = null;
         for (final String entry : order) {
             final int eq = entry.indexOf('=');
             final String hostPort = eq < 0 ? entry : entry.substring(eq + 1);
@@ -3800,6 +3836,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
                 final HttpResponse<String> response =
                     readModelClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+                if (blotter && !(response.statusCode() == 200 && firstTradeSeq(response.body()) == next)) {
+                    if (best == null || betterBlotter(response.statusCode(), response.body(), best.statusCode(), best.body())) { best = response; }
+                    continue;
+                }
                 respond(exchange, response.statusCode(), response.body());
                 return;
             } catch (final InterruptedException ex) {
@@ -3809,6 +3849,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 tried.append(tried.length() == 0 ? "" : ", ").append(host).append(": ").append(ex);
             }
         }
+        if (best != null) { respond(exchange, best.statusCode(), best.body()); return; }
         respond(exchange, 503, "{\"error\":\"no cluster member answered " + suffix + "\",\"tried\":\""
             + tried.toString().replace('"', '\'') + "\"}");
     }

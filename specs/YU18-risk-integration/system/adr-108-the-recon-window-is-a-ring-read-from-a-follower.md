@@ -91,7 +91,8 @@ eviction walk. The record (id string, exact price, JSON) is built by the HTTP th
    `prepare.py` sets it with the other throughput member settings (`--throughput-members`). The capacity is rounded
    up to a power of two.
 4. **The gateway forwards a blotter read to a follower first**, the leader last. It already learns the leader from
-   the cluster client. A read that reaches the leader is still correct.
+   the cluster client. A read that reaches the leader is still correct. (Amended by FR-DRS-61: an answer that starts
+   after the side asked for, as a restarted member's does while it replays, is passed over for one that holds it.)
 5. **The recon reads ranges in parallel when it is behind** (`recon.fetch.parallel`, 4): because the numbering is
    dense, four pages after the last side read can be asked at once and joined in order. At the head it asks one.
    Its read cap rises to 2,000,000 sides/s (at 1,000,000 the pacing itself held it under twice the mixed rate). A range is as long as the pages the engine serves, and a range that

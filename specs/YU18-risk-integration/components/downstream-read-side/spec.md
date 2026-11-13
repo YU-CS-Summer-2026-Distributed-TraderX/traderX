@@ -1108,6 +1108,55 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     - `test_prepare`: the throughput members carry the window.
   - Not on GKE: an hour of stage 2, a leader change with the recon reading a follower, 2× the mixed rate.
 
+- FR-DRS-61 (GKE run 2 of the bridge-overflow lane, 2026-11-12; 60 is that lane's): The ledger recon SHALL NOT call a
+  side MISSING while it may still reach the stream out of tradeSeq order, and a blotter read SHALL be served by a
+  member whose window holds the side asked for when one does.
+  - Why: that run throttled nats-0's writes to 40 MB/s for 200 s at full load, with the bridge spool on. The recon
+    reported 23,936 sides MISSING in the throttle stage and 11,456 more in the stage that also killed the leader, while
+    the read model and the history store were exact (G3, G3h on 1..258,572,898) and the bridges counted nothing lost.
+    - The counts rose in one 30 s sample each, inside the throttle, and stayed flat. The throttle stage had no leader
+      change, so the leader change is not the cause.
+    - In both stages the lanes of nats-0's partitions (0 and 5) caught up against a server still storing what had been
+      sent before: in the throttle stage the leader's lanes reconnected ("no receipt for 5 s with 1024 outstanding",
+      a 20 s catch-up while nats-0 answered each last-message read in 7–11 s); in the kill stage the new leader
+      republished 1.3M and 1.1M records on them. What was in flight from before can be stored behind what is sent
+      after, so for a while the partition's stream holds a side after a later one. The bridges' own rule (ReceiptLanes)
+      is that the stream is in apply order; this is that rule broken, which the projection would book too (average
+      cost is order-dependent). Which ordering the stream took was not recorded: the recon's verdict lines went with
+      the rig.
+    - The ledger rule was MISSING as soon as a side's partition head passed it. That is right only for a stream in
+      tradeSeq order.
+    - The 24.0M and 50.4M unverified in those stages are not this. The rig ran `c95d93e5`, which does not contain
+      ADR-108: the window was the 500,000-side skip list, and the first stage (no fault) counted 66.8M unverified
+      too. So that run did not exercise the ring, the follower read, or either across a leader change.
+  - The recon: a side absent when its partition's head passed it is a suspect, not a verdict, and the cursor goes on.
+    The stream reader keeps a suspect's side whatever the cursor. A suspect that arrives is classified like any side
+    and counted in `traderx_recon_late_total`, with one WARN a step naming the range. One still absent a projection
+    grace (`recon.projection-grace-ms`, 120 s) after it became a suspect is MISSING. Suspects are bounded at a quarter
+    of the held-side bound; past it the oldest is decided MISSING at once, so a mass loss is still counted, not held.
+    A reader reopened after a failure starts from the oldest suspect's time. `traderx_recon_suspects` is the gauge.
+  - The gateway (ADR-108 decision 4): a member killed as leader comes back as a follower with an empty window and fills
+    it as it replays, so asked first it answers a page that starts after the side asked for, or an empty one, or 503
+    cold. Served, the recon counts sides the other members still hold as unverified, or waits at a false head while
+    their windows roll. A blotter answer is now served at once only if it starts at the side after `sinceSeq`;
+    otherwise the next member is asked and the best answer is served (an answer over an error, then the earlier start,
+    an empty page last). The recon asks from one below the last side it read, so at the head a healthy member's page
+    starts there and one member answers, as before. A parallel range past the head is empty and asks all three.
+  - Tests:
+    - `ReconLateArrivalIT` (NATS in Docker), the kill stage's shape mid-read: sides 1..640 stored, then the old
+      leader's late 961..1280 (641..960 never land from it), a sweep, then the new leader's 641..2000. 0 MISSING,
+      2,000 MATCHED, 320 late; on `d3a022de` it fails with 320 MISSING. A side that never lands is MISSING once the
+      grace has passed (1 MISSING, 1,999 MATCHED); on `d3a022de`, 320 MISSING inside the grace.
+    - `LiveTradeRingTest#aBlotterReadPassesOverAMemberWhoseWindowStartsLate`: a ring's page as the member serves it,
+      a restarted member's page, an empty page and a 503 lose to the page that holds the side. New static helpers,
+      so it has no run against `d3a022de`.
+  - Open:
+    - Not on a rig. A rerun needs the spool (the bridge-overflow lane's branch) in the same image; without it the
+      throttle loses records for real and MISSING is right.
+    - Which ordering the stream took after each catch-up is the bridge's question (late sides are now counted).
+    - A step re-checks every suspect: at the bound (about 0.9M on a 16 GB heap, only under a mass loss) that is
+      tens of milliseconds a step. Per-partition heads would let it skip a partition that has not moved.
+
 - FR-DRS-62 (bridge-overflow lane, 2026-11-12; 61 is another lane's): A lane SHALL be held to its stream's receipts
   and confirmations whenever a stream captures its subject, whatever the order they started in.
   - Why: on a fresh epoch the members lead before the read model has created the feed streams. Each lane's first
