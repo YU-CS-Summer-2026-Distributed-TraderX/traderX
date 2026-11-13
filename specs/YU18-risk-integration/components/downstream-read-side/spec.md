@@ -950,6 +950,23 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     every fault stage (stage lengths of an odd number of its phases left its accounts at the position limit), so
     the spooler's headroom at the full rate is unmeasured; saturating the server's volume with `dd` did not slow
     the stream at that reduced rate.
+    Rerun at the full mixed load (2026-11-12, 7:35–8:31 pm ET, same render, image `acc-c95d93e5-j21`, the fault a
+    cgroup `io.max` write limit of 40 MB/s on nats-0 for 200 s, which holds partitions 0 and 5): the throttle slows
+    the stream where `dd` did not. Spool on: the leader's lanes held up to 1,308,642 trade and 4,116,465 order
+    records (the ring is 1,048,576 a lane), each member spooled about 4.4M sides and 10.2M order events (1.1 GB at
+    most), every spool was empty about 100 s after the load stopped, `queueDropped`, `gaps` and `rejected` were 0
+    on every member, and the read model and the history store each held sides 1..215,388,782 once. With the leader
+    killed 60 s into the throttle: each member spooled up to 8.8M sides and 24.6M order events (1.4 GB), the
+    promoted leader republished 12,473,748 records, no member counted a drop or a gap, and both stores held sides
+    1..258,572,898 once. Control (`BRIDGE_SPOOL_BYTES=0`, same throttle): the leader counted 25,500,087 records
+    dropped and 542 gaps, and the read model booked 382,228,815 of 385,947,992 sides (3,719,177 short).
+    `passedByIdle` was 0 on all eight partitions in all three.
+    Not shown: 200 s of overflow with the spool on. In the first spool-on stage one binary pod stopped itself 36 s
+    into the throttle on one unanswered order and its Job stopped the other seven about 75 s in; in the second all
+    eight stopped at the kill. The control's load ran its full 400 s with none unanswered. Whether the spool's
+    writes on the members' archive volume delayed that answer is not established (one stage each). The throttle is
+    also not a clean feed fault: nats-0 holds `KV_FIX_SESSION_LEASE` and four fills streams, so every FIX session
+    lost its lease and the fills router counted 3,572 failed publishes in the first throttled stage.
     `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
     leader to have sent its window into the frozen socket, not its whole tail.
     `LaneSpoolTest` (no NATS): records keep their index across segments, a trim deletes whole segments only, the

@@ -122,7 +122,8 @@ disk. The bound moves from 8–16 s of heap to the budget:
 | One NATS server slow (run 5: 2 partitions) | ≈ 45 MB/s | ≈ 25 min |
 | All of NATS down | ≈ 180 MB/s | ≈ 6 min |
 
-(From the record sizes at 63K sides/s and 127K order events/s per partition; not yet measured at rate.) The members' archive volume is 600 Gi. Past the
+(From the record sizes at 63K sides/s and 127K order events/s per partition. Measured on GKE at the full mixed load, 2026-11-12, one
+server's writes limited to 40 MB/s: about 1.1 GB a member after 75 s, which is ≈ 15 MB/s.) The members' archive volume is 600 Gi. Past the
 budget the loss is the same loud, counted gap as today, repaired from the archive (`/recon/catchup-events`).
 
 The remaining cliffs, each counted when it happens:
