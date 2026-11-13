@@ -1,6 +1,7 @@
 package finos.traderx.ordermatcher.cluster;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.nats.client.Connection;
 import io.nats.client.Nats;
@@ -62,6 +63,15 @@ class LaneStreamAfterStartIT {
             NATS.getDockerClient().pauseContainerCmd(NATS.getContainerId()).exec();
             paused = true;
             LaneSpoolIT.apply(STORED + 1, STORED + MORE, trades, orders);
+            Thread.sleep(1_000);   // the lanes have published what they will while NATS cannot answer
+            // What a lane published while the server is frozen sits in the NATS client's outgoing queue, in the
+            // member's heap. Bounded by the window (one record a message here), plus the messages before the freeze
+            // still unanswered. GKE run 3: about 34,000 messages a lane, and the members slowed to a third of the rate.
+            final long queuedT = trades.published() - trades.acked() - trades.rejected();
+            final long queuedO = orders.published() - orders.acked() - orders.rejected();
+            System.out.println("published and unanswered while NATS was frozen: trades " + queuedT + ", orders " + queuedO);
+            assertTrue(queuedT <= ReceiptLanes.PUBLISH_WINDOW && queuedO <= ReceiptLanes.PUBLISH_WINDOW,
+                "the client queued past the window while NATS was frozen: trades " + queuedT + ", orders " + queuedO);
             NATS.getDockerClient().unpauseContainerCmd(NATS.getContainerId()).exec();
             paused = false;
             final int n = STORED + MORE;
