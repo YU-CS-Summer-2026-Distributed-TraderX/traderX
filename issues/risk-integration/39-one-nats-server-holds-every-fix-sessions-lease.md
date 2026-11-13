@@ -40,9 +40,12 @@ lost fills. The gateways' lost-fill counter is cumulative over the rig's life.
 | s3 throttle + leader kill | 474 | 176,540 | 24,306 |
 | s4 throttle, spool off | 134 | 35,969 | about 5,500 (last sample) |
 
-A session that moves to another gateway leaves fills routed to the old one (FR-FFR-14). There they age out of the
-early-fill buffer as `outcome="lost"`. Which part of stage 3's loss is the kill and which is the lease is not
-separated. A rerun with the fault on a server that holds no lease or order bucket would separate them.
+**Corrected 2026-11-12, 9:55 pm ET:** the lost fills' mechanism is FR-FFR-22 (the lost-fills-failover lane), not
+fills routed to a gateway a session had left. A fill for a session live nowhere takes the session's lease under the
+gateway's feed lock. The adoption log scan's callback then wanted the same lock on the store's watch thread, so both
+waited out the 30 s scan timeout. The fill was dropped uncounted, and early fills aged out behind each freeze. Thursday's
+S3 logged 600 "log scan timed out" lines, and S2 407. RI39 is what put every session in that path at once: every
+lease was lost, so every session was taken again while fills kept arriving. Tonight's rerun carries both fixes.
 
 ## Why
 
