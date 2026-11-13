@@ -2,7 +2,12 @@
 
 Opened 2026-11-12 by the bridge-overflow lane, from GKE stage 2 of the 450K slow-stream rerun. Evidence is in the
 shared notes, `bridge-overflow-20261112/gke2/s2-throttle/`.
-Status: open. A fix is proposed below; nothing is built.
+Status: fixed in code (FR-GFS-25, yaakov 2026-11-12: "Build it now"), not yet run on a rig. Building it found a
+second single point that the proposal had missed: one loop renewed every lease, so a slow server's sessions held
+every other session's renewal behind their timeouts. Each bucket now renews on its own thread.
+`FixStorePinnedIT#aStalledServerCostsOnlyTheLeasesOfTheSessionsItHolds` passes, and on the code before it fails
+(bucket 1's lease lapsed during a stall on the other server). All FIX tests: 97, 0 failed (2 opt-in benches
+skipped).
 Related: [ADR-103](../../specs/YU18-risk-integration/system/adr-103-capture-on-a-nats-cluster-members-on-c4d-16.md),
 which covers placement over five servers, and ADR-086 §6b with FR-GFS-16, FR-GFS-21 and FR-GFS-24 in
 [fix-session-persistence](../../specs/YU18-risk-integration/maintenance/fix-session-persistence/spec.md).

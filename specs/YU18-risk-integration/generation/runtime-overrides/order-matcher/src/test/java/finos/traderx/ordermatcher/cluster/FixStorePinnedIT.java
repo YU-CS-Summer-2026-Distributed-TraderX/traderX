@@ -147,6 +147,46 @@ class FixStorePinnedIT {
     }
 
     /**
+     * FR-GFS-25 (RI39): A, the main connection's server and bucket 0's, stops answering. Bucket 1's live session keeps
+     * its lease: the lease is in bucket 1's own lease bucket on B, renewed on its own thread. Before, every session's
+     * lease was in one bucket on the main connection's server, renewed in one loop, so A's stall cost bucket 1 its
+     * lease too (GKE 2026-11-12: a 40 MB/s write limit on one of five servers cost all 600 sessions their leases).
+     * Checked within the lease TTL's reach, before the main connection's pings declare A gone (which drops every session
+     * by design, ADR-086 §7).
+     */
+    @Test
+    void aStalledServerCostsOnlyTheLeasesOfTheSessionsItHolds() throws Exception {
+        final SessionID s0 = inBucket("STALL-A", 0);
+        final SessionID s1 = inBucket("STALL-B", 1);
+        final FixSessionStore store = start("gw-stall", List.of(url(A), url(B)));
+        final Set<SessionID> lost = ConcurrentHashMap.newKeySet();
+        store.onLost = lost::add;
+        store.create(s0);
+        store.create(s1);
+        boolean paused = false;
+        try {
+            for (final SessionID sid : List.of(s0, s1)) {
+                assertTrue(store.acquire(sid));
+                store.live(sid, true);
+            }
+            A.getDockerClient().pauseContainerCmd(A.getContainerId()).exec();
+            paused = true;
+            final long until = System.nanoTime() + 7_000_000_000L;   // > 2 x the 3 s TTL, < the ~10 s ping verdict
+            while (System.nanoTime() < until && !lost.contains(s1)) {
+                Thread.sleep(100);
+            }
+            assertTrue(lost.contains(s0), "the stall did not cost bucket 0's session its lease: the fault did not take");
+            assertFalse(lost.contains(s1), "bucket 1's session lost its lease to a stall on A, which does not hold it");
+            assertTrue(store.confirm(s1), "bucket 1's session is not confirmed on B");
+        } finally {
+            if (paused) {
+                A.getDockerClient().unpauseContainerCmd(A.getContainerId()).exec();
+            }
+            store.close();
+        }
+    }
+
+    /**
      * B's connection is lost (B paused): bucket 1's live session is dropped, refuses writes and its Logon, while
      * bucket 0's is served on. Nothing of bucket 1 goes to A meanwhile. Once B is back the session is taken again.
      */

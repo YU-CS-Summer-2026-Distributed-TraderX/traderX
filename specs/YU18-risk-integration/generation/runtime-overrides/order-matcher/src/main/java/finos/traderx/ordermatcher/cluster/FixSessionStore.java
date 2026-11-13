@@ -150,6 +150,15 @@ final class FixSessionStore implements MessageStoreFactory {
         return i == 0 ? BUCKET : BUCKET + "_" + i;
     }
 
+    /** FR-GFS-25: session bucket i's lease and order buckets. Bucket 0 keeps the one-bucket names. */
+    static String leaseBucketName(final int i) {
+        return i == 0 ? LEASE_BUCKET : LEASE_BUCKET + "_" + i;
+    }
+
+    static String orderBucketName(final int i) {
+        return i == 0 ? ORDER_BUCKET : ORDER_BUCKET + "_" + i;
+    }
+
     /** FR-GFS-21: a session's bucket, the same on every gateway (String.hashCode is specified). */
     static int bucketOf(final String key) {
         return bucketOf(key, BUCKETS);
@@ -194,9 +203,12 @@ final class FixSessionStore implements MessageStoreFactory {
     private volatile Connection nats;
     // Set once the buckets exist (setUp).
     private volatile KeyValue[] kvs;   // FR-GFS-21: by bucket
-    private volatile KeyValue leases;
-    /** FR-XOD-13: ADR-090's order rings, in a bucket of their own so they never evict the session records. */
-    private volatile KeyValue orders;
+    /** FR-GFS-25 (RI39): by bucket, each beside its session bucket. One lease bucket for every session made a slow
+     *  volume on its one server (2026-11-12, GKE) cost every gateway every session's lease in the same millisecond. */
+    private volatile KeyValue[] leaseKvs;
+    /** FR-XOD-13: ADR-090's order rings, in buckets of their own so they never evict the session records (FR-GFS-25: by
+     *  bucket, as the leases). */
+    private volatile KeyValue[] orderKvs;
     private final String owner;
     private final Map<SessionID, Store> stores = new ConcurrentHashMap<>();
     private final ScheduledExecutorService ticker = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -204,6 +216,13 @@ final class FixSessionStore implements MessageStoreFactory {
         t.setDaemon(true);
         return t;
     });
+    /**
+     * FR-GFS-25 (RI39): one renewal thread per bucket. The ticker renewed every session in turn, so one bucket's slow
+     * server held every other session's renewal behind its timeouts. A bucket's round that is still waiting is not
+     * queued again; its sessions lapse on their own, and only they do.
+     */
+    private final java.util.concurrent.ExecutorService[] renewers;
+    private final java.util.concurrent.atomic.AtomicBoolean[] renewing;
     /** A session's stored outbound messages, oldest first, read one at a time (ADR-092: never the whole day at once). */
     interface SentLog {
         void forEach(Consumer<String> each) throws IOException;
@@ -231,6 +250,17 @@ final class FixSessionStore implements MessageStoreFactory {
         this.serverUrls = serverUrls.toArray(new String[0]);
         this.servers = new java.util.concurrent.atomic.AtomicReferenceArray<>(this.serverUrls.length);
         this.serverUp = new java.util.concurrent.atomic.AtomicIntegerArray(this.serverUrls.length);
+        this.renewers = new java.util.concurrent.ExecutorService[this.buckets];
+        this.renewing = new java.util.concurrent.atomic.AtomicBoolean[this.buckets];
+        for (int i = 0; i < this.buckets; i++) {
+            final String name = "fix-session-lease-" + i;
+            renewers[i] = Executors.newSingleThreadExecutor(r -> {
+                final Thread t = new Thread(r, name);
+                t.setDaemon(true);
+                return t;
+            });
+            renewing[i] = new java.util.concurrent.atomic.AtomicBoolean();
+        }
         // FR-GFS-24: each server's connection fails closed on its own: its buckets' sessions are dropped and their
         // Logons refused until it is back; no write of theirs goes to another server (they have no other connection).
         for (int i = 0; i < this.serverUrls.length; i++) {
@@ -286,6 +316,7 @@ final class FixSessionStore implements MessageStoreFactory {
         }
         try {
             final KeyValue[] buckets = new KeyValue[this.buckets];
+            final KeyValue[] leaseBuckets = new KeyValue[this.buckets], orderBuckets = new KeyValue[this.buckets];
             final JetStream[] jets = new JetStream[this.buckets];
             for (int i = 0; i < this.buckets; i++) {
                 final Connection c = conn(i);
@@ -295,21 +326,25 @@ final class FixSessionStore implements MessageStoreFactory {
                 discardOldest(c.jetStreamManagement(), bucketName(i));
                 buckets[i] = c.keyValue(bucketName(i));
                 jets[i] = c.jetStream();
+                // FR-GFS-25: the session's lease and order rings on the same server as its state, on the same connection
+                ensureBucket(c, leaseBucketName(i), KeyValueConfiguration.builder().name(leaseBucketName(i)).maxHistoryPerKey(1)
+                    .ttl(LEASE_TTL).storageType(StorageType.File).placement(placement(i)).build());
+                leaseTtl(c.jetStreamManagement(), leaseBucketName(i));
+                ensureBucket(c, orderBucketName(i), KeyValueConfiguration.builder().name(orderBucketName(i)).maxHistoryPerKey(1)
+                    .ttl(Duration.ofDays(1)).maxBucketSize(Math.max(1L << 20, ORDER_STORE_BYTES / this.buckets))
+                    .storageType(StorageType.File).placement(placement(i)).build());
+                ordersDiscardOldest(c.jetStreamManagement(), orderBucketName(i));
+                leaseBuckets[i] = c.keyValue(leaseBucketName(i));
+                orderBuckets[i] = c.keyValue(orderBucketName(i));
             }
-            ensureBucket(LEASE_BUCKET, KeyValueConfiguration.builder().name(LEASE_BUCKET).maxHistoryPerKey(1)
-                .ttl(LEASE_TTL).storageType(StorageType.File).build());
-            leaseTtl(nats.jetStreamManagement());
-            ensureBucket(ORDER_BUCKET, KeyValueConfiguration.builder().name(ORDER_BUCKET).maxHistoryPerKey(1)
-                .ttl(Duration.ofDays(1)).maxBucketSize(ORDER_STORE_BYTES).storageType(StorageType.File).build());
-            ordersDiscardOldest(nats.jetStreamManagement());
             kvs = buckets;
             jss = jets;
-            leases = nats.keyValue(LEASE_BUCKET);
-            orders = nats.keyValue(ORDER_BUCKET);
+            leaseKvs = leaseBuckets;
+            orderKvs = orderBuckets;
             groupCommit = GROUP_COMMIT && fenceHonoured();
             available = true;
-            log.warn("FIX session store available (NATS connected, buckets {} x{} and {}{}); Logons accepted",
-                BUCKET, this.buckets, LEASE_BUCKET, servers.length() == 0 ? ""
+            log.warn("FIX session store available (NATS connected, buckets {}, {} and {} x{}{}); Logons accepted",
+                BUCKET, LEASE_BUCKET, ORDER_BUCKET, this.buckets, servers.length() == 0 ? ""
                     : ", each bucket on its own server's connection of " + servers.length());
         } catch (final IOException | JetStreamApiException | RuntimeException e) {
             log.warn("FIX session store not ready yet: {}", e.toString());
@@ -431,8 +466,9 @@ final class FixSessionStore implements MessageStoreFactory {
      * FR-XOD-13: a full order bucket drops its oldest ring slots rather than refusing an order. A ring that loses a
      * slot this way has aged, so a resend that would have needed it is refused, never booked again.
      */
-    private static void ordersDiscardOldest(final JetStreamManagement jsm) throws IOException, JetStreamApiException {
-        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + ORDER_BUCKET).getConfiguration();
+    private static void ordersDiscardOldest(final JetStreamManagement jsm, final String bucket)
+            throws IOException, JetStreamApiException {
+        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + bucket).getConfiguration();
         if (sc.getDiscardPolicy() != DiscardPolicy.Old) {
             jsm.updateStream(StreamConfiguration.builder(sc).discardPolicy(DiscardPolicy.Old).build());
         }
@@ -442,13 +478,13 @@ final class FixSessionStore implements MessageStoreFactory {
      * FR-GFS-16: the lease bucket's max age IS the lease TTL, so an existing bucket (created at 10 s) is moved to
      * {@link #LEASE_TTL}, its duplicate window with it (the server refuses one longer than the max age).
      */
-    private static void leaseTtl(final JetStreamManagement jsm) throws IOException, JetStreamApiException {
-        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + LEASE_BUCKET).getConfiguration();
+    private static void leaseTtl(final JetStreamManagement jsm, final String bucket) throws IOException, JetStreamApiException {
+        final StreamConfiguration sc = jsm.getStreamInfo("KV_" + bucket).getConfiguration();
         if (!LEASE_TTL.equals(sc.getMaxAge())) {
             final Duration dup = sc.getDuplicateWindow() == null || sc.getDuplicateWindow().compareTo(LEASE_TTL) > 0
                 ? LEASE_TTL : sc.getDuplicateWindow();
             jsm.updateStream(StreamConfiguration.builder(sc).maxAge(LEASE_TTL).duplicateWindow(dup).build());
-            log.warn("FIX session store: {} lease TTL {} -> {} (ADR-086 §6b)", LEASE_BUCKET, sc.getMaxAge(), LEASE_TTL);
+            log.warn("FIX session store: {} lease TTL {} -> {} (ADR-086 §6b)", bucket, sc.getMaxAge(), LEASE_TTL);
         }
     }
 
@@ -852,6 +888,9 @@ final class FixSessionStore implements MessageStoreFactory {
 
     void close() {
         ticker.shutdownNow();
+        for (final java.util.concurrent.ExecutorService r : renewers) {
+            r.shutdownNow();
+        }
         commits.shutdownNow();
         for (final Store s : stores.values()) {
             synchronized (s) {
@@ -885,8 +924,28 @@ final class FixSessionStore implements MessageStoreFactory {
         } else if (++ticks % CAPACITY_CHECK_TICKS == 0) {
             checkCapacity();
         }
+        for (int b = 0; b < buckets; b++) {
+            if (!renewing[b].compareAndSet(false, true)) {
+                continue;   // its last round is still waiting on its server
+            }
+            final int bucket = b;
+            renewers[b].execute(() -> {
+                try {
+                    renew(bucket);
+                } finally {
+                    renewing[bucket].set(false);
+                }
+            });
+        }
+    }
+
+    /** One bucket's round: renew what is in use, release what is not. */
+    private void renew(final int bucket) {
         final long now = System.currentTimeMillis();
         for (final Store s : stores.values()) {
+            if (s.bucket != bucket) {
+                continue;
+            }
             boolean lost = false;
             synchronized (s) {
                 if (s.leaseRevision == 0) {
@@ -955,6 +1014,17 @@ final class FixSessionStore implements MessageStoreFactory {
             return jss[bucket];
         }
 
+        /** FR-GFS-25: this session's lease and order buckets, beside its state; null until the store is set up. */
+        KeyValue leases() {
+            final KeyValue[] l = leaseKvs;
+            return l == null ? null : l[bucket];
+        }
+
+        KeyValue orders() {
+            final KeyValue[] o = orderKvs;
+            return o == null ? null : o[bucket];
+        }
+
         /** The store is up for this session: NATS, and (FR-GFS-24) the server that holds its bucket. */
         boolean up() {
             return available && serverUp(bucket);
@@ -1018,7 +1088,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 return false;
             }
             try {
-                leaseRevision = leases.create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
+                leaseRevision = leases().create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
                 renewedAt = System.nanoTime();
             } catch (final JetStreamApiException taken) {
                 return reclaim();
@@ -1043,11 +1113,11 @@ final class FixSessionStore implements MessageStoreFactory {
         /** The key exists: take it back only if it still names this gateway (claims dropped by an outage). */
         private boolean reclaim() {
             try {
-                final KeyValueEntry e = leases.get(key);
+                final KeyValueEntry e = leases().get(key);
                 if (e == null || !owner.equals(ownerOf(e.getValueAsString()))) {
                     return false;
                 }
-                leaseRevision = leases.update(key, leaseValue(), e.getRevision());
+                leaseRevision = leases().update(key, leaseValue(), e.getRevision());
                 renewedAt = System.nanoTime();
             } catch (final Exception e) {
                 return false;
@@ -1068,7 +1138,7 @@ final class FixSessionStore implements MessageStoreFactory {
         /** Renew now; on failure the lease is gone (taken, or NATS unreachable), unless it only lapsed. */
         boolean renew() {
             try {
-                leaseRevision = leases.update(key, leaseValue(), leaseRevision);
+                leaseRevision = leases().update(key, leaseValue(), leaseRevision);
                 renewedAt = System.nanoTime();
                 return true;
             } catch (final Exception e) {
@@ -1092,10 +1162,10 @@ final class FixSessionStore implements MessageStoreFactory {
          */
         private boolean retake() {
             try {
-                if (leases.get(key) != null) {
+                if (leases().get(key) != null) {
                     return false;   // someone else holds it
                 }
-                leaseRevision = leases.create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
+                leaseRevision = leases().create(key, leaseValue().getBytes(StandardCharsets.UTF_8));
                 renewedAt = System.nanoTime();
             } catch (final Exception e) {
                 return false;
@@ -1128,7 +1198,8 @@ final class FixSessionStore implements MessageStoreFactory {
         /** The lease's current holder, or null when it is free (lapsed or released). */
         KeyValueEntry holder() {
             try {
-                return leases == null ? null : leases.get(key);
+                final KeyValue l = leases();
+                return l == null ? null : l.get(key);
             } catch (final Exception e) {
                 return null;
             }
@@ -1152,7 +1223,7 @@ final class FixSessionStore implements MessageStoreFactory {
                 return;
             }
             try {
-                leases.delete(key, leaseRevision);
+                leases().delete(key, leaseRevision);
             } catch (final Exception e) {
                 // lapsed or taken: either way no longer ours
             }
@@ -1216,11 +1287,11 @@ final class FixSessionStore implements MessageStoreFactory {
         /** ADR-090: this FIX day's order records, at most orderWindow per account (FR-XOD-13). */
         private void loadOrders() throws IOException {
             clearOrders();
-            if (!sequenceOrders || orders == null) {
+            if (!sequenceOrders || orders() == null) {
                 return;
             }
             final Map<Integer, Long> held = new java.util.HashMap<>();
-            scanEntries(orders, key + ".>", e -> {
+            scanEntries(orders(), key + ".>", e -> {
                 final String v = e.getValueAsString();
                 final int nl = v.indexOf('\n');
                 final String[] f = v.substring(0, nl).split(" ", 3);
@@ -1282,7 +1353,7 @@ final class FixSessionStore implements MessageStoreFactory {
             try {
                 // FR-XOD-13: overwrite the slot only from the revision this gateway wrote or read; another gateway's
                 // write in between fences this one, as the create-if-absent record did.
-                revision = ring.revs[slot] == 0 ? orders.create(slotKey, value)
+                revision = ring.revs[slot] == 0 ? orders().create(slotKey, value)
                     : updateSlot(slotKey, value, ring.revs[slot]);
             } catch (final JetStreamApiException e) {
                 // another gateway stored this sequence: it owns the session now (the seq record's fencing rule)
@@ -1305,11 +1376,11 @@ final class FixSessionStore implements MessageStoreFactory {
         private long updateSlot(final String slotKey, final byte[] value, final long revision)
                 throws IOException, JetStreamApiException {
             try {
-                return orders.update(slotKey, value, revision);
+                return orders().update(slotKey, value, revision);
             } catch (final JetStreamApiException e) {
-                final KeyValueEntry now = orders.get(slotKey);
+                final KeyValueEntry now = orders().get(slotKey);
                 if (now == null || now.getOperation() != KeyValueOperation.PUT) {
-                    return orders.create(slotKey, value);
+                    return orders().create(slotKey, value);
                 }
                 throw e;
             }
@@ -1704,8 +1775,8 @@ final class FixSessionStore implements MessageStoreFactory {
             try {
                 nats.jetStreamManagement().purgeStream("KV_" + bucketName(bucket),
                     PurgeOptions.subject(prefix + key + ".m.>"));
-                nats.jetStreamManagement().purgeStream("KV_" + ORDER_BUCKET,   // ADR-090: the day's order rings
-                    PurgeOptions.subject("$KV." + ORDER_BUCKET + "." + key + ".>"));
+                conn(bucket).jetStreamManagement().purgeStream("KV_" + orderBucketName(bucket),   // ADR-090: the day's order rings
+                    PurgeOptions.subject("$KV." + orderBucketName(bucket) + "." + key + ".>"));
             } catch (final JetStreamApiException e) {
                 throw new IOException(e);
             }
