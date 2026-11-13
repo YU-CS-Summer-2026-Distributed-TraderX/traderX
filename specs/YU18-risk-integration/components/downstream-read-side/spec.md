@@ -888,7 +888,8 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     last behind what they still held: `queueDropped` 172, `gaps` 9, history NEW 116,662 short of the clients' sent.
   - The spooler. One thread per bridge. For each lane with `head - low > slots / 2` it writes the records from the
     oldest held (or the spool's end) up to `head - slots / 2` into segment files under `BRIDGE_SPOOL_DIR` (default
-    `<CLUSTER_BASE_DIR>/bridge-spool`, wiped at start), and deletes the segments the lane has released. A lane that
+    `<CLUSTER_BASE_DIR>/bridge-spool`, wiped at start; the GKE render sets `/spool`, a claim of its own off the
+    archive volume, ADR-106), and deletes the segments the lane has released. A lane that
     keeps up holds about 100K records against the 524,288 threshold and never spools. `offer` is unchanged.
   - One index. A record keeps its ring index in the spool. The lane reads the spool below its end and the ring above.
     A spooled record is the bridge's fields in binary (51 B a trade side, 141 B an order event plus its gateway's name), every field

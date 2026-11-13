@@ -1,7 +1,7 @@
 # ADR-106: A lane that falls behind its stream spools to the member's disk
 
-Status: accepted (yaakov, 2026-11-12), with one follow-up before production use: the spool moves off the archive
-volume onto its own (below). Component:
+Status: accepted (yaakov, 2026-11-12). Its follow-up, the spool on a volume of its own, is built (2026-11-12,
+yaakov: "Build it now"; below). Component:
 [downstream read side](../components/downstream-read-side/spec.md) (FR-DRS-57). Builds on
 [ADR-083](adr-083-bridge-receipt-publish.md) decisions 19–23 (FR-DRS-47, FR-DRS-49).
 
@@ -143,10 +143,17 @@ stream and a lost record.
 
 - A member writes to `BRIDGE_SPOOL_DIR` (default `<CLUSTER_BASE_DIR>/bridge-spool`) only while a lane lags. In a NATS
   outage all three members write, each to its own volume.
-- The spool shares the archive volume by default. The budget is what keeps a long outage from filling it.
-  **Follow-up (yaakov, at acceptance): before production use the spool gets its own volume**, so a long outage's
-  writes do not compete with the archive's on the consensus disk and a full spool can never be a full archive. Until
-  then `BRIDGE_SPOOL_DIR` is unset in every render and the default applies. Not built yet.
+- Without `BRIDGE_SPOOL_DIR` the spool shares the archive volume, and only the budget keeps a long outage from
+  filling it. **The follow-up yaakov set at acceptance is built:** `prepare.py` gives every member a claim of its
+  own, `spool` (80Gi, the archive's storage class), mounted at `/spool`, with `BRIDGE_SPOOL_DIR=/spool` and
+  `BRIDGE_SPOOL_BYTES` 64 GiB. `validate()` refuses a render whose spool directory is not that claim's mount, lies
+  under `/data`, or has a budget larger than the claim. A long outage's writes then do not compete with the archive on
+  the consensus disk, and a full spool can never be a full archive.
+  - Why now: on GKE (2026-11-12, bridge-overflow stage 2) each member spooled 1.1 GB onto `/data` during a NATS
+    write throttle, and the members' side rate fell from about 420K to about 275K sides/s before the load stopped.
+    The control with the spool off held 320K/s under the same fault. It is one stage each, not shown to be the
+    cause.
+  - A new claim template does not apply to an existing StatefulSet: a rig takes it at bring-up.
 - `/health` `bridges.*` adds `spooled` (records ever written) and `spoolBytes` (bytes held now, the member's total).
 - No log, snapshot, ack or stream format changes. The spool's file format is private to one process.
 - The publish window is new behaviour at rate for healthy lanes too: a lane whose receipts lag more than 65,536
