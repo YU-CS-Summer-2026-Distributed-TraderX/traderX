@@ -35,7 +35,7 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
   waited SHALL be resubmitted by that gateway under the same key (and, on an ADR-090 stream, at its stored sequence),
   at most twice, and answered by the result: booked once if the old leader lost it, restated (`150=I`) if it had
   committed. An ambiguous answer with no leader change in between SHALL NOT be resubmitted, since a plain timeout
-  can outlast the FR-XOC-04 window. Production 2026-11-06 (e1106, leader kill under CLIENT2-8): 7 such orders were
+  can outlast the FR-XOC-04 window; FR-XOC-08 is the exception for an order on the engine's session ring. Production 2026-11-06 (e1106, leader kill under CLIENT2-8): 7 such orders were
   never answered, because FIX carries no ambiguous answer for a client to resend on and the sessions stayed up.
 - FR-XOC-07 (2026-11-12): The gateway SHALL NOT read an account's whole order list to answer for one order.
   - A restatement (FR-XOC-03) and an `OrderStatusRequest` SHALL read the one order booked under the request's client
@@ -75,9 +75,33 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
     unchanged through the kill. The lists the old code would have read were 8,079-9,908 rows / 6.5-8.0 MB an account.
     Not shown: the bounded listing on a rig (no status request arrived: 0 listings), and the binary half of the load
     after the kill (its driver stops itself on an unanswered order).
-  - Seen there, not part of this requirement: 49 of 142,715,038 FIX orders were never answered (FR-XOC-06's two
-    resubmissions exhausted or not triggered; not read further).
+  - Seen there, not part of this requirement: 49 of 142,715,038 FIX orders were never answered (FR-XOC-08).
   - Not covered: an open order the read model has not projected yet is restated `39=3` (as before this change).
+- FR-XOC-08 (2026-11-12): With `FIX_EXACTLY_ONCE=engine` (ADR-104), a pipelined `NewOrderSingle` whose submit comes
+  back ambiguous with no leader change SHALL be resubmitted by its gateway under the same key, session stream and
+  MsgSeqNum with `INPUT_FLAG_POSS_DUP` set, at most twice (the bound it shares with FR-XOC-06), and answered by the
+  result.
+  - Why it cannot book twice (FR-XOD-22): a PossDup the ring holds is answered `DUPLICATE` with the original's ref
+    and restated (`150=I`, FR-XOC-03); one the ring misses is booked only if its MsgSeqNum is above every MsgSeqNum the
+    ring has evicted, so it was never booked; otherwise it is refused `SESSION_AGED_OUT`, which the client hears as
+    `35=j` `EXACTLY_ONCE_AGED_OUT` (FR-XOD-24) and settles with an `OrderStatusRequest`.
+  - Still ambiguous after the second resubmission, the order is still not answered. A session without the ring
+    (`FIX_EXACTLY_ONCE` unset or `jetstream`) keeps FR-XOC-06's rule. FIX cancels and replaces are unchanged: an
+    ambiguous one is still not answered.
+  - Cost: an order with no decision holds its pipeline slot for up to three ack timeouts instead of one, and is
+    offered to the cluster up to three times.
+  - Counter: `traderx_fix_unanswered_resubmits_total`; each logs `unanswered with no leader change`.
+  - Why: GKE run 7b (2026-11-12, `9c39f4ef`), the 49 unanswered FIX orders. All 49 were on one gateway of 18
+    (`cluster-gateway-…-mld6n`), across 17 sessions, and all were reaped ambiguous within 4 ms at 21:33:26.371-.375
+    UTC, one ack timeout (10 s) after they were offered and 14 s after the new leader's term began (21:33:12.06).
+    Their ClOrdIDs are about 1,000 past the ones the election stranded on the same sessions: new orders sent to the
+    new leader, not stranded ones, so `leaderChanges` had not moved and FR-XOC-06 did not resubmit them. The new
+    leader logged `ALERT cluster egress dropped 1 record(s) a live client session refused 20 times (last offer -2)`
+    (back-pressure, FR-BSP-03) and that gateway's no-ack streak reached 320, which tripped its wedge detector. So the
+    leader applied the orders and dropped their acks to one back-pressured gateway session; the log held the outcome
+    and nothing asked for it. The members' final `egress.dropped` was not captured, and why that one session was
+    back-pressured 4 s into the term is not known.
+  - Not shown on a rig. `FixSessionRingGatewayTest` drives the gateway against the engine's `SessionRing`.
 
 ## Acceptance
 
@@ -93,6 +117,8 @@ Decision: [ADR-091](../../system/adr-091-exactly-once-client.md).
 | a listing past the row bound | 07 | `ReadModelOrdersTest.aListingOverTheRowBound…` | unavailable, never a short list; by-key unaffected |
 | 20 listings behind a held one | 07 | `ReadModelOrdersTest.listingsBeyondThePermits…` | 20 refused, 1 reached the read model, by-key goes through |
 | ambiguous with no election | 06 | `FixGatewayFillReportTest.anAmbiguousAnswerWithoutAnElection…` | one submit, no answer |
+| ring session: committed, its answer lost, no election | 08 | `FixSessionRingGatewayTest.anOrderWhoseAnswerNeverCame…` | one resubmission, PossDup, same key and MsgSeqNum; `150=I` for `ord-1`; booked once |
+| ring session: never sequenced, no election | 08 | `FixSessionRingGatewayTest.anOrderThatNeverReachedTheLog…` | booked once by the resubmission; lost three times, two resubmissions and no answer |
 | back-to-back elections | 06 | `FixGatewayFillReportTest.resubmissionsAcrossRepeatedElections…` | three submits, then ambiguous |
 | binary client through a gateway kill and a leader kill | 01, 02, 05 | harness arm `xo`, local triad | 0 missing / duplicate / ambiguous; strict native replay, allowance 0 |
 | stub gateways: 20 ambiguous, a gateway dies with 20 in flight | 05 | harness `tests/test_loadgen_exactly_once.mjs` | 600/600 executed once; today's loadgen fails |

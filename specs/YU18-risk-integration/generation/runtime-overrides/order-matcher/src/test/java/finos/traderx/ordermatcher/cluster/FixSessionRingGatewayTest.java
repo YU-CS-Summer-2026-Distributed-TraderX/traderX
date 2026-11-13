@@ -51,6 +51,8 @@ class FixSessionRingGatewayTest {
         final List<String> keys = new ArrayList<>();
         int nextRef = 1;
         volatile int forceRef;
+        volatile int ackLost;     // commit the next NEW and lose its answer (FR-BSP-03: the leader dropped the egress)
+        volatile int orderLost;   // lose the next NEW before it is sequenced
 
         @Override
         public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker, final char side,
@@ -66,6 +68,10 @@ class FixSessionRingGatewayTest {
             tags.add(new long[] { sessionStream, ClusterGatewayMain.clientOrderCheck(clOrdId), msgSeqNum, possFlags });
             keys.add(clOrdId);
             final byte dup = (byte) RiskReason.DUPLICATE.ordinal();
+            if (orderLost > 0) {
+                orderLost--;
+                return CompletableFuture.completedFuture(null);
+            }
             if (forceRef > 0) {
                 final int ref = forceRef;
                 forceRef = 0;
@@ -85,6 +91,10 @@ class FixSessionRingGatewayTest {
                     (byte) RiskReason.SESSION_AGED_OUT.ordinal());
                 default -> throw new AssertionError("LIMIT");
             };
+            if (ackLost > 0) {
+                ackLost--;
+                return CompletableFuture.completedFuture(null);
+            }
             return CompletableFuture.completedFuture(r);
         }
 
@@ -132,6 +142,47 @@ class FixSessionRingGatewayTest {
                 assertEquals("CLIENT1\001c-6\001#", venue.keys.get(venue.keys.size() - 1), "resubmitted salted");
             }
             assertTrue(Session.lookupSession(new SessionID("FIX.4.4", "TRADERX", "CLIENT1")).isLoggedOn());
+        }
+    }
+
+    /**
+     * FR-XOC-08 (run 7b: 49 orders the leader's dropped egress left unanswered): no answer and no leader change. The
+     * order is asked for again as a PossDup, which the ring never books twice: committed, it is restated.
+     */
+    @Test
+    void anOrderWhoseAnswerNeverCameIsAskedAgainAsAPossDupAndRestated() throws Exception {
+        final Venue venue = new Venue();
+        start(venue);
+        try (Socket s = logon("CLIENT1")) {
+            venue.ackLost = 1;
+            s.getOutputStream().write(order(s, 2, "u-1", ""));
+            awaitWire("DUPLICATE: ClOrdID already executed as ord-1");
+            synchronized (venue) {
+                assertEquals(2, venue.tags.size(), "want the original and one resubmission");
+                assertEquals(0L, venue.tags.get(0)[3]);
+                assertEquals(AeronReplicationCodec.INPUT_FLAG_POSS_DUP, venue.tags.get(1)[3], "asked again as PossDup");
+                assertEquals(venue.tags.get(0)[2], venue.tags.get(1)[2], "at the order's own MsgSeqNum");
+                assertEquals(venue.keys.get(0), venue.keys.get(1), "under the same key");
+                assertEquals(2, venue.nextRef, "booked once");
+            }
+        }
+    }
+
+    /** FR-XOC-08: never sequenced, the same question books it once; lost twice more, it stays ambiguous (bounded). */
+    @Test
+    void anOrderThatNeverReachedTheLogIsBookedOnceByTheQuestion() throws Exception {
+        final Venue venue = new Venue();
+        start(venue);
+        try (Socket s = logon("CLIENT1")) {
+            venue.orderLost = 1;
+            s.getOutputStream().write(order(s, 2, "u-2", ""));
+            awaitWire("37=ord-1");
+            venue.orderLost = 5;
+            s.getOutputStream().write(order(s, 3, "u-3", ""));
+            await(() -> venue.orderLost == 2, "the original and two resubmissions of u-3");
+            Thread.sleep(300);
+            assertEquals(2, venue.orderLost, "resubmitted more than twice");
+            assertTrue(wire.indexOf("11=u-3") < 0, "an order with no decision was answered");
         }
     }
 

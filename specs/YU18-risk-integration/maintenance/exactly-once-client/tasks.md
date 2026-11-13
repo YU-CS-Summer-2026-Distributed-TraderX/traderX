@@ -14,7 +14,13 @@
 - [x] FR-XOC-07 off-rig storm at the gateway's heap: the old reader runs out, the fix does not.
 - [x] FR-XOC-07 on GKE (run 7b): 25,512 restatements by key, 0 listings, 0 of 18 gateways out of heap or restarted.
       Kind does not reach the path (`kind-fix-restatement-failover.sh`: 0 DUPLICATE answers).
-- [ ] 49 FIX orders unanswered after the run-7b leader kill (FR-XOC-06): read the gateways' ambiguous lines.
+- [x] 49 FIX orders unanswered after the run-7b leader kill: the leader dropped one gateway's egress under
+      back-pressure and no election followed, so nothing resubmitted them. FR-XOC-08: asked again as PossDup on the
+      session ring; unit tests against `SessionRing`.
+- [ ] FR-XOC-08 on a rig: a leader kill at rate with `traderx_fix_unanswered_resubmits_total` > 0 and 0 unanswered.
+- [ ] An ambiguous FIX cancel or replace is still not answered.
+- [ ] Why one gateway session was back-pressured 4 s into the new term (run 7b); capture `egress.dropped` at the end
+      of a failover stage.
 - [ ] The bounded listing under a status-request storm on a rig.
 - [ ] GKE `xo` arm at ≤ 5K/s (CLOUD-QUEUE proposal).
 - [ ] Exactly-once at 400K/s: proposed as ADR-090 (`exactly-once-dedupe`, per-stream sequences), awaiting yaakov.

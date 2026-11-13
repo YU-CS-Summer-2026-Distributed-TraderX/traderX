@@ -137,6 +137,8 @@ public final class FixGatewayAcceptor {
     static final int TRACKED_CAPACITY = Integer.parseInt(System.getenv().getOrDefault("FIX_TRACKED_ORDERS", "524288"));
     int trackedCapacity = TRACKED_CAPACITY;   // not final: tests shorten it
     private final AtomicLong trackedEvicted = new AtomicLong();
+    /** FR-XOC-08: NEWs asked again as PossDup after no answer with no leader change. */
+    private final AtomicLong unansweredResubmits = new AtomicLong();
     private final Map<Long, Tracked> tracked = new LinkedHashMap<>(1024, 0.75f, false) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<Long, Tracked> eldest) {
@@ -880,12 +882,25 @@ public final class FixGatewayAcceptor {
                         return submitNew(sid, clOrdId, key + "\001#", accountId, ticker, side, qty, mapped, p, attempt,
                             msgSeqNum, possFlags);
                     }
-                    if (r != null || attempt == FAILOVER_RESUBMITS || submitter.leaderChanges() == elections) {
+                    if (r != null || attempt == FAILOVER_RESUBMITS) {
                         return CompletableFuture.completedFuture(r);
                     }
-                    log.warn("FIX order {} stranded by a leader change: resubmitted under its key", clOrdId);
+                    if (submitter.leaderChanges() != elections) {
+                        log.warn("FIX order {} stranded by a leader change: resubmitted under its key", clOrdId);
+                        return submitNew(sid, clOrdId, key, accountId, ticker, side, qty, mapped, p, attempt + 1,
+                            msgSeqNum, possFlags);
+                    }
+                    if (possFlags < 0) {
+                        // FR-XOC-06: without the session ring a plain timeout can outlast the key window
+                        return CompletableFuture.completedFuture(r);
+                    }
+                    // FR-XOC-08: no answer and no election (run 7b: the leader dropped this gateway's egress,
+                    // FR-BSP-03). As a PossDup the ring restates it if it committed, books it if its MsgSeqNum is above
+                    // everything the ring evicted, and otherwise refuses SESSION_AGED_OUT (FR-XOD-22): never twice.
+                    unansweredResubmits.incrementAndGet();
+                    log.warn("FIX order {} unanswered with no leader change: resubmitted as PossDup", clOrdId);
                     return submitNew(sid, clOrdId, key, accountId, ticker, side, qty, mapped, p, attempt + 1, msgSeqNum,
-                        possFlags);
+                        possFlags | finos.traderx.ordermatcher.lmax.AeronReplicationCodec.INPUT_FLAG_POSS_DUP);
                 });
         }
 
@@ -1901,6 +1916,10 @@ public final class FixGatewayAcceptor {
     /** FR-FFR-19: working orders evicted past {@link #TRACKED_CAPACITY}. */
     public long trackedEvicted() {
         return trackedEvicted.get();
+    }
+
+    public long unansweredResubmits() {
+        return unansweredResubmits.get();
     }
 
     private static final byte[] ID_KEY = "\"id\":\"".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
