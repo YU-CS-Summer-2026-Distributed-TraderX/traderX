@@ -26,6 +26,19 @@ then reconnected and were refused (`Logon rejected: session is live on another g
 Four of the 20 session buckets were on the slow server, so about 120 of the 600 sessions should have been affected.
 The lease took all 600.
 
+The FIX load paid for it in every stage that throttled nats-0, and in none that didn't. Stage 1 had no fault and 0
+lost fills. The gateways' lost-fill counter is cumulative over the rig's life.
+
+| Stage | FIX client reconnects | FIX orders unanswered | Gateways' fills lost (FR-FFR-15), added this stage |
+|---|---|---|---|
+| s2 throttle | 200 | 501,085 | 6 |
+| s3 throttle + leader kill | 474 | 176,540 | 24,306 |
+| s4 throttle, spool off | 134 | 35,969 | about 5,500 (last sample) |
+
+A session that moves to another gateway leaves fills routed to the old one (FR-FFR-14). There they age out of the
+early-fill buffer as `outcome="lost"`. Which part of stage 3's loss is the kill and which is the lease is not
+separated. A rerun with the fault on a server that holds no lease or order bucket would separate them.
+
 ## Why
 
 `FixSessionStore` places the session buckets (FR-GFS-21: bucket i on `FIX_SESSION_PLACEMENT` tag i mod N) and writes
