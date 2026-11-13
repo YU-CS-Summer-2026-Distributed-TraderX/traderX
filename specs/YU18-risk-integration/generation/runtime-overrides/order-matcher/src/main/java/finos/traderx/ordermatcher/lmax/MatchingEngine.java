@@ -83,6 +83,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     private final OutputPublisher out;
     private final HotPathMetrics metrics;
+    /** FR-OPL-12: false when the owner passes no metrics (the cluster tier with CLUSTER_ENGINE_TIMING=off, where
+     *  nothing reads them): the hot path then takes no clock read and records no histogram for them. Telemetry
+     *  only; no decision reads a timing. */
+    private final boolean timing;
     // Authoritative pre-trade risk state (in-memory-risk-gateway, ADR-018): check + reserve
     // exact aggregate exposure in global sequence order BEFORE an order becomes executable
     // (FR-IMRG12/13). Null = risk disabled (legacy construction paths and parity tests).
@@ -263,6 +267,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                           int terminalRetain, BlpRiskState risk) {
         this.out = out;
         this.metrics = metrics;
+        this.timing = metrics != null;
         this.risk = risk;
         // fillFullThreshold is retained for construction-site compatibility only: YU13's
         // crossing book fills exactly what the opposite side offers — there is no
@@ -316,6 +321,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
                           int fillFullThreshold, int initialPoolSize) {
         this(out, metrics, maxSecurities, fillFullThreshold, initialPoolSize, Math.max(1024, initialPoolSize));
+    }
+
+    /** FR-OPL-12: whether this engine times its hot path (it was given metrics). */
+    public boolean timingEnabled() {
+        return timing;
     }
 
     private static int envInt(String name, int dflt) {
@@ -441,7 +451,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // Release-store: publishes this event's plain counter/time writes to edge readers
         // without the full volatile-store fence on the BLP thread.
         BLP_SEQ.setRelease(this, sequence);
-        metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
+        if (timing) metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 
     // ----- bootstrap (single-threaded, before the ring goes live) -----------------------
@@ -896,12 +906,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // validate and reserve at the larger of the mark and the opposite best (ADR-089) — an
         // unpriced empty market fails closed as PRICE_MISSING.
         if (risk != null) {
-            long decideStart = System.nanoTime();
+            long decideStart = timing ? System.nanoTime() : 0L;
             final long validationPx = market ? marketValidationPx(book, e.securityId, e.side) : e.limitPx;
             RiskReason decision = risk.decideAndReserve(e.clientOrderKey(), 0L, e.orderRef,
                 e.accountId, e.securityId, e.side, positions.get(e.accountId, e.securityId),
                 e.qty, validationPx, e.eventTimeMillis, o);
-            metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
+            if (timing) metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
             if (decision != RiskReason.ACCEPTED) {
                 o.riskReason = (byte) decision.ordinal();
                 reject(o, e, null);
@@ -977,7 +987,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             return;
         }
         autoFillAttempts++;
-        final long matchStart = System.nanoTime();
+        final long matchStart = timing ? System.nanoTime() : 0L;
         while (a.remaining > 0 && opp != LimitBook.NO_LEVEL) {
             levelPx = book.priceAt(opp);
             if (!market && (buy ? levelPx > a.limitPx : levelPx < a.limitPx)) {
@@ -1007,7 +1017,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             opp = buy ? book.bestAskSlot() : book.bestBidSlot();
         }
         autoFillSuccess++;
-        metrics.recordMatchLatency(System.nanoTime() - matchStart);
+        if (timing) metrics.recordMatchLatency(System.nanoTime() - matchStart);
     }
 
     /**
@@ -1432,11 +1442,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             final long heldNotional = o.reservedNotional;
             final int heldQty = o.reservedQty;
             risk.release(o.accountId, o.securityId, o.side, o);
-            final long decideStart = System.nanoTime();
+            final long decideStart = timing ? System.nanoTime() : 0L;
             final RiskReason decision = risk.decideAndReserve(e.clientOrderKey(), 0L, o.orderRef,
                 o.accountId, o.securityId, o.side, positions.get(o.accountId, o.securityId),
                 newRemaining, newLimitPx, e.eventTimeMillis, o);
-            metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
+            if (timing) metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
             if (decision != RiskReason.ACCEPTED) {
                 // Exact restore: release() zeroed both the account aggregates and the holder, so
                 // putting the same two numbers back leaves exposure bit-identical to before.
@@ -1541,11 +1551,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // tick has been seen yet, matching 009's trade-processor null-price handling.
         long execPx = lastPxBySecurity[e.securityId];
         if (risk != null) {
-            long decideStart = System.nanoTime();
+            long decideStart = timing ? System.nanoTime() : 0L;
             RiskReason decision = risk.decideMarketTrade(e.clientOrderKey(), 0L, e.accountId,
                 e.securityId, e.side, positions.get(e.accountId, e.securityId), e.qty, execPx,
                 e.eventTimeMillis);
-            metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
+            if (timing) metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
             if (risk.duplicateReplay() || decision != RiskReason.ACCEPTED) {
                 // Idempotent retry returns the original decision; a rejection books nothing and
                 // moves no position (FR-IMRG14/23) — only the correlation ack leaves the BLP.
@@ -1563,7 +1573,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         out.emitMarketTrade(e.accountId, e.securityId, e.side, e.qty, execPx, tradeSeq, newPosition,
             avgCostTicks, e.seq, e.eventTimeMillis, e.ingressNanos);
-        metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
+        if (timing) metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
     }
 
     // ===== YU18 order types (components/order-types) ==========================================

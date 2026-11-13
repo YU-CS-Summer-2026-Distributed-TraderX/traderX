@@ -44,6 +44,62 @@ probe, never the saturating driver; the nanosecond cluster clock; bound an effec
   a cpuset wider than CPU or with fewer than five whole cores. The session-3 arms (`Nsh L1sh L1shbr L1shwm L1st L1pin
   Nsh2`) SHALL each state every node knob they touch (busy_read/busy_poll, wmem_max/wmem_default), so none inherits
   the previous arm's.
+- **FR-OPL-10 (latency-tail attribution harness, 2026-11-12):** `l1-ab.sh` SHALL run `ARM_HOOK start LABEL` on the
+  rolled members before the probe and `ARM_HOOK stop LABEL` before the next roll, refusing the arm if the start
+  fails, and SHALL take `RATES` (default `0 300 500`) as the blocks an arm runs. `l0-baseline.sh` SHALL read thread
+  CPU and leader state from the member's own JVM (the `java` process whose command line names `ClusterNodeMain`),
+  not the first `java` in the container: a second JVM beside the member made every thread-CPU reading the probe's.
+  `scripts/bench/latency/tail/` holds the hook and its readers:
+  - `tail-hook.sh`: `HxProbe` on every member (every position counter each 1 ms; agent thread state, wait channel
+    and run/wait time each 10 ms), then each member's GC, safepoint and snapshot log lines and every gateway's;
+  - the probe SHALL write to `/dev/shm` and SHALL NOT read `memory.stat` or node `vmstat`: writing its series to the
+    container's `/tmp` (the node's boot disk) gave 55-240 ms cluster stalls and +110 us of idle commit, where the
+    same arm without it had none (runs 1, 3 against 2, 4);
+  - the probe SHALL stop itself once its two files pass `hx.capBytes` (150 MiB): `/dev/shm` is a 1Gi volume shared
+    with Aeron's buffers, and an uncapped probe filled it and failed the leader's driver (an election, run 4);
+  - a script that acts on "the leader" SHALL refuse unless exactly one member's `/health` says LEADER: the failed
+    ex-leader kept saying so, and two profiles were taken on it;
+  - `prof.py` + `JfrDump.java`: an async-profiler JFR (itimer, 1 ms) of the leader, the clustered-service thread's
+    samples split into normal, inside a service-lag episode (commit minus service position over a bar) and inside a
+    snapshot's service-flat run, by family and by leaf frame;
+  - `analyze.py`: per member, each stage's lag as bytes behind over the byte rate (leader: publication to sender,
+    to its own recording, to commit, commit to the service; follower: received to recorded), split by whether the
+    tick falls inside one of that member's own GC cycles, with flat runs of 5 ms or more; `ep.py`: episodes over a
+    bar, with the agents' thread states at each.
+- **FR-OPL-11 (apply-cost microbench):** `ServiceApplyCostBenchTest` (opt-in, `APPLY_COST_BENCH=1`) SHALL drive the
+  clustered service's `onSessionMessage` on one thread with no cluster: keyed NEW orders that cross between two
+  accounts, alternating direction so no limit is reached, with the idempotency table at its retention frontier. It
+  SHALL print ns per order per window, by wall time and by the thread's own CPU time, and fail if the orders did
+  not cross. `APPLY_COST_VARIANT` switches FR-OPL-12's knobs on for a run. A change is judged old against new in
+  interleaved runs on one machine, by the best window's CPU time.
+- **FR-OPL-12 (service-thread cost knobs, default unchanged):**
+  - `CLUSTER_OUTPUT_RING_WAIT=none` SHALL give the service's output ring a wait strategy whose signal is a no-op.
+    The ring is published and drained by the one service thread, so nothing waits on it; the default (the
+    Disruptor's blocking strategy) takes a lock and signals a condition on every publish.
+  - `CLUSTER_ENGINE_TIMING=off` SHALL construct the engine with no `HotPathMetrics`; the engine SHALL then take no
+    clock read and record no histogram for them. Nothing in the cluster tier reads those metrics.
+  - Neither knob SHALL change an output: `ServiceThreadCostKnobsTest` runs one input mix (crossing orders, repeated
+    keys, cancels) through a default service and one with both knobs on, and compares every output's decision
+    fields in order. Unset, both keep today's behaviour.
+  - Measured 2026-11-12 (Mac, FR-OPL-11, CPU ns per order, best window, two interleaved runs each): unchanged
+    647 / 675; ring 531 / 567; timing 572 / 575; both 450 / 465. At 300K/s on GKE the two were 9.0% and about 10%
+    of the leader's service thread (`latency-tail-20261112/s2/prof3-B`).
+  - Measured on GKE 2026-11-12 (slot A, `tail-17ab61cf-j21`, arms N, RT, N′ of FR-OPL-14): leader apply per order
+    1.89-1.91 / 1.67-1.68 / 1.88-1.89 us; achieved at the 500K setting 441-456K / 481-494K / 446-471K; 300K commit
+    to service lag p99 1,707 / 1,458 / 1,460 us (the controls differ by 15%, so no verdict on the 300K tail; its
+    median fell 219 to 150 us against both). Each knob alone was not run.
+- **FR-OPL-13 (idempotency table: measured, nothing changed):** a key-less run of FR-OPL-11 costs 290-294 ns per
+  order against 475-542 ns keyed, so the risk state's idempotency table is about 40% of the bench's per-order cost
+  (12% of the leader's service thread at 300K/s on GKE, where the blotter, bridges and egress also run). Two changes
+  were tried on 2026-11-12 and withdrawn: holding each entry's {orderRef, decision} once, in the retention ring,
+  instead of also in two table arrays (433-449 ns against 450-475 ns: inside the noise), and reading the next
+  eviction victim's slot one order early (no further gain). The cost that remains is two dependent reads of random
+  cache lines per new key, the new key's slot and the evicted key's, plus the backward-shift scan. The patch is in
+  the session notes (`idempotency-dedup-and-touch.patch`); the table is unchanged.
+- **FR-OPL-14 (service-thread knob arms):** `l1-ab.sh` SHALL take an arm's own member env from `ARM_ENV`
+  (`KEY=VAL` or `KEY-`) and refuse the arm unless every member's container shows it. Arms on today's member and
+  shared cores: `Nk`, `Nk2`, `Nk3` (both FR-OPL-12 knobs unset: the control at the start, between and at the end),
+  `RT` (both on), `Rk` (the ring alone), `Tk` (the timing alone).
 - **FR-OPL-06 (leader state per window):** each block window SHALL also record on the leader, at its start and end:
   - every Aeron counter in the driver's CnC (`AeronCounters`): each agent's max cycle time, cycles over the threshold
     (`l1-ab.sh` sets every agent's to 1 ms), and back pressure;
