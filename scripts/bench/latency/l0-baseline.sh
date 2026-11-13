@@ -35,13 +35,13 @@ gw_ips(){ kc get pods -l app=cluster-gateway --field-selector=status.phase=Runni
 # every gateway's /latency, in one exec (the gateway does not answer kubectl exec inside its own pod under load)
 gw_all(){ kc exec deploy/trade-processor -- sh -c "for ip in $(gw_ips); do echo \"== \$ip\"; curl -s -m 5 \"http://\$ip:18110/latency$1\"; echo; done"; }
 threads(){ kc exec "order-matcher-cluster-$1" -c cluster-node -- sh -c '
-  for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
+  for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && grep -q ClusterNodeMain "$p/cmdline" 2>/dev/null && { J=${p#/proc/}; break; }; done
   for t in /proc/$J/task/*; do   # a thread can exit mid-scan (idle JIT compiler threads retire): skip it, do not fail
     c=$(cat "$t/comm" 2>/dev/null) && s=$(sed "s/.*) //" "$t/stat" 2>/dev/null) && [ -n "$s" ] || continue
     set -- $s; echo "$c $(( ${12} + ${13} ))"; done' 2>/dev/null; }
 # FR-OPL-06: the leader's state at a window edge, one exec; sections are "== name" (l1-report.py reads them).
 leader_state(){ kc exec "order-matcher-cluster-$1" -c cluster-node -- sh -c '
-  for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
+  for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && grep -q ClusterNodeMain "$p/cmdline" 2>/dev/null && { J=${p#/proc/}; break; }; done
   echo "== cpu.stat"; cat /sys/fs/cgroup/cpu.stat
   echo "== cpuset"; cat /sys/fs/cgroup/cpuset.cpus.effective
   echo "== siblings"; cat /sys/devices/system/cpu/cpu*/topology/thread_siblings_list | sort -u
@@ -293,7 +293,7 @@ pin)
   for m in 0 1 2; do
     out=$(kc exec "order-matcher-cluster-$m" -c cluster-node -- sh -c '
       set -e; CPU='"$CPU"'
-      for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && { J=${p#/proc/}; break; }; done
+      for p in /proc/[0-9]*; do grep -q "^java" "$p/comm" 2>/dev/null && grep -q ClusterNodeMain "$p/cmdline" 2>/dev/null && { J=${p#/proc/}; break; }; done
       mine=$(cat /sys/fs/cgroup/cpuset.cpus.effective)
       expand(){ for part in $(echo "$1" | tr "," " "); do case $part in
         *-*) i=${part%-*}; while [ "$i" -le "${part#*-}" ]; do echo "$i"; i=$((i + 1)); done ;; *) echo "$part" ;; esac; done; }

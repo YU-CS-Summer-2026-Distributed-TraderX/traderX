@@ -640,6 +640,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // Written by the service thread only; read by /health and /metrics.
     private volatile long egressDropped, egressClosing;
     boolean egressCoalesce = EGRESS_COALESCE; // package-private for tests
+    /** FR-OPL-12: the output ring is published and drained by this one thread ({@link #drainOutputs} reads it by
+     *  cursor), so no consumer ever waits on it. {@code CLUSTER_OUTPUT_RING_WAIT=none} gives it a wait strategy whose
+     *  signal is a no-op; the default keeps the Disruptor's blocking one, which takes a lock and signals a condition
+     *  on every publish (9% of this thread at 300K/s, GKE 2026-11-12). */
+    static final boolean OUTPUT_RING_SIGNAL = !"none".equalsIgnoreCase(System.getenv("CLUSTER_OUTPUT_RING_WAIT"));
+    boolean outputRingSignal = OUTPUT_RING_SIGNAL; // package-private for tests
+    /** FR-OPL-12: {@code CLUSTER_ENGINE_TIMING=off} gives the engine no {@link HotPathMetrics}. This tier never
+     *  reads them (the instance is reachable only from the engine), and they cost five clock reads and three
+     *  histogram records per order. Default on: unchanged. */
+    static final boolean ENGINE_TIMING = !"off".equalsIgnoreCase(System.getenv("CLUSTER_ENGINE_TIMING"));
+    boolean engineTiming = ENGINE_TIMING; // package-private for tests
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
     /** ADR-104 format 16: one ring record at most; a fixed buffer, since ExpandableArrayBuffer's per-put capacity
      *  check halves the column copies' speed (3.7 vs 7.6 ms for 600 full rings, measured). */
@@ -948,7 +959,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * {@link #initEngine()} and therefore keeps the exact same capacities.
      */
     void initEngine(final int initialPoolSize, final int terminalRetain) {
-        this.outputRing = RingBuffer.createSingleProducer(OutputEvent::new, outputRingSize());
+        this.outputRing = RingBuffer.createSingleProducer(OutputEvent::new, outputRingSize(),
+            outputRingSignal ? new com.lmax.disruptor.BlockingWaitStrategy() : new com.lmax.disruptor.BusySpinWaitStrategy());
         this.outputConsumed = new Sequence(-1);
         this.outputRing.addGatingSequences(outputConsumed);
         this.risk = new BlpRiskState(MAX_ACCOUNTS, MAX_SECURITIES, POOL_SIZE, IDEMPOTENCY_CAPACITY,
@@ -958,7 +970,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.risk.attachSessionRing(new SessionRing(SESSION_RING, SESSION_STREAMS, STREAM_IDLE_MILLIS));
         // fillFullThreshold 0: the crossing book has no threshold-driven half-fill policy (YU13).
         this.outputs = new OutputPublisher(outputRing, this::drainOnBackpressure);
-        this.engine = new MatchingEngine(outputs, new HotPathMetrics(),
+        this.engine = new MatchingEngine(outputs, engineTiming ? new HotPathMetrics() : null,
             MAX_SECURITIES, 0, initialPoolSize, POOL_SIZE, terminalRetain, risk);
         this.engine.maxActiveBooks(maxActiveBooks(System.getenv("MAX_ACTIVE_BOOKS"), Runtime.getRuntime().maxMemory(),
             engine.bookLevels(), compressedOops()));

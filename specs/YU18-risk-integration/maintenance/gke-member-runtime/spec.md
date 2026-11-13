@@ -95,6 +95,14 @@
   a native sidecar on the member's `shm` volume added by `scripts/bench/latency/aeronmd-sidecar.py`, which mirrors the
   member's Java driver settings and keeps the pod Guaranteed. No production render changes. Node-local: members may
   differ (the wire protocol is the same), so it rolls one member at a time.
+- FR-GMR-15: A member's `/health` SHALL report the consensus module's own role, read from its node-role counter in
+  the driver's CnC, and `DOWN` once that counter has been freed or its id reused: the consensus module has closed
+  while the JVM lives on. Until the counter first appears (start-up) the role is the one the service was last told,
+  as before. The service's role comes from a callback, so a member whose consensus module has closed keeps the last
+  one it heard: on GKE 2026-11-12 an ex-leader whose `/dev/shm` had filled answered `LEADER` for ten minutes after
+  the other two elected, with every cluster counter gone from its driver, and a profiling script that asked "who
+  says LEADER" attached to it twice. `HealthRoleTest`. Not changed here: the member does not exit in that state,
+  and `/ready`, the bridges and the metrics still follow the service's role.
 - NFR-GMR-01: No engine, wire, snapshot or epoch change. `CLUSTER_HEARTBEAT_TIMEOUT_MS` stays 200 on
   the GKE tier.
 

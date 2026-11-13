@@ -278,9 +278,11 @@ public final class ClusterNodeMain {
             try (io.aeron.Aeron aeron = io.aeron.Aeron.connect(
                     new io.aeron.Aeron.Context().aeronDirectoryName(aeronDir))) {
                 final org.agrona.concurrent.status.CountersReader counters = aeron.countersReader();
+                final ConsensusRoleCounter roleCounter = new ConsensusRoleCounter();
                 int counterId = -1;
                 long last = -1;
                 while (true) {
+                    CONSENSUS_ROLE.set(roleCounter.poll(counters));
                     if (counterId < 0) {
                         counterId = io.aeron.cluster.service.ClusterCounters.find(
                             counters, io.aeron.AeronCounters.CLUSTER_ELECTION_STATE_TYPE_ID, 0);
@@ -304,6 +306,46 @@ public final class ClusterNodeMain {
         }, "election-phase-watcher");
         watcher.setDaemon(true);
         watcher.start();
+    }
+
+    /** FR-GMR-15: the consensus module's own node-role counter, as {@link #healthRole} reads it. */
+    static final long ROLE_UNSEEN = -1, ROLE_GONE = -2;
+    static final java.util.concurrent.atomic.AtomicLong CONSENSUS_ROLE = new java.util.concurrent.atomic.AtomicLong(ROLE_UNSEEN);
+
+    /**
+     * FR-GMR-15: {@code /health}'s role is the consensus module's, not the last one the service was told. The service
+     * learns its role from a callback, so a member whose consensus module has closed keeps the role it last heard:
+     * on GKE 2026-11-12 an ex-leader answered LEADER for ten minutes after the others had elected, with every
+     * cluster counter gone from its driver. Before the counter is first seen the service's role stands (start-up).
+     */
+    static String healthRole(final io.aeron.cluster.service.Cluster.Role serviceRole, final long consensusRole) {
+        if (consensusRole == ROLE_GONE) {
+            return "DOWN";
+        }
+        return consensusRole == ROLE_UNSEEN ? serviceRole.name() : io.aeron.cluster.service.Cluster.Role.get(consensusRole).name();
+    }
+
+    /** The node-role counter's value; {@link #ROLE_UNSEEN} until it first appears, {@link #ROLE_GONE} once it has
+     *  been freed (the consensus module closed) or its id has been handed to another counter. */
+    static final class ConsensusRoleCounter {
+        private int id = -1;
+        private boolean seen;
+
+        long poll(final org.agrona.concurrent.status.CountersReader counters) {
+            if (id >= 0 && (counters.getCounterState(id) != org.agrona.concurrent.status.CountersReader.RECORD_ALLOCATED
+                || counters.getCounterTypeId(id) != io.aeron.AeronCounters.CLUSTER_NODE_ROLE_TYPE_ID)) {
+                id = -1;
+            }
+            if (id < 0) {
+                id = io.aeron.cluster.service.ClusterCounters.find(
+                    counters, io.aeron.AeronCounters.CLUSTER_NODE_ROLE_TYPE_ID, 0);
+                if (id < 0) {
+                    return seen ? ROLE_GONE : ROLE_UNSEEN;
+                }
+                seen = true;
+            }
+            return counters.getCounterValue(id);
+        }
     }
 
     private static int memberId() {
@@ -351,7 +393,7 @@ public final class ClusterNodeMain {
         server.createContext("/health", exchange -> {
             final boolean started = service.engine() != null;
             final String body = "{\"memberId\":" + memberId
-                + ",\"role\":\"" + service.role() + "\""
+                + ",\"role\":\"" + healthRole(service.role(), CONSENSUS_ROLE.get()) + "\""
                 + ",\"started\":" + started
                 // Consensus-log position, not the engine's blpSeq: a member restored from a
                 // snapshot into an IDLE cluster has applied no engine events since restore, so
