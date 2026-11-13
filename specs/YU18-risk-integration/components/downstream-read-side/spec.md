@@ -971,8 +971,9 @@ These apply on the cluster member whenever `TRADE_BRIDGE_NATS_URL` is set. Only 
     Run 3 (2026-11-12, 9:56–11:00 pm ET, us-central1-b, a fresh epoch, the same throttle at the full mixed load):
     REFUTED. No lane spooled and no lane fell behind (largest backlog 4,758 records). NATS refused 7,424,684
     records at ingest (429) on the throttled server's two partitions, and the read model and the history store both
-    ended 2,206,391 sides short (314,069,725 of 316,276,116). The cause was not the spool: FR-DRS-62. The spool
-    with FR-DRS-62 and FR-DRS-63 is not yet run on GKE.
+    ended 2,206,391 sides short (314,069,725 of 316,276,116). The spool was not running: its start-up wipe could
+    not delete the `/spool` mount point, so every bridge started unspooled (fixed, ADR-106 follow-up). Nor was the
+    publish window: FR-DRS-62. The spool with both fixes and FR-DRS-63 is not yet run on GKE.
     `ReceiptLanesIT#aDeadLeadersUnstoredTailLongerThanTheKeepIsRepublishedByItsSuccessor` now expects the dying
     leader to have sent its window into the frozen socket, not its whole tail.
     `LaneSpoolTest` (no NATS): records keep their index across segments, a trim deletes whole segments only, the

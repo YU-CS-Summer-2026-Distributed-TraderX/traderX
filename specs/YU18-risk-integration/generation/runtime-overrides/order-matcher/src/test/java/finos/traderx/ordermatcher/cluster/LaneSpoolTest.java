@@ -104,4 +104,25 @@ class LaneSpoolTest {
         }
         assertEquals(before, LaneSpool.held());
     }
+
+    /** ADR-106 follow-up: the spool's root may be a mount point, which cannot be deleted; a wipe empties it and keeps
+     *  it. A root whose parent refuses deletes stands in for the mount (GKE run 3: "/spool: Device or resource busy",
+     *  every bridge unspooled). Before: the wipe deleted the root itself and threw. */
+    @org.junit.jupiter.api.Test
+    void aWipeEmptiesARootItCannotDelete() throws Exception {
+        final java.nio.file.Path parent = java.nio.file.Files.createTempDirectory("spool-mount");
+        final java.nio.file.Path root = java.nio.file.Files.createDirectories(parent.resolve("spool"));
+        java.nio.file.Files.createDirectories(root.resolve("trade-1"));
+        java.nio.file.Files.writeString(root.resolve("trade-1").resolve("p0-0.seg"), "stale");
+        org.junit.jupiter.api.Assumptions.assumeTrue(parent.toFile().setWritable(false), "cannot make the parent read-only");
+        try {
+            LaneSpool.wipe(root);
+            org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.isDirectory(root), "the root itself is kept");
+            try (var left = java.nio.file.Files.list(root)) {
+                org.junit.jupiter.api.Assertions.assertEquals(0, left.count(), "the root is emptied");
+            }
+        } finally {
+            parent.toFile().setWritable(true);
+        }
+    }
 }
